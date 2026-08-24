@@ -18,6 +18,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, Optional
 
@@ -257,3 +258,105 @@ async def test_processing_lifecycle_reacts_eyes_then_check():
     assert all(r["message_id"] == "m42" and r["chat_id"] == "ch1" for r in reacts)
 
 
+# ── fanned-out prompt answers (one press, many gateways) ─────────────────
+#
+# The connector delivers a passthrough forward (a Discord button press) to
+# EVERY live gateway session of the tenant, unlike a message, which it narrows
+# to the admitted instance set. So one press reaches every sibling gateway
+# while only the minting one can resolve it. These pin that a non-owner stays
+# silent and that the owner still answers exactly once.
+
+
+@pytest.mark.asyncio
+async def test_sibling_gateway_ignores_another_instances_prompt_answer(monkeypatch):
+    """A press for a prompt this process didn't mint is consumed silently."""
+    owner, owner_stub = _adapter()
+    sibling, sibling_stub = _adapter()
+    await owner.send_clarify("c1", "Which?", ["alpha", "beta"], "cl-1", "s")
+    prompt_id = owner_stub.sent[-1]["prompt_id"]
+
+    resolved: list[tuple] = []
+    monkeypatch.setattr(
+        "tools.clarify_gateway.resolve_gateway_clarify",
+        lambda cid, resp: resolved.append((cid, resp)) or True,
+    )
+    monkeypatch.setattr("tools.clarify_gateway.mark_awaiting_text", lambda cid: None)
+
+    event = _event({"prompt_id": prompt_id, "option_id": "c1"})
+    # Consumed (True) so the "/c1"-shaped text is never dispatched as chat --
+    # that fall-through is what produced one "Unknown command `/c1`" per
+    # sibling gateway. And the sibling neither resolves nor says anything.
+    assert await sibling._consume_prompt_response(event) is True
+    assert resolved == []
+    assert sibling_stub.sent == []
+
+    # The owner still resolves the same press normally.
+    assert await owner._consume_prompt_response(event) is True
+    assert resolved == [("cl-1", "beta")]
+
+
+@pytest.mark.asyncio
+async def test_repeat_answer_for_resolved_prompt_is_ignored(monkeypatch):
+    """A double tap / redelivered forward must not resolve twice."""
+    adapter, stub = _adapter()
+    await adapter.send_clarify("c1", "Which?", ["alpha", "beta"], "cl-2", "s")
+    prompt_id = stub.sent[-1]["prompt_id"]
+
+    resolved: list[tuple] = []
+    monkeypatch.setattr(
+        "tools.clarify_gateway.resolve_gateway_clarify",
+        lambda cid, resp: resolved.append((cid, resp)) or True,
+    )
+    event = _event({"prompt_id": prompt_id, "option_id": "c0"})
+    assert await adapter._consume_prompt_response(event) is True
+    assert resolved == [("cl-2", "alpha")]
+
+    sent_after_first = len(stub.sent)
+    assert await adapter._consume_prompt_response(event) is True
+    assert resolved == [("cl-2", "alpha")]  # not resolved a second time
+    assert len(stub.sent) == sent_after_first  # and no second ack / notice
+
+
+@pytest.mark.asyncio
+async def test_expired_own_prompt_notifies_instead_of_unknown_command():
+    """An expired prompt of OURS gets an expiry notice, not chat dispatch.
+
+    Falling through would hand run.py a command-shaped "/c1", which is not a
+    real command, so the user got "Unknown command `/c1`".
+    """
+    adapter, stub = _adapter()
+    prompt_id = adapter._mint_prompt("clarify", {"chat_id": "c1"}, timeout_s=-1.0)
+
+    event = _event({"prompt_id": prompt_id, "option_id": "c1"})
+    assert await adapter._consume_prompt_response(event) is True
+    # The notice is fire-and-forget now (read-loop self-deadlock fix:
+    # awaiting a send from _consume_prompt_response blocks the very read
+    # loop that resolves the send's result future). Yield so the
+    # background ack task runs before asserting egress.
+    await asyncio.sleep(0.05)
+    notices = [a for a in stub.sent if a["op"] == "send"]
+    assert len(notices) == 1
+    assert "no longer waiting" in notices[0]["content"]
+
+
+def test_minted_prompt_ids_are_instance_scoped_and_callback_safe():
+    """Ids carry the minting process's nonce and stay codec-legal.
+
+    The connector's promptCodec validates each id as [A-Za-z0-9_.-]{1,32} and
+    caps "hp1:<prompt_id>:<option_id>" at Telegram's 64-byte callback budget.
+    """
+    import re
+
+    a, _ = _adapter()
+    b, _ = _adapter()
+    id_a = a._mint_prompt("clarify", {"chat_id": "c1"})
+    id_b = b._mint_prompt("clarify", {"chat_id": "c1"})
+
+    assert re.fullmatch(r"[A-Za-z0-9_.\-]{1,32}", id_a)
+    assert len(f"hp1:{id_a}:option_id_up_to_32_chars_here") <= 64
+    assert a._minted_here(id_a) is True
+    assert b._minted_here(id_a) is False
+    assert a._minted_here(id_b) is False
+    # A legacy id minted before the nonce existed (no "." segment) is still
+    # treated as ours, so a prompt in flight across an upgrade resolves.
+    assert a._minted_here("a1b2c3d4") is True

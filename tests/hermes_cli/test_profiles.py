@@ -318,6 +318,144 @@ class TestDeleteProfile:
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
         assert pids == [101]
 
+    def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
+        """A `hermes` console-script shim spawned directly (e.g. Electron's
+        findOnPath('hermes') resolution) reports argv[0] as the interpreter
+        (python3) and argv[1] as the shim's path -- not "hermes" -- because
+        the OS execs the shebang. The scanner must still recognize it so
+        profile delete doesn't leave a zombie Desktop-spawned backend behind
+        (issue: deleting a Desktop profile kept reappearing after relaunch).
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Shebang-exec'd shim bound to coder → matched despite argv[0]
+            # being the python interpreter, not "hermes".
+            FakeProc(201, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "coder", "serve",
+                            "--host", "127.0.0.1", "--port", "0"]),
+            # Same shape but a different profile → skipped.
+            FakeProc(202, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "other", "serve"]),
+            # Non-hermes script run by python3 → skipped.
+            FakeProc(203, ["/usr/bin/python3", "/Users/x/some_script.py", "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == [201]
+
+    def test_backend_scan_rejects_unrelated_hermes_prefixed_script(self, profile_env, monkeypatch):
+        """A user's own script that happens to start with "hermes" (e.g.
+        hermes-notes.py, hermes-unrelated-tool) must NOT be misidentified as
+        the console-script shim just because argv[0] is a python interpreter
+        and argv[1]'s basename starts with "hermes" -- only the actual known
+        console-script entry points (hermes, hermes-agent, hermes-acp) count.
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Looks like the shim by prefix alone, but is the user's own
+            # unrelated tool -- must be rejected, not killed by profile delete.
+            FakeProc(301, ["/usr/bin/python3", "/Users/x/scripts/hermes-notes.py",
+                            "--profile", "coder", "serve"]),
+            FakeProc(302, ["/usr/bin/python3", "/Users/x/scripts/hermes-unrelated-tool",
+                            "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == []
+
+    def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
+        """The other two real console-script entry points (hermes-agent,
+        hermes-acp -- see pyproject.toml [project.scripts]) must also be
+        recognized via the shebang-exec path, not just the primary "hermes"
+        shim.
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            FakeProc(401, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-agent",
+                            "--profile", "coder", "serve"]),
+            FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
+                            "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert set(pids) == {401, 402}
+
 
 # ===================================================================
 # TestListProfiles
@@ -915,5 +1053,75 @@ class TestProfilesToServe:
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
 
+    def test_empty_allowlist_serves_only_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+
+        serve = dict(profiles_to_serve(multiplex=True, profile_allowlist=[]))
+
+        assert serve == {"default": _get_default_hermes_home()}
+
+    def test_allowlist_normalizes_deduplicates_and_keeps_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+        create_profile("guest", no_alias=True)
+
+        serve = dict(
+            profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=[" Worker ", "worker", "default", "missing"],
+            )
+        )
+
+        assert set(serve) == {"default", "worker"}
+        assert serve["worker"] == get_profile_dir("worker")
+
+
+
+        assert set(serve) == {"default", "worker"}
+        assert serve["worker"] == get_profile_dir("worker")
+
+
+# ---------------------------------------------------------------------------
+# resolve_profile_env spelling preservation (#82581 junction follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProfileEnvSpelling:
+    """resolve_profile_env() keeps the configured HERMES_HOME spelling as
+
+    the launch root (junction installs) while preserving the pre-existing
+    profile-path handling and existence/validation semantics.
+    """
+
+    def test_resolution_matrix_preserves_configured_spelling(self, monkeypatch, tmp_path):
+        """Resolution matrix over the four pre-existing invariants: root env
+        -> <root>/profiles/<name>; profile-shaped env -> <root>/profiles/<name>
+        with no nesting; profile-shaped env + default -> <root>; custom roots
+        never fall back to the platform default.
+        """
+        root = tmp_path / "configured-root"
+        (root / "profiles" / "beta").mkdir(parents=True)
+        (root / "profiles" / "coder").mkdir(parents=True)
+        custom = tmp_path / "custom-hermes"
+        (custom / "profiles" / "beta").mkdir(parents=True)
+        cases = [
+            (root, "coder", root / "profiles" / "coder"),
+            (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),
+            (root / "profiles" / "alpha", "default", root),
+            (custom, "beta", custom / "profiles" / "beta"),
+        ]
+        for env_home, profile, expected in cases:
+            monkeypatch.setenv("HERMES_HOME", str(env_home))
+            assert Path(resolve_profile_env(profile)) == expected
+
+    def test_missing_named_profile_still_raises(self, monkeypatch, tmp_path):
+        root = tmp_path / "configured-root"
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with pytest.raises(FileNotFoundError):
+            resolve_profile_env("nope")
+
+    def test_unset_env_falls_back_to_default_root(self, monkeypatch):
+        # No HERMES_HOME: the platform default root applies (existing contract).
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
 
 

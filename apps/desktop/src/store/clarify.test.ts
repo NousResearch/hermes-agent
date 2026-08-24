@@ -7,6 +7,7 @@ import {
   clearClarifyRequest,
   hasClarifyRequest,
   normalizeChoices,
+  normalizeQuestions,
   setClarifyRequest,
   skipClarifyRequest
 } from './clarify'
@@ -18,6 +19,7 @@ function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
     requestId,
     question: `question-${requestId}`,
     choices: null,
+    multiSelect: false,
     sessionId
   }
 }
@@ -162,5 +164,52 @@ describe('normalizeChoices', () => {
   it('returns empty array when nothing survives', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
+  })
+})
+
+describe('normalizeQuestions', () => {
+  it('returns empty array for non-array input', () => {
+    expect(normalizeQuestions(null)).toEqual([])
+    expect(normalizeQuestions('x')).toEqual([])
+    expect(normalizeQuestions({})).toEqual([])
+  })
+
+  it('normalizes a valid batch and keys by qid', () => {
+    const result = normalizeQuestions([
+      { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+      { qid: 'q1', question: 'Two?' }
+    ])
+
+    expect(result).toEqual([
+      { choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'One?' },
+      { choices: null, multiSelect: false, qid: 'q1', question: 'Two?' }
+    ])
+  })
+
+  it('drops entries missing qid or question text', () => {
+    const result = normalizeQuestions([
+      { qid: '', question: 'no qid' },
+      { qid: 'q1', question: '   ' },
+      'not-an-object',
+      { qid: 'q2', question: 'kept' }
+    ])
+
+    expect(result.map(q => q.qid)).toEqual(['q2'])
+  })
+
+  it('degrades all-blank choices to open-ended per question', () => {
+    const result = normalizeQuestions([{ choices: ['', '  '], qid: 'q0', question: 'Q?' }])
+
+    expect(result[0]?.choices).toBeNull()
+  })
+
+  it('only honors multi_select when choices survive', () => {
+    const result = normalizeQuestions([
+      { choices: ['a', 'b'], multi_select: true, qid: 'q0', question: 'A?' },
+      { multi_select: true, qid: 'q1', question: 'B?' }
+    ])
+
+    expect(result[0]?.multiSelect).toBe(true)
+    expect(result[1]?.multiSelect).toBe(false)
   })
 })

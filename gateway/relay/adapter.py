@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from gateway.config import Platform, PlatformConfig
@@ -39,6 +41,13 @@ logger = logging.getLogger(__name__)
 # reader, and ws.close (~3s), the full drain path stays inside 5s.
 _RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S = 2.0
 _RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S = 1.0
+
+# How many already-answered prompt ids to remember, so a duplicate answer for
+# one of them (a double tap, or a connector redelivery of the same forward) is
+# recognized as a repeat rather than mistaken for a stale prompt. One short
+# string per entry; sized well above the number of prompts a single gateway can
+# have in flight, and far below anything that matters for memory.
+_RESOLVED_PROMPT_MEMORY = 256
 
 
 def _utf16_len(text: str) -> int:
@@ -86,6 +95,51 @@ class RelayAdapter(BasePlatformAdapter):
         # feedback off SendResult — see send()). Consumed by the gateway's
         # semantic thread-rename lane; bounded like the sibling caches.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
+        # Bounded FIFO seen-set for inbound replay dedupe (finding #3);
+        # dict preserves insertion order, giving cheap oldest-first eviction.
+        self._seen_inbound: Dict[str, None] = {}
+        # chat_id -> draft_id of the currently OPEN native draft stream
+        # (NS-658 live cards). Armed by send_draft on a successful frame;
+        # consumed by send() to convert the turn-final delivery into the
+        # sealing draft(final=true) frame instead of a duplicate post.
+        # Keyed by _draft_key (chat + per-turn identity), NOT bare chat:
+        # parallel turns in one DM are distinct streams (live finding #10 —
+        # per-chat keying collided three concurrent turns: merged task
+        # cards, clobbered seal state, 3x duplicate finals).
+        self._open_draft_by_chat: Dict[str, int] = {}
+        # Strong refs for in-flight fire-and-forget lifecycle acks (asyncio
+        # holds tasks weakly; unreferenced tasks can be GC'd mid-flight).
+        self._lifecycle_ack_tasks: set = set()
+        # Draft keys whose post-seal tombstone swallow has been logged once
+        # (observability for the hijacked-live-stream class; bounded FIFO
+        # like the sibling caches).
+        self._tombstone_swallow_logged: Dict[str, int] = {}
+        # chat_id -> draft_id of the most recently SEALED stream (gateway
+        # mirror of the connector's sealed-key tombstone): post-seal
+        # straggler frames must neither re-arm interception nor re-open a
+        # stream. One entry per turn key; a NEW turn's fresh draft_id
+        # differs, so it arms normally and writes its own tombstone at its
+        # own seal. Bounded like the sibling caches (see send_draft).
+        self._sealed_draft_by_chat: Dict[str, int] = {}
+        # Stream-is-the-message marker (finding #4): the stream consumer
+        # checks this to keep ONE draft stream per turn instead of bumping
+        # draft_id at tool boundaries (which opens a new Slack message per
+        # segment on native streaming — Telegram-shaped adapters want the
+        # bump, we don't).
+        #
+        # SLACK-ONLY semantic, gated on the negotiated descriptor (review
+        # B4): the base send_draft contract is Telegram-shaped — the draft
+        # clears and the final arrives as a separate real send. Setting
+        # this unconditionally made ANY relay connector that advertises
+        # the draft op (e.g. a Telegram connector) intercept the turn-final
+        # into draft(final=true), so no real history message was ever
+        # posted. A future connector platform whose native streaming is
+        # also stream-is-the-message should advertise it explicitly
+        # (descriptor field within the contract) rather than widening this
+        # platform check by guesswork.
+        self.draft_stream_is_message = (
+            str(getattr(descriptor, "platform", "") or "").lower() == "slack"
+        )
         # chat_id -> event fired when the entry above lands, so a consumer that
         # arrives before the send can wait for it instead of polling. See
         # wait_for_auto_thread_info.
@@ -114,6 +168,11 @@ class RelayAdapter(BasePlatformAdapter):
         # _capture_scope / send.
         self._platform_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Cron flat continuable surface — descriptor-advertised (see
+        # _apply_descriptor; same bit, constructor path).
+        self.supports_inchannel_continuable = bool(
+            getattr(descriptor, "supports_inchannel_continuable", False)
+        )
         # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
         # (a 4401 close after a successful handshake = the operator opted this
         # instance out of the relay). On revocation we surface a clean,
@@ -133,8 +192,29 @@ class RelayAdapter(BasePlatformAdapter):
         # waiting primitive (approval / slash-confirm / clarify) so the click
         # resolves EXACTLY like the native adapters' button callbacks.
         # Entries expire lazily (see _pop_prompt) so an unanswered prompt
-        # never leaks. Keyed by our own minted 8-hex ids.
+        # never leaks. Keyed by our own minted ids (see _prompt_owner_nonce).
         self._pending_prompts: Dict[str, Dict[str, Any]] = {}
+        # Per-process marker prefixed onto every prompt id this adapter mints,
+        # so an answer can be recognized as OURS before it is acted on.
+        #
+        # WHY: a button press arrives on the passthrough plane, which the
+        # connector fans out to EVERY live gateway session of the tenant
+        # (relayServer.routeBusMessage delivers `passthrough` via
+        # sessionsByTenant, unlike `message`, which narrows to the admitted
+        # instance set). The prompt itself went out from exactly one instance,
+        # and _pending_prompts is process-local — so every OTHER instance sees
+        # an answer for a prompt it never minted. Without this marker those
+        # instances cannot tell "a sibling owns this" from "my own prompt
+        # expired", and the id-shaped text ("/c1") falls through to chat
+        # dispatch, where run.py answers "Unknown command `/c1`" — one copy per
+        # sibling gateway. Siblings are the common case in a DM: the connector
+        # resolves the invoker's bindings to DISTINCT TENANTS, so several
+        # instances of one tenant all receive the forward.
+        self._prompt_owner_nonce: str = secrets.token_hex(3)
+        # Prompt ids this process has already resolved, newest last. A repeat
+        # answer for the same id (double tap, or a connector redelivery) is
+        # then consumed silently instead of being treated as a stale prompt.
+        self._resolved_prompts: "OrderedDict[str, float]" = OrderedDict()
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -216,8 +296,544 @@ class RelayAdapter(BasePlatformAdapter):
         self,
         chat_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
     ) -> bool:
-        return self.descriptor.supports_draft_streaming
+        # Native draft streaming needs BOTH the descriptor flag and the
+        # "draft" op. supported_ops is fail-open for legacy connectors
+        # (empty tuple = pre-contract ops only), but "draft" did not exist
+        # pre-contract, so it must NOT fail open: an explicit advertisement
+        # is required. Without it the stream consumer stays on the
+        # edit-based path exactly as today.
+        #
+        # Per-chat resolution (review r2, finding 2): one adapter fronts N
+        # platforms, and the scalar descriptor only reflects the PRIMARY
+        # identity — a Telegram primary must not starve a secondary Slack
+        # chat of native streaming, nor vice versa. When the caller can
+        # name the chat, resolve through its platform's negotiated
+        # descriptor; the scalar remains the fallback (chat unknown,
+        # single-platform gateways: identical behavior).
+        desc = (
+            self._descriptor_for_chat(str(chat_id))
+            if chat_id is not None
+            else self.descriptor
+        )
+        return (
+            desc.supports_draft_streaming
+            and "draft" in (desc.supported_ops or ())
+        )
+
+    def stream_is_message_for_chat(self, chat_id: str) -> bool:
+        """Per-chat stream-is-the-message semantic (review r2, finding 2).
+
+        The class-level ``draft_stream_is_message`` can only reflect the
+        primary identity's platform. On a multi-platform relay, a Slack
+        primary must not impose seal semantics on a Telegram chat (its
+        turn-final would become draft(final=true) — no history message),
+        and a Telegram primary must not deny a secondary Slack chat its
+        native streaming. Resolve through the chat's own negotiated
+        descriptor. Platform-name inference is deliberate for now — a
+        descriptor-level field is the eventual contract (gg follow-up)
+        so a future platform can advertise the semantic explicitly.
+        """
+        return (
+            str(self._descriptor_for_chat(str(chat_id)).platform or "").lower()
+            == "slack"
+        )
+
+    # ── Live cards: native draft streaming + task cards (NS-658) ─────────
+    #
+    # Additive relay ops within contract v1. The gateway side is dumb: it
+    # emits ops when the negotiated descriptor advertises them; the
+    # connector owns the platform API mechanics (chat.startStream et al.),
+    # per-workspace feature-gate caching, and the send+edit fallback.
+    #
+    # Semantic bridge: the base send_draft contract is Telegram-shaped —
+    # the draft clears and the final answer arrives as a separate send().
+    # Slack native streaming makes the stream THE message, sealed once.
+    # The adapter tracks the open draft per chat; the turn-final send()
+    # for that chat converts to draft(final=true) so the connector seals
+    # the stream instead of posting a duplicate message.
+
+    def supports_native_task_cards(self) -> bool:
+        """Descriptor probe for the TurnRunner's task-card lane.
+
+        Explicit advertisement required — same no-fail-open rule as
+        "draft" (the op did not exist pre-contract).
+        """
+        return "task_card" in (self.descriptor.supported_ops or ())
+
+    def native_task_cards_enabled(self) -> bool:
+        """TurnRunner opt-in probe (gateway/run.py) — the card lane calls
+        THIS name (same contract as the native Slack adapter's opt-in);
+        ``supports_native_task_cards`` is the descriptor-level capability.
+        Live-canary finding: without this alias the lane silently stays
+        text-mode (hasattr probe fails) even though the connector
+        advertises task_card."""
+        return self.supports_native_task_cards()
+
+    @staticmethod
+    def _draft_key(chat_id: str, metadata: Optional[Dict[str, Any]]) -> str:
+        """Coordination key for one turn's stream.
+
+        Prefers a PER-TURN identity — the triggering inbound message id
+        (``message_id`` is stamped by the gateway's Slack thread metadata,
+        ``reply_to_message_id`` by the consumer's send path; both carry the
+        same event id) — over the thread anchor. Finding #10 keyed on the
+        thread anchor alone, which is simultaneously too coarse and too
+        fragile (review B2 + flat-DM concern):
+
+          - two parallel turns REPLYING INSIDE ONE THREAD share thread_ts,
+            so turn A's final sealed turn B's stream with A's content;
+          - a flat DM whose metadata carries no anchor at all degraded to
+            the bare chat id, re-creating the original #10 collision.
+
+        The thread anchor remains the fallback for callers that only have
+        placement metadata, and the bare chat is the last resort
+        (single-turn semantics).
+        """
+        md = metadata or {}
+        turn_id = md.get("message_id") or md.get("reply_to_message_id")
+        if turn_id:
+            return f"{chat_id}:turn:{turn_id}"
+        anchor = md.get("thread_ts") or md.get("thread_id") or ""
+        return f"{chat_id}:{anchor}"
+
+    # Cap for the draft/seal coordination dicts, matching the sibling
+    # bounded caches (_auto_thread_by_chat). Entries are per-turn keys;
+    # 512 in-flight-or-recent turns per adapter is far beyond any real
+    # concurrency, and matches the connector's tombstone store size.
+    _DRAFT_STATE_CAP = 512
+
+    @classmethod
+    def _evict_oldest(cls, d: Dict[str, int]) -> None:
+        """FIFO-bound a coordination dict in place (review M1)."""
+        while len(d) > cls._DRAFT_STATE_CAP:
+            d.pop(next(iter(d)), None)
+
+    @staticmethod
+    def _card_key(
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]]
+    ) -> str:
+        """Per-turn task-card identity — same precedence as ``_draft_key``.
+
+        ``reply_to`` (the triggering message id from the TurnRunner) wins;
+        metadata message ids cover the flat-DM / resolver lanes; the thread
+        anchor is only a fallback because two turns replying inside one
+        thread share ``thread_ts`` and must not share a card (review B2).
+        One derivation for send AND stop, so the stop always hits the
+        stream the send opened.
+        """
+        md = metadata or {}
+        anchor = (
+            reply_to
+            or md.get("message_id")
+            or md.get("reply_to_message_id")
+            or md.get("thread_ts")
+            or md.get("thread_id")
+            or "root"
+        )
+        return f"turn:{anchor}"
+
+    def _match_open_draft(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Resolve which open stream (if any) a turn-final send belongs to.
+
+        Exact key match first. Callers WITHOUT a per-turn message id fall
+        into two classes (review r2, finding 5):
+
+          - placement-only metadata (thread_ts/thread_id but no message
+            id — legacy resolver lanes): the thread anchor is placement
+            info, not turn identity, and streams are keyed per turn — an
+            exact match will practically never fire for them. They may
+            still absorb the final via the single-open-stream fallback.
+          - no metadata at all: same fallback.
+
+        The fallback only fires when the chat has EXACTLY one open
+        stream. With several open, the send stays a plain send: a
+        duplicate message is recoverable, sealing someone else's stream
+        with the wrong content is not (review B2). Callers that DO carry
+        a message id never fall back — their identity is authoritative,
+        and a mismatch means the stream is someone else's.
+        """
+        key = self._draft_key(str(chat_id), metadata)
+        if key in self._open_draft_by_chat:
+            return key
+        md = metadata or {}
+        # Only a per-turn MESSAGE id is turn identity. Thread anchors are
+        # placement info shared by every turn in the thread — treating
+        # them as identity made the single-open-stream fallback dead for
+        # placement-only callers (probed: plain final beside an open
+        # turn-keyed stream).
+        if md.get("message_id") or md.get("reply_to_message_id"):
+            return None
+        prefix = f"{chat_id}:"
+        candidates = [
+            k for k in self._open_draft_by_chat if k.startswith(prefix)
+        ]
+        if len(candidates) == 1:
+            # Absorbing a send into a stream is a significant, previously
+            # silent decision — the wrong caller matching here is exactly
+            # the prompt-ack-seals-own-stream bug (rc.4 live finding). Say
+            # it out loud so the next mismatch is a grep, not a hunt.
+            logger.info(
+                "relay: absorbing identity-less send into the single open "
+                "stream %s (single-open-stream fallback)",
+                candidates[0],
+            )
+            return candidates[0]
+        return None
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not self.supports_draft_streaming(chat_id=str(chat_id)):
+            raise NotImplementedError(
+                "connector does not advertise the 'draft' relay op"
+            )
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        # Audit fix G-D1 + regression fix (2026-08-15): arm optimistically
+        # BEFORE the transport call (lossy ack: a timeout/WS-drop 'failure'
+        # often means delivered), but NEVER for a draft_id that has already
+        # been sealed this chat — the gateway-side mirror of the connector's
+        # sealed-key tombstone. Without this, a straggler frame arriving
+        # after the seal re-armed interception with no live stream, and the
+        # next unrelated send (media follow-up, next-turn text) was wrongly
+        # converted to draft(final=true) on the tombstoned key — clearing
+        # the tombstone, re-opening a stream, and freezing it (the observed
+        # escalating-frozen-prefixes regression).
+        chat_key = self._draft_key(str(chat_id), metadata)
+        if self._sealed_draft_by_chat.get(chat_key) == draft_id:
+            # Post-seal straggler: its content is already in the sealed
+            # message; report success, send nothing, arm nothing. Log the
+            # FIRST swallow per key at WARNING — one straggler is the
+            # normal race this tombstone exists for, but a hijacked live
+            # stream (something else sealed this draft mid-flight) shows
+            # up as a burst of swallows, and silence here cost a full
+            # forensic hunt (rc.4: prompt ack sealed the turn's own draft
+            # and every later append vanished without a line).
+            if chat_key not in self._tombstone_swallow_logged:
+                self._tombstone_swallow_logged[chat_key] = draft_id
+                self._evict_oldest(self._tombstone_swallow_logged)
+                logger.warning(
+                    "relay: draft frame for %s swallowed by post-seal "
+                    "tombstone (draft_id=%s) — expected for a straggler; "
+                    "a live stream freezing NOW means something sealed it "
+                    "mid-flight",
+                    chat_key,
+                    draft_id,
+                )
+            return SendResult(success=True)
+        # Arm seal-interception ONLY for stream-is-the-message chats
+        # (review B4, per-chat in r2 finding 2): on a Telegram-shaped
+        # connector the draft clears client-side and the final MUST go out
+        # as a separate real send — arming here would intercept that final
+        # into draft(final=true) and no history message would ever be
+        # posted. Resolved per chat: one adapter fronts N platforms.
+        if self.stream_is_message_for_chat(str(chat_id)):
+            self._open_draft_by_chat[chat_key] = draft_id
+            self._evict_oldest(self._open_draft_by_chat)
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "draft",
+                    "chat_id": chat_id,
+                    "draft_id": draft_id,
+                    "content": content,
+                    "final": False,
+                    # Boundary rule (observed in live relay testing): the draft lane
+                    # is a text egress lane like send/edit — a streamed final
+                    # can only render blocks if its frames carry the hint.
+                    "metadata": self._with_scope(
+                        chat_id,
+                        self._with_format_hints_for_chat(
+                            chat_id, dict(metadata or {})
+                        ),
+                    ),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception as e:
+            # Ambiguous by definition (stale socket, mid-write drop): the
+            # frame may have been delivered. Keep interception armed.
+            return SendResult(success=False, error=f"draft transport error: {e}")
+        if result.get("success"):
+            return SendResult(success=True)
+        if result.get("ambiguous"):
+            # Ack lost (transport timeout) — the production ws transport
+            # RETURNS this shape rather than raising (PR 85796 review,
+            # round 2): the connector may have applied the frame. Same
+            # contract as the except branch: keep interception armed.
+            return SendResult(
+                success=False, error=str(result.get("error") or "draft ack lost")
+            )
+        # DEFINITE connector rejection (an explicit non-ambiguous result):
+        # disarm interception for this key. The stream consumer disables
+        # the draft transport on this failure and falls back to edit-based
+        # streaming — its turn-final must go out as a REAL send, not get
+        # converted into a seal on a stream the connector just told us is
+        # unusable. (This restores the disarm-on-failure semantics the
+        # G-D1 optimistic-arming change silently dropped; the ambiguity
+        # that motivated G-D1 lives in the except branch above and the
+        # ambiguous-result branch — both keep the key armed.)
+        if self._open_draft_by_chat.get(chat_key) == draft_id:
+            self._open_draft_by_chat.pop(chat_key, None)
+        return SendResult(
+            success=False, error=str(result.get("error") or "draft failed")
+        )
+
+    async def _seal_open_draft(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        draft_key: Optional[str] = None,
+    ) -> SendResult:
+        """Convert the turn-final send into the sealing draft frame."""
+        if draft_key is None:
+            draft_key = self._draft_key(str(chat_id), metadata)
+        draft_id = self._open_draft_by_chat.pop(draft_key)
+        # Tombstone BEFORE the transport call (regression fix): whatever the
+        # ack says, this draft_id's stream must never be re-armed by a
+        # straggler frame — the connector-side tombstone handles its half.
+        self._sealed_draft_by_chat[draft_key] = draft_id
+        # Bounded like the sibling caches (review M1): the key embeds a
+        # per-turn identity, so an unbounded dict grows one entry per turn
+        # for the life of the process. FIFO eviction matches the
+        # straggler window this tombstone exists for (seconds, not days);
+        # the connector holds its own 512-entry tombstone store.
+        self._evict_oldest(self._sealed_draft_by_chat)
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        seal_frame = {
+            "op": "draft",
+            "chat_id": chat_id,
+            "draft_id": draft_id,
+            "content": content,
+            "final": True,
+            # Same boundary rule as the interim frame: the SEAL frame is the
+            # one the connector's block reconcile reads — a hintless seal is
+            # exactly the plain-code-block downgrade seen in live relay testing.
+            "metadata": self._with_scope(
+                chat_id,
+                self._with_format_hints_for_chat(chat_id, dict(metadata or {})),
+            ),
+        }
+        _seal_platform = self._platform_by_chat.get(str(chat_id))
+        _transport = self._transport  # narrowed by the None-guard above
+
+        async def _attempt() -> Optional[Dict[str, Any]]:
+            """One seal attempt; None means ambiguous (exception or lost ack)."""
+            try:
+                r = await _transport.send_outbound(
+                    seal_frame, platform=_seal_platform
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("relay seal transport error (ambiguous): %s", e)
+                return None
+            if r.get("ambiguous"):
+                # The production ws transport returns this shape on ack
+                # timeout instead of raising (PR 85796 review, round 2):
+                # the connector may have sealed and lost only the ack.
+                logger.warning(
+                    "relay seal ack lost (ambiguous): %s", r.get("error")
+                )
+                return None
+            return r
+
+        # Ambiguous outcomes (exception OR timeout-shaped result) retry the
+        # SAME idempotent frame once: the connector's sealed-key tombstone
+        # returns the original stream ts for a repeated final and never
+        # opens a second stream, so the retry can turn "unknown" into a
+        # definite answer for free. Only after BOTH attempts stay ambiguous
+        # do we report failure — the caller's fail-open plain send is a
+        # possible duplicate, but a silent loss is worse, and two
+        # consecutive ack losses on one socket almost always mean the
+        # transport is actually down (so the plain send fails too and the
+        # gateway's fallback owns delivery).
+        #
+        # Cancellation safety (review r2, finding 4): the open entry was
+        # popped and the tombstone written BEFORE the await. If the task is
+        # cancelled mid-seal, CancelledError bypasses the failure handling
+        # and the later abandon pass would find nothing to close — the
+        # connector-side stream stays visibly live until eviction. Restore
+        # the open entry (and drop our premature tombstone) before
+        # re-raising so the abandon path can seal it.
+        try:
+            result = await _attempt()
+            if result is None:
+                result = await _attempt()
+        except asyncio.CancelledError:
+            self._open_draft_by_chat[draft_key] = draft_id
+            if self._sealed_draft_by_chat.get(draft_key) == draft_id:
+                self._sealed_draft_by_chat.pop(draft_key, None)
+            raise
+        if result is None:
+            return SendResult(
+                success=False,
+                error="draft seal ambiguous after retry (transport ack lost)",
+            )
+        if result.get("success"):
+            # The connector returns the stream's ts as the message identity.
+            return SendResult(
+                success=True,
+                message_id=str(result.get("message_id") or "") or None,
+            )
+        return SendResult(
+            success=False, error=str(result.get("error") or "draft seal failed")
+        )
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id: str,
+        tasks: list,
+        *,
+        title: str = "Hermes is working",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        fallback_text: Optional[str] = None,
+    ) -> SendResult:
+        """Relay leg of the #85476 task-card lane: emit one card frame.
+
+        SIGNATURE CONTRACT (live-canary finding): the TurnRunner calls this
+        with the NATIVE Slack adapter's keyword contract (tasks/title/
+        reply_to/metadata/fallback_text) — not a card_id. The card stream
+        key is derived per (chat, reply_to-thread): one card per turn
+        thread, matching the connector's (channel, card_id) keying.
+        ``fallback_text``/``title`` are accepted for contract parity; the
+        connector's plan-mode stream renders task chunks, so they are not
+        forwarded.
+
+        ``tasks`` are the TurnRunner's normalized task dicts (id/title/
+        status/details/output); the connector maps them onto its
+        workspace-scoped card stream (task_update chunks, 256-char field
+        limits enforced connector-side where the API lives).
+        """
+        if not self.supports_native_task_cards():
+            return SendResult(
+                success=False, error="connector does not advertise task_card"
+            )
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        # Finding #10 + review B2: one card per TURN. reply_to (the
+        # triggering message id) is already per-turn; when it is absent
+        # (flat DM, resolver lanes) fall back to the same per-turn
+        # identity the draft lane keys on — metadata message ids first,
+        # thread anchor only after that (two turns replying inside one
+        # thread share thread_ts and must not share a card).
+        card_id = self._card_key(reply_to, metadata)
+        merged_meta = dict(metadata or {})
+        if reply_to and "thread_ts" not in merged_meta:
+            # Slack card streams are thread replies (same rule as draft):
+            # anchor on the triggering message when the runner gave us one.
+            merged_meta["thread_ts"] = str(reply_to)
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "task_card",
+                    "chat_id": chat_id,
+                    "card_id": card_id,
+                    "chunks": [dict(t) for t in tasks],
+                    "metadata": self._with_scope(chat_id, merged_meta),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception as e:
+            # Progress is advisory: a transport drop must degrade to the
+            # TurnRunner's text fallback (failed SendResult), never raise
+            # into the progress loop / turn-cleanup path (review B7 — an
+            # escaping card exception in cleanup skipped final delivery).
+            return SendResult(
+                success=False, error=f"task_card transport error: {e}"
+            )
+        if result.get("success"):
+            return SendResult(success=True)
+        return SendResult(
+            success=False, error=str(result.get("error") or "task_card failed")
+        )
+
+    async def stop_native_task_card_progress(
+        self,
+        chat_id: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Seal the card stream at turn end (idempotent connector-side).
+
+        Same NATIVE-contract signature as send (canary finding above);
+        card key derived identically so the stop hits the open stream.
+        """
+        if not self.supports_native_task_cards():
+            return SendResult(
+                success=False, error="connector does not advertise task_card"
+            )
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        # Same per-turn key derivation as send (shared helper) so the stop
+        # hits the open stream.
+        card_id = self._card_key(reply_to, metadata)
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "task_card_stop",
+                    "chat_id": chat_id,
+                    "card_id": card_id,
+                    "metadata": self._with_scope(chat_id, dict(metadata or {})),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception as e:
+            # Best-effort by contract: the stop runs in the progress loop's
+            # finally block on the turn-cleanup path — an escaping transport
+            # exception there skipped final delivery (review B7). The
+            # connector seals orphaned card streams on its own (recycling /
+            # eviction), so a lost stop is cosmetic.
+            return SendResult(
+                success=False, error=f"task_card_stop transport error: {e}"
+            )
+        return SendResult(success=bool(result.get("success")))
+
+    async def abandon_open_draft(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Seal an orphaned stream when its turn dies (review B8).
+
+        A stopped (/stop, /new) or superseded turn previously left its
+        native stream open forever: the Slack message kept the live
+        streaming indicator and the adapter kept armed interception state,
+        which the NEXT turn's key could inherit. Seal in place with
+        ``content`` — the text already on screen (the consumer passes its
+        last delivered frame), so the seal adds nothing and claims
+        nothing: it only ends the stream. Delivery flags are the
+        consumer's business; this never sets any.
+
+        Best-effort by contract: failure is reported, never raised — the
+        connector reaps truly orphaned streams via recycling/eviction.
+        """
+        draft_key = self._match_open_draft(str(chat_id), metadata)
+        if draft_key is None:
+            return SendResult(success=True)  # nothing armed — no-op
+        try:
+            return await self._seal_open_draft(
+                chat_id, content, metadata, draft_key=draft_key
+            )
+        except Exception as e:
+            return SendResult(
+                success=False, error=f"abandon seal transport error: {e}"
+            )
+
 
     # ── abstract methods (delegated to the transport) ────────────────────
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -328,9 +944,34 @@ class RelayAdapter(BasePlatformAdapter):
         self.descriptor = descriptor
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Cron in_channel continuable surface (D6 gate in cron/scheduler.py):
+        # the scheduler reads this off the adapter; the connector advertises it
+        # per platform at handshake. Class default is False (BasePlatformAdapter),
+        # so only an explicit descriptor bit turns the flat surface on.
+        self.supports_inchannel_continuable = bool(
+            getattr(descriptor, "supports_inchannel_continuable", False)
+        )
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        # Inbound replay dedupe (live-canary finding #3, Alice staging): the
+        # relay leg is at-least-once — on WS re-handshake the connector
+        # replays its durable per-instance buffer, and a long multi-tool turn
+        # (60-100s) straddling a quiet socket drop gets its ORIGINAL inbound
+        # replayed after the turn completes, re-running the whole turn (user
+        # saw the final answer 2-5x). Platform message identity (chat_id +
+        # message_id/ts) is stable across replays, so a bounded seen-set
+        # drops them. Consumer-side idempotency; no wire change.
+        dedupe_key = self._inbound_dedupe_key(event)
+        if dedupe_key is not None:
+            if dedupe_key in self._seen_inbound:
+                logger.info(
+                    "relay inbound dropped as replay (dedupe key=%s)", dedupe_key
+                )
+                return
+            self._seen_inbound[dedupe_key] = None
+            while len(self._seen_inbound) > self._SEEN_INBOUND_MAX:
+                self._seen_inbound.pop(next(iter(self._seen_inbound)))
         self._capture_scope(event)
         self._stamp_slack_session_thread(event)
         # Phase 3: a structured prompt answer resolves its waiting primitive
@@ -341,6 +982,37 @@ class RelayAdapter(BasePlatformAdapter):
             return
         await self._localize_inbound_media(event)
         await self.handle_message(event)
+
+    _SEEN_INBOUND_MAX = 512
+
+    def _inbound_dedupe_key(self, event) -> Optional[str]:
+        """Stable replay identity: (platform, chat, platform message id).
+
+        Chat identity lives on ``event.source`` (MessageEvent has no top-level
+        ``chat_id``), and this adapter can front SEVERAL platforms over one
+        relay socket (Phase 1.5 multiplex), so the underlying platform joins
+        the key — two platforms' numeric chat/message ids must never collide
+        into one identity.
+
+        Returns None when the event carries no platform message id (synthetic
+        events, some prompt responses) — those never dedupe, fail-open by
+        design: dropping a real user message is strictly worse than rerunning
+        one, so only dedupe when identity is certain.
+        """
+        source = getattr(event, "source", None)
+        message_id = getattr(event, "message_id", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not message_id or not chat_id:
+            return None
+        # Normalize the platform component: production wire decoding always
+        # yields a Platform enum (unknowns canonicalize to Platform.RELAY),
+        # but alternate constructors may carry the plain string. Use the
+        # enum's value when present, the string itself otherwise — both
+        # spellings of one platform must produce ONE key, and two different
+        # string platforms must not collapse into the same empty component.
+        raw_platform = getattr(source, "platform", None)
+        platform = getattr(raw_platform, "value", raw_platform) or ""
+        return f"{platform}:{chat_id}:{message_id}"
 
     def _relay_slack_extra(self) -> Dict[str, Any]:
         """The Slack-behavior subset of the RELAY platform config.
@@ -637,6 +1309,36 @@ class RelayAdapter(BasePlatformAdapter):
         """Backward-compatible internal alias for follow-up routing."""
         return self.fronts_platform(platform)
 
+    def supports_inchannel_continuable_for_platform(self, platform: Any) -> bool:
+        """Whether ONE fronted logical platform can host the flat continuable
+        cron surface (the D6 gate in cron/scheduler.py).
+
+        The scalar ``supports_inchannel_continuable`` carries only the PRIMARY
+        identity's bit, but one RelayAdapter fronts N platforms and the
+        connector advertises the capability per platform at handshake. On a
+        multi-platform relay the scalar both leaks the primary's True onto
+        platforms whose own descriptor never advertised it and suppresses a
+        non-primary platform's advertised True. Resolve the platform's own
+        negotiated descriptor off the transport; fall back to the scalar only
+        when the per-platform descriptor is unavailable (single-platform
+        transport, or a transport predating descriptor_for_platform).
+        """
+        platform_value = str(getattr(platform, "value", platform) or "")
+        if platform_value and self._transport is not None:
+            resolve = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolve):
+                try:
+                    per_platform = resolve(platform_value)
+                except Exception:  # noqa: BLE001 - capability lookup must never break delivery
+                    per_platform = None
+                if per_platform is not None:
+                    return bool(
+                        getattr(
+                            per_platform, "supports_inchannel_continuable", False
+                        )
+                    )
+        return bool(self.supports_inchannel_continuable)
+
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
 
@@ -750,9 +1452,31 @@ class RelayAdapter(BasePlatformAdapter):
         channel_id = str(payload.get("channel_id") or "")
         guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
-            platform=Platform.RELAY,
+            # The LOGICAL platform, not Platform.RELAY. This lane parses a
+            # Discord interaction wire payload, so the underlying platform is
+            # known statically — and it must be stamped for three consumers:
+            #   1. Session keys: the connector binds the interaction's
+            #      follow-up capability under buildSessionKey with
+            #      platform="discord" (interactionSessionSource); the relay
+            #      TEXT lane (ws_transport._event_from_wire) also maps to the
+            #      logical platform. RELAY here forked interaction sessions
+            #      away from both.
+            #   2. /sethome: with platform=RELAY the handler filed the home
+            #      channel under platforms.relay.home_channel (invisible to
+            #      cron delivery, which looks up the logical platform) and
+            #      mirrored it into the dead RELAY_HOME_CHANNEL env var.
+            #   3. Egress: _capture_scope records _platform_by_chat from this
+            #      value and deliberately skips the generic "relay".
+            platform=Platform.DISCORD,
             chat_id=channel_id,
-            chat_type="channel" if guild_id else "dm",
+            # "group", not "channel": the session key embeds chat_type, and
+            # BOTH the connector's capability binding (interactionSessionSource
+            # → buildSessionKey, chat_type "group") and the native Discord
+            # adapter's channel events key guild channels as "group". A
+            # "channel" slot here forked the interaction session from the
+            # chat's message session AND from the vault key the connector
+            # bound the follow-up capability under.
+            chat_type="group" if guild_id else "dm",
             user_id=str(user.get("id"))
             if isinstance(user, dict) and user.get("id")
             else None,
@@ -763,6 +1487,15 @@ class RelayAdapter(BasePlatformAdapter):
             if guild_id
             else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
+            # Same upstream-trust marker the relay text lane stamps
+            # (ws_transport._event_from_wire): this interaction arrived over
+            # the per-instance-authenticated relay WS after the connector
+            # verified Discord's edge signature and resolved the tenant.
+            # Without it, authz treated the event as unauthenticated relay
+            # traffic — and /sethome's via_relay guard never engaged, which is
+            # how platform=RELAY home channels slipped through in the first
+            # place. Set locally, never read off the wire.
+            delivered_via_upstream_relay=True,
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
@@ -960,6 +1693,31 @@ class RelayAdapter(BasePlatformAdapter):
                 success=False,
                 error=f"relay does not front platform {platform_value}",
             )
+        _sfp_metadata = dict(metadata or {})
+        # Gateway-internal interim marker (see send()): strip before the
+        # wire; an interim send through this door also skips interception.
+        _interim = bool(_sfp_metadata.pop("_interim_send", False))
+        # Finding #7 (live canary): the delivery resolver calls THIS method
+        # directly (gateway/delivery.py), bypassing send() — an open native
+        # stream must absorb the turn-final here too, or the stream is left
+        # unsealed (frozen live indicator) and the final posts as a separate
+        # duplicate message.
+        if not _interim:
+            _sfp_key = self._match_open_draft(str(chat_id), _sfp_metadata)
+        else:
+            _sfp_key = None
+        if _sfp_key is not None:
+            seal = await self._seal_open_draft(
+                chat_id, content, _sfp_metadata, draft_key=_sfp_key
+            )
+            if seal.success:
+                return seal
+            # Failed seal falls through to the plain send below (review
+            # finding, PR 85796 point 1): never swallow the turn-final.
+            logger.warning(
+                "relay seal failed (%s); delivering turn-final as plain send",
+                seal.error,
+            )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
         result = await self._transport.send_outbound(
@@ -968,7 +1726,17 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": reply_to,
-                "metadata": self._with_scope(chat_id, metadata),
+                # format_hints on the explicit-platform lane too: this is the
+                # scheduled/cron delivery path — the in_channel brief itself —
+                # and it must render blocks exactly like an interactive send.
+                # Stamps _sfp_metadata (the interim-marker-stripped copy, per
+                # the seal path above), composing both sides of the merge.
+                "metadata": self._with_scope(
+                    chat_id,
+                    self._with_format_hints_for_platform(
+                        str(platform_value), _sfp_metadata
+                    ),
+                ),
             },
             platform=str(platform_value),
         )
@@ -979,6 +1747,101 @@ class RelayAdapter(BasePlatformAdapter):
             raw_response=result,
         )
 
+    def _format_hints(
+        self, descriptor: Optional[CapabilityDescriptor], platform: Optional[str]
+    ) -> Optional[Dict[str, bool]]:
+        """Block-formatting hints for one outbound text frame, or None.
+
+        Native Slack reads ``platforms.slack.extra.rich_blocks`` /
+        ``markdown_blocks`` and renders Block Kit locally; on the relay lane
+        the CONNECTOR owns the platform API call, so the gateway can only
+        signal intent. Hints are stamped ONLY when (a) the DESTINATION
+        platform's negotiated descriptor advertises
+        ``supports_block_formatting`` — an old connector never receives dead
+        metadata — and (b) the operator enabled at least one knob under the
+        relay's per-logical-platform sub-block
+        (``platforms.relay.extra.<platform>.rich_blocks`` /
+        ``markdown_blocks``, same seam and same _coerce_flag semantics as
+        reply_in_thread). Both knobs default OFF, matching native's opt-in
+        posture.
+
+        ``descriptor``/``platform`` are the DESTINATION's, not the adapter's
+        scalar primary identity: one RelayAdapter fronts N platforms, and
+        gating on the primary descriptor both leaked hints onto platforms
+        that never advertised the bit (Slack-primary, Discord chat) and
+        suppressed them for platforms that did (Discord-primary, Slack chat).
+        Same seam as ``_descriptor_for_chat`` / max_message_length.
+        """
+        if descriptor is None or not getattr(
+            descriptor, "supports_block_formatting", False
+        ):
+            return None
+        try:
+            extra = getattr(self.config, "extra", None) or {}
+            sub = extra.get(str(platform or "").lower())
+            knob_src = sub if isinstance(sub, dict) else extra
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return None
+        hints: Dict[str, bool] = {}
+        for knob in ("rich_blocks", "markdown_blocks"):
+            if self._coerce_flag(knob_src.get(knob), False):
+                hints[knob] = True
+        return hints or None
+
+    def _with_format_hints_for_chat(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Metadata with ``format_hints`` stamped for a chat-addressed send.
+
+        Resolves the chat's platform from what we saw inbound
+        (``_platform_by_chat``) and that platform's negotiated descriptor
+        (``_descriptor_for_chat``) — falling back to the primary identity for
+        chats we never saw inbound, matching every other per-chat capability.
+        """
+        platform = self._platform_by_chat.get(str(chat_id)) or getattr(
+            self.descriptor, "platform", None
+        )
+        hints = self._format_hints(self._descriptor_for_chat(chat_id), platform)
+        if not hints:
+            return metadata
+        merged = dict(metadata or {})
+        merged.setdefault("format_hints", hints)
+        return merged
+
+    def _with_format_hints_for_platform(
+        self, platform_value: str, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Metadata with ``format_hints`` stamped for an explicit-platform send.
+
+        ``send_for_platform`` is the scheduled/persisted-home lane — the cron
+        delivery path, i.e. the flagship consumer of the in_channel brief —
+        and it has no inbound event to populate ``_platform_by_chat``, so the
+        destination platform is the caller-supplied logical platform.
+        Resolves that platform's negotiated descriptor off the transport;
+        falls back to the scalar descriptor only when it IS that platform's
+        (fail closed: never stamp from another platform's capability bit).
+        """
+        descriptor: Optional[CapabilityDescriptor] = None
+        if self._transport is not None:
+            resolve = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolve):
+                try:
+                    descriptor = cast(
+                        Optional[CapabilityDescriptor], resolve(str(platform_value))
+                    )
+                except Exception:  # noqa: BLE001 - capability lookup must never break a send
+                    descriptor = None
+        if descriptor is None and getattr(
+            self.descriptor, "platform", None
+        ) == str(platform_value):
+            descriptor = self.descriptor
+        hints = self._format_hints(descriptor, str(platform_value))
+        if not hints:
+            return metadata
+        merged = dict(metadata or {})
+        merged.setdefault("format_hints", hints)
+        return merged
+
     async def send(
         self,
         chat_id: str,
@@ -988,6 +1851,41 @@ class RelayAdapter(BasePlatformAdapter):
     ) -> SendResult:
         send_metadata = dict(metadata or {})
         explicit_platform = send_metadata.pop("_relay_logical_platform", None)
+        # Consumer-declared interim send (commentary, tail flush): NOT the
+        # turn-final, so it must never trigger seal-interception — sealing
+        # the live stream with interim text orphans the true final into a
+        # plain-send duplicate (live finding, 2026-08-16 canary). The
+        # marker is gateway-internal; strip before the wire.
+        _interim = bool(send_metadata.pop("_interim_send", False))
+        # NS-658 seal-interception — checked BEFORE the explicit-platform
+        # branch (finding #7, live canary): the delivery-resolver lane
+        # (follow-up queue, media-accompanied finals, scheduled sends) routes
+        # through send_for_platform, which posted a plain send while the
+        # native stream stayed open — the user got the stream frozen
+        # mid-word (live indicator, never sealed) PLUS the final as a
+        # separate message. An open stream absorbs the turn-final send no
+        # matter which egress door it arrives through; the stream IS the
+        # message.
+        if not _interim:
+            _send_key = self._match_open_draft(str(chat_id), send_metadata)
+        else:
+            _send_key = None
+        if _send_key is not None:
+            seal = await self._seal_open_draft(
+                chat_id, content, send_metadata, draft_key=_send_key
+            )
+            if seal.success:
+                return seal
+            # Review finding (PR 85796, point 1): a failed seal must NOT
+            # swallow the turn-final — the stream consumer has already
+            # disabled the draft transport, so returning failure here means
+            # the user never gets the answer. Fall through to a plain send
+            # (the orphaned stream is sealed connector-side by recycling /
+            # MAX_OPEN_STREAMS eviction).
+            logger.warning(
+                "relay seal failed (%s); delivering turn-final as plain send",
+                seal.error,
+            )
         if explicit_platform:
             return await self.send_for_platform(
                 explicit_platform,
@@ -1011,7 +1909,9 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": effective_reply_to,
-                "metadata": self._with_scope(chat_id, send_metadata),
+                "metadata": self._with_scope(
+                    chat_id, self._with_format_hints_for_chat(chat_id, send_metadata)
+                ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )
@@ -1249,7 +2149,13 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
-                "metadata": self._with_scope(chat_id, metadata),
+                # Same format_hints as send: a streamed reply's FINAL edit is
+                # the frame that carries the finished markdown, so the edit
+                # lane must signal block rendering too or streams would seal
+                # as plain text (boundary rule: every text egress lane).
+                "metadata": self._with_scope(
+                    chat_id, self._with_format_hints_for_chat(chat_id, metadata)
+                ),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )
@@ -1681,17 +2587,22 @@ class RelayAdapter(BasePlatformAdapter):
     def _mint_prompt(
         self, kind: str, state: Dict[str, Any], timeout_s: float = 3600.0
     ) -> str:
-        """Register a pending prompt and return its 8-hex id.
+        """Register a pending prompt and return its id.
 
         ``state`` carries what the resolver needs when the answer comes back
         (session_key, resolver kind, per-kind extras). Expiry is enforced
         gateway-side on consumption (_pop_prompt) — the wire's timeout_s is
         advisory only.
+
+        The id is ``<owner nonce>.<8 hex>``: the nonce marks the minting
+        process so a sibling gateway that receives the same fanned-out answer
+        can tell it is not the owner and stay quiet (see
+        ``_prompt_owner_nonce``). Both segments use the callback alphabet the
+        connector's prompt codec accepts ([A-Za-z0-9_.-], <=32 chars).
         """
-        import secrets
         import time
 
-        prompt_id = secrets.token_hex(4)
+        prompt_id = f"{self._prompt_owner_nonce}.{secrets.token_hex(4)}"
         self._pending_prompts[prompt_id] = {
             **state,
             "kind": kind,
@@ -1706,6 +2617,16 @@ class RelayAdapter(BasePlatformAdapter):
             self._pending_prompts.pop(stale, None)
         return prompt_id
 
+    def _minted_here(self, prompt_id: str) -> bool:
+        """True when this process minted ``prompt_id``.
+
+        Ids minted before the owner nonce existed (a prompt still pending
+        across an in-place upgrade) carry no ``.`` segment; treat them as ours
+        so an in-flight prompt from the previous build still resolves.
+        """
+        head, sep, _ = str(prompt_id).partition(".")
+        return head == self._prompt_owner_nonce if sep else True
+
     def _pop_prompt(self, prompt_id: str) -> Optional[Dict[str, Any]]:
         """Consume a pending prompt: one answer wins, expired entries miss."""
         import time
@@ -1716,6 +2637,17 @@ class RelayAdapter(BasePlatformAdapter):
         if state.get("expires_at", 0) < time.time():
             return None
         return state
+
+    def _note_prompt_resolved(self, prompt_id: str) -> None:
+        """Remember that this process already answered ``prompt_id``.
+
+        Bounded FIFO: a repeat answer is only interesting for as long as a
+        redelivery or a double tap can plausibly arrive, so old ids are
+        dropped rather than retained for the process lifetime.
+        """
+        self._resolved_prompts[str(prompt_id)] = time.time()
+        while len(self._resolved_prompts) > _RESOLVED_PROMPT_MEMORY:
+            self._resolved_prompts.popitem(last=False)
 
     async def _send_prompt(
         self,
@@ -1944,11 +2876,25 @@ class RelayAdapter(BasePlatformAdapter):
         """Route an inbound prompt_response to its waiting primitive.
 
         Returns True when the event was a prompt answer (consumed — do NOT
-        dispatch it as a chat message), False otherwise. Unknown/expired
-        prompt ids fall through to normal dispatch: the command-shaped text
-        ("/once", "/deny", …) then behaves like a typed reply, which the
-        approval/confirm text lanes already understand — the same stale-tap
-        degradation the native adapters implement with an "expired" edit.
+        dispatch it as a chat message), False otherwise.
+
+        A prompt answer is ALWAYS consumed, whoever it belongs to. The three
+        non-resolving cases each stay silent rather than falling through to
+        chat dispatch:
+
+        * **A sibling's prompt** (``_minted_here`` false). The connector fans a
+          passthrough forward out to every live session of the tenant, so one
+          button press reaches every gateway of that tenant while only the
+          minting one can resolve it. Falling through here is what produced a
+          wall of ``Unknown command `/c1``` — one per sibling — under the
+          single ``✅`` from the real owner.
+        * **A repeat answer** for an id this process already resolved (a double
+          tap, or a redelivered forward). The first answer won; a second must
+          not re-run the resolver or re-ack.
+        * **Our own expired/unknown prompt.** Answer with a short expiry notice
+          instead of a command-not-found error: the option ids a prompt renders
+          ("c1", "once", "other") are not commands, so the text lane cannot do
+          anything useful with them.
         """
         pr = getattr(event, "prompt_response", None)
         if not isinstance(pr, dict):
@@ -1957,15 +2903,35 @@ class RelayAdapter(BasePlatformAdapter):
         option_id = str(pr.get("option_id") or "")
         if not prompt_id or not option_id:
             return False
-        state = self._pop_prompt(prompt_id)
-        if state is None:
-            logger.info(
-                "relay prompt_response for unknown/expired prompt %s (option=%s) — "
-                "falling through to text dispatch",
+        if not self._minted_here(prompt_id):
+            # A sibling gateway of this tenant owns this prompt and is
+            # resolving it right now. Consume silently — two gateways must
+            # never both answer one press.
+            logger.debug(
+                "relay prompt_response %s (option=%s) belongs to another "
+                "gateway instance — ignoring",
                 prompt_id,
                 option_id,
             )
-            return False
+            return True
+        if prompt_id in self._resolved_prompts:
+            logger.debug(
+                "relay prompt_response %s (option=%s) already resolved — ignoring "
+                "repeat",
+                prompt_id,
+                option_id,
+            )
+            return True
+        state = self._pop_prompt(prompt_id)
+        if state is None:
+            logger.info(
+                "relay prompt_response for unknown/expired prompt %s (option=%s)",
+                prompt_id,
+                option_id,
+            )
+            await self._notify_prompt_expired(event)
+            return True
+        self._note_prompt_resolved(prompt_id)
 
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
@@ -1991,8 +2957,11 @@ class RelayAdapter(BasePlatformAdapter):
                 # Acknowledge in-channel (the connector's prompt message can't
                 # be edited cross-platform yet — edit support varies; a short
                 # confirmation preserves the audit trail the native edit gives).
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget: we are ON the read loop here (see
+                # _send_lifecycle_ack) — awaiting the send self-deadlocks the
+                # transport for the full outbound timeout.
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if count:
                     self.resume_typing_for_chat(chat_id)
@@ -2010,14 +2979,15 @@ class RelayAdapter(BasePlatformAdapter):
                     "always": "🔒 Always approve",
                     "cancel": "❌ Cancelled",
                 }.get(choice, "Resolved")
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget (read-loop context — see _send_lifecycle_ack).
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if result_text:
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         str(result_text),
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
             elif kind == "clarify":
                 from tools.clarify_gateway import (
@@ -2028,10 +2998,10 @@ class RelayAdapter(BasePlatformAdapter):
                 clarify_id = str(state.get("clarify_id") or "")
                 if option_id == "other":
                     mark_awaiting_text(clarify_id)
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         "✏️ Type your answer:",
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
                 else:
                     choices = state.get("choices") or []
@@ -2041,10 +3011,10 @@ class RelayAdapter(BasePlatformAdapter):
                         idx = -1
                     if 0 <= idx < len(choices):
                         resolve_gateway_clarify(clarify_id, str(choices[idx]))
-                        await self.send(
+                        self._send_lifecycle_ack(
                             chat_id,
                             f"✅ {choices[idx]}",
-                            metadata=self._prompt_reply_metadata(event),
+                            self._prompt_reply_metadata(event),
                         )
                     else:
                         # Unmappable option: flip to text capture so the user
@@ -2056,9 +3026,75 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
+    def _send_lifecycle_ack(
+        self, chat_id: str, text: str, metadata: Dict[str, Any]
+    ) -> None:
+        """Fire-and-forget a prompt-lifecycle ack from read-loop context.
+
+        Live finding round 2 (rc.4): _consume_prompt_response executes ON
+        the transport read loop (inbound frame -> _handle_frame -> the
+        _inbound handler). ``await self.send(...)`` there is a
+        SELF-DEADLOCK: send() blocks on an outbound_result future that only
+        the read loop can resolve — and the read loop is blocked inside
+        this very handler. Every button tap wedged the transport for the
+        full outbound timeout: draft appends starved (the observed frozen
+        stream right after approving), sibling approval-card sends timed
+        out into 'possibly-delivered' ambiguity, and the turn's seal timed
+        out ambiguous -> plain-send fallback (the duplicate final).
+
+        Acks are cosmetic by contract (the audit trail), so they ride a
+        background task: the handler returns immediately, the read loop
+        keeps consuming, and the ack's own result frame resolves normally.
+        Failures are logged at debug — an undelivered ack must never break
+        the reader or the turn. The task ref is retained (asyncio only
+        weakly references tasks) and dropped on completion.
+        """
+
+        async def _ack() -> None:
+            try:
+                await self.send(chat_id, text, metadata=metadata)
+            except Exception:  # noqa: BLE001 - ack is best-effort
+                logger.debug("relay lifecycle ack failed", exc_info=True)
+
+        task = asyncio.create_task(_ack(), name="relay-lifecycle-ack")
+        self._lifecycle_ack_tasks.add(task)
+        task.add_done_callback(self._lifecycle_ack_tasks.discard)
+
+    async def _notify_prompt_expired(self, event) -> None:
+        """Tell the presser their prompt is no longer waiting.
+
+        Only the OWNING gateway reaches this (siblings return earlier), so the
+        user sees exactly one notice. Best-effort: a send failure here must
+        not break the reader.
+        """
+        chat_id = str(getattr(event.source, "chat_id", "") or "")
+        if not chat_id:
+            return
+        # Fire-and-forget (read-loop context — see _send_lifecycle_ack):
+        # _notify_prompt_expired is called from _consume_prompt_response too.
+        self._send_lifecycle_ack(
+            chat_id,
+            "⌛ That prompt is no longer waiting for an answer. "
+            "Send your reply as a normal message.",
+            self._prompt_reply_metadata(event),
+        )
+
     def _prompt_reply_metadata(self, event) -> Dict[str, Any]:
-        """Thread/topic metadata so prompt acks land where the prompt lives."""
-        meta: Dict[str, Any] = {}
+        """Thread/topic metadata so prompt acks land where the prompt lives.
+
+        Marked as an INTERIM send (live finding, rc.4 staging): prompt
+        lifecycle acks ("✅ Approved once", slash-confirm acks, expiry
+        notices) are system messages that fire while the approval turn's
+        OWN draft stream is open. Without the interim marker they carry
+        only placement metadata — no per-turn identity — so send()'s
+        single-open-stream fallback matched them to the live draft and
+        sealed it with the ack text. Every later append then died on the
+        post-seal tombstone (silent by design), freezing the visible
+        stream mid-word, and the real turn-final fell through to a plain
+        send: the observed 100%-reproducible stuck-draft + duplicate-final
+        on approval turns. Interim sends bypass draft matching entirely.
+        """
+        meta: Dict[str, Any] = {"_interim_send": True}
         thread_id = getattr(event.source, "thread_id", None)
         if thread_id:
             meta["thread_id"] = str(thread_id)

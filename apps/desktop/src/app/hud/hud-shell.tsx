@@ -2,22 +2,18 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { TitlebarIcon } from '@/app/shell/titlebar-icon'
-import { Button } from '@/components/ui/button'
-import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
 import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
-import { titlebarButtonClass } from '../shell/titlebar'
 
 import { useHudClickThrough } from './click-through'
+import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
+import { hudTranscriptHeight } from './layout'
 import { useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 
@@ -47,15 +43,6 @@ const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
  *  somewhere to land. Folded into the measured height rather than added in CSS,
  *  so an empty transcript measures a true zero instead of a 12px strip. */
 const HUD_SHEET_OVERHANG_PX = 12
-
-/** Ceiling on the transcript band, which still auto-sizes up from 0. It reads
- *  over another app, so it is a glance rather than a panel: whichever of these
- *  is smaller wins, so a tall HUD doesn't turn the band into a second window
- *  and a short one doesn't get swallowed by it. */
-const HUD_BAND_MAX_PX = 152
-const HUD_BAND_MAX_FRACTION = 0.42
-
-const hudBandMaxPx = () => Math.min(window.innerHeight * HUD_BAND_MAX_FRACTION, HUD_BAND_MAX_PX)
 
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
@@ -149,17 +136,51 @@ function useRecentActivity(): [boolean, () => void] {
 /**
  * True while the HUD must stay up regardless of the hold timer.
  *
- * Only a question: a clarify/approval/sudo/secret prompt is something the agent
- * cannot continue without, and letting it fade hands you a surface you cannot
- * use — zero opacity, and the window goes mouse-transparent under it, so the
- * prompt is neither readable nor clickable.
+ * Three things qualify:
  *
- * A merely BUSY session is not that. Pinning the band for the length of a turn
- * meant a HUD you had walked away from sat open across the screen for as long
- * as the agent worked; the answer arriving flashes it anyway.
+ * - A clarify/approval/sudo/secret prompt: something the agent cannot continue
+ *   without, and letting it fade hands you a surface you cannot use — zero
+ *   opacity, and the window goes mouse-transparent under it, so the prompt is
+ *   neither readable nor clickable.
+ * - The session being BUSY at all — thinking, calling a tool, streaming — plus
+ *   a grace window after the turn ends, so the answer you were waiting for is
+ *   still there when it arrives.
+ * - GAME OVERLAY MODE, unconditionally. Over a fullscreen game the HUD is the
+ *   chat frame, and a chat frame that erases itself a second after each line is
+ *   useless: you look back at it when there is a lull in the game, not when the
+ *   text happens to be fresh. This is what every in-game chat log does, and it
+ *   costs nothing here because the band over a game is bare text with no panel.
+ *
+ * Pinning on busy was deliberately avoided while the band brought its tinted
+ * sheet up with it — that put an opaque panel across the screen for as long as
+ * the agent worked. The sheet is a translucent scrim now, so a held band is
+ * legible text rather than a slab.
  */
-function useHudHeld(): boolean {
-  return useStore($activeSessionAwaitingInput)
+function useHudHeld(gameUnder: boolean): boolean {
+  const awaiting = useStore($activeSessionAwaitingInput)
+  const busy = useStore($busy)
+
+  // The reply landing must stay readable. Held for the whole turn AND for a
+  // grace window after it ends, tracked here rather than by re-arming
+  // `useRecentActivity`'s timer: that timer deliberately refuses to re-arm for
+  // ambient activity on an unfocused HUD, so the turn's own end could not buy a
+  // hold through it and the answer blinked out the instant it finished.
+  const [grace, setGrace] = useState(false)
+
+  useEffect(() => {
+    if (busy) {
+      setGrace(true)
+
+      return
+    }
+
+    // Falling edge: keep it up a moment longer, then let the fade have it.
+    const timer = setTimeout(() => setGrace(false), HUD_RECENT_HOLD_MS)
+
+    return () => clearTimeout(timer)
+  }, [busy])
+
+  return gameUnder || awaiting || busy || grace
 }
 
 /**
@@ -178,9 +199,12 @@ function useHudHeld(): boolean {
  * `useRecentActivity`).
  */
 export function HudShell() {
-  const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
-  const held = useHudHeld()
+  // A fullscreen app (a game) is under the HUD: wear `data-hud-game` so the
+  // idle bar steps back to overlay opacity (see styles.css). Detection is
+  // main's — the page cannot see other apps' windows.
+  const gameUnder = useHudGameOverlay()
+  const held = useHudHeld(gameUnder)
 
   // Clicking away to another APP is the most common way the HUD is let go of,
   // and it fires no focusout: the composer stays document.activeElement while
@@ -302,7 +326,14 @@ export function HudShell() {
 
       const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
 
-      const visible = Math.min(hudBandMaxPx(), Math.max(0, Math.round(contentSpan)))
+      // Once the HUD has a transcript, a resize must buy readable scrollback.
+      // The old glance-band ceiling froze this at 152px and turned every extra
+      // pixel of native window height into empty transparent chrome.
+      const visible = hudTranscriptHeight({
+        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
+        contentHeight: contentSpan,
+        viewportHeight: window.innerHeight
+      })
 
       root.style.setProperty('--hud-band-height', `${visible}px`)
 
@@ -323,12 +354,16 @@ export function HudShell() {
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it.
+    // exists, then let the ResizeObserver own it. Window resize is separate:
+    // the transcript's rows may not change size, but the available scrollback
+    // must, so observing the rows alone cannot update the band.
     measure()
     const probe = setInterval(measure, 500)
+    window.addEventListener('resize', measure)
 
     return () => {
       clearInterval(probe)
+      window.removeEventListener('resize', measure)
       ro.disconnect()
     }
   }, [])
@@ -362,6 +397,7 @@ export function HudShell() {
     <div
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
+      data-hud-game={gameUnder ? '' : undefined}
       data-hud-recent={recent || held ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
@@ -384,22 +420,6 @@ export function HudShell() {
       <div aria-hidden data-hud-glass />
 
       <WiredPane part="chatRoutes" />
-
-      {/* The way back — without it the only exits are ⌘⇧H and ⌘W, both
-          invisible. Placed and revealed entirely from styles.css. */}
-      <Tip label={t.titlebar.exitHud}>
-        <Button
-          aria-label={t.titlebar.exitHud}
-          className={`${titlebarButtonClass} absolute z-20`}
-          data-hud-exit=""
-          onClick={closeHud}
-          size="icon-titlebar"
-          type="button"
-          variant="ghost"
-        >
-          <TitlebarIcon name="screen-normal" />
-        </Button>
-      </Tip>
 
       {/* The resize handle: bottom-right corner, the one sanctioned way to
           change the HUD's size. Invisible chrome — a hot corner, not a

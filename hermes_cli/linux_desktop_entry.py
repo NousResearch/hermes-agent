@@ -68,10 +68,46 @@ def resolve_exec_command() -> str:
 
     bin_path = resolve_hermes_bin()
     if bin_path:
-        argv = [str(Path(bin_path).resolve()), "desktop"]
+        resolved = Path(bin_path).resolve()
+        if _needs_interpreter(resolved):
+            # The resolved launcher is a Python script whose shebang points at
+            # a NON-venv interpreter (e.g. the repo's `hermes` script with
+            # `#!/usr/bin/env python3` when argv[0] came from the shell
+            # installer's bash wrapper). Launched from the .desktop entry that
+            # shebang resolves to the SYSTEM python and dies on the first
+            # third-party import (#90292) — silently, since Terminal=false.
+            # sys.executable is the interpreter actually running Hermes (the
+            # venv one), so prefix it explicitly.
+            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+        else:
+            argv = [str(resolved), "desktop"]
     else:
         argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _needs_interpreter(bin_path: Path) -> bool:
+    """Whether ``bin_path`` is a Python script that must run under
+    ``sys.executable`` to see Hermes' venv (rather than its own shebang)."""
+    try:
+        with open(bin_path, "rb") as fh:
+            head = fh.readline(256)
+    except OSError:
+        return False
+    if not head.startswith(b"#!"):
+        # Native binary (uv tool shim, PyInstaller, distro package) — its own
+        # loader is self-sufficient.
+        return False
+    shebang = head.decode("utf-8", errors="replace").strip().lower()
+    if "python" not in shebang:
+        # A shell wrapper (e.g. the installer's bash launcher) execs the venv
+        # python itself — leave it alone.
+        return False
+    # A python shebang pointing INSIDE the running interpreter's environment
+    # already resolves correctly; anything else (``/usr/bin/env python3``,
+    # a system path) would escape the venv when spawned by the DE.
+    exe_dir = str(Path(sys.executable).resolve().parent)
+    return exe_dir not in shebang
 
 
 def _quote_exec_arg(arg: str) -> str:

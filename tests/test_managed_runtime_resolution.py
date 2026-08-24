@@ -26,6 +26,7 @@ whose behavior is separately covered by a real test.
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,11 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "Fallback after resolve_uv(), plus the except-branch for the "
         "hermes_cli import guard."
     ),
+    ("tools/browser_use_cli.py", "uv"): (
+        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
+        "uv on PATH is a legitimate last rung before giving up with install "
+        "guidance."
+    ),
     ("hermes_cli/gateway.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
@@ -120,8 +126,29 @@ def _source_files() -> list[Path]:
         rel = path.relative_to(REPO_ROOT)
         if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
             continue
+        # Skip packaging copies of the source tree (sdist extractions like
+        # hermes_agent-0.20.5/, build/ and *.egg-info dirs). CI jobs that
+        # build the wheel leave one in the workspace; scanning it re-finds
+        # every already-exempted call site under a versioned path prefix
+        # that can never match an _ALLOWED key, failing the guard on code
+        # that was never touched. A dir is a packaging copy iff its top
+        # level carries PKG-INFO (sdist/egg metadata) or it is a build/
+        # dist output directory.
+        if rel.parts and _is_packaging_copy(rel.parts[0]):
+            continue
         files.append(path)
     return files
+
+
+@functools.lru_cache(maxsize=None)
+def _is_packaging_copy(top_level: str) -> bool:
+    """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
+    if top_level in ("build", "dist") or top_level.endswith(".egg-info"):
+        return True
+    candidate = REPO_ROOT / top_level
+    if not candidate.is_dir():
+        return False
+    return (candidate / "PKG-INFO").exists()
 
 
 def _findings() -> list[tuple[str, str, int]]:

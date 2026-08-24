@@ -36,6 +36,15 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        # Unit tests must not probe live endpoints. The compressor resolves
+        # context length lazily via a real network call against base_url; for
+        # reachable hosts (the nous portal case) the endpoint's answer for the
+        # empty test model (32K) trips agent_init's 64K floor and fails the
+        # test on network behavior, not code under test.
+        patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -364,6 +373,86 @@ class TestRestorePrimaryRuntime:
 
         assert result is True
         agent._swap_credential.assert_called_once()
+
+    def test_restore_reloads_named_custom_pool_by_scoped_key(self):
+        class _Entry:
+            provider = "custom:gemini-display"
+            id = "gemini-key"
+            label = "gemini"
+            runtime_api_key = "gemini-key"
+            access_token = "gemini-key"
+
+        primary_pool = MagicMock()
+        primary_pool.provider = "custom:gemini-display"
+        primary_pool.has_available.return_value = True
+        primary_pool.select.return_value = _Entry()
+
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "openrouter"
+        agent = _make_agent(
+            provider="custom:gemini-no-filter",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        agent._fallback_activated = True
+        agent._credential_pool = fallback_pool
+        agent._swap_credential = MagicMock()
+        config = {
+            "custom_providers": [
+                {
+                    "name": "Legacy Provider",
+                    "base_url": "https://legacy.example/v1",
+                }
+            ],
+            "providers": {
+                "gemini-no-filter": {
+                    "name": "Gemini Display",
+                    "api": "https://generativelanguage.googleapis.com/v1beta",
+                }
+            },
+        }
+
+        with (
+            patch("agent.credential_pool._load_config_safe", return_value=config),
+            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._credential_pool is primary_pool
+        load_pool.assert_called_once_with("custom:gemini-display")
+        agent._swap_credential.assert_called_once_with(primary_pool.select.return_value)
+
+    def test_restore_named_custom_pool_wrong_endpoint_fails_closed(self):
+        pool = MagicMock()
+        pool.provider = "custom:gemini-no-filter"
+        agent = _make_agent(
+            provider="gemini-no-filter",
+            base_url="https://fallback.example/v1",
+        )
+        agent._fallback_activated = True
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+        configured = [(
+            "gemini-no-filter",
+            {
+                "name": "Gemini No Filter",
+                "provider_key": "gemini-no-filter",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            },
+        )]
+
+        with (
+            patch("agent.credential_pool._iter_custom_providers", return_value=configured),
+            patch("agent.credential_pool.load_pool", return_value=None) as load_pool,
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent._credential_pool is None
+        load_pool.assert_called_once_with("gemini-no-filter")
+        agent._swap_credential.assert_not_called()
 
 
 

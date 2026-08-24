@@ -2,6 +2,7 @@
 daemons whose Python parent exited without cleaning up."""
 
 import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -355,3 +356,211 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+def _age_socket_dir(d, seconds):
+    """Backdate every mtime under ``d`` so it looks idle for ``seconds``."""
+    old = time.time() - seconds
+    for p in d.iterdir():
+        os.utime(p, (old, old))
+    os.utime(d, (old, old))
+
+
+class TestSocketDirIdleSeconds:
+    """Unit tests for the idle-age signal backing the leak escape hatch."""
+
+    def test_missing_dir_returns_none(self, tmp_path):
+        from tools.browser_tool import _socket_dir_idle_seconds
+        assert _socket_dir_idle_seconds(str(tmp_path / "nope")) is None
+
+    def test_fresh_dir_is_near_zero(self, tmp_path):
+        from tools.browser_tool import _socket_dir_idle_seconds
+        d = tmp_path / "agent-browser-h_fresh"
+        d.mkdir()
+        assert _socket_dir_idle_seconds(str(d)) < 5
+
+    def test_entry_mtime_beats_stale_dir_mtime(self, tmp_path):
+        """Rewriting an existing file must count as activity.
+
+        Command names repeat (``_stdout_click`` is rewritten on every click),
+        and overwriting an existing file does NOT bump the *directory* mtime.
+        Reading only the directory mtime would therefore report a busy session
+        as idle and reap it.  The reaper must scan entries too.
+        """
+        from tools.browser_tool import _socket_dir_idle_seconds
+        d = tmp_path / "agent-browser-h_reuse"
+        d.mkdir()
+        f = d / "_stdout_click"
+        f.write_text("x")
+        _age_socket_dir(d, 7200)
+        assert _socket_dir_idle_seconds(str(d)) > 7000
+
+        f.write_text("y")  # rewrite in place — dir mtime stays stale
+        assert time.time() - os.path.getmtime(d) > 7000, "precondition"
+        assert _socket_dir_idle_seconds(str(d)) < 5
+
+
+class TestLeakedDaemonWithLiveOwner:
+    """Idle-age escape hatch for untracked daemons whose owner is still alive.
+
+    ``owner_alive is True`` alone made a leaked daemon immortal: in-memory
+    tracking is lost on any exception path between spawn and registration,
+    yet the owner PID stays up, so the reaper skipped it forever.  Observed in
+    the wild — five agent-browser daemons accumulated over 10 days inside one
+    long-lived hermes process, pinning ~5 CPU cores and driving load to 100+.
+
+    The daemon-side ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` is not a backstop here:
+    it does not fire when the daemon itself is wedged (e.g. Chrome's framework
+    was replaced underneath it by an auto-update).
+    """
+
+    def test_fresh_untracked_daemon_with_live_owner_is_spared(self, fake_tmpdir):
+        """Within the grace window, cross-process safety still wins."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir, "h_fresh_owner", pid=12345, owner_pid=os.getpid()
+        )
+        kill_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=kill_calls.append):
+            _reap_orphaned_browser_sessions()
+
+        assert 12345 not in kill_calls
+        assert d.exists()
+
+    def test_idle_untracked_daemon_with_live_owner_is_reaped(self, fake_tmpdir):
+        """Past the grace window, an untracked daemon is treated as leaked."""
+        from tools.browser_tool import (
+            BROWSER_ORPHAN_GRACE_SECONDS,
+            _reap_orphaned_browser_sessions,
+        )
+
+        d = _make_socket_dir(
+            fake_tmpdir, "h_leaked_owner", pid=12345, owner_pid=os.getpid()
+        )
+        _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 600)
+        kill_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=kill_calls.append):
+            _reap_orphaned_browser_sessions()
+
+        assert 12345 in kill_calls
+        assert not d.exists()
+
+    def test_tracked_daemon_with_live_owner_is_spared_at_any_age(self, fake_tmpdir):
+        """A session this process still tracks is never reaped, however old.
+
+        Idle age is a fallback for *lost* bookkeeping, not an override of
+        bookkeeping that is present and says the session is live.
+        """
+        import tools.browser_tool as bt
+        from tools.browser_tool import (
+            BROWSER_ORPHAN_GRACE_SECONDS,
+            _reap_orphaned_browser_sessions,
+        )
+
+        d = _make_socket_dir(
+            fake_tmpdir, "h_tracked_old", pid=12345, owner_pid=os.getpid()
+        )
+        _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS * 10)
+        bt._active_sessions["task-1"] = {"session_name": "h_tracked_old"}
+        kill_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=kill_calls.append):
+            _reap_orphaned_browser_sessions()
+
+        assert 12345 not in kill_calls
+        assert d.exists()
+
+    def test_unknown_idle_age_fails_safe(self, fake_tmpdir):
+        """Unreadable mtime => treat as too young to reap, never guess."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir, "h_unknown_age", pid=12345, owner_pid=os.getpid()
+        )
+        kill_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._socket_dir_idle_seconds", return_value=None), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=kill_calls.append):
+            _reap_orphaned_browser_sessions()
+
+        assert 12345 not in kill_calls
+        assert d.exists()
+
+    def test_identity_guard_still_gates_the_new_path(self, fake_tmpdir):
+        """The escape hatch must not bypass _verify_reapable_browser_daemon.
+
+        That guard is the anti-spoof / anti-PID-recycle defense (issue #14073);
+        an idle daemon is still only reapable if it verifies.
+        """
+        from tools.browser_tool import (
+            BROWSER_ORPHAN_GRACE_SECONDS,
+            _reap_orphaned_browser_sessions,
+        )
+
+        d = _make_socket_dir(
+            fake_tmpdir, "h_unverified", pid=12345, owner_pid=os.getpid()
+        )
+        _age_socket_dir(d, BROWSER_ORPHAN_GRACE_SECONDS + 600)
+        kill_calls = []
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=kill_calls.append):
+            _reap_orphaned_browser_sessions()
+
+        assert 12345 not in kill_calls
+        assert d.exists()
+
+
+class TestPeriodicOrphanReap:
+    """The reaper must run repeatedly, not only at cleanup-thread startup.
+
+    A startup-only reap can never recover from a leak that appears *after*
+    boot — which is exactly what happens in a hermes process that stays up
+    for days.
+    """
+
+    def test_reaper_runs_on_every_interval_not_just_startup(self):
+        import tools.browser_tool as bt
+
+        cycles_to_run = 21
+        reap_calls = []
+        remaining = {"n": cycles_to_run}
+
+        def fake_cleanup():
+            remaining["n"] -= 1
+            if remaining["n"] <= 0:
+                bt._cleanup_running = False
+
+        orig_running = bt._cleanup_running
+        bt._cleanup_running = True
+        try:
+            with patch("tools.browser_tool._reap_orphaned_browser_sessions",
+                       side_effect=lambda: reap_calls.append(1)), \
+                 patch("tools.browser_tool._cleanup_inactive_browser_sessions",
+                       side_effect=fake_cleanup), \
+                 patch("tools.browser_tool.time.sleep"):
+                bt._browser_cleanup_thread_worker()
+        finally:
+            bt._cleanup_running = orig_running
+
+        every = max(1, round(bt.BROWSER_ORPHAN_REAP_INTERVAL / 30))
+        expected = len([c for c in range(cycles_to_run) if c % every == 0])
+        assert len(reap_calls) == expected
+        assert len(reap_calls) > 1, "startup-only reap would give exactly 1"

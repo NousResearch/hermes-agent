@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -231,6 +232,35 @@ class TestGeneratedSystemdUnits:
 
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
+
+    def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
+        """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
+        plist rewrite by `hermes gateway start` cannot strip the FD floor and
+        reintroduce EMFILE crashes (launchd default soft limit is 256)."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
+    def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
+        """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
+        plist must then not contain a SoftResourceLimits block at all."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: None
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "SoftResourceLimits" not in plist
 
 
 
@@ -704,35 +734,191 @@ class TestGatewaySystemServiceRouting:
             lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
 
-        # Simulate systemctl reset-failed/restart followed by an active unit.
-        # A plain start does not break systemd's auto-restart timer once the
-        # old gateway has exited with the planned restart code.
+        # Once SIGUSR1 makes the gateway exit with the planned restart code,
+        # systemd is the only restart owner.  The CLI must only observe the
+        # replacement instead of issuing a second stop/start transition.
         def fake_subprocess_run(cmd, **kwargs):
-            if "reset-failed" in cmd:
-                calls.append(("reset-failed", cmd))
-                return SimpleNamespace(stdout="", returncode=0)
-            if "restart" in cmd:
-                calls.append(("restart", cmd))
-                return SimpleNamespace(stdout="", returncode=0)
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_systemd_service_restart",
-            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+            lambda system=False, previous_pid=None, replacement_observed=None: calls.append(
+                ("wait", system, previous_pid)
+            )
+            or True,
         )
 
         gateway_cli.systemd_restart()
 
         assert ("graceful", 654, 27.0) in calls
-        assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "restart" for call in calls)
         assert ("wait", False, 654) in calls
         out = capsys.readouterr().out.lower()
         assert "restarting gracefully" in out
         assert "21627" not in out  # must use the mocked budget, not live defaults
         assert "27" in out
+
+    def test_systemd_restart_forces_recovery_only_when_handoff_has_no_replacement(
+        self, monkeypatch, capsys
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        waits = iter((False, True))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None, replacement_observed=None: next(waits),
+        )
+        monkeypatch.setattr(gateway_cli, "_systemd_service_is_start_limited", lambda system=False: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "inactive", "MainPID": "0"},
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: calls.append((args, kwargs))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert [call[0][0] for call in calls] == ["reset-failed", "start"]
+        assert "did not relaunch" in capsys.readouterr().out
+
+    def test_systemd_restart_does_not_force_an_unready_replacement(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None, replacement_observed=None: False,
+        )
+        monkeypatch.setattr(gateway_cli, "_systemd_service_is_start_limited", lambda system=False: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args))
+
+        gateway_cli.systemd_restart()
+
+        assert calls == []
+
+    def test_systemd_restart_does_not_recover_a_failed_replacement(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+
+        def failed_replacement_wait(
+            system=False, previous_pid=None, replacement_observed=None
+        ):
+            replacement_observed.append(True)
+            return False
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            failed_replacement_wait,
+        )
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args))
+
+        gateway_cli.systemd_restart()
+
+        assert calls == []
+
+    def test_systemd_restart_does_not_recover_when_handoff_state_is_unknown(
+        self, monkeypatch
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None, replacement_observed=None: False,
+        )
+        monkeypatch.setattr(gateway_cli, "_systemd_service_is_start_limited", lambda system=False: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {},
+        )
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args))
+
+        gateway_cli.systemd_restart()
+
+        assert calls == []
+
+    def test_systemd_restart_wait_timeout_includes_supervisor_budgets(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {
+                "RestartUSec": "5s",
+                "TimeoutStartUSec": "1min 30s",
+            },
+        )
+
+        assert gateway_cli._systemd_restart_wait_timeout() == 155.0
+
+    def test_wait_records_a_short_lived_failed_replacement(self, monkeypatch):
+        ticks = iter((0.0, 0.0, 2.0))
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {
+                "ActiveState": "failed",
+                "MainPID": "0",
+            },
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 777, "gateway_state": "startup_failed"},
+        )
+        replacement_observed = []
+
+        result = gateway_cli._wait_for_systemd_service_restart(
+            previous_pid=654,
+            timeout=1.0,
+            replacement_observed=replacement_observed,
+        )
+
+        assert result is False
+        assert replacement_observed == [True]
 
 
 
@@ -814,6 +1000,92 @@ class TestDetectVenvDir:
 
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
+
+    def test_empty_managed_node_dir_uses_only_ambient_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        managed_bin = tmp_path / ".hermes" / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
+
+    def test_non_executable_managed_node_uses_only_ambient_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        managed_bin = tmp_path / ".hermes" / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o644)
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
+
+    def test_managed_node_makes_system_unit_independent_of_callers_path(
+        self, monkeypatch, tmp_path
+    ):
+        """A target-managed Node must suppress caller-specific PATH fallbacks."""
+        target_home = tmp_path / "home" / "alice"
+        target_hermes = target_home / ".hermes"
+        root_home = tmp_path / "root"
+        root_hermes = root_home / ".hermes"
+        managed_bin = target_hermes / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = managed_bin / "node"
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        root_hermes.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setenv("HERMES_HOME", str(root_hermes))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/root/bin/node")
+        root_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/home/alice/.local/bin/node")
+        user_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert root_unit == user_unit
+        assert str(managed_bin) in root_unit
+        assert "/root/bin" not in root_unit
+
+    def test_node_path_lookup_remains_fallback_without_managed_node(
+        self, monkeypatch, tmp_path
+    ):
+        """External Node installs still work when the managed tree is absent."""
+        monkeypatch.setattr(
+            "hermes_constants.iter_hermes_node_dirs", lambda root=None: []
+        )
+        monkeypatch.setattr(
+            "hermes_constants.hermes_managed_node_tree_present",
+            lambda root=None: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
@@ -1193,7 +1465,34 @@ class TestProfileArg:
         assert "--profile mybot gateway run" in unit
         assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
+    def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
 
+        plist = gateway_cli.generate_launchd_plist()
+        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+
+        assert program_args == [
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.stderr_timestamp",
+            "--error-log",
+            str(profile_dir / "logs" / "gateway.error.log"),
+            "--",
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "mybot",
+            "gateway",
+            "run",
+            "--replace",
+            "--external-supervisor",
+        ]
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -1974,7 +2273,6 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
-
     def test_registered_but_not_running_is_not_success(self, monkeypatch):
         """A definition with no PID must not end the loop.
 
@@ -2005,4 +2303,3 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is False
         assert list_calls["n"] >= 1
-

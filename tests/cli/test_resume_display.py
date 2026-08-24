@@ -173,6 +173,37 @@ class TestDisplayResumedHistory:
 
 
 
+    def test_empty_message_content_does_not_crash(self):
+        """Regression: _display_resumed_history IndexError when a message has empty text.
+
+        An assistant turn that produced no text (or a blank user message)
+        makes ``text.splitlines()`` return ``[]``, crashing on ``msg_lines[0]``.
+        The fix guards with ``or [""]`` so the message renders as a blank line.
+        """
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "Follow-up question"},
+            {"role": "assistant", "content": "Real answer"},
+        ]
+        # Must not raise IndexError
+        output = self._capture_display(cli)
+
+        assert "Follow-up question" in output
+        assert "Real answer" in output
+
+    def test_whitespace_only_message_does_not_crash(self):
+        """Whitespace-only messages should also not crash the resume display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "   "},
+            {"role": "assistant", "content": "\n\n"},
+        ]
+        output = self._capture_display(cli)
+        # Should render without error
+        assert "You:" in output
+
     def test_minimal_config_suppresses_display(self):
         cli = _make_cli(config_overrides={"display": {"resume_display": "minimal"}})
         # resume_display is captured as an instance variable during __init__
@@ -260,19 +291,14 @@ class TestPreloadResumedSession:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "reopen_session", "title": None}
         mock_db.get_resume_conversations.return_value = (messages, messages)
-        mock_conn = MagicMock()
-        mock_db._conn = mock_conn
+        mock_db.resolve_resume_session_id.return_value = "reopen_session"
         cli._session_db = mock_db
 
         buf = StringIO()
         cli.console.file = buf
         cli._preload_resumed_session()
 
-        # Should have executed UPDATE to clear ended_at
-        mock_conn.execute.assert_called_once()
-        call_args = mock_conn.execute.call_args
-        assert "ended_at = NULL" in call_args[0][0]
-        mock_conn.commit.assert_called_once()
+        mock_db.reopen_session.assert_called_once_with("reopen_session")
 
     def test_rejects_runaway_transcript_before_history_load(self):
         from hermes_state import SessionResumeTooLargeError

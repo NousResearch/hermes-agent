@@ -1,13 +1,16 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 
 const POPOUT_STORAGE_KEY = 'hermes.desktop.composerPopout.zones.v1'
+const POPOUT_GESTURES_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.gesturesEnabled'
 
 // Pre-zone keys: one flag + one position for the whole window. Read at load to
 // seed the first zone the user touches (see `legacySeed`), never written again.
 const LEGACY_ENABLED_KEY = 'hermes.desktop.composerPopout.enabled'
 const LEGACY_POSITION_KEY = 'hermes.desktop.composerPopout.position'
+
+const gesturesEnabledAtLoad = storedBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, true)
 
 /** Where the floating composer's bottom-right corner sits, measured as an inset
  *  from the viewport's bottom/right edges. Anchoring to the bottom-right keeps
@@ -63,7 +66,7 @@ function load(): Record<string, PopoutZoneState> {
       const zone = value as null | Partial<PopoutZoneState>
 
       if (typeof zone?.poppedOut === 'boolean' && isPosition(zone.position)) {
-        out[id] = { poppedOut: zone.poppedOut, position: { ...zone.position } }
+        out[id] = { poppedOut: gesturesEnabledAtLoad && zone.poppedOut, position: { ...zone.position } }
       }
     }
   } catch {
@@ -80,6 +83,7 @@ function load(): Record<string, PopoutZoneState> {
  *  put it), while a split zone beside them keeps its own — popping out on the
  *  left doesn't fling a composer out of the right. */
 export const $composerPopoutZones = atom<Record<string, PopoutZoneState>>(load())
+export const $composerPopoutGesturesEnabled = atom(gesturesEnabledAtLoad)
 
 /** Write-through to storage. Called explicitly — NOT on every store change: a
  *  drag updates the position once per frame, and serializing every zone to
@@ -91,7 +95,9 @@ const persistZones = () => persistString(POPOUT_STORAGE_KEY, JSON.stringify($com
  *  — but ONLY until they touch any zone. Once real per-zone state exists, that
  *  is the truth, and a zone split later starts docked like any other. */
 let legacySeed: PopoutZoneState | null =
-  storedString(LEGACY_ENABLED_KEY) === 'true' ? { poppedOut: true, position: legacyPosition() } : null
+  gesturesEnabledAtLoad && storedString(LEGACY_ENABLED_KEY) === 'true'
+    ? { poppedOut: true, position: legacyPosition() }
+    : null
 
 const zoneState = (zones: Record<string, PopoutZoneState>, groupId: string): PopoutZoneState =>
   zones[groupId] ?? legacySeed ?? DEFAULT_ZONE
@@ -221,6 +227,32 @@ function patchZone(groupId: string, patch: Partial<PopoutZoneState>) {
 export function setComposerPoppedOut(groupId: string, value: boolean) {
   patchZone(groupId, { poppedOut: value })
   persistZones()
+}
+
+export function setComposerPopoutGesturesEnabled(value: boolean) {
+  $composerPopoutGesturesEnabled.set(value)
+  persistBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, value)
+
+  if (value) {
+    return
+  }
+
+  // Turning the feature off is an immediate lock-to-dock action for every
+  // layout zone, not merely a promise to ignore the next gesture. Keep each
+  // zone's resting position so opting back in restores where the user put it.
+  const zones = $composerPopoutZones.get()
+
+  const docked = Object.fromEntries(
+    Object.entries(zones).map(([groupId, zone]) => [groupId, { ...zone, poppedOut: false }])
+  )
+
+  legacySeed = null
+  $composerPopoutZones.set(docked)
+  persistZones()
+
+  // Neutralize the pre-zone singleton migration seed too, otherwise a reload
+  // with no materialized zones could revive an old floating composer.
+  persistBoolean(LEGACY_ENABLED_KEY, false)
 }
 
 /** Move this zone's box. Used per-frame during a drag, so it only writes the

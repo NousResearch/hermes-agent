@@ -27,6 +27,13 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     match = _CRON_SESSION_ID_RE.match(sid)
     return match.group(1) if match else sid
 
+from agent.reasoning_effort import (
+    ACTUAL_RELAY_EFFORTS,
+    XAI_GROK46_EFFORTS,
+    XAI_LEGACY_EFFORTS,
+    clamp_effort,
+    codex_supported_efforts,
+)
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -51,6 +58,56 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # avoids that while still dispatching through Hermes's configured provider
 # (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
+
+# OpenCode's /v1/responses endpoints (Zen and Go, including custom providers
+# pointing at opencode.ai) reserve certain function names server-side and
+# reject client tools that use them with HTTP 400 ("custom function name
+# 'X' is reserved"). Reported for grok-4.5 on Go with `search_files` and
+# `web_search` (#85589). Same treatment as the xAI web_search collision:
+# rename on the wire (hermes_<name>), map back in normalize_response so
+# Hermes dispatch is unaffected.
+_OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+_RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
+_RESERVED_ALIAS_TO_NAME = {
+    f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
+    for name in _OPENCODE_RESERVED_TOOL_NAMES
+}
+
+
+def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
+    """True when this Responses request targets an OpenCode endpoint.
+
+    Matches the built-in opencode-zen/go providers, custom ``opencode-go-*`` /
+    ``opencode-zen-*`` family providers, and any base_url hosted on
+    opencode.ai (covers custom providers with arbitrary names pointing at
+    the OpenCode gateway).
+    """
+    try:
+        from hermes_cli.models import opencode_provider_family
+
+        if opencode_provider_family(params.get("provider")) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _rename_reserved_tools_for_opencode(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Alias OpenCode-reserved client function names on the wire."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") in _OPENCODE_RESERVED_TOOL_NAMES:
+            aliased = dict(tool)
+            aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
 
 
 def _xai_prefers_native_web_search() -> bool:
@@ -115,10 +172,16 @@ def _default_prompt_cache_retention_for_request(
     model: str,
     base_url: Any,
 ) -> Optional[str]:
-    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    """Return ``24h`` for supported hosts/models (Bedrock Mantle, Meta)."""
     from utils import base_url_hostname
 
-    hostname_parts = base_url_hostname(str(base_url or "")).split(".")
+    hostname = base_url_hostname(str(base_url or "")).lower()
+    # Meta Model API: prompt caching is opt-in via prompt_cache_retention.
+    # Measured 0% hits on /chat/completions vs 93-99% on /responses with 24h.
+    if hostname == "api.meta.ai":
+        return "24h"
+
+    hostname_parts = hostname.split(".")
     is_bedrock_mantle = (
         len(hostname_parts) == 4
         and hostname_parts[0] == "bedrock-mantle"
@@ -173,6 +236,111 @@ def _content_cache_key(
     return f"pck_{digest}"
 
 
+def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
+    """Return True for Microsoft Foundry's OpenAI-compatible Responses API.
+
+    Matched on the registered provider id first, then on the endpoint host.
+    Host matching goes through ``base_url_host_matches`` rather than a
+    substring test, so a path or query segment carrying the Foundry domain
+    (``https://proxy.example.com/.services.ai.azure.com/v1``) is not
+    misclassified as Foundry.
+    """
+    from utils import base_url_host_matches
+
+    provider = str(params.get("provider") or "").strip().lower()
+    if provider == "azure-foundry":
+        return True
+
+    return base_url_host_matches(
+        str(params.get("base_url") or ""), "services.ai.azure.com"
+    )
+
+
+def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True when ``messages`` end on a tool result awaiting a follow-up.
+
+    Azure Foundry only rejects the *post-tool follow-up* payload — the shape
+    where a prior assistant ``function_call`` and its ``function_call_output``
+    are replayed alongside an encrypted ``reasoning`` item (HTTP 400
+    invalid_payload). Detecting that shape here keeps reasoning suppression
+    scoped to the failing turn, so ordinary (non-tool) Foundry multi-turn
+    continuity is left unchanged.
+
+    The test is on the *trailing* messages, not on the history as a whole.
+    Scanning the whole history for any tool call plus any tool result makes
+    the predicate sticky: one tool call early in a conversation would then
+    suppress reasoning on every later turn, including plain user follow-ups
+    that Foundry accepts. The rejected payload is specifically the turn whose
+    last item is a tool result, so that is what this matches: the final
+    non-system message is a ``tool`` result, and the assistant message that
+    issued its ``tool_call_id`` is present.
+
+    Tool-call identity is resolved the same way
+    ``_chat_messages_to_responses_input`` resolves it, because the pairing
+    that matters is the one that reaches the wire. A stored tool call can
+    carry the function call id in ``call_id``, in ``id``, or in a composite
+    ``"call_x|fc_y"`` id, and a bare ``fc_``-prefixed ``id`` is a response
+    item id that the converter turns into ``call_<rest>``. Matching only
+    ``id`` would miss the ``id=fc_… / call_id=call_…`` shape that resumed
+    legacy sessions and host-fed histories still use, and let the rejected
+    payload through.
+    """
+    from agent.codex_responses_adapter import _split_responses_tool_id
+
+    def _pair_ids(raw: Any, explicit: Any = None) -> set:
+        """Every call id a stored tool id could pair on, converter-order."""
+        embedded_call_id, item_id = _split_responses_tool_id(raw)
+        ids = {embedded_call_id} if embedded_call_id else set()
+        if isinstance(explicit, str) and explicit.strip():
+            ids.add(explicit.strip())
+        if not ids and isinstance(raw, str) and raw.strip():
+            ids.add(raw.strip())
+        if isinstance(item_id, str) and item_id.startswith("fc_") and item_id[3:]:
+            ids.add(f"call_{item_id[3:]}")
+        return ids
+
+    trailing = set()
+    for msg in reversed(messages or ()):
+        if not isinstance(msg, dict):
+            return False
+        role = msg.get("role")
+        if role == "system":
+            continue
+        if role == "tool":
+            ids = _pair_ids(msg.get("tool_call_id"))
+            if not ids:
+                return False
+            trailing |= ids
+            continue
+        # First message before the trailing run of tool results. It must be
+        # the assistant turn that issued them for this to be the follow-up
+        # payload; a non-empty ``trailing`` is what proves the run existed.
+        if role != "assistant":
+            return False
+        return any(
+            trailing & _pair_ids(call.get("id"), call.get("call_id"))
+            for call in msg.get("tool_calls") or []
+            if isinstance(call, dict)
+        )
+
+    return False
+
+
+def _native_compaction_active(context_management: Any) -> bool:
+    """Is THIS request natively compacted?
+
+    True only when the caller's eligibility gate
+    (``native_compaction.native_compaction_context_management``) produced a
+    non-empty payload. Every native-compaction side effect on the wire —
+    sending ``context_management``, replaying a ``type: "compaction"``
+    checkpoint, restructuring the input around it — hangs off this one
+    predicate, so a checkpoint that outlives the gate (model swapped out of
+    the gpt-5.6 family, compression disabled, rejection kill switch, resumed
+    session) cannot keep reshaping requests on its own.
+    """
+    return isinstance(context_management, list) and bool(context_management)
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -213,6 +381,9 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
             current_issuer_kind=issuer,
+            native_compaction_eligible=_native_compaction_active(
+                kwargs.get("context_management")
+            ),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -234,10 +405,16 @@ class ResponsesApiTransport(ProviderTransport):
         params:
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
-            session_id: str | None — transcript/session id; drives the xAI
-                x-grok-conv-id header and the Codex cache-scope headers, and is
-                the fallback prompt_cache_key when there is no static prefix to
-                content-address
+            session_id: str | None — transcript/session id; drives the Codex
+                ``session_id`` header, and is the cache-scope fallback when no
+                ``cache_scope_id`` is given
+            cache_scope_id: str | None — rotation-stable logical scope id
+                (compression-lineage root; see agent/prompt_cache_scope.py).
+                Preferred over session_id when deriving the prompt_cache_key
+                content hash and the xAI x-grok-conv-id header; the Codex
+                x-client-request-id header mirrors the resulting body key.
+                Keeps the cache warm across context-compression session
+                rotation (#79017)
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -271,11 +448,28 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        if replay_encrypted_reasoning and _is_azure_foundry_responses(params):
+            # Microsoft Foundry accepts the initial Responses function-call
+            # request and ordinary (non-tool) multi-turn continuity, but
+            # rejects the post-tool follow-up payload that carries prior
+            # encrypted reasoning items alongside function_call /
+            # function_call_output, with HTTP 400 invalid_payload. Scope the
+            # suppression to that follow-up turn: keep function_call /
+            # function_call_output continuity intact and drop only the
+            # encrypted reasoning replay for this endpoint.
+            if _is_post_tool_replay(payload_messages):
+                replay_encrypted_reasoning = False
         # Native server-side compaction (gpt-5.6 on direct OpenAI/Codex routes
         # only). The caller resolves eligibility via
         # agent.native_compaction.native_compaction_context_management();
         # None means the field is never added to the request.
         context_management = params.get("context_management")
+        # Single source of truth for "this request is natively compacted":
+        # the same value decides whether the field goes out AND whether the
+        # converter may replay/prune around a compaction checkpoint. Keeping
+        # them derived from one expression is what stops a persisted
+        # checkpoint from restructuring the wire after the gate closes.
+        native_compaction_active = _native_compaction_active(context_management)
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning
@@ -295,20 +489,31 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        if "gpt-5.6" in (model or "").lower():
-            # Ultra is the Codex product tier; the Responses API wire value is max.
-            _effort_clamp["ultra"] = "max"
+        # Wire vocabularies are declared in agent.reasoning_effort; the shared
+        # clamp policy (nearest weaker supported level, never escalate,
+        # never invert the ladder) replaces the per-backend hand maps that
+        # repeatedly leaked internal levels like "ultra" to the wire
+        # (#89503 class) or clamped one rung below a model's real ceiling
+        # (#87279).
         if params.get("is_xai_responses", False):
-            # xAI Responses tops out at high; keep generic stronger values usable.
-            _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
-        if (params.get("provider") or "").strip().lower() == "actual":
-            # Actual Computer relays to SGLang/vLLM backends that accept only
-            # none/low/medium/high/max for reasoning effort — a forwarded
-            # xhigh/ultra fails with a wrapped HTTP 400 ("Expecting value:
-            # line 1 column 1"). Clamp Hermes' wider set to the supported one.
-            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
-        reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+            from agent.model_metadata import is_grok_46_family
+
+            # Grok 4.6 accepts xhigh as a wire value; older Grok tops out
+            # at high.
+            _supported = (
+                XAI_GROK46_EFFORTS if is_grok_46_family(model)
+                else XAI_LEGACY_EFFORTS
+            )
+        elif (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends:
+            # none/low/medium/high/max.
+            _supported = ACTUAL_RELAY_EFFORTS
+        else:
+            # OpenAI/Codex Responses backend — per-model vocabulary
+            # (live-verified: "max" is gpt-5.6-only, "minimal" always
+            # rejected). #68365 premise confirmed.
+            _supported = codex_supported_efforts(model)
+        reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)
 
@@ -348,6 +553,12 @@ class ResponsesApiTransport(ProviderTransport):
                 else:
                     response_tools = _rename_client_web_search_for_xai(response_tools)
 
+        # OpenCode Responses backends reserve web_search / search_files as
+        # function names (HTTP 400 "custom function name 'X' is reserved",
+        # #85589). Alias them on the wire; normalize_response maps them back.
+        if response_tools and _is_opencode_responses_backend(params):
+            response_tools = _rename_reserved_tools_for_opencode(response_tools)
+
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
         # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``
@@ -356,8 +567,17 @@ class ResponsesApiTransport(ProviderTransport):
         # request is issued (openai==2.24.0).  Reported for the
         # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
         # (#32892) when the agent runs without external tools registered.
+        # Function-level import: agent.model_metadata is imported lazily
+        # because provider plugins import this transport during
+        # model_metadata's own module init (circular otherwise).
+        from agent.model_metadata import (
+            strip_codex_context_variant_suffix as _strip_ctx_variant,
+        )
         kwargs = {
-            "model": model,
+            # ``-900k`` large-context picker variants are Hermes-side aliases
+            # (gpt-5.6-sol-900k etc.) — the Codex/OpenAI backend only knows
+            # the base slug, so strip the suffix before it hits the wire.
+            "model": _strip_ctx_variant(model),
             "instructions": instructions,
             "input": _chat_messages_to_responses_input(
                 payload_messages,
@@ -365,6 +585,7 @@ class ResponsesApiTransport(ProviderTransport):
                 is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
+                native_compaction_eligible=native_compaction_active,
             ),
             "store": False,
         }
@@ -372,7 +593,7 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
-        if isinstance(context_management, list) and context_management:
+        if native_compaction_active:
             kwargs["context_management"] = context_management
 
         session_id = params.get("session_id")
@@ -381,10 +602,18 @@ class ResponsesApiTransport(ProviderTransport):
         # recurring cron jobs carry a per-fire timestamp in session_id
         # (cron_<id>_<ts>) that made every run cache-cold, so the scope strips
         # that suffix (see _cache_scope_from_session_id). session_id is left
-        # untouched for transcript isolation and the cache-scope routing
-        # headers below. Falls back to session_id when there is no static
-        # content to hash.
-        _cache_scope = _cache_scope_from_session_id(session_id)
+        # untouched for transcript isolation (the Codex ``session_id`` header
+        # below). Falls back to session_id when there is no static content to
+        # hash.
+        #
+        # cache_scope_id, when provided, is the rotation-stable logical scope
+        # (compression-lineage root — agent/prompt_cache_scope.py): legacy
+        # ``compression.in_place: false`` compaction rotates session_id
+        # mid-conversation, and scoping by the physical id went cache-cold at
+        # every rotation boundary (#79017).
+        _cache_scope = _cache_scope_from_session_id(
+            params.get("cache_scope_id") or session_id
+        )
         cache_key = _content_cache_key(
             instructions, response_tools, _cache_scope
         ) or _cache_scope
@@ -441,16 +670,18 @@ class ResponsesApiTransport(ProviderTransport):
             else:
                 kwargs.pop("prompt_cache_key", None)
 
-        # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
-        # supported: service_tier") — hit when ``/fast`` priority-processing
-        # mode lingers from a prior model in the same session, or when a
-        # user explicitly sets ``agent.service_tier`` in config.yaml.  The
-        # main-loop guard (``resolve_fast_mode_overrides`` only returns
-        # ``service_tier`` for OpenAI fast-eligible models) doesn't cover
-        # those leak paths, so strip defensively when targeting xAI.  See
-        # #28490 for the original report.
+        # Older xAI Responses models reject ``service_tier`` (HTTP 400
+        # "Argument not supported: service_tier"). Grok 4.6 accepts Priority
+        # Processing, but continue stripping stale or unsupported tier values
+        # on every other xAI path. See #28490 and #84799.
         if is_xai_responses:
-            kwargs.pop("service_tier", None)
+            from agent.model_metadata import is_grok_46_family
+
+            if not (
+                is_grok_46_family(model)
+                and kwargs.get("service_tier") == "priority"
+            ):
+                kwargs.pop("service_tier", None)
 
         # Forward per-request timeout to the SDK so OpenAI/Anthropic clients
         # honor it.  Without this, ``providers.<id>.request_timeout_seconds``
@@ -568,6 +799,10 @@ class ResponsesApiTransport(ProviderTransport):
                 # the real ``web_search`` tool (Firecrawl / etc.).
                 if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
                     name = "web_search"
+                # Undo the OpenCode reserved-name wire aliases the same way
+                # (hermes_web_search / hermes_search_files, #85589).
+                elif name in _RESERVED_ALIAS_TO_NAME:
+                    name = _RESERVED_ALIAS_TO_NAME[name]
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),
                     name=name,

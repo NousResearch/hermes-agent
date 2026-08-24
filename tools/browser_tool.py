@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+import signal
 import re
 import subprocess
 import shutil
@@ -69,6 +70,8 @@ from hermes_constants import (
     agent_browser_runnable,
     get_hermes_home,
     get_hermes_home_override,
+    hermes_home_key,
+    node_tool_runnable,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -165,6 +168,16 @@ from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # no
 from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
     get_provider as _registry_get_browser_provider,
 )
+try:
+    from agent.browser_registry import (
+        registry_generation as _browser_registry_generation,
+    )
+except ImportError:
+    # A few isolated compatibility tests intentionally install a minimal
+    # ``agent.browser_registry`` stub exposing only ``get_provider``. Those
+    # harnesses have no mutable registry, so a constant generation is exact.
+    def _browser_registry_generation(*, scope=None):
+        return (0, 0)
 from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
     BrowserbaseBrowserProvider as BrowserbaseProvider,
 )
@@ -683,6 +696,11 @@ _DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
+_cached_cloud_provider_scope: Optional[str] = None
+_cached_cloud_providers: Dict[
+    tuple[str, tuple[int, int]], Optional[CloudBrowserProvider]
+] = {}
+_cloud_provider_cache_lock = threading.RLock()
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
@@ -738,6 +756,46 @@ def _ensure_browser_plugins_loaded() -> None:
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Return the provider cached for the active Hermes profile."""
+    global _cached_cloud_provider, _cloud_provider_resolved
+    global _cached_cloud_provider_scope
+
+    scope = hermes_home_key()
+    with _cloud_provider_cache_lock:
+        # Tests and legacy reset paths clear the boolean. Treat that as a full
+        # reset even if a previous scoped resolution remains mirrored here.
+        if not _cloud_provider_resolved:
+            _cached_cloud_provider_scope = None
+            _cached_cloud_providers.clear()
+        while True:
+            before_generation = _browser_registry_generation(scope=scope)
+            cache_key = (scope, before_generation)
+            if cache_key in _cached_cloud_providers:
+                _cached_cloud_provider = _cached_cloud_providers[cache_key]
+                _cloud_provider_resolved = True
+                _cached_cloud_provider_scope = scope
+                return _cached_cloud_provider
+
+            _cached_cloud_provider = None
+            _cloud_provider_resolved = False
+            resolved = _resolve_cloud_provider_uncached()
+            after_generation = _browser_registry_generation(scope=scope)
+            if before_generation != after_generation:
+                # A force reload replaced/unloaded this profile's provider
+                # while resolution was in progress. Discard the stale result
+                # and resolve against the new registry generation.
+                continue
+            if _cloud_provider_resolved:
+                _cached_cloud_provider_scope = scope
+                for stale_key in [
+                    key for key in _cached_cloud_providers if key[0] == scope
+                ]:
+                    _cached_cloud_providers.pop(stale_key, None)
+                _cached_cloud_providers[cache_key] = resolved
+            return resolved
+
+
+def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
@@ -755,23 +813,28 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     ``_is_legacy_provider_registry_overridden``.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
-    if _cloud_provider_resolved:
-        return _cached_cloud_provider
 
     resolved: Optional[CloudBrowserProvider] = None
+    provider_key = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
-        provider_key = None
         if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
             provider_key = normalize_browser_cloud_provider(
                 browser_cfg.get("cloud_provider")
             )
-            if provider_key == "local":
+            if provider_key in ("local", "camofox"):
+                # Camofox runs through the built-in browser tools
+                # (is_camofox_mode() dispatch), not a cloud provider.
                 _cached_cloud_provider = None
                 _cloud_provider_resolved = True
                 return None
+            if provider_key == "nous":
+                # Managed "Nous Subscription" selection is serviced by the
+                # Browser Use provider, whose config resolver routes it
+                # through the managed browser-use gateway.
+                provider_key = "browser-use"
         if provider_key:
             try:
                 if _is_legacy_provider_registry_overridden():
@@ -785,20 +848,20 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                     # populated. Idempotent — cheap on subsequent calls.
                     _ensure_browser_plugins_loaded()
                     resolved = _registry_get_browser_provider(provider_key)
-                    if resolved is None:
-                        # Explicit config name unknown to the registry —
-                        # might be a typo, an uninstalled plugin, or a
-                        # registry-population failure. Warn the user
-                        # (legacy code would have surfaced a typed
-                        # credentials error via direct class instantiation;
-                        # post-migration we surface this WARNING instead).
-                        logger.warning(
-                            "browser.cloud_provider=%r is not a registered "
-                            "browser plugin; falling back to auto-detect "
-                            "(install the corresponding plugin or fix the "
-                            "config key spelling).",
-                            provider_key,
-                        )
+                if resolved is None:
+                    # Strict selection: a stored-but-unregistered name is an
+                    # honest error, never a silent reroute to auto-detect.
+                    from tools.tool_backend_helpers import selection_error
+
+                    raise ValueError(selection_error(
+                        "browser",
+                        f"'{provider_key}'",
+                        "no registered browser plugin has that name (install "
+                        "the corresponding plugin or fix the config key "
+                        "spelling)",
+                    ))
+            except ValueError:
+                raise
             except Exception:
                 logger.warning(
                     "Failed to instantiate explicit cloud_provider %r; will retry on next call",
@@ -806,13 +869,16 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                     exc_info=True,
                 )
                 return None
+    except ValueError:
+        raise
     except Exception as e:
         # Config file may be temporarily unreadable; still try auto-detect so
         # env-based / managed-gateway credentials can resolve. Don't pin cache.
         logger.debug("Could not read cloud_provider from config: %s", e)
 
-    if resolved is None:
-        # Auto-detect path: Browser Use first (managed Nous gateway or
+    if resolved is None and provider_key is None:
+        # Auto-detect path — permitted ONLY when no cloud_provider selection
+        # was ever written: Browser Use first (managed Nous gateway or
         # direct API key), then Browserbase (direct credentials). Uses
         # the legacy class names imported at the top of this module so
         # tests that ``monkeypatch.setattr(browser_tool, "BrowserUseProvider", ...)``
@@ -851,8 +917,26 @@ def _browser_install_hint() -> str:
     return "npm install -g agent-browser && agent-browser install --with-deps"
 
 
+# Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
+# than a concrete executable path. A named constant + predicate keep the six
+# comparison sites (four here, plus hermes_cli/tools_config.py and
+# hermes_cli/doctor.py) from drifting if the sentinel's exact spelling ever
+# changes.
+NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
+
+# Pinned to match scripts/install.sh / scripts/install.ps1's
+# "agent-browser@^0.26.0" managed install so a git-clone install resolving
+# agent-browser via bare npx gets the same version as a managed install,
+# instead of floating latest with no integrity check. Update both together.
+AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+
+
+def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
+    return browser_cmd.strip() == NPX_AGENT_BROWSER_SENTINEL
+
+
 def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
-    return _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser"
+    return _is_termux_environment() and _is_local_mode() and _is_npx_agent_browser_sentinel(browser_cmd)
 
 
 def _termux_browser_install_error() -> str:
@@ -1156,14 +1240,19 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
-    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
-    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
-    # bare container), fall back to the bare name and let Popen raise with
-    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+    # Resolve npx via the same PATH + extended-PATH cascade _find_agent_browser
+    # uses, not a bare shutil.which("npx") — Hermes-managed-Node-only setups
+    # resolve npx only through the extended fallback path, and a bare lookup
+    # would let a broken system npx shadow a healthy managed one. If npx isn't
+    # found at all (Termux, bare container), fall back to the bare name and
+    # let Popen raise with a readable "FileNotFoundError: 'npx'" rather than
+    # WinError 193.
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _npx_bin = _resolve_npx_bin() or "npx"
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range,
+        # not an exact pin — a compromised future 0.26.x patch must not get to
+        # run its own install-time lifecycle scripts on this machine.
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -1563,6 +1652,22 @@ def _get_session_inactivity_timeout() -> int:
 
 BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
+# How often the cleanup thread re-runs the orphan reaper.  The reaper used to
+# run exactly once, before the cleanup loop started, which meant a hermes
+# process that stays up for days could never recover from a leak that appeared
+# *after* boot.  Observed in the wild: five agent-browser daemons accumulated
+# over 10 days in a single 18-day-uptime process, pinning ~5 CPU cores.
+BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
+
+# Hard ceiling for a daemon whose owning hermes process is still alive but
+# which has fallen out of that process's in-memory session tracking.  The
+# owner-alive check alone makes such a daemon immortal: in-memory tracking is
+# lost on any exception path, yet the owner PID stays up, so the reaper skips
+# it forever.  Idle age (see ``_socket_dir_idle_seconds``) is the escape hatch.
+# Deliberately a large multiple of the inactivity timeout so a legitimately
+# busy session is never touched.
+BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
+
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
 
@@ -1793,6 +1898,40 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
+def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
+    """Seconds since anything in ``socket_dir`` was last written.
+
+    Every browser command writes ``_stdout_<cmd>`` / ``_stderr_<cmd>`` temp
+    files into the session's socket dir, so the newest mtime under that dir is
+    a last-activity marker that — unlike ``_session_last_activity`` — survives
+    hermes restarts and does not depend on in-memory bookkeeping surviving an
+    exception path.
+
+    The directory's own mtime is not sufficient: command names repeat, so
+    rewriting an existing ``_stdout_click`` updates that file's mtime but not
+    the directory's.  Scan the entries too.
+
+    Returns ``None`` when the age cannot be determined, so callers can fail
+    safe (treat unknown age as "too young to reap").
+    """
+    try:
+        latest = os.path.getmtime(socket_dir)
+    except OSError:
+        return None
+
+    try:
+        with os.scandir(socket_dir) as entries:
+            for entry in entries:
+                try:
+                    latest = max(latest, entry.stat().st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass  # dir mtime alone is still a usable lower bound
+
+    return max(0.0, time.time() - latest)
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1847,6 +1986,7 @@ def _reap_orphaned_browser_sessions():
 
         # Ownership check: prefer owner_pid file (cross-process safe).
         owner_pid_file = os.path.join(socket_dir, f"{session_name}.owner_pid")
+        owner_pid: Optional[int] = None
         owner_alive: Optional[bool] = None  # None = owner_pid missing/unreadable
         if os.path.isfile(owner_pid_file):
             try:
@@ -1856,11 +1996,34 @@ def _reap_orphaned_browser_sessions():
                 from gateway.status import _pid_exists
                 owner_alive = _pid_exists(owner_pid)
             except (ValueError, OSError):
+                owner_pid = None
                 owner_alive = None  # corrupt file — fall through
 
         if owner_alive is True:
-            # Owner is alive — this session belongs to a live hermes process.
-            continue
+            # Owner is alive.  Normally that means the session belongs to a
+            # live hermes process and must not be touched — but "owner alive"
+            # alone made leaked daemons immortal: if the owner lost its
+            # in-memory tracking (any exception path between spawn and
+            # registration), nothing would ever reap the daemon, and the
+            # daemon-side AGENT_BROWSER_IDLE_TIMEOUT_MS does not fire when the
+            # daemon itself is wedged (e.g. Chrome's framework was swapped out
+            # from under it by an auto-update).
+            #
+            # So: still trust live tracking, but fall back to idle age.
+            if session_name in tracked_names:
+                continue
+
+            idle_s = _socket_dir_idle_seconds(socket_dir)
+            if idle_s is None or idle_s < BROWSER_ORPHAN_GRACE_SECONDS:
+                # Unknown age, or still within the grace window — fail safe.
+                continue
+
+            logger.warning(
+                "Browser session %s has a live owner (PID %s) but is untracked "
+                "and idle for %ds (grace %ds) — treating as leaked and reaping",
+                session_name, owner_pid, int(idle_s),
+                BROWSER_ORPHAN_GRACE_SECONDS)
+            # fall through to the reap path below
 
         if owner_alive is None:
             # No owner_pid file (legacy daemon).  Fall back to in-process
@@ -1924,15 +2087,26 @@ def _browser_cleanup_thread_worker():
 
     Runs every 30 seconds and checks for sessions that haven't been used
     within the BROWSER_SESSION_INACTIVITY_TIMEOUT period.
-    On first run, also reaps orphaned sessions from previous process lifetimes.
+
+    Also reaps orphaned daemons — on startup (sessions left by previous
+    process lifetimes) *and* every BROWSER_ORPHAN_REAP_INTERVAL seconds
+    thereafter.  The periodic pass matters because a leak is not only a
+    across-restart phenomenon: a daemon can fall out of in-memory tracking
+    at any point in a long-lived process, and a startup-only reap can never
+    recover from that.
     """
-    # One-time orphan reap on startup
-    try:
-        _reap_orphaned_browser_sessions()
-    except Exception as e:
-        logger.warning("Orphan reap error: %s", e)
+    reap_every_cycles = max(1, round(BROWSER_ORPHAN_REAP_INTERVAL / 30))
+    cycle = 0
 
     while _cleanup_running:
+        # cycle 0 is the startup reap; then every reap_every_cycles.
+        if cycle % reap_every_cycles == 0:
+            try:
+                _reap_orphaned_browser_sessions()
+            except Exception as e:
+                logger.warning("Orphan reap error: %s", e)
+        cycle += 1
+
         try:
             _cleanup_inactive_browser_sessions()
         except Exception as e:
@@ -2296,6 +2470,27 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
     return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
 
 
+def _resolve_npx_bin() -> Optional[str]:
+    """Resolve a runnable npx binary, preferring the Hermes-managed/Homebrew
+    extended search over a bare ambient PATH lookup.
+
+    Checking bare PATH first would let a broken or unrelated system npx
+    shadow a healthy Hermes-managed one with no recovery — every candidate
+    is therefore validated with ``node_tool_runnable`` (the same check
+    ``find_hermes_node_executable`` uses to self-heal a managed Node tree)
+    before being trusted, falling through to the next candidate otherwise.
+    """
+    extended_path = _merge_browser_path("")
+    if extended_path:
+        extended_npx = shutil.which("npx", path=extended_path)
+        if extended_npx and node_tool_runnable(extended_npx):
+            return extended_npx
+    npx_path = shutil.which("npx")
+    if npx_path and node_tool_runnable(npx_path):
+        return npx_path
+    return None
+
+
 def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
@@ -2315,7 +2510,6 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             raise FileNotFoundError(
                 "agent-browser CLI not found (cached). Install it with: "
                 f"{_browser_install_hint()}\n"
-                "Or run 'npm install' in the repo root to install locally.\n"
                 "Or ensure npx is available in your PATH."
             )
         return _cached_agent_browser
@@ -2380,13 +2574,11 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             return _cached_agent_browser
 
     # Check common npx locations (also search the extended fallback PATH)
-    npx_path = shutil.which("npx")
-    if not npx_path and extended_path:
-        npx_path = shutil.which("npx", path=extended_path)
+    npx_path = _resolve_npx_bin()
     if npx_path:
         if not validate:
-            return "npx agent-browser"
-        _cached_agent_browser = "npx agent-browser"
+            return NPX_AGENT_BROWSER_SENTINEL
+        _cached_agent_browser = NPX_AGENT_BROWSER_SENTINEL
         _agent_browser_resolved = True
         return _cached_agent_browser
 
@@ -2416,9 +2608,150 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
         f"{_browser_install_hint()}\n"
-        "Or run 'npm install' in the repo root to install locally.\n"
         "Or ensure npx is available in your PATH."
     )
+
+
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Best-effort kill of *proc* and any descendants it spawned.
+
+    ``Popen.kill()`` only signals the direct child PID. npm/npx routinely
+    fork further processes (registry-fetch helpers, npm's own lifecycle
+    runner, agent-browser's own detached daemon grandchild) that can survive
+    a plain ``kill()`` of the top-level PID and keep a ``capture_output``-style
+    pipe open, hanging the caller's ``communicate()`` past the nominal
+    timeout — the same orphaned-pipe hazard already hit in production on
+    POSIX (see ``tools/process_registry.py``'s ``_reader_loop``, issue
+    #68915: a backgrounded grandchild inheriting a pipe's write end kept it
+    from ever reaching EOF). That hazard is cross-platform, not
+    Windows-specific; what *is* Windows-specific is the lack of a remedy
+    other than killing the tree — anonymous pipes there don't support
+    overlapped I/O, so there's no ``select()``-style non-blocking read to
+    poll around a stuck grandchild the way POSIX can. Killing the whole
+    process group/tree the child was launched into reaches those
+    descendants on both platforms.
+
+    Fires SIGTERM then SIGKILL back-to-back with no grace period between
+    them (unlike ``tools/mcp_stdio_watchdog.py``'s ``_terminate_process_group``,
+    which waits between signals because it's reacting to a live daemon being
+    orphaned). By the time this is called, the caller has already burned its
+    full timeout budget waiting for a graceful exit — there's nothing to gain
+    from waiting again here, only more delay on an already-timed-out call.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        return
+    # os.killpg/signal.SIGKILL don't exist on Windows; this branch is
+    # POSIX-only (the `os.name == "nt"` check above already returns first
+    # on Windows), but resolve them defensively via getattr anyway so an
+    # accidental future refactor that drops that guard degrades to a plain
+    # kill() instead of AttributeError — same discipline as
+    # tools/mcp_stdio_watchdog.py's _terminate_process_group.
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # windows-footgun: ok - non-POSIX fallback
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for sig in (signal.SIGTERM, sigkill):
+        try:
+            killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+
+
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    """Best-effort pre-fetch of the agent-browser npm package via npx.
+
+    agent-browser is no longer a root package.json dependency (#43564) —
+    it resolves lazily via ``npx agent-browser`` instead, which keeps it
+    out of the npm workspace install graph entirely (nothing to prune it
+    anymore) but means the first real invocation in a session would
+    otherwise pay npx's registry-lookup/fetch cost. Calling this during
+    ``hermes update`` (or ``hermes doctor --fix``) warms npx's own cache
+    ahead of time, restoring the "available before any session starts"
+    property agent-browser had while it was an eager root dependency —
+    without re-entangling it with the workspace graph.
+
+    Runs a credential-scrubbed, PATH-propagated environment matching every
+    other agent-browser subprocess spawn (see ``_build_browser_env``) —
+    this used to inherit the full parent environment, including every
+    provider/gateway credential Hermes holds, while running registry-fetched
+    npm code on every ``hermes update`` (the GHSA-m4m8-xjp4-5rmm class of
+    risk ``_build_browser_env`` exists specifically to prevent). Runs in its
+    own process group and kills the *whole* group — not just the top-level
+    npx PID — on timeout, since a surviving descendant can otherwise hold a
+    capture pipe open past the nominal deadline (see ``_kill_process_tree``).
+
+    Fire-and-forget: never raises, always safe to call opportunistically.
+    Returns True only if npx actually ran successfully (npx unavailable,
+    a timeout, or a nonzero exit all return False silently).
+    """
+    npx_bin = _resolve_npx_bin()
+    if not npx_bin:
+        return False
+
+    env = _build_browser_env()
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+
+    popen_kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "env": env,
+        "creationflags": windows_hide_flags(),
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    cmd = [
+        npx_bin,
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0
+        # range, not an exact pin — a compromised future 0.26.x patch must
+        # not get to run its own install-time lifecycle scripts here.
+        "--ignore-scripts",
+        # --prefer-offline: once cached, repeat `hermes update`/`doctor
+        # --fix` runs shouldn't hit the registry just to re-confirm
+        # "latest" is still latest — that would defeat the point of
+        # warming the cache in the first place.
+        "--prefer-offline",
+        "-y",
+        AGENT_BROWSER_NPX_SPEC,
+        "--version",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **popen_kwargs)
+    except Exception:
+        return False
+    try:
+        proc.communicate(timeout=timeout)
+        return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        return False
+    except Exception:
+        _kill_process_tree(proc)
+        return False
 
 
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
@@ -2541,10 +2874,13 @@ def _run_browser_command(
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
-    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+    # Resolve via the same PATH + extended-PATH cascade _find_agent_browser
+    # uses (see the chrome-fallback call site above for why a bare
+    # shutil.which("npx") is wrong here).
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _npx_bin = _resolve_npx_bin() or "npx"
+        # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -4375,26 +4711,47 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
 
-        # Convert screenshot to base64 at full resolution.
-        _screenshot_bytes = screenshot_path.read_bytes()
-        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
-        data_url = f"data:image/png;base64,{_screenshot_b64}"
+        # NOTE: the full-resolution base64 encode is deliberately deferred.
+        # The native fast path below sizes its own history-reuse embed via
+        # _resize_image_for_vision (stat-based quick estimate — no full-res
+        # encode when oversized), and only the aux-LLM fallback path needs
+        # the one-shot full-res data URL.
 
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
             _build_native_vision_tool_result,
+            _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
         if _should_use_native_vision_fast_path():
+            # History-reuse cap (#92699): this embed is baked into the tool
+            # result and re-sent on every later turn, exactly like
+            # vision_analyze's native path — apply the same proactive resize
+            # so full-res screenshots can't enter immutable history uncapped.
+            # The helper's internal stat/dimension quick-estimate skips the
+            # resize (and encodes directly) when the screenshot is already
+            # under both caps, so no full-res base64 is built just to be
+            # thrown away. Fail-open: without Pillow it falls back to the
+            # raw bytes and the compressor's keep-newest pass still retires
+            # stale embeds.
+            data_url = _resize_image_for_vision(
+                screenshot_path,
+                mime_type="image/png",
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True,
+            )
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,
                 image_data_url=data_url,
-                image_size_bytes=len(_screenshot_bytes),
+                image_size_bytes=screenshot_path.stat().st_size,
             )
             meta = native_result.setdefault("meta", {})
             meta["screenshot_path"] = str(screenshot_path)
@@ -4416,6 +4773,13 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             f"or CAPTCHAs, describe what type they are and what action might be needed. "
             f"Focus on answering the user's specific question."
         )
+
+        # Aux-LLM path: one-shot analysis, not baked into history — encode at
+        # full resolution here (the pre-existing 5 MB oversize guard below
+        # still applies).
+        _screenshot_bytes = screenshot_path.read_bytes()
+        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{_screenshot_b64}"
 
         # Use the centralized LLM router
         vision_model = _get_vision_model()
@@ -4451,7 +4815,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     ],
                 }
             ],
-            "max_tokens": 2000,
             "temperature": vision_temperature,
             "timeout": vision_timeout,
         }
@@ -4861,8 +5224,10 @@ def _maybe_autoinstall_chromium() -> bool:
     except FileNotFoundError:
         return False
 
-    if browser_cmd == "npx agent-browser":
-        install_cmd = [shutil.which("npx") or "npx", "-y", "agent-browser", "install"]
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        install_cmd = [
+            _resolve_npx_bin() or "npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install",
+        ]
     else:
         install_cmd = [browser_cmd, "install"]
 
@@ -5053,64 +5418,145 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.browser_extension_router import (
+    extension_controller_available,
+    routed_browser_handler,
+)
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
+
+
+def _browser_router_kw(kw: dict) -> dict:
+    """Identity kwargs forwarded to the extension router wrapper."""
+    return {
+        "task_id": kw.get("task_id"),
+        "session_id": kw.get("session_id"),
+    }
+
+
+def check_browser_routed_requirements(action: str = "browser_snapshot") -> bool:
+    """Availability gate for tools that can use either browser backend."""
+    return check_browser_requirements() or extension_controller_available(action)
+
+
+def check_browser_navigate_requirements() -> bool:
+    return check_browser_routed_requirements("browser_navigate")
+
+
+def check_browser_snapshot_requirements() -> bool:
+    return check_browser_routed_requirements("browser_snapshot")
+
+
+def check_browser_click_requirements() -> bool:
+    return check_browser_routed_requirements("browser_click")
+
+
+def check_browser_type_requirements() -> bool:
+    return check_browser_routed_requirements("browser_type")
+
+
+def check_browser_scroll_requirements() -> bool:
+    return check_browser_routed_requirements("browser_scroll")
+
+
+def check_browser_back_requirements() -> bool:
+    return check_browser_routed_requirements("browser_back")
+
+
+def check_browser_press_requirements() -> bool:
+    return check_browser_routed_requirements("browser_press")
+
 
 registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_navigate",
+        args,
+        fallback=lambda: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_navigate_requirements,
     emoji="🌐",
 )
 registry.register(
     name="browser_snapshot",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
-    handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_snapshot",
+        args,
+        fallback=lambda: browser_snapshot(
+            full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_snapshot_requirements,
     emoji="📸",
 )
 registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_click",
+        args,
+        fallback=lambda: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_click_requirements,
     emoji="👆",
 )
 registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
-    handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_type",
+        args,
+        fallback=lambda: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_type_requirements,
     emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
-    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_scroll",
+        args,
+        fallback=lambda: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_scroll_requirements,
     emoji="📜",
 )
 registry.register(
     name="browser_back",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
-    handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_back",
+        args,
+        fallback=lambda: browser_back(task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_back_requirements,
     emoji="◀️",
 )
 registry.register(
     name="browser_press",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
-    handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_press",
+        args,
+        fallback=lambda: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_press_requirements,
     emoji="⌨️",
 )
 
@@ -5118,7 +5564,12 @@ registry.register(
     name="browser_get_images",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
-    handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_get_images",
+        args,
+        fallback=lambda: browser_get_images(task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_requirements,
     emoji="🖼️",
 )
@@ -5126,7 +5577,12 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_vision",
+        args,
+        fallback=lambda: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_vision_requirements,
     emoji="👁️",
 )
@@ -5134,7 +5590,12 @@ registry.register(
     name="browser_console",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
-    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_console",
+        args,
+        fallback=lambda: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_requirements,
     emoji="🖥️",
 )

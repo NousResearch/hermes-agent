@@ -183,6 +183,17 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     return f"{normalized_mod}{named}"
 
 
+def pt_key_to_sequence(pt_key: str) -> tuple[str, ...]:
+    """Convert a prompt_toolkit key specifier (e.g. 'c-b' or 'a-v') to a sequence tuple.
+
+    prompt_toolkit's ``@kb.add`` rejects 'a-x' strings directly (raises ValueError),
+    expecting ('escape', 'x') instead for Alt-modifier shortcuts.
+    """
+    if isinstance(pt_key, str) and pt_key.startswith("a-"):
+        return ("escape", pt_key[2:])
+    return (pt_key,)
+
+
 def format_voice_record_key_for_status(raw: Any) -> str:
     """Render ``voice.record_key`` for ``/voice status`` in CLI-friendly form.
 

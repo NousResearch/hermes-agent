@@ -46,6 +46,20 @@ epoch check is deliberately **lenient**: it ignores a marker only on a
 *definite* epoch mismatch. A marker with no epoch (legacy/corrupt/contentless),
 or an environment where the epoch cannot be computed (non-Linux, no ``/proc``),
 both degrade to the original presence-only behaviour — never fail-closed.
+
+Why the max-age (#85433). The epoch handles the restart case, but it bakes in
+the assumption that the action a drain protects always ends in a machine
+restart. When a drain-gated action completes *without* recreating the container
+and the writer never cancels the drain (writer crash, forgotten cleanup), the
+orphaned marker still carries the *current* epoch — so the epoch check honours
+it and the gateway bounces every inbound message forever (observed in the
+field: a cloud instance refused all Telegram turns for ~3 days). The marker's
+``requested_at`` timestamp is therefore also checked: a marker older than
+:data:`DRAIN_REQUEST_MAX_AGE_SECONDS` reads as stale. Same leniency contract as
+the epoch — only a *definite* expiry (timestamp present, parseable, and too
+old) is ignored; a missing/corrupt timestamp still reads as drain-active. A
+deliberately long drain has a sanctioned keep-alive: re-calling
+:func:`write_drain_request` refreshes ``requested_at``.
 """
 from __future__ import annotations
 
@@ -62,6 +76,21 @@ from utils import atomic_json_write
 _log = logging.getLogger(__name__)
 
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
+
+# Max-age fallback for a same-epoch orphaned marker (#85433). Drain-gated
+# lifecycle actions complete in minutes; an hour is comfortably past any
+# legitimate drain while still bounding the wedge a leaked marker can cause
+# (vs. the unbounded outage observed in the field). Long-running drains
+# refresh the marker via write_drain_request() (idempotent re-write bumps
+# ``requested_at``) rather than raising this bound.
+DRAIN_REQUEST_MAX_AGE_SECONDS = 3600.0
+
+# Dedup guard for the expired-marker warning: the drain watcher re-reads the
+# marker every second, and an expired orphan sits on disk until removed, so
+# an unconditional warning would fire ~86k times/day. Keyed by the marker's
+# ``requested_at`` string — a keep-alive re-write (new timestamp) that later
+# expires again logs again, which is the desired behaviour.
+_expiry_logged_for: Optional[str] = None
 
 
 @functools.lru_cache(maxsize=1)
@@ -141,8 +170,9 @@ def write_drain_request(
     """Write the begin-drain marker. Returns the payload written.
 
     Atomic write so the gateway watcher never reads a half-written file.
-    Idempotent: re-writing while a drain is already in progress just refreshes
-    ``requested_at`` (harmless — the watcher keys off presence, not content).
+    Idempotent: re-writing while a drain is already in progress refreshes
+    ``requested_at`` — the sanctioned keep-alive for a drain that legitimately
+    needs longer than :data:`DRAIN_REQUEST_MAX_AGE_SECONDS`.
 
     Stamps the marker with :func:`current_instantiation_epoch` so a marker that
     later survives a machine restart on the durable HERMES_HOME volume can be
@@ -207,6 +237,67 @@ def _marker_epoch_is_stale(body: dict[str, Any]) -> bool:
     return marker_epoch != current
 
 
+def _marker_is_expired(body: dict[str, Any]) -> bool:
+    """True iff ``body``'s ``requested_at`` is *definitely* too old (#85433).
+
+    The max-age fallback for a same-epoch orphan: a drain-gated action that
+    completes WITHOUT a machine restart leaves a marker the epoch check cannot
+    reject, and if the writer never cancels the drain the gateway is wedged in
+    ``draining`` for the life of the container. Bounding the marker's lifetime
+    by :data:`DRAIN_REQUEST_MAX_AGE_SECONDS` converts that unbounded outage
+    into a self-healing one.
+
+    Same leniency contract as :func:`_marker_epoch_is_stale` — returns False
+    ("not expired, honour it") whenever it can't be sure:
+      * the marker carries no ``requested_at`` (legacy/corrupt/contentless
+        body), OR
+      * the timestamp isn't a parseable ISO-8601 string.
+    Only a timestamp that parses AND lies more than the max-age in the past is
+    considered expired. A future-dated timestamp (clock skew) is honoured. The
+    expiry is logged loudly — but once per marker, not per poll: the gateway's
+    drain watcher re-reads the marker every second, and an expired orphan stays
+    on disk until an operator or writer removes it, so an unconditional warning
+    would repeat ~86k times/day. This path only fires when a writer leaked a
+    marker, and the log is the operator's breadcrumb.
+    """
+    global _expiry_logged_for
+    raw = body.get("requested_at")
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        requested_at = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if requested_at.tzinfo is None:
+        requested_at = requested_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - requested_at).total_seconds()
+    if age <= DRAIN_REQUEST_MAX_AGE_SECONDS:
+        return False
+    if _expiry_logged_for != raw:
+        _expiry_logged_for = raw
+        _log.warning(
+            "drain-control: ignoring expired drain marker (requested_at=%s, "
+            "age=%.0fs > max %.0fs, principal=%s) — the drain that wrote it "
+            "was never cancelled; treating as stale so the gateway keeps "
+            "accepting turns.",
+            raw,
+            age,
+            DRAIN_REQUEST_MAX_AGE_SECONDS,
+            body.get("principal"),
+        )
+    return True
+
+
+def _marker_is_stale(body: dict[str, Any]) -> bool:
+    """True iff the marker is definitely from a drain that is already over.
+
+    Two independent, individually-lenient signals (either suffices):
+      * epoch mismatch — the marker survived a machine restart (NS-570);
+      * expiry — a same-epoch orphan outlived any legitimate drain (#85433).
+    """
+    return _marker_epoch_is_stale(body) or _marker_is_expired(body)
+
+
 def drain_requested(*, home: Optional[Path] = None) -> bool:
     """True iff a begin-drain marker for THIS instantiation is present.
 
@@ -214,14 +305,19 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     treated as absent: it survived a container/VM restart (HERMES_HOME is a
     durable Fly volume on Hermes Cloud) and the lifecycle action that triggered
     the drain has already completed — honouring it would wedge the
-    freshly-restarted gateway in ``draining`` (NS-570). The staleness check is
-    lenient (see :func:`_marker_epoch_is_stale`): a legacy/corrupt marker with
-    no epoch, or an environment without ``/proc``, still reads as drain-active.
+    freshly-restarted gateway in ``draining`` (NS-570). A marker whose
+    ``requested_at`` is older than :data:`DRAIN_REQUEST_MAX_AGE_SECONDS` is
+    likewise treated as absent: it is a same-epoch orphan whose drain-gated
+    action completed without a restart and was never cancelled (#85433). Both
+    staleness checks are lenient (see :func:`_marker_epoch_is_stale` /
+    :func:`_marker_is_expired`): a legacy/corrupt marker with no epoch and no
+    timestamp, or an environment without ``/proc``, still reads as
+    drain-active.
     """
     body = read_drain_request(home=home)
     if body is None:
         return False
-    if _marker_epoch_is_stale(body):
+    if _marker_is_stale(body):
         return False
     return True
 
@@ -230,8 +326,9 @@ def drain_notification_suppressed(*, home: Optional[Path] = None) -> bool:
     """True iff an ACTIVE drain marker asks to suppress the shutdown broadcast.
 
     "Active" means exactly what :func:`drain_requested` means — a marker present
-    AND stamped with the current instantiation epoch. A stale (other-epoch)
-    marker that survived a machine restart on the durable HERMES_HOME volume is
+    AND stamped with the current instantiation epoch AND not past its max-age.
+    A stale (other-epoch) marker that survived a machine restart on the durable
+    HERMES_HOME volume, or an expired same-epoch orphan (#85433), is
     ignored here just as it is for drain state (NS-570): we must never let an
     orphaned marker's flag silence a *fresh* gateway's legitimate shutdown
     broadcast.
@@ -246,7 +343,7 @@ def drain_notification_suppressed(*, home: Optional[Path] = None) -> bool:
     body = read_drain_request(home=home)
     if body is None:
         return False
-    if _marker_epoch_is_stale(body):
+    if _marker_is_stale(body):
         return False
     return bool(body.get("suppress_notification"))
 

@@ -30,6 +30,13 @@ auth:
 # tool names under `tools.default_enabled`. Probe failure would then apply
 # that list directly.
 
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - linear
+  hosts:
+    - linear.app
+
 post_install: |
   On first connection, Hermes will open a browser to authenticate with Linear.
   After auth, restart your Hermes session so the Linear tools are loaded.

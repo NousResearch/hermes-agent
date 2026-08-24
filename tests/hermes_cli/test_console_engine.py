@@ -504,3 +504,85 @@ def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_hom
 
     assert result.status == "error"
     assert result.output
+
+
+_ORPHAN_STORE_STATUS = {
+    "projects": [
+        {"hash": "abc123", "workdir": "/gone/v2-project", "exists": False, "commits": 4},
+    ],
+    "pre_v2_projects": [],
+}
+
+
+def _patch_checkpoint_manager(monkeypatch, prune_calls: list) -> None:
+    """Report one orphan project and record the resulting prune call."""
+    import tools.checkpoint_manager as ckpt_mgr
+
+    monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: _ORPHAN_STORE_STATUS)
+
+    def _fake_prune(**kwargs):
+        prune_calls.append(kwargs)
+        return {
+            "scanned": 1,
+            "deleted_orphan": 1,
+            "deleted_stale": 0,
+            "errors": 0,
+            "bytes_freed": 0,
+        }
+
+    monkeypatch.setattr(ckpt_mgr, "prune_checkpoints", _fake_prune)
+
+
+def test_console_checkpoints_prune_does_not_reprompt_for_orphans(
+    _isolate_hermes_home, monkeypatch
+):
+    """`checkpoints prune` is console-mutating, so the nested prompt must be skipped.
+
+    The console asks for confirmation itself before dispatching any command in the
+    `checkpoints` mutating set, and `_apply_confirmed_defaults` exists to keep the
+    CLI layer from asking a second time. `clear` and `clear-legacy` are force
+    defaulted; `prune` was not, so its orphan confirmation still called `input()`.
+    """
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, prune_calls)
+
+    def _unexpected_input(_prompt):
+        raise AssertionError(
+            "input() must not be called: the console already confirmed `checkpoints prune`"
+        )
+
+    monkeypatch.setattr("builtins.input", _unexpected_input)
+
+    result = HermesConsoleEngine().execute("checkpoints prune", confirmed=True)
+
+    assert result.status == "ok"
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["delete_orphans"] is True
+    # No preview was shown, so there is nothing to bind the deletion to — the
+    # documented `--force` case for `orphan_allowlist`.
+    assert prune_calls[0]["orphan_allowlist"] is None
+
+
+def test_console_checkpoints_prune_succeeds_without_a_tty(
+    _isolate_hermes_home, monkeypatch
+):
+    """The dashboard console has no stdin, so an unskipped prompt aborts the command.
+
+    `_capture_output` redirects stdout/stderr but never stdin, so `input()` raises
+    `EOFError`, `_confirm` returns False, and `cmd_prune` returns 1 — which the
+    console surfaces as a failed command for every user with an orphan project.
+    """
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, prune_calls)
+
+    def _eof_input(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof_input)
+
+    result = HermesConsoleEngine().execute("checkpoints prune", confirmed=True)
+
+    assert result.status == "ok"
+    assert "Aborted." not in result.output
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["orphan_allowlist"] is None

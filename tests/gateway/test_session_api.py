@@ -1,6 +1,8 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -64,6 +66,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["run_steer"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -72,6 +75,10 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["run_steer"] == {
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/steer",
     }
 
 
@@ -158,6 +165,137 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypatch):
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+
+        def steer(self, text: str) -> bool:
+            observed["steer_text"] = text
+            return True
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed["registered"] = adapter._active_run_agents.get("run_steer_test") is self
+            observed["task_id"] = task_id
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent(kwargs["session_id"])
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="request-session",
+        active_run_id="run_steer_test",
+    )
+
+    assert result["session_id"] == "request-session"
+    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert observed == {"registered": True, "task_id": "request-session"}
+    assert "run_steer_test" not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
+    adapter, session_db
+):
+    """Disconnects must interrupt the live run without dropping its control refs early."""
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        for _ in range(40):
+            if interrupt_called.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert interrupt_called.is_set()
+        assert run_id in adapter._active_run_agents
+        # Not in _active_run_tasks: session-stream turns are counted via
+        # _inflight_agent_runs; a task entry would double-count them in the
+        # shutdown drain (active_agent_work_count).
+        assert run_id not in adapter._active_run_tasks
+        assert not handler_task.done()
+
+        allow_finish.set()
+        await handler_task
+
+    assert run_id not in adapter._active_run_agents
 
 
 @pytest.mark.asyncio
@@ -260,6 +398,64 @@ async def test_session_chat_resolves_stored_model_route_alias(session_db, monkey
 
     _, kwargs = mock_run.call_args
     assert kwargs["route"] == {"model": "route/model", "provider": "openrouter"}
+    assert kwargs["session_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_treats_pre_existing_poisoned_row_as_no_model(session_db):
+    """A session row created before the alias-leak fix may still have the
+    virtual model alias (e.g. "hermes-agent") persisted literally as its
+    model. Reading that back must NOT thread it through as a raw
+    session_model override — it must fall through to the global default,
+    exactly like a row that never had a model at all (#session-model-
+    alias-leak)."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session(
+        "poisoned-session", "api_server", model=adapter._model_name
+    )
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(session_db):
+    """Streaming twin of the above: the SSE chat path must apply the same
+    guard against a pre-existing poisoned session row."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session(
+        "poisoned-stream-session", "api_server", model=adapter._model_name
+    )
+
+    async def fake_run(**kwargs):
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200
+            # Drain the SSE body: the 200 lands before the streaming task
+            # invokes _run_agent, so asserting on call_args without reading
+            # the body races the handler (flaked on loaded CI runners).
+            await resp.text()
+
+    _, kwargs = mock_run.call_args
     assert kwargs["session_model"] is None
 
 

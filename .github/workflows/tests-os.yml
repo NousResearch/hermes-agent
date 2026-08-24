@@ -16,9 +16,9 @@ name: OS-specific tests
 #
 # Deliberately NOT sliced. The marked set is small (tens of tests, not
 # thousands), so one plain ``pytest`` process per OS is both faster and far
-# less machinery than the LPT-sliced per-file runner the Linux lane needs.
+# less machinery than the per-file parallel runner the Linux lane uses.
 # If either lane grows past its timeout, that is the signal to reach for
-# scripts/run_tests.sh --slice here too.
+# scripts/run_tests.sh here too.
 #
 # Each lane FAILS when it selects zero tests (pytest exit code 5). Without
 # that guard, a renamed marker or a bad selector would report a green job
@@ -48,7 +48,7 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest
+            runner: windows-latest-32-core
             marker: windows_only
     steps:
       - name: Checkout code
@@ -67,7 +67,9 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install dependencies
         # Same extras as the Linux test lane so an OS-marked test can import

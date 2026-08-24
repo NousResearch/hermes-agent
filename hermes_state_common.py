@@ -6,12 +6,24 @@ reference them without importing hermes_state (which would be a cycle).
 hermes_state re-imports every name here for backward compatibility.
 """
 
+import contextlib
+import logging
+import os
+import sys
+import time
 from typing import Any
 
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,
     describe_skill_invocation,
+)
+from agent.context_compressor import (
+    LEGACY_SUMMARY_PREFIX,
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
 )
 
 
@@ -52,12 +64,90 @@ _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
 _PREVIEW_SCAFFOLDED_SQL = f"m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
 
 
+def _sql_literal(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+_SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
+
+
+def _sql_ltrim_whitespace(expression: str) -> str:
+    return f"LTRIM({expression}, {_SQL_WHITESPACE})"
+
+
+def _sql_trim_whitespace(expression: str) -> str:
+    return f"TRIM({expression}, {_SQL_WHITESPACE})"
+
+
+def _sql_starts_with(expression: str, prefixes: tuple[str, ...]) -> str:
+    trimmed = _sql_ltrim_whitespace(expression)
+    checks = [
+        f"SUBSTR({trimmed}, 1, {len(prefix)}) = {_sql_literal(prefix)}"
+        for prefix in prefixes
+    ]
+    return "(" + " OR ".join(checks) + ")"
+
+
+# Current and historical long-form prefixes share this complete introduction;
+# their stale-item guidance diverges only after it. Matching the whole intro
+# avoids treating an ordinary user message that merely starts with the short
+# bracketed label as a compaction carrier.
+_PREVIEW_LONG_FORM_PREFIX = SUMMARY_PREFIX.split("Do NOT answer", 1)[0]
+_PREVIEW_SUMMARY_PREFIXES = (
+    _PREVIEW_LONG_FORM_PREFIX,
+    LEGACY_SUMMARY_PREFIX,
+)
+_PREVIEW_STANDALONE_SUMMARY_SQL = _sql_starts_with(
+    "m.content", _PREVIEW_SUMMARY_PREFIXES
+)
+_PREVIEW_MERGED_AFTER_SQL = (
+    f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)})"
+    f" + {len(_MERGED_SUMMARY_DELIMITER)})"
+)
+_PREVIEW_MERGED_SUMMARY_SQL = (
+    f"(INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
+    f" AND {_sql_starts_with(_PREVIEW_MERGED_AFTER_SQL, _PREVIEW_SUMMARY_PREFIXES)})"
+)
+_PREVIEW_MERGED_PRIOR_SQL = _sql_trim_whitespace(
+    f"SUBSTR(m.content, 1, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) - 1)"
+)
+_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL = _sql_ltrim_whitespace(
+    _PREVIEW_MERGED_PRIOR_SQL
+)
+_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (
+    f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, 1,"
+    f" {len(_MERGED_PRIOR_CONTEXT_HEADER)}) = {_sql_literal(_MERGED_PRIOR_CONTEXT_HEADER)}"
+    f" THEN {_sql_ltrim_whitespace(f'SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, {len(_MERGED_PRIOR_CONTEXT_HEADER) + 1})')}"
+    f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END"
+)
+_PREVIEW_FORCE_USER_REMAINDER_SQL = (
+    f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)})"
+    f" + {len(_SUMMARY_END_MARKER)})"
+)
+
+# Session preview subqueries select their first eligible user-authored content.
+# Pure compaction rows are ineligible; force-user-leading and merged carriers
+# remain eligible only when authentic content survives the wire boundary.
+_PREVIEW_ELIGIBLE_SQL = (
+    f"((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
+    f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL}"
+    f" AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
+    f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))"
+)
+
+
 # The shared ``_preview_raw`` SELECT expression, interpolated by every listing
 # query. A scaffolded row gets a wider excerpt: the whole message while it fits
 # the budget, else head + tail (where the typed instruction lands) spliced
 # around SKILL_EXCERPT_JOINT.
 _PREVIEW_RAW_SELECT = (
-    f"CASE WHEN {_PREVIEW_SCAFFOLDED_SQL}"
+    f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL}"
+    f" THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
+    f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL}"
+    f" THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
+    f" WHEN {_PREVIEW_SCAFFOLDED_SQL}"
     f" AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW})"
     f" || '{SKILL_EXCERPT_JOINT}'"
@@ -73,6 +163,7 @@ def _shape_preview(raw: Any) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
+    text = text.replace("\n", " ").replace("\r", " ")
     described = describe_skill_invocation(text)
     text = described if described is not None else text.split(SKILL_EXCERPT_JOINT)[0]
     if len(text) > _PREVIEW_MAX_CHARS:
@@ -98,19 +189,90 @@ _COMPRESSION_CHILD_SQL = (
 )
 
 
-# Rows that surface in pickers: roots + branch children (subagent runs and
-# compression continuations stay hidden).
-_LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
+_RESET_END_REASONS = (
+    "session_reset",
+    # switch_session() never creates a child row, but pre-marker DBs can hold
+    # legacy reset children whose parent later ended with 'session_switch'
+    # (resumed then switched away before reopen-time stamping existed). Also
+    # keeps this set identical to the recovery fence in
+    # find_latest_gateway_session_for_peer, which interpolates
+    # _RESET_END_REASONS_SQL so the two cannot drift.
+    "session_switch",
+    "idle",
+    "daily",
+    "suspended",
+    "resume_pending_expired",
+)
+_RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
+
+# Accidental end reasons that recovery treats as resumable (see
+# docs/session-lifecycle.md "recoverable accidental reasons"). Interpolated
+# into the recovery SQL below AND exposed as SessionDB.RECOVERABLE_END_REASONS
+# so the tuple is the single source of truth — literals cannot drift.
+_RECOVERABLE_END_REASONS = (
+    "agent_close",
+    "ws_orphan_reap",
+    # A stale sentinel-parked runtime quietly superseded by a fresh
+    # session.resume of the same stored session (no reclaimed broadcast);
+    # the stored session stays resumable like any accidental end.
+    "superseded_by_resume",
+    # Startup sweep of rows orphaned by a dead gateway process (#65194):
+    # the in-process ws-orphan grace timer died with the process, so the
+    # row was closed at the next boot instead. Same accident class as
+    # ws_orphan_reap — kept distinct for forensics — and equally resumable.
+    "startup_orphan_reap",
+)
+_RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
+
+
+def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
+    """Pre-marker reset-continuation heuristic.
+
+    A child is a legacy reset continuation when it rides its parent's exact
+    non-empty routing key and the parent ended at a reset boundary. Shared by
+    the listing predicate (``_RESET_CHILD_SQL``) and ``reopen_session()``'s
+    marker-stamping UPDATE so the two sites cannot drift; ``reasons_sql`` is
+    either the literal ``_RESET_END_REASONS_SQL`` or a bound-placeholder list.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM sessions p"
+        f"            WHERE p.id = {alias}.parent_session_id"
+        f"            AND p.end_reason IN ({reasons_sql})"
+        f"            AND {alias}.session_key IS NOT NULL"
+        f"            AND {alias}.session_key != ''"
+        f"            AND {alias}.session_key = p.session_key)"
+    )
+
+
+# A reset starts a separate user-visible conversation even though gateway rows
+# retain parent_session_id for durable lineage. New rows carry the stable
+# marker; the same-key fallback recovers rows written before the marker existed.
+# Requiring the exact non-empty routing key keeps ordinary child/subagent rows
+# out even when their parent is later reset.
+_RESET_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+    " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
+)
+
+
+# Rows that surface in pickers: roots + branch/reset children. Subagent runs
+# and compression continuations stay hidden.
+_LISTABLE_CHILD_SQL = (
+    f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
+    f" OR {_RESET_CHILD_SQL.format(a='s')})"
+)
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
-    """Subagent runs (cascade-delete targets), not branches or compression tips."""
+    """Subagent runs, not branch, reset, or compression children."""
     branch = _BRANCH_CHILD_SQL.format(a=alias)
     compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+    reset = _RESET_CHILD_SQL.format(a=alias)
     return (
         f"({alias}.parent_session_id IS NOT NULL"
         f" AND NOT ({branch})"
-        f" AND NOT ({compression}))"
+        f" AND NOT ({compression})"
+        f" AND NOT ({reset}))"
     )
 
 
@@ -164,7 +326,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -233,6 +395,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     git_branch TEXT,
     git_repo_root TEXT,
+    git_metadata_generation INTEGER NOT NULL DEFAULT 0,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -258,6 +421,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
@@ -324,8 +488,20 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
     PRIMARY KEY (scope, session_key)
 );
 
+CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
+    session_key TEXT PRIMARY KEY,
+    failure_streak INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_turn_leases (
+    conversation_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
     expires_at REAL NOT NULL
@@ -367,6 +543,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
@@ -556,6 +733,9 @@ FTS_CJK_STALE_KEY = "fts_cjk_stale"
 # them would preserve an unknown index gap.
 FTS_STALE_KEY = "fts_stale"
 
+# Durable diagnostic for stale FTS recovery blocked across process restarts.
+FTS_REBUILD_DEFERRAL_KEY = "fts_rebuild_deferral"
+
 
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
 # Used ONLY to keep an existing pre-v23 install's search working and its
@@ -621,3 +801,116 @@ AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     );
 END;
 """
+
+
+# ── Cross-process full-FTS-rebuild admission (single authority) ──────────────
+#
+# Several independent Hermes processes routinely share one state.db (gateway
+# service, the Desktop app's `hermes serve` backend, interactive CLI sessions,
+# the TUI slash worker). A full structural FTS rebuild — the FTS5 'rebuild'
+# command or the drop/recreate script in `_recover_stale_fts` — must only ever
+# run in ONE of them at a time: two concurrent rebuilds collide on write and
+# have structurally corrupted state.db in production (PR #93200; the
+# 2026-08-15 / 2026-08-23 incidents and issues #89293 / #90950).
+#
+# This is the single admission authority for every full structural rebuild
+# entry point: `SessionSearchMixin.rebuild_fts()`,
+# `SessionSchemaMixin._rebuild_fts_indexes()` (via `_init_schema`), and
+# `SessionSchemaMixin._recover_stale_fts()`. The chunked deferred backfill
+# (`fts_rebuild_step`) is deliberately NOT routed through it — it claims
+# progress under `_execute_write`'s SQLite transaction authority and is
+# intentionally multi-process.
+#
+# Semantics mirror `hermes_state._cross_process_repair_lock` (the schema-
+# surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded
+# wait, and FAIL CLOSED — a caller that cannot acquire the lock must NOT
+# rebuild. The kernel drops both lock types when the holder dies, so a crashed
+# rebuilder cannot wedge future rebuilds. It lives here (not hermes_state)
+# because the search/schema mixins cannot import hermes_state (cycle).
+#
+# The lock file is `<db>.fts_rebuild.lock`, distinct from `<db>.repair.lock`:
+# schema surgery runs on an EXCLUSIVE offline connection and can legitimately
+# take minutes in VACUUM, while runtime rebuilds run on live connections. The
+# timeout is sized for a full 'rebuild' of both indexes on a large DB.
+
+logger = logging.getLogger("hermes_state")
+
+_FTS_REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
+_FTS_REBUILD_LOCK_POLL_SECONDS = 0.1
+_IS_WINDOWS = sys.platform == "win32"
+
+
+@contextlib.contextmanager
+def fts_rebuild_admission(db_path):
+    """Serialize full structural FTS rebuilds on *db_path* across processes.
+
+    Yields True when this process holds the rebuild authority, False when the
+    bounded acquire timed out. A caller that gets False must NOT perform a
+    full rebuild — proceeding is exactly the concurrent-rebuild interleaving
+    this lock exists to prevent (fail closed). The deferred/stale breadcrumb
+    machinery already guarantees a skipped rebuild is retried later.
+
+    ``db_path`` may be a str or Path; None (in-memory DB / tests without a
+    file path) yields True — a private in-memory DB has no cross-process
+    surface.
+    """
+    if db_path is None:
+        yield True
+        return
+    lock_path = f"{db_path}.fts_rebuild.lock"
+    try:
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
+        # pre-lock behaviour rather than refusing a rebuild we could run.
+        logger.warning(
+            "Could not open FTS rebuild lock %s (%s) — proceeding with "
+            "in-process serialisation only.", lock_path, exc,
+        )
+        yield True
+        return
+
+    acquired = False
+    try:
+        deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
+        if not acquired:
+            logger.warning(
+                "FTS rebuild lock %s held by another process for more than "
+                "%.0fs — deferring this rebuild to avoid racing the holder "
+                "(the stale-FTS breadcrumb keeps it retryable).",
+                lock_path, _FTS_REBUILD_LOCK_TIMEOUT_SECONDS,
+            )
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - best effort release
+            pass
+        finally:
+            handle.close()

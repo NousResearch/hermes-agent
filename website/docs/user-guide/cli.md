@@ -25,6 +25,11 @@ hermes
 # Single query mode (non-interactive)
 hermes chat -q "Hello"
 
+# Single query from a file or stdin — nothing is shell-interpreted, so
+# arbitrary text (quotes, $(...), backticks) arrives verbatim
+hermes chat --query-file prompt.txt
+hermes chat --query-file - < prompt.txt
+
 # With a specific model
 hermes chat --model "anthropic/claude-sonnet-4"
 
@@ -52,6 +57,43 @@ hermes chat --verbose
 hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
+
+### Worktree cleanup
+
+`hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
+A conservative pruner runs automatically at startup (it only removes clean,
+fully-merged scratch trees past an age threshold), but preserved trees and
+merged local branches still accumulate on busy machines. Reclaim them
+explicitly:
+
+```bash
+hermes worktree list              # audit: age, size, verdict, reason per tree
+hermes worktree prune             # remove safe trees + delete merged branches
+hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree prune --trees-only     # leave local branches alone
+hermes worktree prune --branches-only  # leave worktrees alone
+```
+
+Inside a session, `/worktree prune [--dry-run]` does the same (and never
+touches the tree the session is running in).
+
+Safety guarantees (all modes, any age):
+
+- Uncommitted **tracked** changes are never deleted.
+- **Unique unpushed commits** are never deleted — commits that were
+  rebase/squash-merged upstream are detected via `git cherry`
+  patch-equivalence and count as merged, which is what lets the dominant
+  "merged PR, tree preserved forever" leak finally reclaim.
+- Trees **in use by a running hermes session** are never touched.
+- **Untracked-only scratch** (PR body drafts, notes) is archived to
+  `~/.hermes/archive/worktree-prune/` before its tree is removed — never
+  destroyed.
+- Branch deletion is content-gated, not name-gated: any local branch whose
+  commits are all on upstream is safe to delete; branches with unique work,
+  checked-out branches, and `main`/`master`/`develop` are always kept.
+
+When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
+notice pointing at these commands.
 
 ### Plugin management
 
@@ -270,6 +312,14 @@ There are two ways to enter multi-line messages:
   2. Returns the sum
 ```
 
+`Ctrl+J` and backslash continuation are enabled by default, matching Claude Code / Codex / OpenCode multiline shortcuts. On supported terminals such as iTerm2, Hermes also requests extended key reporting so `Shift+Enter` arrives as a distinct newline key. If your terminal sends LF for plain `Enter` and you need the legacy `Ctrl+J`-as-submit fallback, opt out:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  cli_multiline_shortcuts: false
+```
+
 :::info
 Pasting multi-line text is supported — use any of the newline keys above, or simply paste content directly.
 :::
@@ -285,7 +335,7 @@ Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by defa
 | Windows Terminal Preview 1.25+ | Supported once the Kitty protocol is enabled in settings |
 | macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
 
-Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
+Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work by default. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
 ## Redirecting the Agent Mid-Turn
 

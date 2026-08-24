@@ -261,6 +261,14 @@ class ActiveSessionLease:
     surface: str
     enabled: bool = True
     released: bool = False
+    # Registry paths pinned at acquisition time. A lease acquired under the
+    # root ``HERMES_HOME`` must release against the same registry even when
+    # ``release()`` runs inside a profile home override (native multiplex
+    # routes turns under ``_profile_runtime_scope``), otherwise the root
+    # entry survives until process exit and the session cap fills with
+    # phantom leases (#85431).
+    state_path: Optional[Path] = None
+    lock_path: Optional[Path] = None
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -331,13 +339,18 @@ def try_acquire_active_session(
         lease_id=lease_id,
         session_id=str(session_id),
         surface=str(surface),
+        state_path=state_path,
+        lock_path=_lock_path(),
     ), None
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
-    state_path = _state_path()
+    # Prefer the registry the lease was acquired against: the caller may be
+    # running under a profile HERMES_HOME override (#85431).
+    state_path = lease.state_path or _state_path()
+    lock_path = lease.lock_path or _lock_path()
     try:
-        with _FileLock(_lock_path()):
+        with _FileLock(lock_path):
             entries = _prune_dead(_read_entries(state_path))
             kept = [
                 entry
@@ -366,8 +379,9 @@ def transfer_active_session(
         lease.session_id = new_session_id
         return True
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    state_path = lease.state_path or _state_path()
+    lock_path = lease.lock_path or _lock_path()
+    with _FileLock(lock_path):
         entries = _prune_dead(_read_entries(state_path))
         updated = False
         for entry in entries:

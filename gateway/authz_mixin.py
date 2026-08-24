@@ -28,28 +28,12 @@ from gateway.whatsapp_identity import (
 )
 
 
-def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
-    if not name:
-        return default
-    try:
-        from agent.secret_scope import get_secret
-
-        val = get_secret(name)
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    except Exception:
-        pass
-    return (os.getenv(name) or default).strip()
-
-
 def _platform_gate_env(name: str, default: str = "") -> str:
     """Read a platform allow/deny gate env var with per-profile isolation.
 
-    Like ``_auth_env`` but authoritative under multiplex: when a profile
-    secret scope is installed AND multiplexing is active, a key absent from
-    the scope returns ``default`` instead of falling through to
-    ``os.environ``. Under multiplex the process env may hold ANOTHER
+    When a profile secret scope is installed AND multiplexing is active, a
+    key absent from the scope returns ``default`` instead of falling through
+    to ``os.environ``. Under multiplex the process env may hold ANOTHER
     profile's first-writer-bridged value (the YAML→env bridges in the
     Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
     so falling through would leak profile A's allowlist into profile B
@@ -70,6 +54,19 @@ def _platform_gate_env(name: str, default: str = "") -> str:
     except Exception:
         pass
     return (os.getenv(name) or default).strip()
+
+
+def _auth_env(name: str, default: str = "") -> str:
+    """Read allowlist/auth env with per-profile isolation under multiplex.
+
+    Same rules as ``_platform_gate_env``: a scoped miss under multiplex
+    returns ``default`` and does not fall through to ``os.environ``. The
+    process env may hold another profile's first-writer-bridged value, so
+    a fallthrough would leak allowlists and allow-all flags across profiles
+    (issue #72348). Single-profile deployments keep the legacy
+    ``os.getenv`` read.
+    """
+    return _platform_gate_env(name, default)
 
 
 def _coerce_allow_set(raw) -> set[str]:
@@ -383,7 +380,12 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
-    def _is_user_authorized(self, source: SessionSource) -> bool:
+    def _is_user_authorized(
+        self,
+        source: SessionSource,
+        *,
+        allow_adapter_delegation: bool = True,
+    ) -> bool:
         """
         Check if a user is authorized to use the bot.
         
@@ -432,9 +434,12 @@ class GatewayAuthorizationMixin:
         # SessionSource, and an explicit identity check refuses to authorize a
         # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
         # tests) — defensive against accidental fail-open.
-        if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
-            source.platform,
-            profile=adapter_profile,
+        if allow_adapter_delegation and (
+            source.delivered_via_upstream_relay is True
+            or self._adapter_authorization_is_upstream(
+                source.platform,
+                profile=adapter_profile,
+            )
         ):
             return True
 
@@ -556,6 +561,7 @@ class GatewayAuthorizationMixin:
         if source.platform not in platform_env_map:
             try:
                 from gateway.platform_registry import platform_registry
+
                 entry = platform_registry.get(source.platform.value)
                 if entry:
                     if entry.allowed_users_env:
@@ -575,7 +581,10 @@ class GatewayAuthorizationMixin:
         # Compare with ``is True`` so the real bool field authorizes while a
         # MagicMock source (test fixtures using ``object.__new__`` runners with
         # mock sources) does not auto-truthy through this gate (see pitfall #13).
-        if getattr(source, "role_authorized", False) is True:
+        if (
+            allow_adapter_delegation
+            and getattr(source, "role_authorized", False) is True
+        ):
             return True
 
         # Check pairing store. A pairing entry is a first-class authorization
@@ -630,7 +639,7 @@ class GatewayAuthorizationMixin:
             # flag (checked above), and the pairing flow remain the explicit
             # opt-ins to broader access. (#34515 follow-up: trusting "open" was a
             # fail-open.)
-            if self._adapter_enforces_own_access_policy(
+            if allow_adapter_delegation and self._adapter_enforces_own_access_policy(
                 source.platform,
                 profile=adapter_profile,
             ):

@@ -30,6 +30,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Optional
@@ -43,13 +44,18 @@ from agent.secret_sources.base import (
     reset_source_environment,
     set_source_environment,
 )
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
 # Ordered registry: name → source instance.  Python dicts preserve
-# insertion order, which doubles as the default apply order.
+# insertion order, which doubles as the default apply order. Origin is
+# recorded beside each source so consumers never infer ownership from names.
 _SOURCES: Dict[str, SecretSource] = {}
+_SOURCE_ORIGINS: Dict[str, str] = {}
+_SCOPED_SOURCES: Dict[str, Dict[str, SecretSource]] = {}
 _BUILTINS_LOADED = False
+_REGISTRY_LOCK = threading.RLock()
 
 
 @dataclass
@@ -94,7 +100,13 @@ class ApplyReport:
 # ---------------------------------------------------------------------------
 
 
-def register_source(source: SecretSource, *, replace: bool = False) -> bool:
+def register_source(
+    source: SecretSource,
+    *,
+    replace: bool = False,
+    builtin: bool = False,
+    scope: Optional[str] = None,
+) -> bool:
     """Register a secret source.  Returns True on success.
 
     Rejections are logged, never raised — a bad plugin must not take
@@ -126,31 +138,99 @@ def register_source(source: SecretSource, *, replace: bool = False) -> bool:
             name, getattr(source, "shape", None),
         )
         return False
-    if name in _SOURCES and not replace:
-        logger.warning("Secret source '%s' already registered; ignoring duplicate", name)
-        return False
-    scheme = getattr(source, "scheme", None)
-    if scheme:
-        for other_name, other in _SOURCES.items():
-            if other_name != name and getattr(other, "scheme", None) == scheme:
-                logger.warning(
-                    "Ignoring secret source '%s': scheme '%s://' is already "
-                    "owned by source '%s'",
-                    name, scheme, other_name,
-                )
-                return False
-    _SOURCES[name] = source
+    with _REGISTRY_LOCK:
+        effective = dict(_SOURCES)
+        if scope is not None:
+            effective.update(_SCOPED_SOURCES.get(scope, {}))
+        if name in effective and not replace:
+            logger.warning(
+                "Secret source '%s' already registered; ignoring duplicate", name
+            )
+            return False
+        scheme = getattr(source, "scheme", None)
+        if scheme:
+            for other_name, other in effective.items():
+                if other_name != name and getattr(other, "scheme", None) == scheme:
+                    logger.warning(
+                        "Ignoring secret source '%s': scheme '%s://' is already "
+                        "owned by source '%s'",
+                        name,
+                        scheme,
+                        other_name,
+                    )
+                    return False
+        target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
+        target[name] = source
+        if scope is None:
+            _SOURCE_ORIGINS[name] = "builtin" if builtin else "plugin"
     return True
 
 
-def get_source(name: str) -> Optional[SecretSource]:
+def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     _ensure_builtin_sources()
-    return _SOURCES.get(name)
+    with _REGISTRY_LOCK:
+        return _SCOPED_SOURCES.get(scope or hermes_home_key(), {}).get(
+            name
+        ) or _SOURCES.get(name)
 
 
-def list_sources() -> List[SecretSource]:
+def snapshot_registration(
+    name: str, *, scope: Optional[str] = None
+) -> Optional[SecretSource]:
+    """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
-    return list(_SOURCES.values())
+    with _REGISTRY_LOCK:
+        target = _SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})
+        return target.get(name)
+
+
+def restore_registration(
+    name: str,
+    current: SecretSource,
+    previous: Optional[SecretSource],
+    *,
+    scope: Optional[str] = None,
+) -> bool:
+    """Restore a host-owned source registration if it is still current."""
+    _ensure_builtin_sources()
+    with _REGISTRY_LOCK:
+        target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
+        if target.get(name) is not current:
+            return False
+        if previous is None:
+            target.pop(name, None)
+        else:
+            target[name] = previous
+        if scope is not None and not target:
+            _SCOPED_SOURCES.pop(scope, None)
+    return True
+
+
+def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
+    _ensure_builtin_sources()
+    with _REGISTRY_LOCK:
+        merged = dict(_SOURCES)
+        merged.update(_SCOPED_SOURCES.get(scope or hermes_home_key(), {}))
+        return list(merged.values())
+
+
+def list_plugin_sources() -> List[SecretSource]:
+    """Return sources registered outside the bundled bootstrap set.
+
+    Includes both legacy global plugin registrations (``_SOURCE_ORIGINS ==
+    "plugin"``) and the current scope's profile-keyed registrations — every
+    scoped entry is plugin-registered by definition, since bundled sources
+    register with ``scope=None`` (#64229 profile isolation).
+    """
+    _ensure_builtin_sources()
+    with _REGISTRY_LOCK:
+        merged: Dict[str, SecretSource] = {
+            name: source
+            for name, source in _SOURCES.items()
+            if _SOURCE_ORIGINS.get(name) == "plugin"
+        }
+        merged.update(_SCOPED_SOURCES.get(hermes_home_key(), {}))
+        return list(merged.values())
 
 
 def _ensure_builtin_sources() -> None:
@@ -160,36 +240,46 @@ def _ensure_builtin_sources() -> None:
     source can never break registration of the others.
     """
     global _BUILTINS_LOADED
-    if _BUILTINS_LOADED:
-        return
-    _BUILTINS_LOADED = True
-    try:
-        from agent.secret_sources.bitwarden import BitwardenSource
+    with _REGISTRY_LOCK:
+        if _BUILTINS_LOADED:
+            return
+        _BUILTINS_LOADED = True
+        try:
+            from agent.secret_sources.bitwarden import BitwardenSource
 
-        register_source(BitwardenSource())
-    except Exception:  # noqa: BLE001 — never block startup
-        logger.warning("Failed to register bundled Bitwarden secret source",
-                       exc_info=True)
-    try:
-        from agent.secret_sources.onepassword import OnePasswordSource
+            register_source(BitwardenSource(), builtin=True)
+        except Exception:  # noqa: BLE001 — never block startup
+            logger.warning(
+                "Failed to register bundled Bitwarden secret source",
+                exc_info=True,
+            )
+        try:
+            from agent.secret_sources.onepassword import OnePasswordSource
 
-        register_source(OnePasswordSource())
-    except Exception:  # noqa: BLE001 — never block startup
-        logger.warning("Failed to register bundled 1Password secret source",
-                       exc_info=True)
-    try:
-        from agent.secret_sources.command import CommandSource
+            register_source(OnePasswordSource(), builtin=True)
+        except Exception:  # noqa: BLE001 — never block startup
+            logger.warning(
+                "Failed to register bundled 1Password secret source",
+                exc_info=True,
+            )
+        try:
+            from agent.secret_sources.command import CommandSource
 
-        register_source(CommandSource())
-    except Exception:  # noqa: BLE001 — never block startup
-        logger.warning("Failed to register bundled command secret source",
-                       exc_info=True)
+            register_source(CommandSource(), builtin=True)
+        except Exception:  # noqa: BLE001 — never block startup
+            logger.warning(
+                "Failed to register bundled command secret source",
+                exc_info=True,
+            )
 
 
 def _reset_registry_for_tests() -> None:
     global _BUILTINS_LOADED
-    _SOURCES.clear()
-    _BUILTINS_LOADED = False
+    with _REGISTRY_LOCK:
+        _SOURCES.clear()
+        _SOURCE_ORIGINS.clear()
+        _SCOPED_SOURCES.clear()
+        _BUILTINS_LOADED = False
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +342,9 @@ def _fetch_with_timeout(
     return result
 
 
-def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
+def _ordered_enabled_sources(
+    secrets_cfg: dict, *, scope: Optional[str] = None
+) -> List[SecretSource]:
     """Resolve which sources run, in which order.
 
     Order: the optional ``secrets.sources`` list wins; sources not named
@@ -260,28 +352,28 @@ def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
     ``is_enabled`` says so for its config section.  Mapped-vs-bulk
     precedence is applied on top of this order by :func:`apply_all`.
     """
-    _ensure_builtin_sources()
+    sources = {source.name: source for source in list_sources(scope=scope)}
 
     explicit = secrets_cfg.get("sources")
     order: List[str] = []
     if isinstance(explicit, list):
         for entry in explicit:
-            if isinstance(entry, str) and entry in _SOURCES and entry not in order:
+            if isinstance(entry, str) and entry in sources and entry not in order:
                 order.append(entry)
         unknown = [e for e in explicit
-                   if isinstance(e, str) and e not in _SOURCES]
+                   if isinstance(e, str) and e not in sources]
         if unknown:
             logger.warning(
                 "secrets.sources names unknown source(s): %s (known: %s)",
-                ", ".join(unknown), ", ".join(_SOURCES) or "none",
+                ", ".join(unknown), ", ".join(sources) or "none",
             )
-    for name in _SOURCES:
+    for name in sources:
         if name not in order:
             order.append(name)
 
     enabled: List[SecretSource] = []
     for name in order:
-        source = _SOURCES[name]
+        source = sources[name]
         cfg = secrets_cfg.get(name)
         cfg = cfg if isinstance(cfg, dict) else {}
         try:
@@ -363,7 +455,9 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     report = ApplyReport()
 
     secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
-    enabled = _ordered_enabled_sources(secrets_cfg)
+    enabled = _ordered_enabled_sources(
+        secrets_cfg, scope=hermes_home_key(home_path)
+    )
     if not enabled:
         return report
 

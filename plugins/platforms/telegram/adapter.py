@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,7 @@ try:
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
+        TypeHandler,
         filters,
     )
     from telegram.constants import ParseMode, ChatType
@@ -261,6 +262,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    TypeHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -301,6 +303,7 @@ from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
 from plugins.platforms.telegram.telegram_network import (
+    SEED_FALLBACK_IPS,
     TelegramFallbackTransport,
     discover_fallback_ips,
     parse_fallback_ip_env,
@@ -308,6 +311,25 @@ from plugins.platforms.telegram.telegram_network import (
 from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+# Max seconds a send/edit coroutine may sleep inline on a Telegram
+# flood-control RetryAfter. Longer server penalties fail closed with a
+# ``flood_control:{wait}`` SendResult so the caller's retry machinery
+# (delivery ledger, streaming fallback) owns the wait instead of the
+# coroutine pinning its worker — a 97-minute penalty on the boot path
+# froze inbound on every platform (#91969).
+_FLOOD_INLINE_WAIT_CAP_SECS = 5.0
+
+
+def _flood_cap_result(wait: float) -> "SendResult":
+    """The shared fail-closed SendResult for an over-cap flood wait."""
+    return SendResult(
+        success=False,
+        error=f"flood_control:{wait}",
+        retry_after=float(wait),
+    )
+
+
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -414,7 +436,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -434,6 +456,7 @@ def check_telegram_requirements() -> bool:
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
@@ -454,6 +477,7 @@ def check_telegram_requirements() -> bool:
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
+    TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
 
@@ -614,6 +638,15 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Telegram holds a long-poll open for at most ~50s before answering (empty or
+# not), so a healthy idle poller completes a getUpdates round-trip well inside
+# this window. If no round-trip has completed for longer than this — while
+# get_me() on the general request path stays healthy and no updates are queued
+# server-side — the long-poll consumer is wedged on a socket that never
+# raises (CLOSE-WAIT behind a TUN/proxy route flip, #92991) and no other probe
+# can see it. ~3x the worst-case poll window leaves ample margin against false
+# positives while still recovering within a few heartbeat intervals.
+_POLLING_STALL_TIMEOUT = 150.0
 # Telegram transcodes an uploaded video before it answers sendVideo, so the
 # wait for the response is unrelated to how fast the bytes went out and can
 # outlast the 20s read timeout the rest of the Bot API is tuned for. Only
@@ -655,6 +688,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Cap on inbound events held across a disconnect/reconnect window.
+    # Bounds memory during extended outages; oldest events are dropped first.
+    HELD_INBOUND_MAX = 64
     _GENERAL_TOPIC_THREAD_ID = "1"
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
@@ -738,9 +774,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
-        # When rich_messages is on but rich_drafts is off, supports_draft_streaming
-        # declines drafts so transport=auto uses edit-in-place + rich finalize
-        # instead of MDV2 drafts that jump to sendRichMessage at the end.
+        # When rich_messages is on but rich_drafts is off, keep native DM draft
+        # *transport* and only skip rich draft *rendering*. The persistent
+        # reply still lands through sendRichMessage so tables are not flattened
+        # by the MarkdownV2 formatter.
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
@@ -787,6 +824,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
+        # Inbound events held across disconnect. PTB advances the polling offset
+        # before our enqueue/flush drop-guard runs, so Telegram will not
+        # redeliver — destroying the event is silent permanent loss. Hold and
+        # redispatch on reconnect instead (see _hold_inbound_event).
+        self._held_inbound_events: List[MessageEvent] = []
+        self._held_inbound_redispatch_task: Optional[asyncio.Task] = None
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
@@ -798,6 +841,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Monotonic timestamps for the polling stall watchdog (#92991): when
+        # the current polling generation began, and when the last successful
+        # getUpdates round-trip completed. None = unknown / not yet observed.
+        self._polling_generation_started_monotonic: Optional[float] = None
+        self._polling_last_progress_monotonic: Optional[float] = None
         # Live @username, refreshed whenever Telegram tells us what it is.
         # PTB caches getMe() in Bot._bot_user at initialize() and only rewrites
         # it inside get_me(), so a BotFather rename leaves self._bot.username
@@ -909,6 +957,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
+        # Drain anything held while we were down. PTB will not redeliver —
+        # these events exist only in our hold queue now.
+        self._schedule_held_inbound_redispatch()
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -917,15 +968,228 @@ class TelegramAdapter(BasePlatformAdapter):
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._drop_delayed_deliveries = True
         super()._set_fatal_error(code, message, retryable=retryable)
+        # Permanent fatal: no reconnect will drain. Discard the hold queue now
+        # and refuse further holds (teardown salvage / late enqueue must not
+        # re-populate a queue that can never drain — review #83878).
+        if not retryable:
+            held = getattr(self, "_held_inbound_events", None)
+            n = len(held) if held else 0
+            if held:
+                held.clear()
+            if n:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal (%s); discarding %d held inbound message(s)",
+                    code,
+                    n,
+                )
+
+    def _is_permanent_fatal(self) -> bool:
+        """True after non-retryable fatal — holds must discard, not queue."""
+        if not getattr(self, "_fatal_error_code", None):
+            return False
+        return not bool(getattr(self, "_fatal_error_retryable", True))
 
     def _should_drop_delayed_delivery(self) -> bool:
-        """True once teardown/fatal-error started — delayed flushes must drop.
+        """True once teardown/fatal-error started — delayed flushes must not dispatch.
 
         Buffered text/photo/media-group flushes sit behind an asyncio.sleep().
         If disconnect wins the race, dispatching them spawns an agent on a
         torn-down session, producing stale/duplicate deliveries.
+
+        Callers must NOT destroy the event when this returns True: PTB has
+        already advanced the polling offset, so Telegram will never redeliver.
+        Use ``_hold_inbound_event`` and redispatch on reconnect (unless
+        permanent fatal, which discards explicitly).
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
+
+    def _schedule_held_inbound_redispatch(self) -> None:
+        """Ensure a tracked drain runs when held events exist and delivery is live.
+
+        Drain triggers:
+        - ``_mark_connected`` after reconnect
+        - any hold created while already connected (e.g. cancel-after-pop)
+        - end of a drain pass if more events arrived mid-drain
+
+        No-ops while disconnected/tearing down or after permanent fatal.
+        """
+        if self._is_permanent_fatal():
+            return
+        if self._should_drop_delayed_delivery():
+            return
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        prior = getattr(self, "_held_inbound_redispatch_task", None)
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        # Already draining on another task — that pass schedules a follow-up
+        # if anything remains. Do not stack duplicate tasks.
+        if prior is not None and not prior.done() and prior is not current:
+            return
+        self._held_inbound_redispatch_task = loop.create_task(
+            self._redispatch_held_inbound(
+                prior=None if prior is current else prior
+            )
+        )
+
+    def _hold_inbound_event(
+        self,
+        event: "MessageEvent",
+        *,
+        where: str,
+        schedule: bool = True,
+    ) -> None:
+        """Preserve an inbound event that cannot be dispatched right now.
+
+        The disconnect drop-guard (#55971) correctly prevents dispatch into a
+        torn-down session. Destroying the event is wrong: by the time we reach
+        enqueue/flush, python-telegram-bot has already acked the update and
+        advanced the offset — silent permanent loss, no log, no error.
+
+        Hold the event and redispatch from ``_mark_connected`` (or immediately
+        if already connected). Cap the queue so a long outage cannot grow
+        without bound. Dedup by object identity so salvage-after-hold never
+        double-queues the same event. Permanent fatal discards explicitly.
+
+        ``schedule=False`` when the caller is already inside a drain and will
+        decide follow-up policy (avoids poison-event tight loops).
+        """
+        if self._is_permanent_fatal():
+            logger.warning(
+                "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)",
+                where,
+                len(getattr(event, "text", None) or ""),
+            )
+            return
+
+        held = getattr(self, "_held_inbound_events", None)
+        if held is None:
+            self._held_inbound_events = []
+            held = self._held_inbound_events
+        for existing in held:
+            if existing is event:
+                return
+
+        max_n = int(getattr(self, "HELD_INBOUND_MAX", 64) or 64)
+        while len(held) >= max_n:
+            dropped = held.pop(0)
+            logger.warning(
+                "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)",
+                max_n,
+                len(getattr(dropped, "text", None) or ""),
+            )
+        held.append(event)
+        logger.warning(
+            "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s",
+            where,
+            len(getattr(event, "text", None) or ""),
+            len(held),
+            " - will redispatch on reconnect"
+            if self._should_drop_delayed_delivery()
+            else (" - scheduling redispatch" if schedule else ""),
+        )
+        # Connected cancel-after-pop (and any other live-path hold) must not
+        # orphan the event waiting for a future reconnect that may never come.
+        if schedule and not self._should_drop_delayed_delivery():
+            self._schedule_held_inbound_redispatch()
+
+    async def _redispatch_held_inbound(
+        self, prior: Optional[asyncio.Task] = None
+    ) -> None:
+        """Drain the hold queue after reconnect or a connected-path hold.
+
+        ``prior`` is the previous redispatch task, if any — awaited here so
+        ``_mark_connected`` stays synchronous while teardown can still
+        cancel+await the single tracked task via
+        ``_cancel_pending_delivery_tasks``.
+        """
+        if prior is not None and prior is not asyncio.current_task() and not prior.done():
+            prior.cancel()
+            try:
+                await prior
+            except asyncio.CancelledError:
+                pass
+
+        if self._is_permanent_fatal():
+            held = getattr(self, "_held_inbound_events", None)
+            if held:
+                n = len(held)
+                held.clear()
+                logger.warning(
+                    "[Telegram] Redispatch aborted; discarded %d held inbound under non-retryable fatal",
+                    n,
+                )
+            return
+
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        # Take ownership atomically so a concurrent hold during drain appends
+        # to a fresh list and is picked up by a follow-up schedule.
+        events = list(held)
+        held.clear()
+        logger.warning(
+            "[Telegram] Redispatching %d held inbound message(s)",
+            len(events),
+        )
+        allow_followup_schedule = True
+        try:
+            for idx, event in enumerate(events):
+                if self._is_permanent_fatal() or self._should_drop_delayed_delivery():
+                    # Disconnect/fatal mid-drain — re-hold current + remainder
+                    # (hold itself discards under permanent fatal).
+                    self._hold_inbound_event(
+                        event, where="redispatch-interrupted", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-interrupted", schedule=False
+                        )
+                    return
+                try:
+                    await self.handle_message(event)
+                except asyncio.CancelledError:
+                    self._hold_inbound_event(
+                        event, where="redispatch-cancelled", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-cancelled", schedule=False
+                        )
+                    raise
+                except Exception:
+                    # Retryable failure: keep current + remainder. Do not
+                    # immediately reschedule — a poison event would tight-loop.
+                    # Next mark_connected or a later connected-path hold drains.
+                    logger.exception(
+                        "[Telegram] Failed to redispatch held inbound (%d chars); re-holding",
+                        len(getattr(event, "text", None) or ""),
+                    )
+                    self._hold_inbound_event(
+                        event, where="redispatch-failed", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-failed", schedule=False
+                        )
+                    allow_followup_schedule = False
+                    return
+        finally:
+            # Events arrived mid-drain while still connected need another pass.
+            if (
+                allow_followup_schedule
+                and getattr(self, "_held_inbound_events", None)
+                and not self._should_drop_delayed_delivery()
+                and not self._is_permanent_fatal()
+            ):
+                self._schedule_held_inbound_redispatch()
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1054,6 +1318,60 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
+    def _source_from_reaction_for_auth(self, update):
+        """Build the SessionSource for a ``message_reaction`` update's actor.
+
+        Mirrors ``_source_from_message_for_auth`` but for reactions, which
+        carry the reactor (``user``, or ``actor_chat`` for an anonymous admin)
+        and ``chat`` but no ``Message``. The gateway runner uses this internal
+        source for its normal profile-scoped authorization decision. Reactions
+        expose no thread id, so ``thread_id`` is None.
+
+        Raises ``ValueError`` when the reaction, actor, chat, or message identity
+        is absent so the post-auth boundary fails closed rather than authorizing
+        an incomplete source. A future event type must wire its own extraction.
+        """
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            raise ValueError(
+                "gateway_platform_event source extraction requires a "
+                "message_reaction update"
+            )
+        user = getattr(mr, "user", None) or getattr(mr, "actor_chat", None)
+        chat = getattr(mr, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        user_name = (
+            str(
+                getattr(user, "username", "")
+                or getattr(user, "full_name", "")
+                or getattr(user, "title", "")
+            ).strip()
+            or None
+        )
+
+        chat_id = str(getattr(chat, "id", "")).strip() or None
+        message_id = getattr(mr, "message_id", None)
+        if not user_id or not chat_id or message_id is None or not str(message_id).strip():
+            raise ValueError(
+                "gateway_platform_event reaction requires actor, chat, and message identities"
+            )
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            # Reactions carry no message_thread_id; a forum supergroup is the
+            # only forum signal available without the underlying message.
+            chat_type = "forum" if getattr(chat, "is_forum", False) is True else "group"
+
+        return self.build_source(
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=None,
+            message_id=str(message_id),
+        )
+
     def _telegram_auth_env_configured(self) -> bool:
         """Return True when Telegram auth env vars make an early decision safe."""
         keys = (
@@ -1156,22 +1474,44 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
 
         if authorized is None:
+            # Resolve through the runner's full auth chain (platform + group
+            # allowlists, pairing store, allow-all flags). Prefer the
+            # platform-bound callback registered via set_authorization_check:
+            # it routes to GatewayRunner._is_user_authorized AND survives
+            # multiplex handler wrapping, whereas the bound-handler __self__
+            # lookup is None when the primary handler is a profile closure —
+            # which silently dropped the chat allowlist and default-denied
+            # allowlisted group members under multiplex_profiles (#87132). Fall
+            # back to the bound handler for setups without a registered callback.
             runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
             auth_fn = getattr(runner, "_is_user_authorized", None)
-            if callable(auth_fn):
-                # Only make an early decision via the runner when an allowlist
-                # actually exists; otherwise unknown DMs must reach the pairing
-                # flow rather than being default-denied here.
+            has_callback = getattr(self, "_authorization_check", None) is not None
+            if has_callback or callable(auth_fn):
+                # Only make an early decision when an allowlist actually exists;
+                # otherwise unknown DMs must reach the pairing flow rather than
+                # being default-denied here.
                 if not self._telegram_auth_env_configured():
                     return True
-                try:
-                    authorized = bool(auth_fn(source))
-                except Exception:
-                    logger.debug(
-                        "[Telegram] Falling back to env-only auth for user %s",
+                decision = (
+                    self._is_sender_authorized(
                         user_id,
-                        exc_info=True,
+                        chat_type=source.chat_type,
+                        chat_id=source.chat_id,
                     )
+                    if has_callback
+                    else None
+                )
+                if decision is not None:
+                    authorized = decision
+                elif callable(auth_fn):
+                    try:
+                        authorized = bool(auth_fn(source))
+                    except Exception:
+                        logger.debug(
+                            "[Telegram] Falling back to env-only auth for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
 
         if authorized is None:
             allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()
@@ -1261,9 +1601,13 @@ class TelegramAdapter(BasePlatformAdapter):
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
         ``telegram_dm_topic_reply_fallback``. Live replies send the private
-        topic thread id together with a reply anchor; synthetic/resumed sends
-        without an anchor use ``direct_messages_topic_id`` when metadata has it.
-        ``message_thread_id`` alone can render outside the visible lane.
+        topic thread id together with a reply anchor. Synthetic/resumed sends
+        without an anchor (loop wakeups, background-process notifications,
+        queued follow-ups after a gateway restart) prefer the Hermes topic's
+        ``message_thread_id`` so they stay in the active topic lane (#87051);
+        ``direct_messages_topic_id`` is only used when no topic thread
+        resolves, since the native DM-topic id does not match the Hermes
+        topic lane and can render the message in a different chat lane.
 
         When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
         DM topic fallback sends while preserving the ``message_thread_id`` so
@@ -1275,6 +1619,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
+                # Anchor-less synthetic sends (loop wakeups, watch
+                # notifications, restart-resumed follow-ups) must stay in the
+                # active topic lane: prefer the Hermes topic thread id when it
+                # resolves (#87051). Routing via direct_messages_topic_id here
+                # sent these to a different lane than the topic the session
+                # runs in.
+                thread_message_id = cls._message_thread_id_for_send(thread_id)
+                if thread_message_id is not None:
+                    return {"message_thread_id": thread_message_id}
                 direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
                 if direct_topic_id is not None:
                     return {
@@ -1290,6 +1643,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 "direct_messages_topic_id": int(direct_topic_id),
             }
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+
+    def _thread_kwargs_for_draft(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Routing kwargs for ``sendMessageDraft`` / ``sendRichMessageDraft``.
+
+        Reuse :meth:`_thread_kwargs_for_send` so private DM topics get an
+        integer ``message_thread_id`` (or ``direct_messages_topic_id``) instead
+        of the raw string ``thread_id`` the draft path used to forward.
+        Telegram rejects that string on topics, which disabled draft streaming
+        for the rest of the turn and fell through to the table-to-bullets
+        formatter.
+        """
+        thread_id = self._metadata_thread_id(metadata)
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+        kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=getattr(self, "_reply_to_mode", None),
+        )
+        return {k: v for k, v in kwargs.items() if v is not None}
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -1459,6 +1837,26 @@ class TelegramAdapter(BasePlatformAdapter):
             or "terminated by other getupdates request" in text
             or "another bot instance is running" in text
         )
+
+    @staticmethod
+    def _looks_like_auth_error(error: Exception) -> bool:
+        """Return True for credential failures that can never self-heal.
+
+        InvalidToken (malformed/unknown token) and Forbidden (revoked token /
+        bot deleted) are terminal: no amount of reconnecting fixes them, so
+        connect() must classify them retryable=False (OOF-151). Deliberately
+        narrower than "not _looks_like_network_error" — BadRequest and
+        RetryAfter are non-network but transient at connect time and must
+        keep retrying. Type-based only; never match on message text.
+        """
+        name = error.__class__.__name__.lower()
+        if name in {"invalidtoken", "forbidden"}:
+            return True
+        try:
+            from telegram.error import Forbidden, InvalidToken
+            return isinstance(error, (InvalidToken, Forbidden))
+        except ImportError:
+            return False
 
     @staticmethod
     def _looks_like_network_error(error: Exception) -> bool:
@@ -1729,15 +2127,23 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         """Whether to replace a streamed preview with a fresh rich final.
 
-        Disabled for Telegram. The fresh-final path briefly shows two copies of
-        the final answer, then deletes the streaming preview after the rich send
-        succeeds — it looks like duplicate delivery at the end of every streamed
-        turn (the reason #46206 reverted it).  Rich finalize is instead handled
-        by editing the existing preview in place via Bot API 10.1's
-        ``editMessageText`` ``rich_message`` parameter (see
-        :meth:`_try_edit_rich`), so no fresh re-send / delete is needed.
+        Root DMs keep this off (#46206 / #47048): successful draft streaming
+        has no preview ``message_id``, so the hook is not consulted, and
+        in-place ``editMessageText.rich_message`` would duplicate a live draft
+        turn.  Private DM *topics* often reject ``sendMessageDraft``; the
+        consumer then degrades to edit-in-place. Telegram rejects a rich edit
+        of that plain MarkdownV2 preview, and the fallback formatter
+        permanently turns pipe tables into bullet lists.  Fresh
+        ``sendRichMessage`` plus deleting the preview is the remaining way to
+        keep native tables on that degraded path.
         """
-        return False
+        metadata = metadata or {}
+        if not (
+            metadata.get("telegram_dm_topic_reply_fallback")
+            or self._metadata_direct_messages_topic_id(metadata)
+        ):
+            return False
+        return self._rich_eligible(content)
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
@@ -1990,15 +2396,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "message_id": int(message_id),
             "rich_message": self._rich_message_payload(content),
         }
-        thread_id = self._metadata_thread_id(metadata)
-        thread_kwargs = self._thread_kwargs_for_send(
-            chat_id,
-            thread_id,
-            metadata,
-            reply_to_message_id=None,
-            reply_to_mode=self._reply_to_mode,
-        )
-        payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
+        # Edits target an existing message by chat_id + message_id. Topic
+        # routing belongs only on send endpoints; forwarding message_thread_id
+        # or direct_messages_topic_id makes Telegram reject this rich edit and
+        # sends the caller through the legacy table-to-bullets fallback.
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         try:
@@ -2084,9 +2485,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "draft_id": int(draft_id),
             "rich_message": self._rich_message_payload(content),
         }
-        thread_id = self._metadata_thread_id(metadata)
-        if thread_id is not None:
-            payload["message_thread_id"] = int(thread_id)
+        payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
             return bool(ok)
@@ -2168,6 +2567,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
+        # Reset the stall-watchdog timestamps (#92991): this generation has not
+        # proven getUpdates progress yet, and its age is measured from here.
+        self._polling_generation_started_monotonic = time.monotonic()
+        self._polling_last_progress_monotonic = None
         return self._polling_generation, self._polling_progress_event
 
     def _record_polling_progress(self, generation: int) -> None:
@@ -2178,7 +2581,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if generation != self._polling_generation:
             return
+        if not self._polling_progress_event.is_set():
+            # The first confirmed getUpdates round-trip of this generation
+            # resolves the "health pending getUpdates progress" line both
+            # reconnect paths end on. Without it the log stream for
+            # "reconnected and healthy" is byte-identical to "reconnected
+            # and hung" — a wedged long-poll is invisible until a user
+            # notices silence (#90504).
+            logger.info(
+                "[%s] Telegram polling confirmed healthy: getUpdates progressing "
+                "(generation %d)",
+                self.name,
+                generation,
+            )
         self._polling_progress_event.set()
+        self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None
@@ -2638,14 +3055,24 @@ class TelegramAdapter(BasePlatformAdapter):
                     # the gateway silently drops messages for hours.
                     # Bounding stop() lets the reconnect ladder always advance.
                     # Refs: NousResearch/hermes-agent#58270
-                    await asyncio.wait_for(app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "[%s] updater.stop() timed out during network-error "
-                        "reconnect (likely CLOSE-WAIT socket); forcing drain "
-                        "and restart without clean stop",
-                        self.name,
+                    await _await_with_thread_deadline(
+                        app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT
                     )
+                except asyncio.TimeoutError:
+                    message = (
+                        "Telegram updater.stop() did not finish before the network-"
+                        "recovery deadline; rebuilding the adapter instead of reusing "
+                        "an Updater whose lifecycle lock may still be held."
+                    )
+                    logger.error(
+                        "[%s] %s (likely CLOSE-WAIT socket)",
+                        self.name, message,
+                    )
+                    self._set_fatal_error(
+                        "telegram_network_error", message, retryable=True
+                    )
+                    await self._handoff_polling_fatal_error()
+                    return
         except Exception:
             pass
 
@@ -2796,6 +3223,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # a single in-flight update (consumed before the next probe)
                 # never trips recovery.
                 await self._probe_pending_updates(bot, PROBE_TIMEOUT)
+                # Even an empty queue cannot hide a wedged long-poll forever:
+                # Telegram answers within ~50s, so a consumer with no
+                # successful round-trip past the stall threshold is dead
+                # (#92991). Pure local-state check — no Bot API call needed.
+                await self._check_polling_stall()
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
@@ -2915,6 +3347,67 @@ class TelegramAdapter(BasePlatformAdapter):
                     RuntimeError("getUpdates consumer wedged: pending updates not draining")
                 )
             )
+
+    async def _check_polling_stall(self) -> None:
+        """Watchdog the last successful getUpdates round-trip (#92991).
+
+        PTB's long-poll can wedge without ever raising: the TCP connection
+        dies mid-read (e.g. a TUN/proxy route flip leaves the socket in
+        CLOSE-WAIT) and the pending read simply never returns and never
+        errors. In that state ``updater.running`` stays True, ``get_me()`` on
+        the general request path stays healthy, and — while no messages are
+        queued server-side — ``pending_update_count`` stays 0, so every other
+        probe is blind and the gateway goes silently, permanently deaf.
+
+        Telegram answers a long-poll within ~50s at most, so a poller that has
+        completed no getUpdates round-trip for ``_POLLING_STALL_TIMEOUT``
+        seconds is unambiguously wedged. Escalate loudly through the same
+        bounded reconnect ladder every other polling failure uses, so the
+        wedged updater is cancelled and rebuilt instead of hanging forever.
+
+        Called from ``_polling_heartbeat_loop`` and independently testable.
+        """
+        if self._webhook_mode:
+            return
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if self.has_fatal_error:
+            return
+        if self._polling_error_task and not self._polling_error_task.done():
+            return
+        now = time.monotonic()
+        last_progress = getattr(self, "_polling_last_progress_monotonic", None)
+        generation_started = getattr(
+            self, "_polling_generation_started_monotonic", None
+        )
+        if last_progress is not None:
+            stalled_for = now - last_progress
+        elif generation_started is not None:
+            # No round-trip ever completed in this generation. The one-shot
+            # progress verifier owns the immediate post-start window; this
+            # branch is the belt-and-braces fallback when it could not run.
+            stalled_for = now - generation_started
+        else:
+            return
+        if stalled_for <= _POLLING_STALL_TIMEOUT:
+            return
+        logger.error(
+            "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
+            "(generation %d). Rebuilding the long-poll consumer through the "
+            "reconnect ladder instead of staying silently deaf.",
+            self.name, stalled_for, getattr(self, "_polling_generation", 0),
+        )
+        loop = asyncio.get_running_loop()
+        self._polling_error_task = loop.create_task(
+            self._handle_polling_network_error(
+                RuntimeError(
+                    "getUpdates made no progress for %.0fs (polling stall "
+                    "watchdog)" % stalled_for
+                )
+            )
+        )
+        self._background_tasks.add(self._polling_error_task)
+        self._polling_error_task.add_done_callback(self._background_tasks.discard)
 
     async def _verify_polling_after_reconnect(
         self,
@@ -3111,19 +3604,34 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             # Stop the local updater cleanly before sleeping.  If it's already
             # stopped (e.g. PTB raised before updater.running was set) this is
-            # a no-op.  Bounded with a timeout for the same reason as the
-            # network-error path: a CLOSE-WAIT socket can wedge stop() on epoll
-            # forever, which would stall the conflict-retry ladder.
+            # a no-op.  Bounded with a wall-clock deadline for the same reason
+            # as the network-error path: a CLOSE-WAIT socket can wedge stop()
+            # on epoll forever.  Using _await_with_thread_deadline (not
+            # asyncio.wait_for) because PTB/AnyIO cleanup can be cancellation-
+            # shielded — wait_for would hang forever waiting for cancellation
+            # to finish, blocking the conflict-retry ladder.
             try:
                 if self._app and self._app.updater and self._app.updater.running:
                     try:
-                        await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "[%s] updater.stop() timed out during conflict "
-                            "retry (likely CLOSE-WAIT socket); continuing",
-                            self.name,
+                        await _await_with_thread_deadline(
+                            self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT
                         )
+                    except asyncio.TimeoutError:
+                        message = (
+                            "Telegram updater.stop() did not finish before the "
+                            "conflict-retry deadline; rebuilding the adapter "
+                            "instead of reusing an Updater whose lifecycle lock "
+                            "may still be held."
+                        )
+                        logger.error(
+                            "[%s] %s (likely CLOSE-WAIT socket)",
+                            self.name, message,
+                        )
+                        self._set_fatal_error(
+                            "telegram_network_error", message, retryable=True
+                        )
+                        await self._handoff_polling_fatal_error()
+                        return
             except Exception:
                 pass
 
@@ -3231,7 +3739,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
-                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+                await _await_with_thread_deadline(
+                    self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT
+                )
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] updater.stop() timed out after exhausting conflict "
@@ -3679,6 +4189,218 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    async def _on_platform_update(self, update, context) -> None:
+        """Catch-all PTB handler firing ``gateway_platform_event`` per inbound update.
+
+        Normalizes the update into a stable envelope (no raw SDK objects; see
+        #64176), then forwards it with an internal source to the gateway-owned
+        post-auth boundary. Registered in a dedicated high group so it observes
+        alongside, never displaces, the core handlers. Malformed updates and
+        dispatch errors cannot raise into PTB's update loop.
+        """
+        handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(
+            self, "_platform_event_handler", None
+        )
+        if handler is None:
+            return
+        try:
+            from hermes_cli.lifecycle import has_hook
+
+            if not has_hook("gateway_platform_event"):
+                return
+            event = self._normalize_platform_event(update)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
+            return
+        if event is None:
+            return
+        # The catch-all sees every inbound update. Hand the normalized envelope
+        # and its internal source to the gateway-owned boundary, where the full
+        # profile-scoped authorization chain runs before plugin dispatch. No
+        # callback means no trusted auth boundary, so fail closed.
+        try:
+            source = self._source_for_platform_event_auth(update)
+            await handler(event, source)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
+            return
+
+    def _source_for_platform_event_auth(self, update):
+        """Route a supported update to its event-specific auth-source extractor.
+
+        Every ``gateway_platform_event`` type needs its own identity
+        extraction (a reaction carries the reactor; an edit carries the
+        editor). Raises ``ValueError`` for updates without a wired extractor
+        so the post-auth boundary fails closed rather than authorizing an
+        incomplete source.
+        """
+        if getattr(update, "message_reaction", None) is not None:
+            return self._source_from_reaction_for_auth(update)
+        edited = getattr(update, "edited_message", None)
+        if edited is not None:
+            source = self._source_from_message_for_auth(edited)
+            # _source_from_message_for_auth tolerates missing identities for
+            # its pairing-flow callers; the platform-event boundary must not.
+            if not source.user_id or not source.chat_id:
+                raise ValueError(
+                    "gateway_platform_event message_edited requires editor "
+                    "and chat identities"
+                )
+            return source
+        raise ValueError(
+            "gateway_platform_event source extraction has no extractor for "
+            "this update type"
+        )
+
+    def _normalize_platform_event(self, update) -> Optional[Dict[str, Any]]:
+        """Map an inbound PTB update to a normalized ``gateway_platform_event``
+        envelope ``{platform, event_type, payload}``, or ``None`` if unsupported.
+
+        Each supported event type has its own event-local, additive payload
+        contract (documented in hooks.md). Raw SDK objects never leave this
+        boundary. Update types without a wired contract (forward, chat-member)
+        return ``None`` unless and until they gain a concrete contract and
+        current fire-site consumer.
+        """
+        if getattr(update, "message_reaction", None) is not None:
+            return self._normalize_reaction_event(update)
+        if getattr(update, "edited_message", None) is not None:
+            return self._normalize_message_edited_event(update)
+        return None
+
+    def _normalize_reaction_event(self, update) -> Optional[Dict[str, Any]]:
+        """Normalize a ``message_reaction`` update (event_type ``reaction``).
+
+        Reaction (the motivating use case: a plugin that re-renders or reacts to
+        a message when the user reacts to it) is normalized to the fields a
+        plugin consumes: ``emojis`` (standard unicode), ``custom_emoji_ids``
+        (custom reaction emojis — PTB exposes ``custom_emoji_id`` with no
+        ``.emoji``), ``chat_id``, ``message_id``, ``thread_id``.
+        """
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return None
+        chat = getattr(mr, "chat", None)
+        new_reaction = getattr(mr, "new_reaction", None) or []
+        if not isinstance(new_reaction, (list, tuple)):
+            return None
+        chat_id = getattr(chat, "id", None) if chat is not None else None
+        message_id = getattr(mr, "message_id", None)
+        if (
+            isinstance(chat_id, bool)
+            or not isinstance(chat_id, (str, int))
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, (str, int))
+        ):
+            return None
+        emojis: List[str] = []
+        custom_emoji_ids: List[str] = []
+        for r in new_reaction[:64]:
+            emoji = getattr(r, "emoji", None)
+            if isinstance(emoji, str) and emoji:
+                emojis.append(emoji[:64])
+            custom_id = getattr(r, "custom_emoji_id", None)
+            if (
+                not isinstance(custom_id, bool)
+                and isinstance(custom_id, (str, int))
+            ):
+                custom_emoji_ids.append(str(custom_id)[:128])
+        return {
+            "platform": "telegram",
+            "event_type": "reaction",
+            "payload": {
+                "emojis": emojis,
+                "custom_emoji_ids": custom_emoji_ids,
+                "chat_id": str(chat_id)[:128],
+                "message_id": str(message_id)[:128],
+                # Reactions don't carry thread_id; do not guess it or expose an
+                # adapter object as a routing escape hatch.
+                "thread_id": None,
+            },
+        }
+
+    def _normalize_message_edited_event(self, update) -> Optional[Dict[str, Any]]:
+        """Normalize an ``edited_message`` update (event_type ``message_edited``).
+
+        Payload contract (v1, additive): ``chat_id``, ``message_id``,
+        ``thread_id`` (forum topic when present), ``text`` (edited text or
+        caption, bounded), ``edited_at`` (ISO 8601 UTC or None). No raw PTB
+        ``Message`` object leaves this boundary. Malformed identities return
+        ``None`` so the fire-site drops the event.
+        """
+        message = getattr(update, "edited_message", None)
+        if message is None:
+            return None
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None) if chat is not None else None
+        message_id = getattr(message, "message_id", None)
+        if (
+            isinstance(chat_id, bool)
+            or not isinstance(chat_id, (str, int))
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, (str, int))
+        ):
+            return None
+        text = getattr(message, "text", None) or getattr(message, "caption", None)
+        if not isinstance(text, str):
+            text = None
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if (
+            not isinstance(thread_id_raw, bool)
+            and isinstance(thread_id_raw, (str, int))
+            and bool(getattr(message, "is_topic_message", False))
+        ):
+            thread_id = str(thread_id_raw)[:128]
+        edited_at = None
+        edit_date = getattr(message, "edit_date", None)
+        try:
+            if edit_date is not None and hasattr(edit_date, "isoformat"):
+                edited_at = str(edit_date.isoformat())[:64]
+        except Exception:
+            edited_at = None
+        return {
+            "platform": "telegram",
+            "event_type": "message_edited",
+            "payload": {
+                "chat_id": str(chat_id)[:128],
+                "message_id": str(message_id)[:128],
+                "thread_id": thread_id,
+                "text": text[:8192] if text is not None else None,
+                "edited_at": edited_at,
+            },
+        }
+
+    def _register_handlers(self, app) -> None:
+        """Register every PTB handler on ``app``.
+
+        Single source of truth for handler registration. Both initial connect
+        and the transient-initialization rebuild path call this method, keeping
+        the ``gateway_platform_event`` observer (group 99) in lockstep with the
+        core handlers.
+        """
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message
+        ))
+        # Handle inline keyboard button callbacks (update prompts)
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        # gateway_platform_event observer (see _on_platform_update); group 99 so
+        # it observes alongside, never displaces, the core handlers.
+        app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3823,16 +4545,46 @@ class TelegramAdapter(BasePlatformAdapter):
                     kwargs["limits"] = _pool_limits
                 return kwargs
 
-            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
+            disable_fallback = (
+                os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "")
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "on"}
+            )
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                logger.warning("[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…", self.name)
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
+            if disable_fallback:
+                fallback_ips = []
+            if not fallback_ips and not disable_fallback:
+                discovery_timeout = self._env_float_clamped(
+                    "HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT",
+                    5.0,
+                    min_value=0.0,
                 )
+                logger.warning(
+                    "[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…",
+                    self.name,
+                )
+                try:
+                    fallback_ips = await _await_with_thread_deadline(
+                        discover_fallback_ips(),
+                        timeout=discovery_timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Telegram fallback-IP discovery failed after %.0fs; "
+                        "using seed IPv4 Telegram API IPs so a blackholed IPv6 "
+                        "hostname path cannot hang initialize() (#87015): %s",
+                        self.name,
+                        discovery_timeout,
+                        _redact_telegram_error_text(exc),
+                    )
+                    fallback_ips = list(SEED_FALLBACK_IPS)
+                else:
+                    logger.info(
+                        "[%s] Auto-discovered Telegram fallback IPs: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
 
             proxy_targets = ["api.telegram.org", *fallback_ips]
             proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
@@ -3891,25 +4643,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Register handlers via the single registration site (#64176).
+            self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -4023,24 +4758,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         old_app = self._app
                         self._app = builder.build()
                         self._bot = self._app.bot
-                        # Re-register handlers on the new app
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.TEXT & ~filters.COMMAND,
-                            self._handle_text_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.COMMAND,
-                            self._handle_command
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                            self._handle_location_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                            self._handle_media_message
-                        ))
-                        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+                        # Keep core and observer handlers in lockstep after a
+                        # transient-init rebuild (#64176).
+                        self._register_handlers(self._app)
                         # Best-effort discard the old app's resources
                         try:
                             await _shutdown_abandoned_app(old_app)
@@ -4227,8 +4947,23 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             self._release_platform_lock()
             safe_error = _redact_telegram_error_text(e)
-            message = f"Telegram startup failed: {safe_error}"
-            self._set_fatal_error("telegram_connect_error", message, retryable=True)
+            # Classify by exception TYPE (never message text): auth failures
+            # (InvalidToken / Forbidden — dead or revoked bot token) can never
+            # self-heal, so marking them retryable put agents into a silent,
+            # eternal reconnect loop (OOF-151: weeks of retries at the backoff
+            # cap with zero owner signal). _looks_like_network_error already
+            # discriminates these types for the runtime polling path — reuse
+            # it here so connect() and runtime agree on what is transient.
+            if self._looks_like_auth_error(e):
+                message = (
+                    f"Telegram bot token rejected: {safe_error}. "
+                    "The token is invalid or was revoked — generate a new one "
+                    "with @BotFather and update TELEGRAM_BOT_TOKEN."
+                )
+                self._set_fatal_error("telegram_auth_error", message, retryable=False)
+            else:
+                message = f"Telegram startup failed: {safe_error}"
+                self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
 
@@ -4294,11 +5029,37 @@ class TelegramAdapter(BasePlatformAdapter):
             collect(task)
         collect(getattr(self, "_polling_error_task", None))
         collect(getattr(self, "_polling_progress_verifier_task", None))
+        # Hold-queue redispatch must be cancellable+awaitable on teardown so it
+        # cannot dispatch handle_message into a torn-down session (same lifecycle
+        # rule teknium called out on #72037 for shielded flush dispatch).
+        collect(getattr(self, "_held_inbound_redispatch_task", None))
 
         for task in pending_tasks:
             task.cancel()
         if awaitable_tasks:
             await asyncio.gather(*awaitable_tasks, return_exceptions=True)
+
+        # Salvage buffered inbound events before clearing maps — unless permanent
+        # fatal, where no reconnect can drain and hold would re-orphan them
+        # (#83878). Discard pending sources explicitly in that case.
+        if self._is_permanent_fatal():
+            n_pending = (
+                len(self._pending_text_batches)
+                + len(self._pending_photo_batches)
+                + len(self._media_group_events)
+            )
+            if n_pending:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal teardown; discarding %d pending inbound batch(es)",
+                    n_pending,
+                )
+        else:
+            for event in list(self._pending_text_batches.values()):
+                self._hold_inbound_event(event, where="text-batch-teardown")
+            for event in list(self._pending_photo_batches.values()):
+                self._hold_inbound_event(event, where="photo-batch-teardown")
+            for event in list(self._media_group_events.values()):
+                self._hold_inbound_event(event, where="media-group-teardown")
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()
@@ -4310,6 +5071,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
             self._polling_progress_verifier_task = None
+        if getattr(self, "_held_inbound_redispatch_task", None) is not current_task:
+            self._held_inbound_redispatch_task = None
 
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances.
@@ -4782,9 +5545,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as send_err:
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
+                            wait = float(retry_after) if retry_after is not None else 1.0
+                            safe_send_error = _redact_telegram_error_text(send_err)
+                            # Mirror the edit path: a RetryAfter past a few
+                            # seconds is not something to hold this coroutine
+                            # open for. Sleeping the server value verbatim
+                            # pinned send() for 97 minutes in production and
+                            # froze inbound on every platform when it ran on
+                            # the gateway boot path (#91969).
+                            if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                                logger.warning(
+                                    "[%s] Telegram flood control on send "
+                                    "(retry_after=%.1fs > %.0fs); failing closed "
+                                    "instead of sleeping: %s",
+                                    self.name,
+                                    wait,
+                                    _FLOOD_INLINE_WAIT_CAP_SECS,
+                                    safe_send_error,
+                                )
+                                return _flood_cap_result(wait)
                             if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
-                                safe_send_error = _redact_telegram_error_text(send_err)
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
                                     self.name,
@@ -5035,12 +5815,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
                 )
-                if wait > 5.0:
-                    return SendResult(
-                        success=False,
-                        error=f"flood_control:{wait}",
-                        retry_after=float(wait),
-                    )
+                if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    return _flood_cap_result(wait)
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(
@@ -5350,21 +6126,15 @@ class TelegramAdapter(BasePlatformAdapter):
         (added to python-telegram-bot in 22.6); older PTB installs gracefully
         fall back to the edit path even on DMs.
 
-        When ``rich_messages`` is enabled but ``rich_drafts`` is not, decline
-        drafts even on DMs.  Final delivery then uses ``sendRichMessage`` /
-        rich ``editMessageText``, while the default draft path still renders
-        MarkdownV2 (tables → bullet lists).  That mismatch makes the streaming
-        preview look unformatted/"crooked" and the finalized reply a second
-        beautiful wiki-style bubble.  Prefer edit-in-place streaming so the
-        same message upgrades via rich finalize.  Operators who want animated
-        rich drafts opt in with ``rich_drafts: true``.
+        ``rich_drafts`` controls the draft *format*, not whether native draft
+        streaming is available.  When final rich delivery is enabled but rich
+        drafts are not, keep the preview ephemeral and persist the completed
+        response through ``sendRichMessage``.  A plain message edited in place
+        cannot be relied on to upgrade through ``editMessageText``'s
+        ``rich_message`` parameter; when that edit is rejected, the fallback
+        formatter permanently turns tables into bullet lists.
         """
         if not self._bot or not hasattr(self._bot, "send_message_draft"):
-            return False
-        if (
-            getattr(self, "_rich_messages_enabled", False)
-            and not getattr(self, "_rich_drafts_enabled", False)
-        ):
             return False
         return (chat_type or "").lower() in {"dm", "private"}
 
@@ -5407,8 +6177,6 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
-        thread_id = self._metadata_thread_id(metadata)
-
         # Apply the same MarkdownV2 conversion the regular ``send`` path uses
         # so the animated draft preview renders with identical formatting to
         # the final message.  Without this, the draft streams as raw text and
@@ -5418,7 +6186,20 @@ class TelegramAdapter(BasePlatformAdapter):
         # malformed escape would be rejected — mirroring the (True, False)
         # retry the streaming send loop uses — so a single bad token never
         # kills draft streaming for the whole response.
-        for use_markdown in (True, False):
+        # When the persistent response will use a Rich Message but rich draft
+        # rendering is intentionally disabled, do not run rich-only constructs
+        # through the legacy formatter in the ephemeral preview.  In particular,
+        # that formatter rewrites pipe tables into bullet groups.  A raw draft
+        # preserves the table source until ``sendRichMessage`` replaces it with
+        # the native persistent rendering at finalization.
+        plain_rich_preview = bool(
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_drafts_enabled", False)
+            and self._needs_rich_rendering(text)
+        )
+        draft_modes = (False,) if plain_rich_preview else (True, False)
+        draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
+        for use_markdown in draft_modes:
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
                 "draft_id": int(draft_id),
@@ -5426,8 +6207,7 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             if use_markdown:
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            if thread_id is not None:
-                kwargs["message_thread_id"] = thread_id
+            kwargs.update(draft_thread_kwargs)
 
             try:
                 ok = await self._bot.send_message_draft(**kwargs)
@@ -6248,12 +7028,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
-                from hermes_cli.model_cost_guard import expensive_model_warning
+                from hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a
                 # cache miss — keep it off the event loop.
                 warning = await asyncio.to_thread(
-                    expensive_model_warning,
+                    combined_selection_warning,
                     model_id,
                     provider=provider_slug,
                 )
@@ -6269,12 +7049,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 ])
                 await query.edit_message_text(
                     text=self.format_message(
-                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                        f"⚠ *{warning.title}*\n\n{warning.message}"
                     ),
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
-                await query.answer(text="Confirm expensive model")
+                await query.answer(text="Confirm model selection")
                 return
 
             switch_failed = False
@@ -9034,7 +9814,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9046,7 +9826,7 @@ class TelegramAdapter(BasePlatformAdapter):
         dispatching the combined message.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="text-enqueue")
             return
 
         key = self._text_batch_key(event)
@@ -9080,6 +9860,7 @@ class TelegramAdapter(BasePlatformAdapter):
         split point, since a continuation chunk is almost certain.
         """
         current_task = asyncio.current_task()
+        event = None
         try:
             # Adaptive delay tiers:
             #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
@@ -9109,13 +9890,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping text batch flush after disconnect started")
+                self._hold_inbound_event(event, where="text-flush")
+                event = None
                 return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="text-flush-cancelled")
+            raise
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -9131,6 +9919,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
         )
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
@@ -9140,16 +9929,23 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _flush_photo_batch(self, batch_key: str) -> None:
         """Send a buffered photo burst/album as a single MessageEvent."""
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self._media_batch_delay_seconds)
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
+                self._hold_inbound_event(event, where="photo-flush")
+                event = None
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            if event is not None:
+                self._hold_inbound_event(event, where="photo-flush-cancelled")
+            raise
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
@@ -9157,7 +9953,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="photo-enqueue")
             return
 
         existing = self._pending_photo_batches.get(batch_key)
@@ -9484,7 +10280,7 @@ class TelegramAdapter(BasePlatformAdapter):
         attachments into a single MessageEvent.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            self._hold_inbound_event(event, where="media-group-enqueue")
             return
 
         existing = self._media_group_events.get(media_group_id)
@@ -9506,16 +10302,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
-            if event is not None:
-                if self._should_drop_delayed_delivery():
-                    logger.debug("[Telegram] Dropping media group flush after disconnect started")
-                    return
-                await self.handle_message(event)
+            if event is None:
+                return
+            if self._should_drop_delayed_delivery():
+                self._hold_inbound_event(event, where="media-group-flush")
+                event = None
+                return
+            await self.handle_message(event)
+            event = None
         except asyncio.CancelledError:
-            return
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="media-group-flush-cancelled")
+            raise
         finally:
             if self._media_group_tasks.get(media_group_id) is current_task:
                 self._media_group_tasks.pop(media_group_id, None)

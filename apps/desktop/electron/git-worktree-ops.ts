@@ -437,6 +437,25 @@ async function listBranches(repoPath, gitBin) {
 
 async function switchBranch(repoPath, branch, gitBin) {
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch switch' })
+
+  // Sidebar lanes exist for plain folders too (non-repo explicit projects),
+  // and their lane label is the folder basename — not a branch. `git switch`
+  // there is meaningless, and sanitizing that label would throw a misleading
+  // "Branch name is required." — so short-circuit for non-repo roots and let
+  // callers (e.g. "+" new session on the project lane) proceed with a plain
+  // session instead of aborting.
+  let inside = 'false'
+
+  try {
+    inside = (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], resolved)).trim()
+  } catch {
+    // Not a git repo (or git unavailable): fall through to the short-circuit.
+  }
+
+  if (inside !== 'true') {
+    return { branch: null }
+  }
+
   const target = sanitizeBranch(branch)
 
   if (!target) {

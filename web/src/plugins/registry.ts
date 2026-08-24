@@ -22,6 +22,14 @@ import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import {
+  Dialog, DialogClose, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -121,6 +129,13 @@ export function exposePluginSDK() {
       useRef,
       useContext,
       createContext,
+      // useToast returns { showToast, toast } where toast is the current
+      // visible toast (or null) and showToast(message, 'success'|'error')
+      // replaces it. useConfirmDelete<TId>({ onDelete }) returns the state
+      // machine (requestDelete / confirm / cancel / isOpen / isDeleting /
+      // pendingId) for single-id delete confirmations.
+      useToast,
+      useConfirmDelete,
     },
 
     // Hermes API client
@@ -148,6 +163,14 @@ export function exposePluginSDK() {
       Badge,
       Button,
       Checkbox,
+      ConfirmDialog,
+      Dialog,
+      DialogClose,
+      DialogContent,
+      DialogDescription,
+      DialogFooter,
+      DialogHeader,
+      DialogTitle,
       Input,
       Label,
       Select,
@@ -156,6 +179,7 @@ export function exposePluginSDK() {
       Tabs,
       TabsList,
       TabsTrigger,
+      Toast,
       PluginSlot,
     },
 

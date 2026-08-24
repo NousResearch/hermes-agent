@@ -8,6 +8,26 @@ A **profile distribution** packages a complete Hermes agent — personality, ski
 
 If a [profile](./profiles.md) is a local agent, a distribution is that agent made shareable.
 
+## Two ways to share a profile
+
+Hermes has two sharing paths, and they answer different questions. Distributions are the durable one; export files are the quick one.
+
+| | **Distribution** (git repo) | **Export file** (`.tar.gz`) |
+|---|---|---|
+| Ship it by | `hermes profile install <repo>` | Send a file — chat, AirDrop, USB, email |
+| Recipient needs | git, and access to the repo | The file |
+| Updates | `hermes profile update` pulls new versions | Re-send the file |
+| Versioning | Tags, branches, commit SHAs | None — a snapshot in time |
+| Setup cost for the author | `distribution.yaml` + `.gitignore` + a repo | None — one command |
+| Carries | SOUL, config, skills, cron, MCP, plugins | The same, **plus** the desktop theme and layout |
+| Made with | `hermes profile install` / `update` | `/export` and `/import`, or `hermes profile export` / `import` |
+
+Pick a **distribution** when the agent is a product you'll keep improving and other people should track: a team's reviewed internal agent, a community release, the same agent deployed to five machines.
+
+Pick an **export file** when you just want someone to have your setup right now, or you're moving to a new laptop. No repo, no manifest — run `/export` in chat, hand over the file, they run `/import`. See [Export and import a profile file](#export-and-import-a-profile-file).
+
+The two aren't exclusive. Plenty of authors dogfood a profile, `/export` it to a colleague for a second opinion, then publish it as a distribution once it's worth versioning.
+
 ## What this means
 
 Before distributions, sharing a Hermes agent meant sending someone:
@@ -65,9 +85,10 @@ Good fits:
 
 Not a fit:
 
-- **You just want to back up a profile on your own machine.** Use [`hermes profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — that's what those are for.
-- **You want to share API keys alongside the agent.** `auth.json` and `.env` are deliberately excluded from distributions. Each installer brings their own credentials.
-- **You want to share memories / sessions / conversation history.** Those are user data, not distribution content. Never shipped.
+- **You want to hand someone your setup once, right now.** A distribution needs a repo, a manifest, and a `.gitignore`. `/export` needs none of that — see [Export and import a profile file](#export-and-import-a-profile-file). Same for backing up or moving a profile to a new machine.
+- **You want to share your desktop theme and layout.** A distribution carries the agent — SOUL, config, skills, cron, MCP, plugins. An export made from the desktop app also carries the look: skin, light/dark mode, custom themes, rail color, and window layout.
+- **You want to share API keys alongside the agent.** `auth.json` and `.env` are deliberately excluded from distributions. Each installer brings their own credentials. (Export files strip them too.)
+- **You want to share memories / sessions / conversation history.** Those are user data, not distribution content. Never shipped. (Export files are different here — read [what an export contains](#what-an-export-file-contains) before sending one.)
 
 :::caution
 **Hermes does not control git.** The file exclusions described on this page are applied by the **installer** when someone runs `hermes profile install` or `hermes profile update`. They are **not** applied when you run `git add` or `git commit`.
@@ -594,6 +615,77 @@ hermes profile install ~/.hermes/profiles/research-bot --name research-bot-test
 
 ---
 
+## Export and import a profile file
+
+When you don't need versioning, skip the repo. `/export` packs a profile into a single `.tar.gz`; `/import` unpacks it as a new profile on the other end. Credentials are stripped on the way out.
+
+### Export
+
+In the CLI, TUI, or desktop chat:
+
+```
+/export                          # the active profile → <name>.tar.gz
+/export research-bot             # a named profile
+/export research-bot -o ~/Desktop/research-bot.tar.gz
+```
+
+Or from a shell, same machinery:
+
+```bash
+hermes profile export research-bot
+hermes profile export research-bot -o ./research-bot.tar.gz
+```
+
+In the **desktop app** there are three doors, all landing on a native save dialog:
+
+- **⌘K → Export profile…**
+- Right-click a profile square in the sidebar rail → **Export profile…**
+- The import button beside the rail's **+** covers the other direction
+
+A desktop export adds one extra file the CLI doesn't: `desktop.json`, carrying your skin, light/dark mode, any custom theme definitions the skin needs, the profile's rail color, and your window layout. That's why a profile shared from the desktop arrives *looking* like yours, not just behaving like yours.
+
+### Import
+
+```
+/import ~/Downloads/research-bot.tar.gz
+/import ~/Downloads/research-bot.tar.gz --name research-bot-2
+```
+
+```bash
+hermes profile import ./research-bot.tar.gz
+hermes profile import ./research-bot.tar.gz --name research-bot-2
+```
+
+The profile name is inferred from the archive unless you pass `--name`. Importing over an existing profile is refused — rename or delete the old one first. A shell wrapper (`research-bot` → `hermes -p research-bot`) is created when the name doesn't collide with an existing command.
+
+Importing in the desktop app also applies the `desktop.json` overlay and drops you into the new profile on a fresh chat. Importing a desktop-made archive from the CLI is fine — the overlay file rides along on disk and applies the next time you open that profile in the desktop.
+
+:::note
+You cannot import as `default` — that name is the built-in root profile (`~/.hermes`). Pass `--name something-else`.
+:::
+
+### What an export file contains
+
+Always excluded, both profiles types: `auth.json` and `.env`. Your API keys never leave the machine.
+
+**The default profile** (`~/.hermes`) is exported through an allow-list — only known Hermes artifacts, so an unrelated file sitting in your home directory can't get swept in:
+
+`config.yaml`, `SOUL.md`, `MEMORY.md`, `USER.md`, `todo.json`, `system_prompt.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `skills/`, `plugins/`, `cron/`, `scripts/`, `sessions/`, `memories/`, `knowledge/`, `preferences/`, and `desktop.json` when the desktop staged one.
+
+**A named profile** (`~/.hermes/profiles/<name>`) copies the whole directory minus `auth.json` / `.env`. That's broader — if the profile has `state.db`, logs, or caches, they go in the archive too, and the file gets big.
+
+:::caution Read your archive before you send it
+An export is a snapshot of your profile, not a curated release. Unlike a distribution, it **can** include `memories/`, `sessions/`, and `USER.md` — and nothing scans skills, memories, or your persona for anything personal you wrote into them. Credentials are filtered by filename; content is not.
+
+Before sharing with someone else, list what's inside:
+
+```bash
+tar -tzf research-bot.tar.gz | less
+```
+
+If it carries conversation history you'd rather not hand over, publish a [distribution](#for-authors-publishing-a-distribution) instead — those never ship memories or sessions.
+:::
+
 ## What's NOT in a distribution (ever)
 
 The installer hard-excludes these paths even if an author accidentally ships them. No config option lets you override this — the safety guard is a regression-tested invariant:
@@ -645,7 +737,8 @@ The short version:
 
 - [Profiles: Running Multiple Agents](./profiles.md) — the base concept
 - [Profile Commands reference](../reference/profile-commands.md) — every flag, every option
-- [`hermes profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — local backup / restore (not distribution)
+- [`hermes profile export` / `import`](../reference/profile-commands.md#hermes-profile-export) — the CLI form of [export files](#export-and-import-a-profile-file)
+- [Slash Commands reference](../reference/slash-commands.md) — `/export`, `/import`, and every other in-chat command
 - [Using SOUL with Hermes](../guides/use-soul-with-hermes.md) — authoring personalities
 - [Personality & SOUL](./features/personality.md) — how SOUL fits into the agent
 - [Skills catalog](../reference/skills-catalog.md) — skills you can bundle

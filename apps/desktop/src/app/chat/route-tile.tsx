@@ -86,6 +86,7 @@ function RouteTilePane({ path }: { path: string }) {
 /** Keep pane contributions mirroring `$routeTiles`. Call once from the root. */
 export const watchRouteTiles = paneMirror<RouteTile>({
   source: $routeTiles,
+  workspaceMode: 'sessions',
   key: t => t.path,
   prefix: 'route-tile',
   dir: t => t.dir,

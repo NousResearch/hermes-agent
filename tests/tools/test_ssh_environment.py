@@ -45,12 +45,31 @@ class TestBuildSSHCommand:
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
-    def test_base_flags(self):
+    def test_base_flags(self, monkeypatch):
+        # ControlMaster flags are POSIX-only (#73927): assert them only
+        # where multiplexing is enabled so the test passes on Windows too.
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
         for flag in ("ControlMaster=auto", "ControlPersist=300",
                       "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
+
+    def test_controlmaster_gated_off_on_windows(self, monkeypatch):
+        """#73927: Windows OpenSSH has no Unix-domain ControlMaster, so the
+        ControlPath/ControlMaster/ControlPersist options must be omitted —
+        passing them fails the connection with 'getsockname failed'."""
+        monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", False)
+        env = SSHEnvironment(host="h", user="u")
+        cmd = " ".join(env._build_ssh_command())
+        assert "ControlMaster" not in cmd
+        assert "ControlPath" not in cmd
+        assert "ControlPersist" not in cmd
+        # Non-multiplex flags must still be present — the backend works,
+        # just without connection pooling.
+        assert "BatchMode=yes" in cmd
+        assert "StrictHostKeyChecking=accept-new" in cmd
+        assert env._build_ssh_command()[-1] == "u@h"
 
 
     def test_user_host_suffix(self):

@@ -30,6 +30,15 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this SYNC context. The tests call
+    # GoalManager.set() on the event-loop thread, where _get_session_db()
+    # refuses to construct SessionDB inline (loop-liveness guard) and only
+    # waits _DB_BOOTSTRAP_LOOP_WAIT_S for a background bootstrap. On a loaded
+    # CI runner the init overruns that window, the goal write is silently
+    # dropped by design, and the continuation path no-ops — the recurring
+    # sends == [] flake. Warming here uses the direct construction path, so
+    # the loop-thread set() always finds a cached DB.
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 
@@ -96,6 +105,18 @@ def _make_runner_with_adapter(session_id: str = None):
     return runner, adapter, session_entry, src
 
 
+async def _drain_until(condition, timeout=5.0):
+    """Yield to the event loop until ``condition()`` is truthy (bounded).
+
+    The goal-continuation path finishes its sends/enqueues on spawned tasks;
+    a fixed 0.05s sleep raced them on loaded CI runners (#88975). Returns as
+    soon as the condition holds — the asserts after the call stay exact.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while not condition() and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     """When the judge says continue, both the 'continuing' status and the
@@ -115,7 +136,7 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
             source=src,
             final_response="here's a partial edit",
         )
-        await asyncio.sleep(0.05)
+        await _drain_until(lambda: adapter.sends and adapter._pending_messages)
 
     # Status line sent back
     assert len(adapter.sends) == 1
@@ -143,7 +164,7 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
             source=src,
             final_response="still partial",
         )
-        await asyncio.sleep(0.05)
+        await _drain_until(lambda: adapter.sends)
 
     assert len(adapter.sends) == 1
     content = adapter.sends[0]["content"]

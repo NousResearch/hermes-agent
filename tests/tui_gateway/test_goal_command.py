@@ -180,6 +180,57 @@ def test_goal_bare_shows_status_when_none_set(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
+def _exhaust_budget(session_key: str, goal_text: str = "finish the benchmark"):
+    """Set a 1-turn goal and drive it to budget-exhaustion auto-pause."""
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    mgr.set(goal_text, max_turns=1)
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "needs more steps", False, None, False),
+    ):
+        decision = mgr.evaluate_after_turn("worked a bit")
+    assert decision["status"] == "paused"
+    assert decision["should_continue"] is False
+    return mgr
+
+
+def test_goal_resume_after_budget_exhaustion_dispatches_continuation(
+    server, session
+):
+    """#75362: /goal resume must restart work, not just flip state.
+
+    The pre-fix handler returned a display-only `exec` payload, so the
+    resumed goal sat idle until the user sent another message. Resume
+    must return a sendable dispatch carrying the canonical continuation
+    prompt, with a concise `/goal resume` transcript projection.
+    """
+    from hermes_cli.goals import GoalManager
+
+    sid, session_key, _ = session
+    _exhaust_budget(session_key)
+    assert GoalManager(session_key).state.status == "paused"
+
+    r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"].startswith("[Continuing toward your standing goal]")
+    assert result["display"] == "/goal resume"
+    assert "Goal resumed" in result["notice"]
+
+    state = GoalManager(session_key).state
+    assert state.status == "active"
+    assert state.turns_used == 0, "resume must reset the turn budget"
+
+
+def test_goal_resume_without_goal_stays_exec(server, session):
+    sid, _, _ = session
+    r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "No goal to resume" in r["result"]["output"]
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 

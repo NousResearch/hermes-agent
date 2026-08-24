@@ -97,6 +97,42 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
     assert not flush_file.exists()
 
 
+def test_recover_closes_owned_db_when_unexpected_exception_escapes(
+    tmp_path, monkeypatch
+):
+    """Owned SessionDB must close even when recovery is interrupted."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    (flush_dir / "pending.json").write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:123",
+                "data": {"text": "message", "session_id": "sid"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class InterruptingDB:
+        closed = False
+
+        def append_message(self, **_kwargs):
+            raise KeyboardInterrupt
+
+        def close(self):
+            self.closed = True
+
+    db = InterruptingDB()
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+
+    with pytest.raises(KeyboardInterrupt):
+        recover_pending_to_db()
+
+    assert db.closed is True
+
+
 def test_serialise_object_with_text():
     obj = MagicMock()
     obj.text = "msg"

@@ -131,10 +131,24 @@ class TestExplicitProviderRespected:
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
             assert result == "none", f"Expected 'none' but got {result!r}"
+
+    def test_seeded_local_without_stored_selection_autodetects(self, monkeypatch):
+        """The DEFAULT_CONFIG-seeded stt.provider: local (no raw-config
+        selection) is treated as never-configured: autodetect runs instead of
+        hard-pinning to a missing local backend."""
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._try_lazy_install_stt", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value=None), \
+             patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "local"}) == "groq"
 
     def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
         """Local-to-local_command fallback is fine — both are local."""
@@ -1230,3 +1244,107 @@ class TestRunCommandSttIdleTimeout:
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
+
+
+# ============================================================================
+# Explicit openai selection keeps its selection-specific error (#93045)
+# ============================================================================
+
+class TestExplicitOpenaiSelectionError:
+    """A managed-route outage must not be reported as generic setup guidance.
+
+    When ``_resolve_openai_audio_client_config()`` raises its
+    selection-specific ValueError (managed openai-audio gateway unavailable,
+    with the ``hermes tools`` remediation for managed-Nous users), the old
+    boolean probe flattened it into False — the log said "no API key" and
+    the transcription result returned the all-provider install hint,
+    pointing operators at unrelated setup instead of their managed route.
+    """
+
+    def _no_openai_credentials(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools.resolve_openai_audio_api_key",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools.resolve_managed_tool_gateway",
+            lambda vendor: None,
+        )
+
+    def test_get_provider_openai_none_not_generic_when_managed_route_down(
+        self, monkeypatch, caplog
+    ):
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            from tools.transcription_tools import _get_provider
+
+            with caplog.at_level("WARNING"):
+                result = _get_provider({"provider": "openai"})
+
+        assert result == "none"
+        warning = caplog.records[-1].getMessage()
+        assert "unavailable" in warning
+        # The selection-specific blocker is named, not a bare API-key hint.
+        assert "managed" in warning or "gateway" in warning
+        assert "no API key available" not in warning
+
+    def test_dispatch_returns_selection_specific_error(self, monkeypatch):
+        """The final transcription result carries the managed-route error and
+        its hermes tools remediation instead of the all-provider install
+        hint."""
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch(
+                 "tools.transcription_tools.nous_tool_gateway_unavailable_message",
+                 lambda what: f"managed route down for {what}; run `hermes tools`",
+             ):
+            from tools.transcription_tools import _dispatch_stt_provider
+
+            result = _dispatch_stt_provider(
+                "/tmp/nonexistent.wav", "none", {"provider": "openai"}
+            )
+
+        assert result["success"] is False
+        assert "managed route down" in result["error"]
+        assert "hermes tools" in result["error"]
+        assert "No STT provider available" not in result["error"]
+
+    def test_auto_detect_none_keeps_generic_hint(self, monkeypatch):
+        """Auto-detect with no credentials at all still returns the generic
+        all-provider hint — the selection-specific branch must not fire
+        without an explicit provider choice."""
+        self._no_openai_credentials(monkeypatch)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config", lambda: {}
+        )
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch(
+                 "tools.transcription_tools._has_local_command", return_value=False
+             ), \
+             patch(
+                 "tools.transcription_tools._try_lazy_install_stt",
+                 return_value=False,
+             ):
+            from tools.transcription_tools import _dispatch_stt_provider
+
+            result = _dispatch_stt_provider("/tmp/x.wav", "none", {})
+
+        assert result["success"] is False
+        assert "No STT provider available" in result["error"]

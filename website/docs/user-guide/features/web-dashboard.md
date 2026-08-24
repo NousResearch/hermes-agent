@@ -105,6 +105,26 @@ The landing page shows a live overview of your installation:
 
 The status page auto-refreshes every 5 seconds.
 
+#### Resource pressure banner
+
+When the host is running low on memory or disk, a banner appears at the top of
+the dashboard (fed by the same status poll — no extra requests):
+
+- **"Your agent is almost out of memory and may restart"** — system available
+  memory has dropped to *elevated* (< 128 MiB or < 15%) or *critical*
+  (< 64 MiB or < 5%) levels, as sampled by the gateway's 30-second heartbeat.
+- **"Your agent restarted unexpectedly, most likely because it ran out of
+  memory"** — the lifecycle ledger recorded an unclean exit under memory
+  pressure on the previous boot (a suspected OOM kill).
+- **Disk warnings** — the volume holding `~/.hermes` is nearly full
+  (*elevated* below 512 MB free, *critical* below 256 MB free).
+
+Only the most severe active warning shows at a time (disk critical > memory
+critical > OOM restart > disk elevated > memory elevated). Dismissals are
+scoped to the current gateway boot: dismissing a warning surfaces the next
+active one, a gateway restart or an escalation (elevated → critical) re-opens
+it, and a stale heartbeat renders nothing rather than a spurious alert.
+
 ### Chat
 
 The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
@@ -133,7 +153,7 @@ To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a d
 
 ### Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
+Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateways → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.
 
 :::info Prerequisite: a `hermes dashboard` must be running on the remote host
 The "remote backend" Desktop connects to **is** a `hermes dashboard` process running on the remote machine — the same server this page documents. It has to be up and reachable before any of the steps below matter; Desktop attaches to it, it doesn't start it for you. Keep it running under `systemd`/`tmux`/etc. so it survives logout and reboots. The **gateway** (Telegram/Discord/Slack/etc.) is a *separate* long-running process — start it independently if you rely on messaging channels; it is not the thing the desktop app connects to.
@@ -179,7 +199,7 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 - `auth_required: true` but no `"basic"` provider → the username/password env vars aren't loaded. Fix those first.
 :::
 
-If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
+If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateways → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
 ### Config
 
@@ -414,6 +434,29 @@ a chat under the selected profile.
 ### GET /api/status
 
 Returns agent version, gateway status, platform states, and active session count.
+
+The response also carries two advisory resource blocks (they never affect the
+`components`/`overall` health verdict):
+
+- **`memory`** — distilled from the gateway's 30-second heartbeat and the
+  lifecycle ledger. Fields: `pressure` (`ok` / `elevated` / `critical` /
+  `unknown`), `gateway_rss_mb`, `system_total_mb`, `system_available_mb`,
+  `swap_used_mb`, `sampled_at`, `boot_id`, `last_boot_unclean`,
+  `last_boot_suspected_oom`. Pressure is `elevated` below 128 MiB (or 15%) of
+  available system memory and `critical` below 64 MiB (or 5%) — the same
+  levels at which a subsequent unclean exit would be flagged as a suspected
+  OOM kill. Heartbeats older than 150 seconds (or future-dated) keep their
+  numbers but degrade `pressure` to `unknown`, so a dead gateway's last
+  sample can't masquerade as a live reading.
+- **`disk`** — a live `shutil.disk_usage()` sample of the volume holding
+  `~/.hermes`. Fields: `pressure`, `free_mb`, `total_mb`, `used_percent`,
+  `sampled_at`. Pressure is `elevated` below 512 MB free (or ≥85% used with
+  under 4 GB headroom) and `critical` below 256 MB free (or ≥95% used with
+  under 1 GB headroom).
+
+Both collectors are fail-safe: any sampling error degrades the block to
+`{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
+are coarse (whole MB, whole-percent) since `/api/status` is public.
 
 ### GET /api/sessions
 
@@ -896,6 +939,35 @@ dashboard:
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
 
+The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
+WebSocket `Origin` value. This supports a reverse proxy that preserves the
+browser-facing hostname while forwarding to a dashboard bound to
+`127.0.0.1`. Wildcards and suffix matches are not allowed, so an attacker host
+such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
+guard.
+
+Declaring a non-loopback `public_url` always engages the dashboard auth gate,
+even when the backend binds to loopback. Configure a password or OAuth provider
+first; without one, Hermes fails closed at startup. This prevents the local SPA
+session token from becoming a remote authentication mechanism through the
+proxy. Uvicorn also enables trusted proxy-header processing in this mode so a
+local TLS terminator can supply `X-Forwarded-Proto: https` for secure cookies.
+
+```bash
+# Backend remains reachable only on this machine.
+hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+```
+
+Point the TLS reverse proxy at `http://127.0.0.1:9119` and use
+the same external origin in `dashboard.public_url`.
+
+Tailscale Serve is one example of this deployment shape: it can terminate
+tailnet-only HTTPS on a `https://<machine>.<tailnet>.ts.net` hostname while
+proxying to the loopback dashboard. Use that exact HTTPS origin as
+`dashboard.public_url`. It is still treated as a non-loopback browser-facing
+origin and therefore requires a dashboard auth provider; this does not require
+making the service reachable from the public internet.
+
 Same precedence as the other dashboard settings — env wins over `config.yaml`:
 
 | Surface | Override path | When to use |
@@ -997,7 +1069,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
 
 You protect the remote dashboard with one of the bundled auth providers, and the desktop app signs in against whichever one the backend advertises. For a backend reachable beyond your own machine — a VPS, a public host, anything internet-facing — the recommended provider is **OAuth (Nous Portal)** (register it with [`hermes dashboard register`](#registering-a-dashboard) and sign in with *Sign in with Nous Research*). The bundled [username/password provider](#usernamepassword-provider-no-oauth-idp) is the quickest option when the backend is on a trusted LAN or reachable only over a VPN, but is **not suitable for direct public-internet exposure**. Binding the dashboard to a non-loopback address engages its auth gate; once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 
@@ -1030,7 +1102,7 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 
 ### In Hermes Desktop
 
-**Settings → Gateway → Remote gateway:**
+**Settings → Gateways → Remote gateway:**
 
 - **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` are supported if you front it with a reverse proxy)
 - **Sign in** — the app detects the username/password gateway and shows a **Sign in** button; click it and enter the credentials from step 1

@@ -370,6 +370,62 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].identifier, "only-skill")
         mock_write_cache.assert_called_once()
 
+    def test_parse_identifier_accepts_clawhub_shapes(self):
+        self.assertEqual(ClawHubSource._parse_identifier("skillopt"), ("skillopt", None))
+        self.assertEqual(ClawHubSource._parse_identifier("clawhub/skillopt"), ("skillopt", None))
+        self.assertEqual(
+            ClawHubSource._parse_identifier("@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
+            ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+
+    def test_parse_identifier_rejects_github_style_paths(self):
+        self.assertIsNone(
+            ClawHubSource._parse_identifier("latipun7/agent-skill-collections/skillopt")
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "skills-sh/latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_does_not_claim_github_style_identifier(self, mock_get):
+        meta = self.src.inspect("latipun7/agent-skill-collections/skills/skillopt")
+        self.assertIsNone(meta)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_does_not_claim_github_style_identifier(self, mock_get):
+        bundle = self.src.fetch("latipun7/agent-skill-collections/skillopt")
+        self.assertIsNone(bundle)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_rejects_owner_mismatch_on_clawhub_url_path(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "slug": "skillopt",
+                "displayName": "SkillOpt",
+                "summary": "Train, evaluate, and improve Agent skill files",
+                "owner": {"handle": "harrylabsj"},
+            },
+        )
+
+        meta = self.src.inspect("latipun7/skills/skillopt")
+
+        self.assertIsNone(meta)
+        mock_get.assert_called_once()
+
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
     """max_items bounds the walk so browse's cold-start fallback renders one

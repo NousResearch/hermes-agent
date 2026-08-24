@@ -3,6 +3,12 @@
 import hashlib
 import logging
 import os
+
+# Windows OpenSSH has no Unix-domain-socket ControlMaster support —
+# passing ControlPath/ControlMaster options fails the connection outright
+# ('getsockname failed: Not a socket', #73927). Skip multiplexing there;
+# each command pays a fresh connection but the backend works.
+_SSH_MULTIPLEX = os.name != "nt"
 import shlex
 import shutil
 import subprocess
@@ -86,9 +92,10 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        if _SSH_MULTIPLEX:
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
@@ -186,7 +193,9 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        scp_cmd = ["scp"]
+        if _SSH_MULTIPLEX:
+            scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:

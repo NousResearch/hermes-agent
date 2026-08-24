@@ -57,6 +57,14 @@ describe('goal store', () => {
     expect($goalsBySession.get().s1).toBeUndefined()
   })
 
+  it('clears immediately on /goal clear output', () => {
+    applyGoalStatusText('s1', '⊙ Goal set (20-turn budget): ship another feature')
+    applyGoalStatusText('s1', '⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going.')
+    applyGoalStatusText('s1', '✓ Goal cleared.')
+
+    expect($goalsBySession.get().s1).toBeUndefined()
+  })
+
   it('cancels pending done clears when replacing a goal', () => {
     vi.useFakeTimers()
 
@@ -69,5 +77,34 @@ describe('goal store', () => {
     expect($goalsBySession.get().s1).toMatchObject({ status: 'active', title: 'second' })
 
     clearSessionGoal('s1')
+  })
+
+  it('does not resurrect a done goal on hydration', () => {
+    // `/goal status` reports "✓ Goal done" forever after completion (the DB
+    // keeps terminal state). Hydrating that on session open must not bring
+    // the completed chip back — Bot Mode's single endless session would show
+    // it for the rest of time.
+    applyGoalStatusText('s1', '✓ Goal done (12/20 turns): ship the feature', { hydrate: true })
+
+    expect($goalsBySession.get().s1).toBeUndefined()
+  })
+
+  it('hydration drops a lingering done chip already on screen', () => {
+    vi.useFakeTimers()
+
+    applyGoalStatusText('s1', '✓ Goal achieved: tests pass')
+    applyGoalStatusText('s1', '✓ Goal done (12/20 turns): tests pass', { hydrate: true })
+
+    expect($goalsBySession.get().s1).toBeUndefined()
+  })
+
+  it('hydration still surfaces non-terminal goals', () => {
+    applyGoalStatusText('s1', '⊙ Goal (active, 3/20 turns): ship the feature', { hydrate: true })
+
+    expect($goalsBySession.get().s1).toMatchObject({ status: 'active', title: 'ship the feature' })
+
+    applyGoalStatusText('s2', '⏸ Goal (paused, 20/20 turns): other work', { hydrate: true })
+
+    expect($goalsBySession.get().s2).toMatchObject({ status: 'paused', title: 'other work' })
   })
 })

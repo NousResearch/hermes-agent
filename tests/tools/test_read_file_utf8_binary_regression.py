@@ -91,15 +91,19 @@ class TestReadFileBinaryClassification:
         assert r.is_binary is True
 
     @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
-    def test_utf16_stays_read_only(self, ops, tmp_path, encoding):
-        # UTF-16 is full of NUL bytes; a lossy replace-decode round-trip
-        # would corrupt it, so it must remain flagged until a transcode
-        # path (#80717) lands. This is a do-not-regress pin, either endian.
+    def test_utf16_transcodes_to_readable_text(self, ops, tmp_path, encoding):
+        # Formerly a do-not-regress pin asserting UTF-16 stayed flagged as
+        # binary "until a transcode path (#80717) lands" — this is that
+        # landing. Either endian now reads as transcoded UTF-8 text with a
+        # hint disclosing the conversion.
         path = _write(
             tmp_path, f"{encoding}.txt", ("hello world\n" * 50).encode(encoding)
         )
         r = ops.read_file(path)
-        assert r.is_binary is True
+        assert r.error is None
+        assert r.is_binary is False
+        assert "hello world" in (r.content or "")
+        assert "utf-16" in (r.hint or "").lower()
 
 
 class TestSiblingSites:

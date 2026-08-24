@@ -685,7 +685,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature changes (dir/category mtimes or the disabled-set) and expires
     after a short TTL to bound staleness from in-place SKILL.md edits.
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        get_project_skills_dirs,
+        iter_project_skill_files,
+        iter_skill_index_files,
+    )
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
 
@@ -695,8 +700,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Collect directories to scan — same resolution as the scan loop below
     # (_skills_dir() resolves the LIVE profile HERMES_HOME; the module-level
-    # SKILLS_DIR can be stale in long-lived runtimes).
-    dirs_to_scan: list = []
+    # SKILLS_DIR can be stale in long-lived runtimes). Trusted project-local
+    # dirs come FIRST: first-wins dedup below gives them precedence over
+    # same-named local/external skills.
+    project_dirs = list(get_project_skills_dirs())
+    dirs_to_scan: list = list(project_dirs)
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
@@ -719,10 +727,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     skills = []
     seen_names: set = set()
 
-    # Scan local dir first, then external dirs (local takes precedence) —
-    # dirs_to_scan already resolved above for the signature.
+    # Scan project dirs first, then local, then external (first-wins) —
+    # dirs_to_scan already resolved above for the signature. Project dirs
+    # iterate through the quarantine chokepoint (scan-time injection gate).
     for scan_dir in dirs_to_scan:
-        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+        _is_project = scan_dir in project_dirs
+        _iter = (
+            iter_project_skill_files(scan_dir)
+            if _is_project
+            else iter_skill_index_files(scan_dir, "SKILL.md")
+        )
+        for skill_md in _iter:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -1114,7 +1129,41 @@ def skill_view(
 
             discover_plugins()  # idempotent
             pm = get_plugin_manager()
+            active_memory_provider = None
+            try:
+                from plugins.memory import (
+                    _get_active_memory_provider,
+                    _prune_inactive_memory_provider_skills,
+                )
+
+                active_memory_provider = _get_active_memory_provider()
+                _prune_inactive_memory_provider_skills(active_memory_provider)
+            except Exception as exc:
+                logger.debug(
+                    "Failed pruning inactive memory-provider skills: %s",
+                    exc,
+                )
+
             plugin_skill_md = pm.find_plugin_skill(name)
+
+            # Memory provider plugins are loaded through plugins.memory rather
+            # than the general PluginManager. If a memory provider shim also
+            # registers skills, load the namespaced provider once so its
+            # collector can forward those skills into the plugin skill registry
+            # before declaring the qualified skill missing.
+            if plugin_skill_md is None:
+                try:
+                    from plugins.memory import load_memory_provider
+
+                    if namespace == active_memory_provider:
+                        load_memory_provider(namespace)
+                        plugin_skill_md = pm.find_plugin_skill(name)
+                except Exception as exc:
+                    logger.debug(
+                        "Failed lazy memory-provider skill load for %s: %s",
+                        namespace,
+                        exc,
+                    )
 
             if plugin_skill_md is not None:
                 if not plugin_skill_md.exists():
@@ -1160,7 +1209,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -1176,8 +1225,11 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
-        all_dirs = []
+        # Build list of all skill directories to search. Project dirs first —
+        # they're the highest-precedence tier and the collision resolver
+        # below uses this ordering.
+        project_dirs = get_project_skills_dirs()
+        all_dirs = list(project_dirs)
         active_skills_dir = _skills_dir()
         if active_skills_dir.exists():
             all_dirs.append(active_skills_dir)
@@ -1276,6 +1328,30 @@ def skill_view(
                 ):
                     _record(None, found_md)
 
+        if len(candidates) > 1 and project_dirs:
+            # Cross-tier collision resolution: a project skill intentionally
+            # overrides a same-named local/external skill, so when at least
+            # one candidate lives under a trusted project dir, narrow to
+            # those. Ambiguity WITHIN the project tier still refuses below.
+            def _in_project(smd: Path) -> bool:
+                try:
+                    resolved = smd.resolve()
+                except Exception:
+                    resolved = smd
+                for pd in project_dirs:
+                    try:
+                        resolved.relative_to(pd)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            project_candidates = [
+                (sd, smd) for sd, smd in candidates if _in_project(smd)
+            ]
+            if project_candidates:
+                candidates = project_candidates
+
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
             logging.getLogger(__name__).warning(
@@ -1303,6 +1379,43 @@ def skill_view(
         if candidates:
             skill_dir, skill_md = candidates[0]
 
+        # Quarantine gate: a project-tier skill with a dangerous scan verdict
+        # must not load even by explicit name (same chokepoint the index and
+        # skills_list use — see agent.skill_utils.iter_project_skill_files).
+        if skill_md is not None and project_dirs:
+            from agent.skill_utils import is_quarantined_project_skill
+
+            def _under_project(p: Path) -> bool:
+                try:
+                    rp = p.resolve()
+                except Exception:
+                    rp = p
+                for pd in project_dirs:
+                    try:
+                        rp.relative_to(pd)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            if _under_project(skill_md) and is_quarantined_project_skill(skill_md):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Project skill '{name}' is quarantined: the security "
+                            "scan flagged its content as dangerous. It will not "
+                            "load until the repo's skill content changes and "
+                            "passes a re-scan."
+                        ),
+                        "hint": (
+                            "Inspect the skill in the repo checkout, or untrust "
+                            "the repo with `hermes skills untrust`."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(
@@ -1328,11 +1441,12 @@ def skill_view(
             )
 
         # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # (project dirs + local skills dir + configured external_dirs — i.e.
+        # everything in all_dirs — are trusted)
         _outside_skills_dir = True
         _trusted_dirs = [active_skills_dir.resolve()]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_dirs.extend(d.resolve() for d in all_dirs)
         except Exception:
             pass
         for _td in _trusted_dirs:

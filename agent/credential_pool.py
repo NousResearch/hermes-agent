@@ -136,6 +136,14 @@ EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60   # 1 minute
 # the classifier), so the value is duplicated here rather than referenced.
 FAILURE_REASON_BILLING = "billing"
 
+# Billing verdict that rests on an ambiguous body (#82154): Anthropic's
+# "out of extra usage" 400 is returned both for genuine overage depletion and
+# for a server-side content-filter rejection of the request. The latter leaves
+# the credential perfectly healthy, so an unverified billing exhaustion gets
+# the short transient cooldown instead of the one-hour billing bench — a
+# genuine depletion simply re-latches on the next attempt.
+FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
+
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
 # compression/moa/titles), so when a pool is empty or fully exhausted the
@@ -332,6 +340,15 @@ def _exhausted_ttl(
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
+    # Unverified billing (#82154): the same 400 body can be a content-filter
+    # rejection of the request itself, in which case the credential is healthy
+    # and an hour-long bench just blocks it (and, for a sole credential,
+    # replays the stored error for the full hour — making a real fix look like
+    # it did not work). Short cooldown regardless of pool size; a genuine
+    # depletion re-latches on the next attempt. A true 402 stays a full bench
+    # even if something mislabeled it unverified.
+    if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
+        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     # Sole credential: shorten only TRANSIENT throttles (429 rate-limit, 403
     # edge-throttle, 5xx server, or unknown). Billing exhaustion — whether
     # classified as such or self-evident from a 402 — is a genuine depletion
@@ -441,20 +458,17 @@ def _normalize_custom_pool_name(name: str) -> str:
 
 
 def _iter_custom_providers(config: Optional[dict] = None):
-    """Yield (normalized_name, entry_dict) for each valid custom_providers entry."""
+    """Yield normalized entries from the merged custom-provider config view."""
     if config is None:
         config = _load_config_safe()
     if config is None:
         return
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        # Fall back to the v12+ providers dict via the compatibility layer
-        try:
-            from hermes_cli.config import get_compatible_custom_providers
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
 
-            custom_providers = get_compatible_custom_providers(config)
-        except Exception:
-            return
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        return
     if not custom_providers:
         return
     for entry in custom_providers:
@@ -542,10 +556,11 @@ def credential_pool_matches_provider(
 ) -> bool:
     """Return whether a pool belongs to the requested runtime provider.
 
-    Named custom endpoints intentionally use two identities: the live agent is
-    ``custom`` while its pool is keyed ``custom:<name>``. Accept that pair only
-    when the runtime base URL resolves to the exact same custom pool key.
-    Empty string identities fail closed. Legacy pool adapters without a
+    Named custom endpoints may use three identities: the live agent can retain
+    the configured name/provider key, newer runtime paths normalize it to
+    ``custom``, and the pool is keyed ``custom:<name>``. Accept those aliases
+    only when the runtime endpoint belongs to the same configured custom
+    provider. Empty identities fail closed. Legacy pool adapters without a
     ``provider`` attribute remain compatible; production pools are scoped.
     """
     raw_pool_provider = getattr(pool_or_provider, "provider", None)
@@ -561,15 +576,80 @@ def credential_pool_matches_provider(
     provider_norm = str(provider or "").strip().lower()
     if not pool_provider or not provider_norm:
         return False
-    if pool_provider == provider_norm:
-        return True
-    if provider_norm != "custom" or not pool_provider.startswith(CUSTOM_POOL_PREFIX):
+    if not pool_provider.startswith(CUSTOM_POOL_PREFIX):
+        return pool_provider == provider_norm
+    if provider_norm == "custom":
+        try:
+            matched_pool = get_custom_provider_pool_key(base_url or "")
+        except Exception:
+            return False
+        return str(matched_pool or "").strip().lower() == pool_provider
+
+    runtime_url = str(base_url or "").strip().rstrip("/")
+    if not runtime_url:
         return False
     try:
-        matched_pool = get_custom_provider_pool_key(base_url or "")
+        for normalized_name, entry in _iter_custom_providers():
+            if f"{CUSTOM_POOL_PREFIX}{normalized_name}" != pool_provider:
+                continue
+            aliases = {normalized_name}
+            for value in (entry.get("name"), entry.get("provider_key")):
+                alias = _normalize_custom_pool_name(str(value or ""))
+                if alias:
+                    aliases.add(alias)
+                    if alias.startswith(CUSTOM_POOL_PREFIX):
+                        aliases.add(alias[len(CUSTOM_POOL_PREFIX):])
+            configured_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            runtime_aliases = {_normalize_custom_pool_name(provider_norm)}
+            if provider_norm.startswith(CUSTOM_POOL_PREFIX):
+                runtime_aliases.add(
+                    _normalize_custom_pool_name(
+                        provider_norm[len(CUSTOM_POOL_PREFIX):]
+                    )
+                )
+            return bool(runtime_aliases & aliases) and runtime_url == configured_url
     except Exception:
         return False
-    return str(matched_pool or "").strip().lower() == pool_provider
+    return False
+
+
+def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -> str:
+    """Resolve the credential-pool key for a runtime provider identity.
+
+    Named custom runtimes retain their configured alias while their pool is
+    stored under ``custom:<name>``. Return that scoped key only when the
+    canonical provider/endpoint boundary accepts it; otherwise preserve the
+    normalized runtime identity so callers fail closed.
+    """
+    provider_norm = str(provider or "").strip().lower()
+    if not provider_norm:
+        return ""
+
+    try:
+        if provider_norm == "custom":
+            candidate = get_custom_provider_pool_key(base_url)
+            if candidate and credential_pool_matches_provider(
+                candidate,
+                provider_norm,
+                base_url=base_url,
+            ):
+                return str(candidate).strip().lower()
+        else:
+            # Named and exact custom runtimes are keyed by provider identity,
+            # while auth storage remains keyed by display name. Search the
+            # configured candidates by identity before considering endpoint;
+            # this prevents a sibling sharing the URL from lending its pool.
+            for normalized_name, _entry in _iter_custom_providers():
+                candidate = f"{CUSTOM_POOL_PREFIX}{normalized_name}"
+                if credential_pool_matches_provider(
+                    candidate,
+                    provider_norm,
+                    base_url=base_url,
+                ):
+                    return candidate
+    except Exception:
+        pass
+    return provider_norm
 
 
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1

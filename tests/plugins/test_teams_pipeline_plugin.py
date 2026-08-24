@@ -11,9 +11,15 @@ import pytest
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.teams_pipeline import register
+from plugins.teams_pipeline.meetings import (
+    TeamsMeetingError,
+    looks_like_transcript_id,
+    parse_graph_meeting_resource,
+    resolve_meeting_reference,
+)
+from plugins.teams_pipeline.models import MeetingArtifact
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore
-from plugins.teams_pipeline.models import MeetingArtifact
 
 
 class FakeGraphClient:
@@ -21,11 +27,14 @@ class FakeGraphClient:
         self.downloaded = False
 
 
-async def _transcript_meeting_resolver(client, *, meeting_id=None, join_web_url=None, tenant_id=None):
+async def _transcript_meeting_resolver(
+    client, *, meeting_id=None, join_web_url=None, tenant_id=None, organizer_user_id=None
+):
     from plugins.teams_pipeline.models import TeamsMeetingRef
 
     return TeamsMeetingRef(
         meeting_id=str(meeting_id),
+        organizer_user_id=organizer_user_id,
         tenant_id=tenant_id,
         metadata={"subject": "Weekly Sync", "participants": [{"displayName": "Ada"}]},
     )
@@ -422,3 +431,262 @@ class TestTeamsMeetingPipeline:
         assert len(store.list_jobs()) == 1
         receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
         assert store.has_notification_receipt(receipt_key) is True
+
+
+def test_parse_graph_meeting_resource_reads_quoted_users_transcript_path():
+    parsed = parse_graph_meeting_resource(
+        "users/org-1/onlineMeetings('MSo-meeting')/transcripts('ktViz-transcript-TranscriptV2=')"
+    )
+
+    assert parsed["organizer_user_id"] == "org-1"
+    assert parsed["meeting_id"] == "MSo-meeting"
+    assert parsed["transcript_id"] == "ktViz-transcript-TranscriptV2="
+    assert parsed["recording_id"] is None
+
+
+def test_parse_graph_meeting_resource_reads_quoted_user_key_odata_id():
+    parsed = parse_graph_meeting_resource(
+        "users('org-1')/onlineMeetings('MSo-meeting')/transcripts('ktViz-transcript-TranscriptV2=')"
+    )
+
+    assert parsed["organizer_user_id"] == "org-1"
+    assert parsed["meeting_id"] == "MSo-meeting"
+    assert parsed["transcript_id"] == "ktViz-transcript-TranscriptV2="
+    assert parsed["recording_id"] is None
+
+
+def test_parse_graph_meeting_resource_reads_graph_url_quoted_user_key():
+    parsed = parse_graph_meeting_resource(
+        "https://graph.microsoft.com/v1.0/users('org-1')/onlineMeetings('MSo-meeting')"
+        "/transcripts('tx-1')"
+    )
+
+    assert parsed["organizer_user_id"] == "org-1"
+    assert parsed["meeting_id"] == "MSo-meeting"
+    assert parsed["transcript_id"] == "tx-1"
+
+
+def test_parse_graph_meeting_resource_ignores_get_all_transcripts_sentinel():
+    parsed = parse_graph_meeting_resource("communications/onlineMeetings/getAllTranscripts")
+
+    assert parsed["meeting_id"] is None
+    assert parsed["organizer_user_id"] is None
+    assert parsed["transcript_id"] is None
+
+
+def test_looks_like_transcript_id_detects_graph_call_transcripts():
+    assert looks_like_transcript_id(
+        "ktVizInGAAAA-TranscriptV2=",
+        odata_type="#Microsoft.Graph.callTranscript",
+    )
+    assert looks_like_transcript_id("abcTranscriptV2=")
+    assert not looks_like_transcript_id("MSo-meeting")
+
+
+def test_looks_like_transcript_id_detects_base64_encoded_marker():
+    # Real-world getAllTranscripts resourceData.id shape: base64url blob whose
+    # DECODED payload ends in "-TranscriptV2" while the encoded form has no
+    # readable marker (from a field report, Aug 2026).
+    import base64
+
+    encoded = base64.urlsafe_b64encode(
+        b"...meeting_ABC@thread.v2#55d6e479-2db7-4297-8590-98f6011a9613-1787004872-TranscriptV2"
+    ).decode().rstrip("=") + "="
+    assert "transcript" not in encoded.lower()
+    assert looks_like_transcript_id(encoded)
+    # Meeting ids (base64 of "0#...#0**19:meeting_...@thread.v2") must NOT match.
+    meeting_encoded = base64.b64encode(
+        b"0#af8b854e-e592-4d5a-b04c-6e63a3b502e7#0**19:meeting_ABC@thread.v2"
+    ).decode()
+    assert not looks_like_transcript_id(meeting_encoded)
+
+
+def test_create_job_from_get_all_transcripts_uses_meeting_id_not_transcript_id(tmp_path):
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)
+    transcript_id = "ktVizInGAAAAi_B6lATZRTE5Om1lZXRpbmdfTranscriptV2="
+
+    job = pipeline.create_job_from_notification(
+        {
+            "id": "notif-tx",
+            "changeType": "created",
+            "resource": "communications/onlineMeetings/getAllTranscripts",
+            "resourceData": {
+                "id": transcript_id,
+                "@odata.type": "#Microsoft.Graph.callTranscript",
+                "@odata.id": (
+                    "users/976f4b31-fd01-4e0b-9178-29cc40c14438/"
+                    f"onlineMeetings('MSo-meeting-id')/transcripts('{transcript_id}')"
+                ),
+            },
+            "tenantId": "tenant-1",
+        }
+    )
+
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "MSo-meeting-id"
+    assert job.meeting_ref.organizer_user_id == "976f4b31-fd01-4e0b-9178-29cc40c14438"
+    assert job.meeting_ref.meeting_id != transcript_id
+    assert job.meeting_ref.metadata.get("transcript_id") == transcript_id
+
+
+def test_create_job_from_quoted_user_odata_id_uses_meeting_id_not_transcript_id(tmp_path):
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)
+    transcript_id = "ktVizInGAAAAi_B6lATZRTE5Om1lZXRpbmdfTranscriptV2="
+
+    job = pipeline.create_job_from_notification(
+        {
+            "id": "notif-quoted-user",
+            "changeType": "created",
+            "resource": "communications/onlineMeetings/getAllTranscripts",
+            "resourceData": {
+                "id": transcript_id,
+                "@odata.type": "#Microsoft.Graph.callTranscript",
+                "@odata.id": (
+                    "users('976f4b31-fd01-4e0b-9178-29cc40c14438')"
+                    f"/onlineMeetings('MSo-meeting-id')/transcripts('{transcript_id}')"
+                ),
+            },
+            "tenantId": "tenant-1",
+        }
+    )
+
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "MSo-meeting-id"
+    assert job.meeting_ref.organizer_user_id == "976f4b31-fd01-4e0b-9178-29cc40c14438"
+    assert job.meeting_ref.meeting_id != transcript_id
+    assert job.meeting_ref.metadata.get("transcript_id") == transcript_id
+
+
+@pytest.mark.anyio
+async def test_run_job_reparses_quoted_user_odata_id_when_stored_meeting_id_is_transcript(
+    tmp_path, monkeypatch
+):
+    from plugins.teams_pipeline import pipeline as pipeline_module
+    from plugins.teams_pipeline.models import TeamsMeetingRef
+
+    captured: dict[str, str | None] = {}
+
+    async def _resolve(client, *, meeting_id=None, join_web_url=None, tenant_id=None, organizer_user_id=None):
+        captured["meeting_id"] = meeting_id
+        captured["organizer_user_id"] = organizer_user_id
+        return TeamsMeetingRef(
+            meeting_id=str(meeting_id),
+            organizer_user_id=organizer_user_id,
+            tenant_id=tenant_id,
+            metadata={"subject": "Standup"},
+        )
+
+    async def _fetch_transcript(client, meeting_ref):
+        return (
+            MeetingArtifact(artifact_type="transcript", artifact_id="tx-1", display_name="meeting.vtt"),
+            "Decision: Re-parse stored Graph notifications on replay.\nAction: Confirm the meeting id is used.",
+        )
+
+    async def _summarize(**kwargs):
+        return pipeline_module.TeamsMeetingSummaryPayload(
+            meeting_ref=kwargs["resolved_meeting"],
+            title="Standup",
+            transcript_text=kwargs["transcript_text"],
+            summary="Reparsed",
+            source_artifacts=kwargs["artifacts"],
+        )
+
+    monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _resolve)
+    monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", _fetch_transcript)
+    monkeypatch.setattr(pipeline_module, "enrich_meeting_with_call_record", _no_call_record)
+
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(
+        graph_client=FakeGraphClient(),
+        store=store,
+        config={"transcript_min_chars": 20},
+        summarize_fn=_summarize,
+    )
+    transcript_id = "ktVizInGAAAAi_B6lATZRTE5Om1lZXRpbmdfTranscriptV2="
+    notification = {
+        "id": "notif-replay",
+        "changeType": "created",
+        "resource": "communications/onlineMeetings/getAllTranscripts",
+        "resourceData": {
+            "id": transcript_id,
+            "@odata.type": "#Microsoft.Graph.callTranscript",
+            "@odata.id": (
+                "users('org-1')/onlineMeetings('MSo-from-odata')/transcripts("
+                f"'{transcript_id}')"
+            ),
+        },
+    }
+    job = pipeline.create_job_from_notification(notification)
+    assert job.meeting_ref is not None
+    job.meeting_ref.meeting_id = transcript_id
+    store.upsert_job(job.job_id, job.to_dict())
+
+    ran = await pipeline.run_job(job.job_id)
+
+    assert captured["meeting_id"] == "MSo-from-odata"
+    assert captured["organizer_user_id"] == "org-1"
+    assert ran.status == "completed"
+
+
+def test_create_job_from_users_resource_path_without_odata_id(tmp_path):
+    store = TeamsPipelineStore(tmp_path / "teams-store.json")
+    pipeline = TeamsMeetingPipeline(graph_client=FakeGraphClient(), store=store)
+
+    job = pipeline.create_job_from_notification(
+        {
+            "id": "notif-resource-path",
+            "changeType": "created",
+            "resource": "users/org-2/onlineMeetings('MSo-from-resource')/transcripts('tx-99')",
+            "resourceData": {
+                "id": "tx-99",
+                "@odata.type": "#Microsoft.Graph.callTranscript",
+            },
+        }
+    )
+
+    assert job.meeting_ref is not None
+    assert job.meeting_ref.meeting_id == "MSo-from-resource"
+    assert job.meeting_ref.organizer_user_id == "org-2"
+    assert job.meeting_ref.metadata.get("transcript_id") == "tx-99"
+
+
+@pytest.mark.anyio
+async def test_resolve_meeting_reference_uses_organizer_scoped_graph_path():
+    class RecordingGraphClient:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        async def get_json(self, path, *, params=None, headers=None):
+            self.paths.append(path)
+            return {
+                "id": "MSo-meeting-id",
+                "subject": "Standup",
+                "organizer": {"identity": {"user": {"id": "org-1"}}},
+            }
+
+    client = RecordingGraphClient()
+    meeting_ref = await resolve_meeting_reference(
+        client,
+        meeting_id="MSo-meeting-id",
+        organizer_user_id="org-1",
+        tenant_id="tenant-1",
+    )
+
+    assert client.paths == ["/users/org-1/onlineMeetings/MSo-meeting-id"]
+    assert meeting_ref.meeting_id == "MSo-meeting-id"
+    assert meeting_ref.organizer_user_id == "org-1"
+
+
+@pytest.mark.anyio
+async def test_resolve_meeting_reference_refuses_transcript_id_without_join_url():
+    class BoomGraphClient:
+        async def get_json(self, path, *, params=None, headers=None):
+            raise AssertionError(f"Graph should not be called, got {path}")
+
+    with pytest.raises(TeamsMeetingError, match="transcript id"):
+        await resolve_meeting_reference(
+            BoomGraphClient(),
+            meeting_id="ktVizInGAAAA-TranscriptV2=",
+        )

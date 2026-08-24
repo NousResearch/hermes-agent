@@ -3,15 +3,28 @@
 from __future__ import annotations
 
 import copy
+import logging
+import os
+import ssl
+import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Headers safe to forward to a different origin. Everything else is dropped:
 # custom provider headers routinely carry credentials under arbitrary names.
 _CROSS_ORIGIN_SAFE_HEADERS = frozenset({"accept", "user-agent"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+_CA_BUNDLE_ENV_VARS = (
+    "HERMES_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
 
 
 def url_origin(url: str) -> tuple[str, str, int | None]:
@@ -83,17 +96,81 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     https_request = _sanitize
 
 
-def _secure_opener_from_installed_policy(original_url: str):
-    """Clone the installed opener's handlers, replacing redirect policy only."""
+def _resolved_https_context() -> ssl.SSLContext | None:
+    """Return the explicit CA context for Hermes-owned urllib openers."""
+    ca_bundle = next(
+        (
+            value
+            for name in _CA_BUNDLE_ENV_VARS
+            if (value := os.getenv(name, "").strip())
+        ),
+        "",
+    )
+    if ca_bundle:
+        ca_path = Path(ca_bundle).expanduser()
+        if ca_path.is_file():
+            try:
+                return ssl.create_default_context(cafile=str(ca_path))
+            except (OSError, ssl.SSLError) as exc:
+                logger.warning(
+                    "CA bundle could not be loaded from %s: %s — falling back to default certificates",
+                    ca_bundle,
+                    exc,
+                )
+        else:
+            logger.warning(
+                "CA bundle path does not exist: %s — falling back to default certificates",
+                ca_bundle,
+            )
+
+    if sys.platform != "darwin":
+        return None
+
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, OSError, ssl.SSLError) as exc:
+        logger.warning(
+            "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates",
+            exc,
+        )
+        return None
+
+
+def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):
+    """Clone the installed opener's handlers, replacing redirect policy only.
+
+    When ``ssl_context`` is provided, the cloned HTTPS handler is replaced with
+    one bound to that context so per-provider TLS settings (``ssl_ca_cert`` /
+    ``ssl_verify``) apply to this request. When it is None, Hermes-owned
+    openers get an explicit CA default via ``_resolved_https_context`` (env
+    bundle first, certifi on macOS); an application-installed opener's TLS
+    policy is preserved unchanged.
+    """
     installed = getattr(urllib.request, "_opener", None)
     if installed is None:
-        installed = urllib.request.build_opener()
+        context = _resolved_https_context()
+        if context is None:
+            installed = urllib.request.build_opener()
+        else:
+            installed = urllib.request.build_opener(
+                urllib.request.HTTPSHandler(context=context)
+            )
 
+    _https_handler_cls = getattr(urllib.request, "HTTPSHandler", None)
     handlers = [
         copy.copy(handler)
         for handler in getattr(installed, "handlers", ())
         if not isinstance(handler, urllib.request.HTTPRedirectHandler)
+        and not (
+            ssl_context is not None
+            and _https_handler_cls is not None
+            and isinstance(handler, _https_handler_cls)
+        )
     ]
+    if ssl_context is not None and _https_handler_cls is not None:
+        handlers.append(_https_handler_cls(context=ssl_context))
     handlers.append(SafeCredentialRedirectHandler(original_url))
     handlers.append(_CrossOriginRequestSanitizer(original_url))
     secured = urllib.request.build_opener(*handlers)
@@ -114,6 +191,7 @@ def open_credentialed_url(
     *,
     timeout: float,
     opener_factory: Callable[..., Any] | None = None,
+    ssl_context=None,
 ):
     """Open a request without forwarding credentials across origins.
 
@@ -121,9 +199,16 @@ def open_credentialed_url(
     cookies, custom protocol handlers, and instrumentation while replacing its
     redirect handler. ``opener_factory`` is an explicit test seam; security is
     never disabled based on global ``urlopen`` identity.
+
+    ``ssl_context`` (an ``ssl.SSLContext``) overrides the HTTPS handler's TLS
+    policy for this request only. It is used to honor a custom provider's
+    ``ssl_ca_cert`` / ``ssl_verify`` on the ``/models`` discovery path, which
+    otherwise falls back to the process-wide ``SSL_CERT_FILE`` / certifi bundle.
     """
     if opener_factory is None:
-        opener = _secure_opener_from_installed_policy(request.full_url)
+        opener = _secure_opener_from_installed_policy(
+            request.full_url, ssl_context=ssl_context
+        )
         for name, value in getattr(opener, "_hermes_initial_addheaders", ()):
             if not request.has_header(name):
                 request.add_header(name, value)

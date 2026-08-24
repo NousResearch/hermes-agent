@@ -221,6 +221,44 @@ class TestGatewayRedeliverySweep:
 
         assert blocked_event_loop == []
 
+    @pytest.mark.asyncio
+    async def test_clear_resume_pending_before_send_so_a_hang_cannot_also_resume(
+        self,
+    ):
+        """A hung redelivery send must still clear resume_pending.
+
+        Otherwise a timed-out startup-restore gate would schedule resume and
+        replay a turn whose answer is already in the ledger (#91969).
+        """
+        import asyncio
+
+        _record()
+        _orphan("ob-1")
+        hang = asyncio.Event()
+
+        async def hanging_send(**_kwargs):
+            await hang.wait()
+            return MagicMock(success=True, error="")
+
+        adapter = MagicMock()
+        adapter.send = hanging_send
+        runner = self._runner(adapter)
+        task = asyncio.create_task(runner._redeliver_pending_obligations())
+
+        deadline = asyncio.get_running_loop().time() + 2
+        while runner._async_session_store.clear_resume_pending.await_count == 0:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("resume_pending was not cleared before send")
+            await asyncio.sleep(0)
+
+        runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
+            "agent:main:slack:channel:C1"
+        )
+        assert not task.done()
+
+        hang.set()
+        assert await task == 1
+
 
 class TestAttemptsOnlySpentOnRealSends:
     """``attempts`` is the redelivery budget — it must buy a send.
@@ -297,3 +335,59 @@ class TestUnconnectedPlatformKeepsItsBudget:
         )
         assert _row("ob-1")["attempts"] == 0
 
+
+
+class TestOwnerAlivePidProbe:
+    """_owner_alive's no-start-time fallback must route through
+    gateway.status._pid_exists, never a raw ``os.kill(pid, 0)`` probe.
+
+    On Windows ``os.kill(pid, 0)`` is NOT a no-op: CPython maps sig=0 to
+    ``GenerateConsoleCtrlEvent(0, pid)`` (bpo-14484), so probing a LIVE pid
+    whose start time psutil could not read would Ctrl+C its console group.
+    Pattern per the windows-native-support reference: patch
+    ``gateway.status._pid_exists``, not ``os.kill``.
+    """
+
+    def _no_start_time(self, monkeypatch):
+        from gateway import status
+
+        monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
+
+    def test_alive_when_pid_exists(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        assert dl._owner_alive(12345, 999) is True
+
+    def test_dead_when_pid_gone(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+        assert dl._owner_alive(12345, 999) is False
+
+    def test_raw_os_kill_probe_never_used(self, monkeypatch):
+        """Regression guard: the probe must not touch os.kill when
+        gateway.status._pid_exists is importable (i.e. always in-tree)."""
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+        calls = []
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: calls.append(pid) or True)
+        monkeypatch.setattr(
+            dl.os, "kill", lambda *a, **k: (_ for _ in ()).throw(AssertionError("raw os.kill probe used"))
+        )
+        assert dl._owner_alive(4242, 999) is True
+        assert calls == [4242]
+
+    def test_probe_exception_means_dead(self, monkeypatch):
+        from gateway import status
+
+        self._no_start_time(monkeypatch)
+
+        def boom(pid):
+            raise RuntimeError("probe blew up")
+
+        monkeypatch.setattr(status, "_pid_exists", boom)
+        assert dl._owner_alive(12345, 999) is False

@@ -937,9 +937,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write SKILL.md atomically
+    # Write instructional documents with a readable mode while preserving
+    # the mode of an existing file across the atomic replacement.
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -1032,13 +1033,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
-    atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            atomic_write_text(skill_md, original_content)
+            atomic_write_text(skill_md, original_content, preserve_mode=True)
         return {"success": False, "error": scan_error}
 
     # Extract description from new content for verbose notifications
@@ -1161,12 +1162,12 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
-    atomic_write_text(target, new_content)
+    atomic_write_text(target, new_content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        atomic_write_text(target, original_content)
+        atomic_write_text(target, original_content, preserve_mode=True)
         return {"success": False, "error": scan_error}
 
     result = {
@@ -1340,13 +1341,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    atomic_write_text(target, file_content)
+    atomic_write_text(target, file_content, preserve_mode=True, create_mode=0o644)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            atomic_write_text(target, original_content)
+            atomic_write_text(target, original_content, preserve_mode=True)
         else:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
@@ -1575,6 +1576,21 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the
+    # skill directory so every mutation — any actor — lands in the append-only
+    # JSONL ledger with before/after blobs. Telemetry, not a gate: failures
+    # here must NEVER block the mutation (capture_before returns None on
+    # error, and record_mutation below swallows everything).
+    _ledger_before = None
+    _ledger_before_dir = None
+    try:
+        from tools import skill_ledger as _ledger
+        _pre = _find_skill(name)
+        _ledger_before_dir = _pre["path"] if _pre else None
+        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+    except Exception:
+        pass
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -1611,6 +1627,30 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        # Audit ledger append (best-effort; never blocks the mutation).
+        try:
+            from tools import skill_ledger as _ledger
+            _post = _find_skill(name)
+            _after_dir = _post["path"] if _post else None
+            _evidence = {}
+            if action == "delete":
+                # Record delete intent: consolidation vs prune, and whether
+                # the recoverable-archive path handled it (curator pass).
+                _evidence["absorbed_into"] = absorbed_into
+                _evidence["archived"] = bool(result.get("_archived"))
+            if session_id:
+                _evidence["session_id"] = session_id
+            if file_path:
+                _evidence["file_path"] = file_path
+            _ledger.record_mutation(
+                action,
+                name,
+                before=_ledger_before if _ledger_before is not None else [],
+                after_root=_after_dir,
+                evidence=_evidence,
+            )
+        except Exception:
+            pass
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -1737,8 +1777,8 @@ SKILL_MANAGE_SCHEMA = {
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
+                    "Replacement text (required for 'patch'); must differ from "
+                    "old_string. Can be empty string to delete the matched text."
                 )
             },
             "replace_all": {

@@ -12,6 +12,7 @@ from agent.image_routing import (
     _coerce_mode,
     _explicit_aux_vision_override,
     _lookup_supports_vision,
+    _should_probe_ollama_vision,
     _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
@@ -156,6 +157,70 @@ class TestLookupSupportsVisionOverride:
         # Caller didn't pass cfg at all — old call sites must still work.
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
+
+
+# ─── _should_probe_ollama_vision ──────────────────────────────────────────────
+
+
+class TestShouldProbeOllamaVision:
+    """Regression tests for issue #89863: remote OpenAI-compatible endpoints
+    must not be fingerprint-probed (with or without an api_key).
+    """
+
+    def test_ollama_provider_always_probes(self):
+        # provider="ollama" → probe regardless of base_url
+        assert _should_probe_ollama_vision("ollama", "") is True
+
+    def test_empty_base_url_returns_false(self):
+        assert _should_probe_ollama_vision("custom", "") is False
+
+    def test_remote_endpoint_not_probed(self):
+        # A remote sglang/vLLM endpoint must NEVER be fingerprinted — that's
+        # the 401-spray bug from #89863.
+        assert _should_probe_ollama_vision(
+            "custom", "https://my-remote-host/v1"
+        ) is False
+
+    def test_remote_endpoint_not_probed_without_key(self):
+        # Same as above but explicit: no api_key is not a reason to probe.
+        assert _should_probe_ollama_vision(
+            "custom", "https://inference.example.com/v1", api_key=""
+        ) is False
+
+    def test_remote_endpoint_not_probed_with_key(self):
+        # Even WITH an api_key, remote endpoints are not local and must not be
+        # fingerprinted — the key just prevents 401s, it doesn't make the
+        # endpoint local.
+        assert _should_probe_ollama_vision(
+            "custom", "https://inference.example.com/v1", api_key="sk-xxxx"
+        ) is False
+
+    def test_local_endpoint_with_key_passes_key(self):
+        # A local endpoint is still probed; the api_key must be forwarded so
+        # keyed local servers don't 401.
+        with patch(
+            "agent.model_metadata.detect_local_server_type",
+            return_value="ollama",
+        ) as mock_detect:
+            result = _should_probe_ollama_vision(
+                "custom", "http://localhost:11434/v1", api_key="sk-local"
+            )
+        assert result is True
+        mock_detect.assert_called_once_with(
+            "http://localhost:11434/v1", api_key="sk-local"
+        )
+
+    def test_local_endpoint_without_key(self):
+        # Legacy call: no api_key → forwarded as "" (existing behaviour).
+        with patch(
+            "agent.model_metadata.detect_local_server_type",
+            return_value="ollama",
+        ) as mock_detect:
+            result = _should_probe_ollama_vision(
+                "custom", "http://127.0.0.1:11434/v1"
+            )
+        assert result is True
+        mock_detect.assert_called_once_with("http://127.0.0.1:11434/v1", api_key="")
 
 
 # ─── decide_image_input_mode with auto + override ────────────────────────────
@@ -506,3 +571,83 @@ class TestCustomProviderVisionAlias:
             ]
         }
         assert _supports_vision_override(cfg, "custom:my-vllm", "other") is None
+
+
+def _fake_key(tag: str) -> str:
+    """Build an obviously-fake placeholder key from parts — never a literal
+    that could be mistaken for (or collide with) a real credential."""
+    return "fake-" + tag + "-not-a-secret"
+
+
+class TestProbeApiKeyForwarding:
+    """The local server-type probe must carry the provider's API key (#89863).
+
+    A remote API-keyed endpoint answers the probe waterfall with 401s
+    without the Authorization header, and an unauthorized probe can never
+    produce a positive verdict — so every image-bearing turn re-ran the
+    5-request waterfall against the user's own server.
+    """
+
+    def test_resolve_inference_api_key_model_block(self):
+        from agent.image_routing import _resolve_inference_api_key
+
+        key = _fake_key("model")
+        cfg = {"model": {"api_key": key}}
+        assert _resolve_inference_api_key(cfg, "custom") == key
+
+    def test_resolve_inference_api_key_providers_block(self):
+        from agent.image_routing import _resolve_inference_api_key
+
+        key = _fake_key("prov")
+        cfg = {
+            "model": {"provider": "custom:remote"},
+            "providers": {
+                "custom:remote": {"base_url": "https://x/v1", "api_key": key}
+            },
+        }
+        assert _resolve_inference_api_key(cfg, "custom:remote") == key
+
+    def test_resolve_inference_api_key_custom_providers_list(self):
+        from agent.image_routing import _resolve_inference_api_key
+
+        key = _fake_key("list")
+        cfg = {
+            "model": {"provider": "remote"},
+            "custom_providers": [
+                {"name": "remote", "base_url": "https://x/v1", "api_key": key}
+            ],
+        }
+        assert _resolve_inference_api_key(cfg, "remote") == key
+
+    def test_resolve_inference_api_key_absent(self):
+        from agent.image_routing import _resolve_inference_api_key
+
+        assert _resolve_inference_api_key({"model": {}}, "custom") == ""
+        assert _resolve_inference_api_key(None, "custom") == ""
+
+    def test_should_probe_forwards_api_key(self):
+        from agent.image_routing import _should_probe_ollama_vision
+
+        key = _fake_key("probe")
+        with patch(
+            "agent.model_metadata.detect_local_server_type",
+            return_value=None,
+        ) as detect:
+            _should_probe_ollama_vision("custom", "https://remote/v1", api_key=key)
+        detect.assert_called_once_with("https://remote/v1", api_key=key)
+
+    def test_lookup_passes_resolved_key_to_probe(self):
+        """The full lookup path resolves the key from cfg and hands it to the
+        probe — the exact chain that sprayed 401s in #89863."""
+        key = _fake_key("lookup")
+        import agent.models_dev  # noqa: F401 — make the patch target importable
+        with patch(
+            "agent.models_dev.get_model_capabilities", return_value=None
+        ), patch(
+            "agent.image_routing._resolve_inference_base_url",
+            return_value="https://remote/v1",
+        ), patch(
+            "agent.model_metadata.detect_local_server_type", return_value=None
+        ) as detect:
+            _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
+        assert detect.call_args.kwargs.get("api_key") == key

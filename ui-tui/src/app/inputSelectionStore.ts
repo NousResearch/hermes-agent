@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 export interface InputSelection {
   clear: () => void
   collapseToEnd: () => void
+  copy: () => void
+  cut: () => void
   end: number
   start: number
   value: string

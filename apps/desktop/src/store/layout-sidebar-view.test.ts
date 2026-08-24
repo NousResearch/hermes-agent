@@ -19,10 +19,10 @@ beforeEach(() => {
 })
 
 describe('the sidebar as it ships', () => {
-  it('groups by date, sorts by recency, and pins the timestamp', () => {
+  it('groups by date, sorts by recency, and pins the timestamp and preview', () => {
     expect($sidebarGrouping.get()).toBe('date')
     expect($sidebarOrdering.get()).toBe('updated')
-    expect($sidebarRowMeta.get()).toEqual(['updated'])
+    expect($sidebarRowMeta.get()).toEqual(['preview', 'updated'])
   })
 
   it('offers no reset until something actually moves off the defaults', () => {
@@ -44,7 +44,7 @@ describe('the sidebar as it ships', () => {
 
     expect($sidebarGrouping.get()).toBe('date')
     expect($sidebarOrdering.get()).toBe('updated')
-    expect($sidebarRowMeta.get()).toEqual(['updated'])
+    expect($sidebarRowMeta.get()).toEqual(['preview', 'updated'])
     expect($sidebarViewCustomized.get()).toBe(false)
   })
 

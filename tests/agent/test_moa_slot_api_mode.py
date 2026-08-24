@@ -79,7 +79,7 @@ def test_run_reference_passes_slot_extra_body(monkeypatch):
         },
     )
     monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
-    monkeypatch.setattr(moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime: messages)
+    monkeypatch.setattr(moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime, **kwargs: messages)
 
     label, text, _usage = moa_loop._run_reference(
         {"provider": "dashscope", "model": "qwen3.7-max"},
@@ -178,7 +178,7 @@ def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
     )
     monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
     monkeypatch.setattr(
-        moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime: messages
+        moa_loop, "_maybe_apply_moa_cache_control", lambda messages, runtime, **kwargs: messages
     )
 
     result = moa_loop.aggregate_moa_context(

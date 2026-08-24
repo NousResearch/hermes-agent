@@ -274,6 +274,47 @@ class TestBlueBubblesAttachmentDownload:
         assert result == "/tmp/test_image.png"
 
 
+class TestBlueBubblesAttachmentSend:
+    @pytest.mark.asyncio
+    async def test_attachment_payload_is_read_before_async_upload(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        file_path = tmp_path / "payload.bin"
+        payload = b"attachment-payload"
+        file_path.write_bytes(payload)
+
+        captured = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;+;chat-guid"
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "message-guid"}}
+
+        class MockClient:
+            async def post(self, url, *, files, data, timeout):
+                captured.update(url=url, files=files, data=data, timeout=timeout)
+                return MockResponse()
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        adapter.client = MockClient()
+
+        result = await adapter._send_attachment(
+            "target", str(file_path), filename="payload.bin"
+        )
+
+        assert result.success is True
+        assert captured["files"]["attachment"] == (
+            "payload.bin",
+            payload,
+            "application/octet-stream",
+        )
+        assert captured["data"]["chatGuid"] == "iMessage;+;chat-guid"
+
+
 # ---------------------------------------------------------------------------
 # Webhook registration
 # ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import json
+
 import pytest
 import yaml
 
@@ -48,6 +50,12 @@ def client(monkeypatch, isolated_profiles):
 
 def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+
+def _write_jobs(home, jobs):
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
 
 
 class TestProfileScopedConfig:
@@ -158,6 +166,60 @@ class TestProfileScopedMcp:
         )
         assert resp.json()["ok"] is True
 
+    def test_mcp_test_reports_optional_schema_chars(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The probe's per-tool `schema_chars` (details out-param) surfaces as an
+        ADDITIVE per-tool field on the wire; tools without a size stay bare so
+        older/partial probes degrade to 'no estimate' in the renderer."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  sized-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+
+        def fake_probe(name, config, connect_timeout=30, details=None):
+            if details is not None:
+                details["schema_chars"] = {"tool-a": 420}
+            return [("tool-a", "desc-a"), ("tool-b", "desc-b")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+
+        resp = client.post(
+            "/api/mcp/servers/sized-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        tools = {t["name"]: t for t in body["tools"]}
+        assert tools["tool-a"]["schema_chars"] == 420
+        # No size for tool-b → the key is simply absent (additive-optional).
+        assert "schema_chars" not in tools["tool-b"]
+
+    def test_mcp_test_without_schema_chars_keeps_old_wire_shape(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A probe that never fills schema_chars (older code path) produces the
+        exact pre-overlay tool objects — nothing new for old renderers."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  plain-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
+        )
+
+        resp = client.post(
+            "/api/mcp/servers/plain-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
+
 
 class TestProfileScopedModel:
     def test_model_set_main_scoped(self, client, isolated_profiles):
@@ -179,6 +241,113 @@ class TestProfileScopedModel:
         default_model = _cfg(isolated_profiles["default"]).get("model", {})
         if isinstance(default_model, dict):
             assert default_model.get("default") != "test/model-1"
+
+    def test_main_assignment_reports_only_target_profile_cron_impact(
+        self, client, isolated_profiles
+    ):
+        stale = {
+            "name": "Worker summary",
+            "enabled": True,
+            "no_agent": False,
+            "provider_snapshot": "openrouter",
+            "model_snapshot": "old/model",
+        }
+        _write_jobs(
+            isolated_profiles["worker_beta"], [{"id": "worker-job", **stale}]
+        )
+        _write_jobs(
+            isolated_profiles["default"],
+            [{"id": "default-job", **stale, "name": "Default summary"}],
+        )
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cron_model_impact"] == {
+            "available": True,
+            "guard_enabled": True,
+            "affected_count": 1,
+            "truncated": False,
+            "jobs": [
+                {
+                    "id": "worker-job",
+                    "name": "Worker summary",
+                    "drifted_axes": ["provider", "model"],
+                }
+            ],
+        }
+
+    def test_unavailable_impact_does_not_fail_persisted_assignment(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import cron.jobs
+
+        monkeypatch.setattr(cron.jobs, "load_jobs", lambda: {"malformed": True})
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["cron_model_impact"]["available"] is False
+        assert _cfg(isolated_profiles["worker_beta"])["model"]["default"] == "new/model"
+
+    def test_auxiliary_and_confirmation_responses_have_no_impact_summary(
+        self, client, isolated_profiles
+    ):
+        _write_jobs(
+            isolated_profiles["worker_beta"],
+            [
+                {
+                    "id": "worker-job",
+                    "enabled": True,
+                    "provider_snapshot": "openrouter",
+                    "model_snapshot": "old/model",
+                }
+            ],
+        )
+
+        auxiliary = client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "provider": "nous",
+                "model": "new/model",
+                "profile": "worker_beta",
+            },
+        )
+        confirmation = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "openai/gpt-5.5-pro",
+                "profile": "worker_beta",
+            },
+        )
+
+        assert auxiliary.status_code == 200
+        assert "cron_model_impact" not in auxiliary.json()
+        assert confirmation.status_code == 200
+        assert confirmation.json()["confirm_required"] is True
+        assert "cron_model_impact" not in confirmation.json()
 
 
 
@@ -333,6 +502,80 @@ class TestProfileScopedGateway:
         assert data["gateway_state"] == "running"
         assert data["gateway_platforms"] == {"telegram": {"state": "connected"}}
 
+    def test_status_keeps_fatal_platforms_on_startup_failed(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """startup_failed keeps FATAL per-profile entries — they're the diagnosis.
+
+        A multiplex gateway that dies at startup persists per-profile fatal
+        entries (``alpha:telegram`` etc.). The dead-gateway platform clear must
+        not erase them: exit_reason alone can't say which profile failed how.
+        Non-fatal leftovers (e.g. a platform that connected before the crash)
+        are still dropped — only fatals survive.
+        """
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "startup_failed",
+            "platforms": {
+                "telegram": {"state": "fatal", "error_code": "telegram_auth_error"},
+                "alpha:telegram": {"state": "fatal", "error_code": "credential_collision"},
+                "beta:discord": {"state": "connected"},
+            },
+            "exit_reason": "telegram: token rejected",
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        # Bare platform keys are checked against the configured set (fail
+        # closed) — mirror a host that actually has telegram configured.
+        monkeypatch.setattr(
+            web_server, "_load_configured_gateway_platforms", lambda: {"telegram"}
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_state"] == "startup_failed"
+        assert data["gateway_exit_reason"] == "telegram: token rejected"
+        # Fatal entries (root and namespaced) survive; the stale non-fatal is dropped.
+        assert set(data["gateway_platforms"]) == {"telegram", "alpha:telegram"}
+        assert data["gateway_platforms"]["alpha:telegram"]["error_code"] == "credential_collision"
+
+    def test_status_clears_platforms_on_clean_stop(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A cleanly stopped gateway still reports no platforms (stale-noise rule)."""
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "stopped",
+            "platforms": {"telegram": {"state": "connected"}},
+            "exit_reason": None,
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "stopped"
+        assert data["gateway_platforms"] == {}
+
 
 class TestProfileScopedTelegramOnboarding:
     def test_apply_writes_target_profile_and_restarts_target(
@@ -406,6 +649,126 @@ class TestProfileScopedChatPty:
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
+
+    def test_chat_argv_bridges_selected_profile_terminal_config(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "terminal:\n"
+            "  backend: docker\n"
+            "  docker_image: launch-profile-image\n",
+            encoding="utf-8",
+        )
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "terminal:\n"
+            "  backend: ssh\n"
+            "  ssh_host: worker.example.test\n"
+            "  cwd: '~'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env["TERMINAL_ENV"] == "ssh"
+        assert env["TERMINAL_SSH_HOST"] == "worker.example.test"
+        assert env["TERMINAL_CWD"] == "~"
+        assert env["TERMINAL_DOCKER_IMAGE"] != "launch-profile-image"
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_default_profile_preserves_exported_terminal_values(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "terminal:\n  backend: docker\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv()
+
+        assert env is not None
+        assert env["TERMINAL_ENV"] == "docker"
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    @pytest.mark.parametrize("placeholder", [".", "auto", "cwd"])
+    def test_chat_argv_placeholder_cwd_preserves_exported_value(
+        self, isolated_profiles, monkeypatch, placeholder
+    ):
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            f"terminal:\n  backend: docker\n  cwd: {placeholder}\n",
+            encoding="utf-8",
+        )
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "terminal:\n  backend: ssh\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/operator/work")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["TERMINAL_ENV"] == "ssh"
+        assert env["TERMINAL_CWD"] == "/operator/work"
+
+    def test_chat_argv_warns_when_profile_terminal_bridge_fails(
+        self, isolated_profiles, monkeypatch, caplog
+    ):
+        import logging
+
+        import hermes_cli.config as config_mod
+        import hermes_cli.web_server as web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "terminal:\n  backend: docker\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            config_mod,
+            "apply_terminal_config_to_env",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("bridge failed")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=web_server._log.name):
+            _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert "TERMINAL_ENV" not in env
+        assert "Failed to apply terminal config bridge for dashboard chat" in caplog.text
 
 
 class TestProfileScopedAudio:

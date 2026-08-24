@@ -46,7 +46,9 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _format_interrupted_output,
 )
+from tools.registry import registry
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -78,6 +80,33 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertEqual(EXECUTE_CODE_SCHEMA["name"], "execute_code")
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
+
+
+class TestInterruptedOutput(unittest.TestCase):
+    def tearDown(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(False)
+
+    def test_uses_recorded_interrupt_source(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True, reason="superseded by a new live turn")
+
+        self.assertEqual(
+            _format_interrupted_output("partial output"),
+            "partial output\n[execution interrupted — superseded by a new live turn]",
+        )
+
+    def test_unknown_interrupt_source_is_neutral(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True)
+
+        self.assertEqual(
+            _format_interrupted_output(""),
+            "[execution interrupted]",
+        )
 
 
 class TestHermesToolsGeneration(unittest.TestCase):
@@ -563,6 +592,56 @@ class TestEnvVarFiltering(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
+
+    def test_command_argument_points_to_terminal(self):
+        result = json.loads(registry.dispatch(
+            "execute_code",
+            {"command": "git status"},
+            task_id="test",
+            enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+        ))
+        self.assertIn("error", result)
+        self.assertIn("'command' parameter", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+
+    def test_terminal_code_argument_points_to_execute_code(self):
+        """Mirror recovery: terminal(code=...) names the stray argument and
+        redirects to execute_code, instead of the opaque
+        'Invalid command: expected string, got NoneType'."""
+        from tools.terminal_tool import _handle_terminal
+        result = json.loads(_handle_terminal({"code": "print(1)"}, task_id="test"))
+        self.assertIn("error", result)
+        self.assertIn("'code' parameter", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
+    def test_empty_code_explains_required_parameter(self):
+        for code in ("", None):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn("non-empty 'code' parameter", result["error"])
+                self.assertIn("Python source", result["error"])
+                self.assertIn("terminal(command=...)", result["error"])
+
+    def test_non_string_code_redirects_instead_of_attributeerror(self):
+        for code in (123, {"code": "print(1)"}, ["print(1)"]):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn(type(code).__name__, result["error"])
+                self.assertIn("Python source as a string", result["error"])
+                self.assertNotIn("AttributeError", result["error"])
 
     def test_windows_returns_error(self):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems

@@ -1,3 +1,4 @@
+import { hermesApi } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
@@ -58,7 +59,7 @@ function bridge() {
 }
 
 function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
+  return hermesApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }
@@ -107,6 +108,29 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
 
   return typeof result === 'string' ? result : result.dataUrl || ''
+}
+
+/**
+ * Read a composer image local-shell first, even when the active agent is
+ * remote. Picker, clipboard, and OS-drop paths belong to this machine; in-app
+ * project-tree paths may belong only to the gateway and fall back there.
+ */
+export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(path)
+
+    if (local) {
+      return local
+    }
+  } catch (error) {
+    if (!isDesktopFsRemoteMode()) {
+      throw error
+    }
+
+    // Not on this machine (or unreadable locally) — try the active gateway.
+  }
+
+  return readDesktopFileDataUrl(path)
 }
 
 export async function desktopGitRoot(path: string): Promise<string | null> {
@@ -178,13 +202,15 @@ export async function desktopFileDiff(repoRoot: string, filePath: string): Promi
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
+  const profile = desktopFsProfile()
+  const localOptions = profile ? { ...options, profile } : options
 
   if (!isDesktopFsRemoteMode()) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   if (!options?.directories) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

@@ -28,14 +28,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    EXECUTION_GUIDANCE_MODELS,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    USER_PROFILE_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
@@ -49,10 +52,16 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
+from pathlib import Path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+_PLUGIN_SECTION_FRAME_RE = re.compile(
+    r"^## Plugin Context: (?P<id>[a-z0-9][a-z0-9._-]{0,127})\n"
+    r"<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
+    re.MULTILINE,
+)
 
 
 def _ra():
@@ -149,6 +158,185 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
+def _plugin_session_info(agent: Any) -> Dict[str, str]:
+    """Return immutable-at-render-time metadata exposed to prompt sections."""
+    try:
+        cwd = str(resolve_context_cwd() or "")
+    except Exception:
+        cwd = ""
+    try:
+        # Prefer the agent's own home (override-aware, session_db fallback) —
+        # ambient get_active_profile_name() misreports on threads that lost
+        # the HERMES_HOME ContextVar (#86313 class; plugin half per @helix4u).
+        _home = _agent_home(agent)
+        if _home is not None:
+            profile_name = _profile_name_for_home(_home)
+        else:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile_name = str(get_active_profile_name() or "default")
+    except Exception:
+        profile_name = "default"
+    return {
+        "session_id": str(getattr(agent, "session_id", None) or ""),
+        "model": str(getattr(agent, "model", None) or ""),
+        "provider": str(getattr(agent, "provider", None) or ""),
+        "platform": str(getattr(agent, "platform", None) or ""),
+        "profile_name": profile_name,
+        "cwd": cwd,
+    }
+
+
+def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
+    """Render once on a new session; never re-evaluate a restored prompt.
+
+    Compression rebuilds reuse the per-agent tuple. A fresh process restores
+    ``_cached_system_prompt`` before reconstructing its static cache prefix;
+    because plugin sections live after memory in the volatile tail, that
+    reconstruction can safely omit them and must not call plugin code again.
+    """
+    attr = "_plugin_system_prompt_sections_snapshot"
+    if hasattr(agent, attr):
+        return getattr(agent, attr)
+    stored_prompt = getattr(agent, "_cached_system_prompt", None)
+    if isinstance(stored_prompt, str) and stored_prompt:
+        rendered = _restore_plugin_prompt_sections(stored_prompt)
+        setattr(agent, attr, rendered)
+        return rendered
+    try:
+        from hermes_cli.plugins import render_system_prompt_sections
+
+        rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
+    except Exception as exc:
+        logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+        rendered = ()
+    setattr(agent, attr, rendered)
+    return rendered
+
+
+def _restore_plugin_prompt_sections(prompt: str) -> tuple:
+    """Recover frozen section bytes from the already-persisted full prompt."""
+    from hermes_cli.plugins import (
+        MAX_SYSTEM_PROMPT_SECTION_CHARS,
+        PLUGIN_SECTIONS_END,
+        PLUGIN_SECTIONS_START,
+        RenderedPluginSystemPromptSection,
+        format_system_prompt_sections,
+    )
+
+    start = prompt.rfind(PLUGIN_SECTIONS_START)
+    if start < 0:
+        return ()
+    end = prompt.find(PLUGIN_SECTIONS_END, start + len(PLUGIN_SECTIONS_START))
+    if end < 0:
+        return ()
+    after_end = end + len(PLUGIN_SECTIONS_END)
+    if not prompt[after_end:].startswith("\n\nConversation started:"):
+        return ()
+    framed = prompt[start:after_end]
+
+    restored = []
+    for match in _PLUGIN_SECTION_FRAME_RE.finditer(framed):
+        content_len = int(match.group("chars"))
+        if content_len > MAX_SYSTEM_PROMPT_SECTION_CHARS:
+            continue
+        content_start = match.end()
+        content = framed[content_start : content_start + content_len]
+        if len(content) != content_len:
+            continue
+        restored.append(
+            RenderedPluginSystemPromptSection(
+                id=match.group("id"),
+                content=content,
+                position="after_memory",
+                plugin="persisted-prompt",
+            )
+        )
+    # User/project text may resemble a frame. Accept only the exact canonical
+    # container emitted by core, never a partial or malformed lookalike.
+    if format_system_prompt_sections(restored) != framed:
+        return ()
+    return tuple(restored)
+
+
+def restore_plugin_prompt_sections(agent: Any, prompt: str) -> None:
+    """Seed a resumed agent's frozen snapshot from persisted prompt bytes."""
+    agent._plugin_system_prompt_sections_snapshot = _restore_plugin_prompt_sections(prompt)
+
+
+def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
+    from hermes_cli.plugins import format_system_prompt_sections
+
+    selected = [section for section in sections if section.position == position]
+    block = format_system_prompt_sections(selected)
+    return [block] if block else []
+
+
+def _agent_home(agent: Any) -> Optional[Path]:
+    """The agent's OWN profile home.
+
+    Resolution order:
+
+    1. A bound HERMES_HOME ContextVar override wins. Surfaces that multiplex
+       several profiles over ONE shared session DB (the messaging gateway:
+       ``gateway/run.py`` hands every agent the launch-home ``state.db`` and
+       binds the profile home per turn via ``_profile_runtime_scope`` +
+       ``copy_context``) would otherwise have the db-derived launch home
+       STOMP the correctly-bound profile — inverting the leak this helper
+       exists to fix (found by @kshitijk4poor's post-merge probe on #86313).
+    2. Fallback: the home containing the agent's ``_session_db.db_path``
+       (``<home>/state.db``) — ground truth on threads that lost the
+       ContextVar (ContextVars don't propagate into ``threading.Thread``),
+       where the unbound build previously fell back to the launch home and
+       leaked the default profile's skills/identity into a bot prompt.
+
+    Returns None when neither resolves so callers fall back to ambient.
+    """
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+        if override:
+            return Path(override)
+    except Exception:
+        pass
+    try:
+        db = getattr(agent, "_session_db", None)
+        db_path = getattr(db, "db_path", None)
+        if db_path:
+            return Path(db_path).parent
+    except Exception:
+        pass
+    return None
+
+
+def _agent_skills_dir(agent: Any) -> Optional[Path]:
+    """The agent's own ``<home>/skills`` dir, or None to use ambient home."""
+    home = _agent_home(agent)
+    return (home / "skills") if home is not None else None
+
+
+def _profile_name_for_home(home: Path) -> str:
+    """Derive the profile name for an explicit agent home.
+
+    ``<root>/profiles/X`` -> ``"X"``; anything else -> ``"default"``.
+
+    Uses :func:`get_default_hermes_root` (NOT ``get_hermes_home()``): on a
+    correctly bound profile session the ambient home IS the profile dir, so
+    ``get_hermes_home()/profiles`` would never contain ``home`` and every
+    profile would misreport as "default".
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+        rel = home.resolve().relative_to((root / "profiles").resolve())
+        return rel.parts[0] if rel.parts else "default"
+    except (ValueError, OSError):
+        # Home IS the root (default profile) or unrelatable -> default.
+        return "default"
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -191,7 +379,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len)
+        # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
+        # ambient resolution on a thread that lost the HERMES_HOME ContextVar
+        # reads the launch profile's SOUL.md instead (#50233).
+        _soul_content = _r.load_soul_md(_ctx_len, home_override=_agent_home(agent))
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -225,8 +416,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
+    # MEMORY_GUIDANCE instructs the model to save facts to the built-in
+    # MEMORY.md/USER.md stores. With both disabled in config no store is built,
+    # so the guidance would steer the model at a tool whose every call returns
+    # "Memory is not available". Defaults to True for the rare code paths that
+    # build an agent view without going through agent_init.
+    # When only the user profile store is enabled, the narrower
+    # USER_PROFILE_GUIDANCE is injected instead — the full block instructs the
+    # model to write notes to a MEMORY.md store that does not exist.
+    _mem_enabled = getattr(agent, "_memory_enabled", True)
+    _profile_enabled = getattr(agent, "_user_profile_enabled", True)
     if "memory" in agent.valid_tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
+        if _mem_enabled:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        elif _profile_enabled:
+            tool_guidance.append(USER_PROFILE_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
@@ -288,13 +492,36 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
-            # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # Execution-discipline guidance (tool persistence, mandatory tool use
+    # for arithmetic, external-write read-back, count reconciliation,
+    # literal preservation, verification-gated completion).  Historically
+    # nested inside the tool-use-enforcement branch and fenced to
+    # gpt/codex/grok; now an independent gate so DeepSeek/Kimi/Qwen-class
+    # models receive it even when tool_use_enforcement is off.  Controlled
+    # by config.yaml agent.execution_guidance:
+    #   "auto" (default) — matches EXECUTION_GUIDANCE_MODELS
+    #   true  — always inject (all models)
+    #   false — never inject
+    #   list  — custom model-name substrings to match
+    # Resolved once at session start keyed on the (fixed) model name, so
+    # the system prompt stays byte-stable for the life of the conversation.
+    if agent.valid_tool_names:
+        _exec_guidance = getattr(agent, "_execution_guidance", "auto")
+        _exec_inject = False
+        if _exec_guidance is True or (isinstance(_exec_guidance, str) and _exec_guidance.lower() in {"true", "always", "yes", "on"}):
+            _exec_inject = True
+        elif _exec_guidance is False or (isinstance(_exec_guidance, str) and _exec_guidance.lower() in {"false", "never", "no", "off"}):
+            _exec_inject = False
+        elif isinstance(_exec_guidance, list):
+            model_lower = (agent.model or "").lower()
+            _exec_inject = any(p.lower() in model_lower for p in _exec_guidance if isinstance(p, str))
+        else:
+            # "auto" or any unrecognised value — use hardcoded defaults
+            model_lower = (agent.model or "").lower()
+            _exec_inject = any(p in model_lower for p in EXECUTION_GUIDANCE_MODELS)
+        if _exec_inject:
+            stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -322,6 +549,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            skills_dir_override=_agent_skills_dir(agent),
         )
     else:
         skills_prompt = ""
@@ -394,6 +622,43 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Probe failure must never block prompt build.
             pass
 
+    # Bot Mode teammate protocol — injected ONLY into a bot's canonical
+    # "Bot Chat" session (the conversation teammate bots message into via
+    # `hermes -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
+    # installs where Bot Mode manages profiles (ui_meta['hermes-bots']).
+    # Regular sessions never carry it — the desktop's composer middleware
+    # owns the @mention send path. Title is read once at first build and the
+    # rendered prompt is cached + DB-restored, so this is cache-safe.
+    # Gated by config.yaml ``agent.bot_mode_protocol`` (default True).
+    if getattr(agent, "_bot_mode_protocol", True):
+        try:
+            from tools.bot_mode_probe import (
+                BOT_CHAT_TITLE,
+                epoch_line,
+                get_bot_mode_protocol_section,
+            )
+            _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+            if not _title:
+                _sdb = getattr(agent, "_session_db", None)
+                _sid = getattr(agent, "session_id", None)
+                _title = str((_sdb.get_session_title(_sid) if (_sdb and _sid) else None) or "").strip()
+            if _title == BOT_CHAT_TITLE:
+                _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
+                if _bot_section:
+                    post_workspace_parts.append(_bot_section)
+                    # Eternal-session support: stamp the capability epoch so
+                    # the restore path can detect user-initiated capability
+                    # changes (skills/toolsets/MCP/SOUL/roster) and rebuild
+                    # ONCE per change instead of waiting for /new or
+                    # compression. Also marks this prompt as timeless — the
+                    # volatile timestamp line is omitted (see below), since a
+                    # birth date pinned in a session that lives for months is
+                    # misinformation.
+                    post_workspace_parts.append(epoch_line(_agent_home(agent)))
+                    agent._bot_chat_timeless_prompt = True
+        except Exception:
+            pass
+
     # Active-profile hint — names the Hermes profile the agent is running
     # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
     # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
@@ -401,26 +666,57 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
     # for the matching tool-side guard.
+    #
+    # Resolve from the agent's OWN home first (its session_db path), not the
+    # ambient HERMES_HOME: on a build thread that lost the ContextVar this
+    # line would otherwise print "default" for a bot profile — the same
+    # thread-fallback bug that leaked default's skills index.
+    _agent_home_path = _agent_home(agent)
+    active_profile = "default"
     try:
-        from agent.file_safety import _resolve_active_profile_name
-        active_profile = _resolve_active_profile_name()
+        if _agent_home_path is not None:
+            active_profile = _profile_name_for_home(_agent_home_path)
+        else:
+            from agent.file_safety import _resolve_active_profile_name
+            active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    # Home string for the message text: prefer the agent's own home so the
+    # paths named match the profile just resolved. When we have an explicit
+    # agent home, the root (where the default profile's data lives) comes
+    # from get_default_hermes_root(): get_hermes_home() on a bound profile
+    # session is the PROFILE dir, which would misname the default profile's
+    # paths. Without an agent home, keep the ambient resolution byte-identical
+    # to the legacy behavior (and patchable via this module's get_hermes_home).
+    if _agent_home_path is not None:
+        _home_str = str(_agent_home_path)
+        _root_str = str(get_default_hermes_root())
+    else:
+        _home_str = _root_str = str(get_hermes_home())
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under " + str(get_hermes_home()) + "/profiles/<name>/. Each profile has its own "
+            "under " + _root_str + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
             "you to."
         )
     else:
+        # A non-default name is only ever returned when the resolved home is
+        # ALREADY <root>/profiles/<name> — that is exactly how both
+        # _profile_name_for_home() and _resolve_active_profile_name() derive
+        # it. So the profile home is the session home itself; appending
+        # /profiles/<name> again doubled it (#72894). The default profile's
+        # data sits at the ROOT (get_default_hermes_root()), which in ambient
+        # profile mode is NOT get_hermes_home().
+        profile_home = _home_str
+        default_root = get_default_hermes_root()
         post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
+            f"and writes {profile_home}/. The default "
+            f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
@@ -499,7 +795,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
             context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+            home_override=_agent_home(agent))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
@@ -540,7 +837,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import now as _hermes_now
+    # Plugin sections are intentionally confined to one coarse anchor in the
+    # volatile tail. This preserves deterministic ordering and lets a resumed
+    # process reconstruct the stable cache prefix without re-running plugins.
+    volatile_parts.extend(
+        _plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory")
+    )
+
+    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
     # for the full day.  Minute-precision changes invalidate prefix-cache KV
@@ -548,7 +852,37 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    #
+    # Zone and UTC offset ARE included: tools that accept instants reject naive
+    # datetimes and require an explicit offset, and with the bare date the model
+    # has to infer EST vs EDT on its own (a coin-flip near a DST boundary, and a
+    # wrong guess silently writes the record onto the wrong day).  Both values
+    # are constant for the whole day -- they shift only at a DST transition --
+    # so the byte-stability the comment above depends on is preserved.
+    # ``get_timezone()`` returns None when no timezone is configured, in which
+    # case we fall back to the abbreviation of the server-local (still tz-aware)
+    # time.
+    _tz = _hermes_tz()
+    _zone_bits = []
+    _iana = getattr(_tz, "key", None)
+    if _iana:
+        _zone_bits.append(_iana)
+    _abbrev = now.strftime("%Z")
+    if _abbrev and _abbrev != _iana:
+        _zone_bits.append(_abbrev)
+    _offset = now.strftime("%z")
+    if _offset:  # '-0400' -> 'UTC-04:00'
+        _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
+    _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
+    timestamp_line = (
+        f"Conversation started: {now.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+    )
+    # Bot Chat sessions are effectively eternal — a birth date frozen in the
+    # prompt becomes confidently-wrong misinformation within days. Timeless
+    # prompts keep the identity lines but drop the date (the timezone still
+    # rides workspace context; live time comes from the terminal tool).
+    if getattr(agent, "_bot_chat_timeless_prompt", False):
+        timestamp_line = f"Timezone: {', '.join(_zone_bits)}" if _zone_bits else ""
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:
@@ -689,5 +1023,6 @@ __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
     "invalidate_system_prompt",
+    "restore_plugin_prompt_sections",
     "format_tools_for_system_message",
 ]

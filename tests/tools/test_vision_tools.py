@@ -276,9 +276,20 @@ class TestVisionConfig:
         )
         assert kwargs["temperature"] == 1.0
         assert kwargs["timeout"] == 77.0
+        # No hardcoded output cap — the aux client omits max_tokens so the
+        # provider uses its full output budget (max-tokens-knob policy).
+        assert "max_tokens" not in kwargs
 
         # Omitted values fall back to the built-in defaults.
         kwargs = await call_with({"auxiliary": {"vision": {}}})
+        assert kwargs["temperature"] == 0.1
+        assert kwargs["timeout"] == 120.0
+        assert "max_tokens" not in kwargs
+
+        # Even an explicit auxiliary.vision.max_tokens config entry must NOT
+        # be forwarded: user-facing max_tokens knobs are policy-prohibited.
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": 8000}}})
+        assert "max_tokens" not in kwargs
         assert kwargs["temperature"] == 0.1
         assert kwargs["timeout"] == 120.0
 
@@ -728,6 +739,106 @@ class TestResizeImageForVision:
                 result = _resize_image_for_vision(path, max_base64_bytes=100)
                 # Should return the original (oversized) data url
                 assert len(result) > 100
+
+    def test_force_jpeg_keeps_resolution_of_dense_png(self, tmp_path):
+        """A dense PNG over the byte cap shrinks via JPEG quality, not halving.
+
+        PNG has no quality ladder — before force_jpeg, the only shrink lever
+        for a text-dense screenshot was halving dimensions (1568px → ~784px),
+        destroying text legibility (#92699 follow-up). With force_jpeg the
+        quality ladder absorbs the byte pressure and resolution survives.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import base64 as _b64
+        import random
+        from io import BytesIO
+
+        # Photo-like PNG at exactly the long-edge cap: a gradient with
+        # low-amplitude noise defeats PNG's lossless filters (no exact
+        # repeats → >256KB) but JPEG's DCT quantization absorbs it easily —
+        # the realistic screenshot shape, unlike pure noise which no codec
+        # can fit in-budget at full resolution.
+        rng = random.Random(42)
+        img = Image.new("RGB", (1568, 900))
+        img.putdata([
+            (
+                min(255, (x * 255) // 1568 + rng.randrange(12)),
+                min(255, (y * 255) // 900 + rng.randrange(12)),
+                min(255, ((x + y) * 255) // 2468 + rng.randrange(12)),
+            )
+            for y in range(900)
+            for x in range(1568)
+        ])
+        path = tmp_path / "dense.png"
+        img.save(path, "PNG")
+
+        budget = 256 * 1024
+        result = _resize_image_for_vision(
+            path, mime_type="image/png",
+            max_base64_bytes=budget, max_dimension=1568,
+            force_jpeg=True,
+        )
+        assert result.startswith("data:image/jpeg;base64,")
+        assert len(result) <= budget
+        with Image.open(BytesIO(_b64.b64decode(result.partition(",")[2]))) as out:
+            # Resolution preserved (the PNG path would have halved to 784px).
+            assert max(out.size) == 1568
+
+    def test_force_jpeg_leaves_small_png_untouched(self, tmp_path):
+        """Under-cap images skip the resize entirely — still PNG."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (10, 10), (0, 255, 0))
+        path = tmp_path / "tiny.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(
+            path, mime_type="image/png",
+            max_base64_bytes=256 * 1024, max_dimension=1568,
+            force_jpeg=True,
+        )
+        assert result.startswith("data:image/png;base64,")
+
+    def test_force_jpeg_handles_alpha_and_exotic_modes(self, tmp_path):
+        """RGBA/LA/P PNGs must convert cleanly — JPEG can't encode alpha.
+
+        force_jpeg newly routes PNG inputs to the JPEG encoder, so modes
+        JPEG can't save (LA grayscale+alpha especially) must be normalized
+        to RGB instead of crashing img.save().
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import random
+
+        rng = random.Random(7)
+        for mode, size in (("RGBA", (600, 400)), ("LA", (600, 400)), ("P", (600, 400))):
+            img = Image.new(mode, size)
+            # Noise so the PNG exceeds a tiny budget and the resize fires.
+            if mode == "P":
+                img.putpalette([i % 256 for i in range(768)])
+                img.putdata([rng.randrange(256) for _ in range(size[0] * size[1])])
+            else:
+                bands = len(img.getbands())
+                img.putdata([
+                    tuple(rng.randrange(256) for _ in range(bands))
+                    for _ in range(size[0] * size[1])
+                ])
+            path = tmp_path / f"img_{mode}.png"
+            img.save(path, "PNG")
+
+            result = _resize_image_for_vision(
+                path, mime_type="image/png",
+                max_base64_bytes=16 * 1024, max_dimension=1568,
+                force_jpeg=True,
+            )
+            assert result.startswith("data:image/jpeg;base64,"), mode
 
 
 # ---------------------------------------------------------------------------

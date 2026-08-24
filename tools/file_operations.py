@@ -31,6 +31,7 @@ import os
 import re
 import difflib
 import hashlib
+import json
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -1144,6 +1145,34 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_native_tool_arg(self, arg: str) -> str:
+        """Escape a path argument destined for a NATIVE Windows binary.
+
+        ``_escape_shell_arg`` rewrites Windows paths to the Git Bash MSYS
+        form (``/c/Users/x``) so bash builtins resolve them. But native
+        Windows binaries invoked from that bash (ripgrep installed via
+        winget/cargo/choco, native git, etc.) do not understand ``/c/...``
+        paths — and Hermes disables MSYS argument conversion for its bash
+        subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
+        see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
+        translates the MSYS form back. The native tool then fails with
+        ``The system cannot find the path specified. (os error 3)``.
+
+        The forward-slash native form (``C:/Users/x``) is the one spelling
+        every layer accepts: bash passes it through untouched (it is not an
+        absolute POSIX path, so no conversion applies even without the
+        opt-outs), and Windows APIs treat ``/`` and ``\\`` as equivalent
+        separators. MSYS builds of the same tools accept it too, so this is
+        safe regardless of which flavor of the binary is installed.
+
+        On non-Windows hosts this is exactly ``_escape_shell_arg``.
+        """
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+
+        if _IS_WINDOWS and arg:
+            arg = _msys_to_windows_path(arg).replace("\\", "/")
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -1322,6 +1351,112 @@ class ShellFileOperations(FileOperations):
             )
         )
 
+    # UTF-16 rescue constants (ported from MoonshotAI/kimi-code#2647,
+    # detection derived from VS Code's encoding sniffer): sample the leading
+    # bytes; trust a BOM first, then a zero-byte parity heuristic — zeros
+    # clustering at odd indices mean UTF-16 LE (`0xAA 0x00`), at even indices
+    # UTF-16 BE (`0x00 0xAA`). Only the *placement* of zeros is checked, not
+    # density, so mixed Latin/CJK content (whose CJK units carry no zero
+    # byte) still detects. Zeros at both parities, or a single isolated
+    # zero, mean real binary. Legacy 8-bit encodings (GBK, Big5, ...) are
+    # never guessed — a wrong silent guess is worse than a clear refusal.
+    _UTF16_MAX_BYTES = 10 * 1024 * 1024
+    _UTF16_SAMPLE_BYTES = 512
+
+    def _try_read_utf16(self, path: str, offset: int, limit: int,
+                        file_size: int) -> "Optional[ReadResult]":
+        """Attempt to read ``path`` as UTF-16 text, transcoded to UTF-8.
+
+        Returns a populated ``ReadResult`` when the file is UTF-16 (BOM or
+        zero-byte parity heuristic), else ``None`` so the caller falls back
+        to the binary-file error. Files over 10 MiB are not rescued.
+        ``path`` must already be expanded (caller ran ``_expand_path``).
+        """
+        # Extensions that are definitively binary (images, archives, ...)
+        # never contain UTF-16 text worth rescuing — skip the subprocess.
+        ext = os.path.splitext(path)[1].lower()
+        if ext in BINARY_EXTENSIONS:
+            return None
+        if file_size > self._UTF16_MAX_BYTES:
+            return None
+
+        snippet = (
+            "import sys, json, os\n"
+            f"p = {path!r}\n"
+            f"offset = {int(offset)}\n"
+            f"limit = {int(limit)}\n"
+            f"MAX = {self._UTF16_MAX_BYTES}\n"
+            f"SAMPLE = {self._UTF16_SAMPLE_BYTES}\n"
+            "try:\n"
+            "    size = os.path.getsize(p)\n"
+            "    if size > MAX:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    with open(p, 'rb') as f:\n"
+            "        data = f.read()\n"
+            "    sample = data[:SAMPLE]\n"
+            "    enc = None\n"
+            "    if sample[:2] == b'\\xfe\\xff':\n"
+            "        enc = 'utf-16-be'\n"
+            "    elif sample[:2] == b'\\xff\\xfe':\n"
+            "        enc = 'utf-16-le'\n"
+            "    else:\n"
+            "        odd = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)\n"
+            "        even = sum(1 for i in range(0, len(sample), 2) if sample[i] == 0)\n"
+            "        if even == 0 and odd >= 2:\n"
+            "            enc = 'utf-16-le'\n"
+            "        elif odd == 0 and even >= 2:\n"
+            "            enc = 'utf-16-be'\n"
+            "    if enc is None:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    text = data.decode(enc, 'replace')\n"
+            "    if text[:1] == '\\ufeff':\n"
+            "        text = text[1:]\n"
+            "    text = text.replace('\\r\\n', '\\n')\n"
+            "    lines = text.split('\\n')\n"
+            "    total = len(lines)\n"
+            "    sel = lines[offset - 1: offset - 1 + limit]\n"
+            "    out = {'total_lines': total, 'encoding': enc,\n"
+            "           'content': '\\n'.join(sel)}\n"
+            "    print('HERMES_UTF16:OK')\n"
+            "    print(json.dumps(out, ensure_ascii=True))\n"
+            "except Exception:\n"
+            "    print('HERMES_UTF16:NO'); sys.exit(0)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
+        stdout = _strip_terminal_fence_leaks(result.stdout or "")
+        marker = stdout.find("HERMES_UTF16:OK")
+        if result.exit_code != 0 or marker < 0:
+            return None
+        payload = stdout[marker + len("HERMES_UTF16:OK"):].strip()
+        try:
+            data = json.loads(payload.split("\n", 1)[0] if "\n" in payload else payload)
+            content = data["content"]
+            total_lines = int(data["total_lines"])
+            encoding = str(data.get("encoding", "utf-16"))
+        except (ValueError, KeyError, TypeError):
+            return None
+
+        end_line = offset + limit - 1
+        truncated = total_lines > end_line
+        hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
+                      "Text edits via patch/write_file would re-encode as UTF-8."]
+        if truncated:
+            hint_parts.append(
+                f"Use offset={end_line + 1} to continue reading "
+                f"(showing {offset}-{end_line} of {total_lines} lines)"
+            )
+        return ReadResult(
+            content=self._add_line_numbers(content, offset),
+            total_lines=total_lines,
+            file_size=file_size,
+            truncated=truncated,
+            hint=" ".join(hint_parts),
+        )
+
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
@@ -1400,6 +1535,16 @@ class ShellFileOperations(FileOperations):
             is_binary = self._is_likely_binary(path, sample_output)
 
         if is_binary:
+            # UTF-16 rescue (ported from MoonshotAI/kimi-code#2647): the
+            # terminal env decodes stdout as UTF-8 with errors="replace", so
+            # a UTF-16 text file (Windows Notepad .txt, PowerShell `>`
+            # redirects) arrives mangled with U+FFFD and trips the binary
+            # guard. Probe the raw bytes via the backend's Python and
+            # transcode to UTF-8 when a BOM or the zero-byte parity
+            # heuristic identifies UTF-16.
+            utf16_result = self._try_read_utf16(path, offset, limit, file_size)
+            if utf16_result is not None:
+                return utf16_result
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
@@ -2259,6 +2404,28 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
+        # A per-file `tsc --noEmit <file>` cannot read the project's
+        # tsconfig.json, so for any .ts that belongs to a TS project it floods
+        # phantom errors — unresolved path aliases (`@/…` → TS2307) and ambient
+        # globals (`Window.hermesDesktop` → TS2339) that are defined by the
+        # config it never loads. The delta filter then reports the misleading
+        # "pre-existing lint errors … the file is still broken", which carries
+        # no signal and wastes the caller's turns. When an ancestor
+        # tsconfig.json exists, skip the shell tsc entirely; real diagnostics
+        # come from the LSP tier (below) or an explicit `tsc -p tsconfig.json`
+        # the caller runs deliberately. (.tsx already returns above via the
+        # `ext not in LINTERS` branch.)
+        if ext == '.ts' and self._has_ancestor_tsconfig(path):
+            return LintResult(
+                skipped=True,
+                message=(
+                    "Project tsconfig.json detected — per-file tsc skipped "
+                    "(single-file tsc can't resolve project aliases/globals; "
+                    "use the LSP tier or `tsc -p tsconfig.json` for real "
+                    "diagnostics)."
+                ),
+            )
+
         # If a real LSP server is active and claims this file, skip the
         # shell linter for extensions whose per-file shell invocation is
         # structurally weaker / floods phantom errors.  See
@@ -2279,8 +2446,12 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Linters (python, node, tsc, go, rustfmt) are native
+        # Windows binaries on Windows hosts: they need the C:/... path form.
+        # The MSYS /c/... form makes node resolve the file as C:\c\Users\...
+        # (double-prefixed) — every .js write then reports a phantom ENOENT
+        # lint failure. Native form works for MSYS builds too.
+        cmd = linter_cmd.replace("{file}", self._escape_native_tool_arg(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2434,6 +2605,33 @@ class ShellFileOperations(FileOperations):
             if ext_lower in srv.extensions:
                 return True
         return False
+
+    def _has_ancestor_tsconfig(self, path: str) -> bool:
+        """True iff a tsconfig.json exists in *path*'s directory or any ancestor.
+
+        A single-file ``tsc`` invocation can't read that config, so its
+        diagnostics for such a file are pure noise (unresolved aliases /
+        ambient globals). Used by :meth:`_check_lint` to skip the per-file
+        shell tsc for project TypeScript files.
+
+        Best-effort and local-host only: a host-side ``os.path`` walk. On a
+        remote/sandboxed backend the project tree isn't on this host, so the
+        walk returns False and the shell linter runs exactly as before — never
+        suppress lint based on a probe that couldn't answer.
+        """
+        if not self._lsp_local_only():
+            return False
+        try:
+            d = os.path.dirname(os.path.abspath(path))
+            while True:
+                if os.path.isfile(os.path.join(d, "tsconfig.json")):
+                    return True
+                parent = os.path.dirname(d)
+                if parent == d:
+                    return False
+                d = parent
+        except Exception:  # noqa: BLE001
+            return False
 
     def _lsp_will_handle(self, path: str) -> bool:
         """Return True iff the LSP service is active AND will lint this file.
@@ -2695,24 +2893,36 @@ class ShellFileOperations(FileOperations):
         """
         if not self._has_command('rg'):
             return None
+
+        def _tally(stdout: str):
+            """Parse ``path:count`` lines from rg --count-matches."""
+            total = 0
+            per_file = []
+            for line in (stdout or "").strip().splitlines():
+                p, _sep, n = line.rpartition(":")
+                if n.isdigit():
+                    total += int(n)
+                    per_file.append(p)
+            return total, per_file
+
+        def _paths_note(per_file, cap: int = 5) -> str:
+            shown = ", ".join(per_file[:cap])
+            extra = len(per_file) - cap
+            return shown + (f" (+{extra} more)" if extra > 0 else "")
+
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        ci_total = 0
-        ci_files = 0
-        for line in (probe.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                ci_total += int(n)
-                ci_files += 1
+        ci_total, ci_paths = _tally(probe.stdout)
         if ci_total > 0:
             return (
                 f"0 exact matches, but {ci_total} case-insensitive match(es) "
-                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+                f"in {len(ci_paths)} file(s): {_paths_note(ci_paths)} — "
+                "the pattern's casing may be wrong."
             )
         # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
         # default. When the pattern exists only there, say so instead of
@@ -2720,38 +2930,29 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        h_total = 0
-        h_files = 0
-        for line in (hidden.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                h_total += int(n)
-                h_files += 1
+        h_total, h_paths = _tally(hidden.stdout)
         if h_total > 0:
             return (
                 f"0 matches in visible files, but {h_total} match(es) in "
-                f"{h_files} hidden or gitignored file(s) — these are excluded "
-                "by default. Search the hidden path explicitly to include them."
+                f"{len(h_paths)} hidden or gitignored file(s): "
+                f"{_paths_note(h_paths)} — these are excluded by default."
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
-            f_total = sum(
-                int(line.rpartition(":")[2])
-                for line in (fixed.stdout or "").strip().splitlines()
-                if line.rpartition(":")[2].isdigit()
-            )
+            f_total, f_paths = _tally(fixed.stdout)
             if f_total > 0:
                 return (
-                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    f"0 regex matches, but {f_total} literal match(es) in "
+                    f"{len(f_paths)} file(s): {_paths_note(f_paths)} — the "
                     "pattern contains regex metacharacters that likely need "
                     "escaping (or pass a simpler substring)."
                 )
@@ -2862,7 +3063,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2873,7 +3074,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2957,7 +3158,10 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # rg is a native Windows binary when installed via winget/cargo/choco:
+        # it needs the C:/... path form, not the MSYS /c/... form (which
+        # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
+        cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -3091,9 +3295,23 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
+        # Add pattern and path. grep applies --exclude-dir to the command-line
+        # search root too, so passing the default relative root ``.`` causes
+        # ``.*`` to exclude the entire search. Anchor relative paths at the
+        # shell's live cwd; quoting $PWD separately keeps user paths escaped
+        # while working across local, container, and remote backends.
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        is_absolute = path.startswith(("/", "\\\\")) or bool(
+            re.match(r"^[A-Za-z]:[\\/]", path)
+        )
+        if is_absolute:
+            search_root = self._escape_shell_arg(path)
+        else:
+            relative_path = path[2:] if path.startswith("./") else path
+            search_root = '"$PWD"'
+            if relative_path not in {"", "."}:
+                search_root += f"/{self._escape_shell_arg(relative_path)}"
+        cmd_parts.append(search_root)
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)

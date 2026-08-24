@@ -76,16 +76,25 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
   // ── Session ──────────────────────────────────────────────────────────────
-  { id: 'session.new', category: 'session', defaults: ['mod+n', 'shift+n'] },
+  // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
+  // hijacked normal typing — pressing uppercase N outside an input (or via an
+  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
+  // stays; users who liked ⇧N can rebind it in the panel.
+  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
-  { id: 'session.next', category: 'session', defaults: ['ctrl+tab'] },
-  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab'] },
+  { id: 'session.next', category: 'session', defaults: ['ctrl+tab', 'ctrl+pagedown'] },
+  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab', 'ctrl+pageup'] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  // Archive the active session. Ships unbound (like `session.togglePin`) so an
+  // irreversible-feeling, mouse-only action doesn't silently claim a chord for
+  // every user — surfaced in the panel for opt-in binding (the issue suggests
+  // ⌘⇧⌫ / Ctrl+Shift+⌫).
+  { id: 'session.archive', category: 'session', defaults: [] },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
   // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's
@@ -113,9 +122,18 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
+  // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
+  // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
+  // here the hide can take away every other affordance the zone had, so the
+  // way back has to already exist. (⌥+letter emits a symbol on macOS; the
+  // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
+  { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
+  // ⌘⇧L — "L" for location, the address-bar chord every browser shares. Plain
+  // ⌘L is the terminal's selection shortcut, hence the shift.
+  { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+l'] },
   // ⌘⇧H — "h" for HUD. Enters/leaves the chrome-free floating chat: the app
   // window steps aside and a composer + live reply float over whatever the
   // user is working in. Ships bound because the whole point is leaving the app
@@ -140,7 +158,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
   { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
-  // ⌘F — open the find-in-page bar. `comboAllowedInInput` lets the combo
+  // ⌘F — open the find-in-page bar. `actionAllowedInInput` lets this action
   // fire from inside a textarea / contenteditable (matches browser behavior
   // so typing in the composer and pressing ⌘F focuses find, not 'f').
   { id: 'view.findInPage', category: 'view', defaults: ['mod+f'] },

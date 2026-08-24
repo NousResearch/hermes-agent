@@ -225,15 +225,28 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- fire -------------------------------------------------------------
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
-        """Run the due job (claim + run_one_job via the ABC default), then
-        re-arm the NEXT one-shot through NAS.
+    # NOTE: no ``fire_due`` override on purpose. The base implementation
+    # virtually dispatches through ``self.claim_fire``/``self.fire_claimed``,
+    # and ``provider_supports_split_fire`` treats ANY ``fire_due`` override
+    # (even a pure ``super()`` delegate) as the legacy single-phase signal —
+    # overriding it here would silently opt Chronos out of claim admission,
+    # duplicate detection, and the cancel-aware drain on the fire webhook.
 
-        Re-arm happens AFTER the run so next_run_at reflects the completed fire.
-        If the job is gone (one-shot completed / repeat-N exhausted), get_job
-        returns None → nothing to re-arm (the schedule naturally stops).
-        """
-        ran = super().fire_due(job_id, adapters=adapters, loop=loop)
+    def fire_claimed(
+        self,
+        claimed_job: dict,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        cancel_event: Any = None,
+    ) -> bool:
+        job_id = claimed_job["id"]
+        ran = super().fire_claimed(
+            claimed_job,
+            adapters=adapters,
+            loop=loop,
+            cancel_event=cancel_event,
+        )
         if ran:
             from cron.jobs import get_job
             job = get_job(job_id)

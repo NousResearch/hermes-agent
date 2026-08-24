@@ -40,3 +40,36 @@ def has_binary_extension(path: str) -> bool:
     if dot == -1:
         return False
     return path[dot:].lower() in BINARY_EXTENSIONS
+
+
+# Container document formats (OOXML zip / OLE compound / ODF zip / EPUB zip / RTF)
+# that a plain-text write can NEVER produce validly.  read_file auto-extracts
+# these to readable text (via anydoc for the non-built-in formats), so a model
+# that "read" report.docx and then writes the edited text back via
+# write_file/patch silently destroys the document.
+# PDF is intentionally NOT here: raw PDF syntax is text-authorable, so
+# new-file creation is legitimate — only overwrites are dangerous (handled
+# separately by the write guard).
+OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
+    ".doc", ".docx", ".docm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".odt", ".ods", ".odp",
+    ".rtf", ".epub",
+})
+
+
+def has_opaque_document_extension(path: str) -> bool:
+    """True when the path names an opaque container document (.docx etc.).
+
+    Pure string check, no I/O.
+    """
+    dot = path.rfind(".")
+    if dot == -1:
+        return False
+    return path[dot:].lower() in OPAQUE_DOCUMENT_EXTENSIONS
+
+
+def is_pdf_path(path: str) -> bool:
+    """True when the path has a .pdf extension. Pure string check, no I/O."""
+    return path.lower().endswith(".pdf")

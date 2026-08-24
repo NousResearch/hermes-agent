@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 import uuid
 from types import SimpleNamespace
@@ -57,6 +58,31 @@ def bare_gemini_model_id(model: str) -> str:
         if lowered.startswith(prefix):
             return name[len(prefix):].strip() or name
     return name
+
+
+def _gemini_major_version(model: str) -> Optional[int]:
+    """Extract the major version from a Gemini model id (``gemini-3.6-flash`` → 3)."""
+    name = bare_gemini_model_id(model).lower()
+    match = re.match(r"gemini-(\d+)", name)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def gemini_requires_tool_call_ids(model: str) -> bool:
+    """Whether functionCall/functionResponse parts must carry explicit ids.
+
+    Gemini 3+ models require explicit tool call IDs in replayed history —
+    without them, multi-tool turns can be rejected or mismatched. Older
+    Gemini models (2.x) reject unexpected ``id`` fields, so this is gated on
+    the major version. Mirrors earendil-works/pi#7494 (their fix for the same
+    class of bug in the google-shared converter).
+    """
+    version = _gemini_major_version(model)
+    return version is not None and version >= 3
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
@@ -299,7 +325,10 @@ _INTERRUPTED_RESPONSE_PLACEHOLDER = (
 )
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(
+    tool_call: Dict[str, Any],
+    include_ids: bool = False,
+) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
     try:
@@ -315,6 +344,12 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
             "args": args,
         }
     }
+    if include_ids:
+        # Gemini 3+ requires explicit tool call IDs so replayed parallel tool
+        # calls pair with their functionResponses (earendil-works/pi#7494).
+        tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
+        if tool_call_id:
+            part["functionCall"]["id"] = tool_call_id
     thought_signature = _tool_call_extra_signature(tool_call)
     # Fallback sentinel for cross-provider tool_calls (e.g. fallback from
     # xAI/Anthropic to Gemini, where the original tool_call carries no
@@ -325,9 +360,37 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     return part
 
 
+def _looks_like_json_schema(node: Any) -> bool:
+    """True if a parsed value contains a JSON-Schema-style ``$ref`` pointer.
+
+    Gemini 3 resolves ``$ref``/``$defs`` references inside a
+    functionResponse.response payload and rejects unknown pointers with
+    HTTP 400 INVALID_ARGUMENT. A tool result that is itself a JSON Schema
+    (e.g. the output of ``tool_describe`` for an MCP tool) must therefore be
+    forwarded as opaque text rather than as a structured response.
+
+    Detection is deliberately structural, not semantic: any ``$ref`` value
+    shaped like a JSON pointer (``#/...``) demotes the whole result. Non-schema
+    data that happens to carry such a pointer is a false positive, but the raw
+    content is preserved verbatim either way, so the cost is fidelity-free.
+    The recursive walk is O(n) over the parsed value; tool-result payloads are
+    small, so this is negligible per turn.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+                return True
+            if _looks_like_json_schema(value):
+                return True
+    elif isinstance(node, list):
+        return any(_looks_like_json_schema(item) for item in node)
+    return False
+
+
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any],
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
+    include_ids: bool = False,
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
@@ -346,16 +409,28 @@ def _translate_tool_result_to_gemini(
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
+    # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a
+    # functionResponse.response payload and rejects unknown references with
+    # HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match
+    # a display_name"; see vercel/ai#14369). A tool result that is itself a
+    # JSON Schema (e.g. tool_describe output for an MCP tool) must therefore
+    # be forwarded as opaque text, not as a structured response.
+    if isinstance(parsed, dict) and _looks_like_json_schema(parsed):
+        parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
-    return {
-        "functionResponse": {
-            "name": name,
-            "response": response,
-        }
+    function_response: Dict[str, Any] = {
+        "name": name,
+        "response": response,
     }
+    if include_ids and tool_call_id:
+        function_response["id"] = tool_call_id
+    return {"functionResponse": function_response}
 
 
-def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+def _build_gemini_contents(
+    messages: List[Dict[str, Any]],
+    include_tool_call_ids: bool = False,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
     tool_name_by_call_id: Dict[str, str] = {}
@@ -377,6 +452,7 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                         _translate_tool_result_to_gemini(
                             msg,
                             tool_name_by_call_id=tool_name_by_call_id,
+                            include_ids=include_tool_call_ids,
                         )
                     ],
                 }
@@ -397,7 +473,11 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                     tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
                     if tool_call_id and tool_name:
                         tool_name_by_call_id[tool_call_id] = tool_name
-                    parts.append(_translate_tool_call_to_gemini(tool_call))
+                    parts.append(
+                        _translate_tool_call_to_gemini(
+                            tool_call, include_ids=include_tool_call_ids
+                        )
+                    )
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
@@ -515,6 +595,49 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
     return normalized or None
 
 
+def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
+    """Return True when Gemini will spend output tokens on thinking.
+
+    Gemini bills thought tokens against ``maxOutputTokens``. A global
+    Hermes ``max_tokens`` of 4096/16384 is enough for visible text, but
+    Ultra/high thinking can consume the entire budget and leave
+    ``finishReason=MAX_TOKENS`` with no complete answer. Continuations
+    then abort after 4 retries.
+    """
+    normalized = _normalize_thinking_config(thinking_config)
+    if not normalized:
+        return False
+    if normalized.get("includeThoughts") is False:
+        return "thinkingLevel" in normalized or bool(normalized.get("thinkingBudget"))
+    budget = normalized.get("thinkingBudget")
+    if isinstance(budget, int) and budget <= 0 and "thinkingLevel" not in normalized:
+        return False
+    return True
+
+
+def _effective_gemini_max_output_tokens(
+    max_tokens: Optional[int], thinking_config: Any
+) -> int:
+    """Resolve native ``maxOutputTokens``.
+
+    Gemini's generateContent API does not treat an omitted cap as
+    unlimited — it applies a low internal default and truncates. When
+    thinking is enabled, also raise a too-small explicit cap to the
+    published 65,535 ceiling so thought tokens do not starve the answer.
+    """
+    if max_tokens is None:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if requested <= 0:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if _thinking_requests_output_headroom(thinking_config):
+        return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
+    return requested
+
+
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
@@ -525,8 +648,12 @@ def build_gemini_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
+    model: str = "",
 ) -> Dict[str, Any]:
-    contents, system_instruction = _build_gemini_contents(messages)
+    contents, system_instruction = _build_gemini_contents(
+        messages,
+        include_tool_call_ids=gemini_requires_tool_call_ids(model),
+    )
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         request["systemInstruction"] = system_instruction
@@ -542,20 +669,9 @@ def build_gemini_request(
     generation_config: Dict[str, Any] = {}
     if temperature is not None:
         generation_config["temperature"] = temperature
-    if max_tokens is not None:
-        generation_config["maxOutputTokens"] = max_tokens
-    else:
-        # Gemini's native generateContent does NOT treat an omitted
-        # maxOutputTokens as "use the model's full output budget" — it applies
-        # a low internal default and the model stops early with
-        # finishReason=MAX_TOKENS, truncating tool calls mid-stream (Hermes
-        # then retries 3× and refuses the incomplete call). Every current
-        # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
-        # 65,535 output tokens, so default to that ceiling when the caller
-        # passes None ("unlimited"). See the OpenAI-compat path where omitting
-        # the field genuinely means full budget — that assumption does not
-        # hold on the native API.
-        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    generation_config["maxOutputTokens"] = _effective_gemini_max_output_tokens(
+        max_tokens, thinking_config
+    )
     if top_p is not None:
         generation_config["topP"] = top_p
     if stop:
@@ -642,7 +758,11 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
             except (TypeError, ValueError):
                 args_str = "{}"
             tool_call = SimpleNamespace(
-                id=f"call_{uuid.uuid4().hex[:12]}",
+                id=(
+                    str(fc["id"])
+                    if isinstance(fc.get("id"), str) and fc.get("id")
+                    else f"call_{uuid.uuid4().hex[:12]}"
+                ),
                 type="function",
                 index=index,
                 function=SimpleNamespace(name=str(fc["name"]), arguments=args_str),
@@ -793,7 +913,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "id": (
+                        str(fc["id"])
+                        if isinstance(fc.get("id"), str) and fc.get("id")
+                        else f"call_{uuid.uuid4().hex[:12]}"
+                    ),
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot
@@ -1048,6 +1172,7 @@ class GeminiNativeClient:
             top_p=top_p,
             stop=stop,
             thinking_config=thinking_config,
+            model=model,
         )
 
         model = bare_gemini_model_id(model)

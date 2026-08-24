@@ -59,7 +59,7 @@ terminal("""curl -X POST https://api.example.com/users \\
 terminal('curl -sI https://api.example.com/health')
 
 # Pretty-print JSON
-terminal('curl -s https://api.example.com/users | python3 -m json.tool')
+terminal('curl -s https://api.example.com/users | python -m json.tool')
 ```
 
 ### GraphQL via terminal

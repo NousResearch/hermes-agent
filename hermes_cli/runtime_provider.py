@@ -134,6 +134,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # providers.is_official_openai_host for the spoof-rejection contract.
     if is_official_openai_host(base_url):
         return "codex_responses"
+    # Meta Model API: prompt caching only on Responses API (0% on
+    # chat/completions vs 93-99% on /responses with retention). Exact
+    # hostname per #32243.
+    if hostname == "api.meta.ai":
+        return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
     # Direct native Anthropic host: realign with providers.determine_api_mode,
@@ -185,6 +190,7 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     Responses path after upgrades or /reset.
     """
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    # Note: api.meta.ai is handled by _detect_api_mode_for_url (returns codex_responses), so the suppression guard below does not fire for Meta.
     detected_mode = _detect_api_mode_for_url(base_url)
 
     if configured_mode == "codex_responses" and detected_mode != "codex_responses":
@@ -322,9 +328,19 @@ def _get_model_config() -> Dict[str, Any]:
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
-        default = (cfg.get("default") or "").strip()
+        # Handle model.default being a dict {provider: ..., model: ...} rather than a string
+        _default = cfg.get("default")
+        if isinstance(_default, dict):
+            from hermes_cli.config import split_model_config_default
+            cfg_model, cfg_provider = split_model_config_default(_default)
+            cfg_provider = cfg_provider or str(model_cfg.get("provider") or "")
+            cfg["default"] = cfg_model
+            if cfg_provider and not cfg.get("provider"):
+                cfg["provider"] = cfg_provider
+            _default = cfg_model
+        default = (str(_default or "")).strip()
         base_url = (cfg.get("base_url") or "").strip()
-        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
         is_fallback = not default
         if is_local and is_fallback and base_url:
             detected = _auto_detect_local_model(base_url)
@@ -397,9 +413,17 @@ _VALID_API_MODES = {
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    Legacy/alias spellings (``openai``, ``anthropic``, ``responses``, …) are
+    canonicalized via the shared alias map before validation, so configs
+    written against older releases keep selecting the transport they named
+    instead of silently falling through to hostname-based detection.
+    """
     if isinstance(raw, str):
-        normalized = raw.strip().lower()
+        from hermes_cli.config import _canonical_api_mode
+
+        normalized = _canonical_api_mode(raw).lower()
         if normalized in _VALID_API_MODES:
             return normalized
     return None
@@ -543,7 +567,8 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             # Re-derive api_mode from the effective model rather than the
             # persisted api_mode: the opencode providers serve both
             # anthropic_messages and chat_completions models, so the previous
@@ -564,7 +589,8 @@ def _resolve_runtime_from_pool_entry(
     # symmetrically: strip /v1 for anthropic_messages, re-append it for
     # chat_completions / codex_responses (heals a stripped URL persisted to
     # model.base_url by an earlier switch into an anthropic-routed model).
-    if provider in {"opencode-zen", "opencode-go"}:
+    from hermes_cli.models import opencode_provider_family
+    if opencode_provider_family(provider) is not None:
         from hermes_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
@@ -628,6 +654,18 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
+            # Legacy configs commonly used short/placeholder keys ('123',
+            # 'm', ...) for local no-auth services like Ollama -- fine for
+            # the endpoint itself, but has_usable_secret's 4-char floor
+            # (added after these configs were written) now rejects them
+            # here with no migration path. Every OTHER resolution path in
+            # this file already substitutes "no-key-required" for a
+            # loopback endpoint with no usable secret (the config-based
+            # custom_providers fallback a few hundred lines below, and the
+            # "actual" provider's local-offline exemption further down) --
+            # this pool path was the one gap (issue #86864).
+            pool_api_key = "no-key-required"
         return {
             "provider": provider_label,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
@@ -721,7 +759,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if not is_provider_enabled(entry):
                 continue
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            key_env = str(
+                entry.get("key_env") or entry.get("api_key_env") or ""
+            ).strip()
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
@@ -745,6 +785,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
                     _lift_extra_headers(entry, result)
+                    # Command that PRINTS a credential, for gateways issuing
+                    # short-lived bearers instead of static keys. Propagated
+                    # raw; wrapped in a per-request token provider at
+                    # resolution.
+                    key_cmd = str(entry.get("key_cmd", "") or "").strip()
+                    if key_cmd:
+                        result["key_cmd"] = key_cmd
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -1051,6 +1098,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -1119,7 +1167,8 @@ def _resolve_named_custom_runtime(
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
+        # An explicit ``target_model`` wins (same rule as the non-pool path).
+        model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
         if isinstance(custom_provider.get("max_output_tokens"), int):
@@ -1153,6 +1202,22 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    # A ``key_cmd`` credential is minted per request rather than resolved once:
+    # gateways that issue short-lived bearers would otherwise go stale
+    # mid-session and 401. Both wire clients already accept a callable api_key
+    # (the Entra ID contract) and invoke it per request. An explicit --api-key
+    # still wins — it is the one-off recovery escape hatch.
+    key_cmd = str(custom_provider.get("key_cmd", "") or "").strip()
+    if key_cmd and not has_usable_secret((explicit_api_key or "").strip()):
+        from agent.command_token_source import build_command_token_provider
+
+        token_provider = build_command_token_provider(
+            key_cmd,
+            str(custom_provider.get("name", requested_provider) or "custom"),
+        )
+        if token_provider is not None:
+            api_key = token_provider
+
     result = {
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
@@ -1164,7 +1229,13 @@ def _resolve_named_custom_runtime(
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
+    # An explicit ``target_model`` wins over the provider's configured
+    # default (regression: auxiliary slots / background-review resolve a
+    # concrete model for a custom provider and must not silently fall back
+    # to ``default_model``).
+    if target_model:
+        result["model"] = target_model
+    elif custom_provider.get("model"):
         result["model"] = custom_provider["model"]
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
@@ -1175,6 +1246,43 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
+
+    # Custom providers in the OpenCode family (name extends opencode-go/zen,
+    # or base_url hosted on opencode.ai) serve models behind different API
+    # surfaces per model — a static api_mode 503s for /v1/responses-only
+    # models like grok-4.5 (#85589). Re-derive api_mode from the effective
+    # model and normalize the /v1 suffix, exactly like the built-in
+    # opencode-zen/go paths do.
+    from hermes_cli.models import opencode_provider_family
+
+    _oc_family = opencode_provider_family(requested_provider)
+    if _oc_family is None:
+        try:
+            from utils import base_url_hostname
+
+            if base_url_hostname(base_url).lower() == "opencode.ai":
+                _oc_family = (
+                    "opencode-go" if "/zen/go" in base_url.lower() else "opencode-zen"
+                )
+        except Exception:
+            _oc_family = None
+    if _oc_family is not None and not custom_provider.get("api_mode"):
+        from hermes_cli.models import (
+            normalize_opencode_base_url,
+            opencode_model_api_mode,
+        )
+
+        _effective_model = str(
+            target_model
+            or custom_provider.get("model")
+            or _get_model_config().get("default")
+            or ""
+        ).strip()
+        if _effective_model:
+            result["api_mode"] = opencode_model_api_mode(_oc_family, _effective_model)
+        result["base_url"] = normalize_opencode_base_url(
+            _oc_family, result["api_mode"], result["base_url"]
+        )
     return result
 
 
@@ -1717,7 +1825,7 @@ def resolve_runtime_provider(
     # return provider="custom" with chat_completions api_mode and no valid key).
     # Instead, use the Azure key directly with anthropic_messages api_mode.
     _eff_base = (explicit_base_url or "").strip()
-    if requested_provider == "anthropic" and "azure.com" in _eff_base:
+    if requested_provider == "anthropic" and base_url_host_matches(_eff_base, "azure.com"):
         _azure_key = (
             (explicit_api_key or "").strip()
             or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
@@ -1784,6 +1892,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -1832,6 +1941,27 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+
+    # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
+    # "Ox Alpha"): served ANONYMOUSLY on the Zen relay ONLY. Any bearer the
+    # relay doesn't recognize is a 401 — and the Go relay doesn't serve the
+    # free tier at all ("Model x is not supported"), so a valid OpenCode GO
+    # subscription key still fails. Route free slugs through the keyless Zen
+    # runtime BEFORE the credential-pool / explicit / api_key paths so they
+    # work with any OpenCode credential state, including none.
+    from hermes_cli.models import (
+        opencode_provider_family as _oc_family_fn,
+        opencode_zen_free_runtime as _oc_free_runtime_fn,
+    )
+    if _oc_family_fn(provider) is not None:
+        _oc_model = str(
+            target_model or model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip()
+        _free_runtime = _oc_free_runtime_fn(provider, _oc_model)
+        if _free_runtime is not None:
+            _free_runtime["requested_provider"] = requested_provider
+            return _free_runtime
+
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
@@ -2057,8 +2187,8 @@ def resolve_runtime_provider(
         # would find the Claude Code OAuth token first (priority 3) and return
         # that instead, causing 401s. Detect Azure endpoints and use the env
         # key directly to bypass the OAuth priority chain.
-        _is_azure_endpoint = "azure.com" in base_url.lower() or (
-            cfg_base_url and "azure.com" in cfg_base_url.lower()
+        _is_azure_endpoint = base_url_host_matches(base_url, "azure.com") or (
+            cfg_base_url and base_url_host_matches(cfg_base_url, "azure.com")
         )
         if _is_azure_endpoint:
             # Honor user-specified env var hints on the model config before
@@ -2112,8 +2242,11 @@ def resolve_runtime_provider(
         from agent.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
-            resolve_bedrock_region,
+            resolve_bedrock_runtime_region,
             is_anthropic_bedrock_model,
+            is_openai_bedrock_model,
+            bedrock_openai_base_url,
+            resolve_bedrock_bearer_token,
         )
         # When the user explicitly selected bedrock (not auto-detected),
         # trust boto3's credential chain — it handles IMDS, ECS task roles,
@@ -2131,8 +2264,10 @@ def resolve_runtime_provider(
             )
         # Read bedrock-specific config from config.yaml
         _bedrock_cfg = load_config().get("bedrock", {})
-        # Region priority: config.yaml bedrock.region → env var → us-east-1
-        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        # Region priority: config.yaml bedrock.region → env var → us-east-1.
+        # resolve_bedrock_runtime_region() is the canonical implementation of
+        # this priority; auxiliary resolution uses the same helper.
+        region = resolve_bedrock_runtime_region({"bedrock": _bedrock_cfg})
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
         # Build guardrail config if configured
         _gr = _bedrock_cfg.get("guardrail", {})
@@ -2146,9 +2281,12 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # Triple-path routing:
+        # - OpenAI GPT-5.5 on Bedrock uses Bedrock Mantle's OpenAI Responses
+        #   endpoint (not Converse / bedrock-runtime).
+        # - Claude models use AnthropicBedrock SDK for prompt caching,
+        #   thinking budgets, and adaptive thinking.
+        # - Other models use the native Converse API.
         #
         # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
         # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
@@ -2157,7 +2295,20 @@ def resolve_runtime_provider(
         # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
         _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
+        if is_openai_bedrock_model(_current_model):
+            bearer = resolve_bedrock_bearer_token()
+            runtime = {
+                "provider": "bedrock",
+                "api_mode": "codex_responses",
+                "base_url": bedrock_openai_base_url(region),
+                "api_key": bearer or "aws-sdk",
+                "source": "AWS_BEARER_TOKEN_BEDROCK" if bearer else auth_source,
+                "region": region,
+                "model": _current_model,
+                "bedrock_openai": True,
+                "requested_provider": requested_provider,
+            }
+        elif is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
@@ -2170,7 +2321,7 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # Non-Claude/OpenAI (Nova, DeepSeek, Llama, GPT-OSS, etc.) → Converse API
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",
@@ -2244,7 +2395,8 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_provider_family
+            if opencode_provider_family(provider) is not None:
                 # opencode-zen/go must always re-derive api_mode from the
                 # target model (not the stale persisted api_mode), because
                 # the same provider serves both anthropic_messages
@@ -2266,7 +2418,8 @@ def resolve_runtime_provider(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
-        if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(provider) is not None:
             from hermes_cli.models import normalize_opencode_base_url
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":

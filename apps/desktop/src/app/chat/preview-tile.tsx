@@ -19,7 +19,7 @@ import { $previewTabs, closeRightRailTab, type PreviewTarget } from '@/store/pre
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
-import { forgetPreviewStripTools, previewStripTools } from './right-rail/preview-strip-tools'
+import { forgetPreviewConsole } from './right-rail/preview-console-store'
 
 /** The target behind a tile id, or null once its tab is gone. */
 function targetFor(tabId: string): PreviewTarget | null {
@@ -122,6 +122,10 @@ export function watchPreviewTiles(): void {
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
   source: $previewTabs,
+  // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
+  // clicking a link in a bot chat must open the same pane Sessions already
+  // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
+  // `openPreview` ran and the click looked like a no-op.
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
   // Identical to route (page) tiles: its own zone docked beside main, sized by
@@ -132,12 +136,9 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   minWidth: '22rem',
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,
-  // Console + DevTools as bare strip glyphs after the last tab, where "+" sits.
-  // Only a URL preview has a webview behind it, so a file/artifact tab gets none.
-  stripTools: tabId => (targetFor(tabId)?.kind === 'url' ? previewStripTools(tabId) : []),
   render: tabId => <PreviewTilePane tabId={tabId} />,
   close: tabId => {
-    forgetPreviewStripTools(tabId)
+    forgetPreviewConsole(tabId)
     closeRightRailTab(tabId)
   }
 })

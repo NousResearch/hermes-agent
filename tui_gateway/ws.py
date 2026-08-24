@@ -89,10 +89,19 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        auth_identity: dict | None = None,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
+        #: Server-verified identity carried from the WS-upgrade credential
+        #: (dashboard ticket / internal credential) — stamped by
+        #: ``hermes_cli.web_server._ws_auth_reason`` onto the WS object and
+        #: passed through ``handle_ws``. None for transports that
+        #: authenticated via the legacy token path or stdio. RPC params can
+        #: never populate this: it is the only identity authority for
+        #: browser-controller registration.
+        self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
@@ -279,12 +288,36 @@ def _disable_nagle(ws: Any) -> None:
         sock = transport.get_extra_info("socket") if transport is not None else None
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Dead-peer detection: without keepalive a silently-dropped client
+            # (SSH tunnel reset, client sleep) leaves the TCP leg half-open
+            # forever, receive_text() blocks indefinitely, and the disconnect
+            # teardown (detach + orphan reap + resume replay) never runs.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):  # Linux
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+            elif hasattr(socket, "TCP_KEEPALIVE"):  # macOS idle seconds
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30)
     except Exception as exc:  # pragma: no cover - best-effort tuning
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+async def handle_ws(
+    ws: Any,
+    *,
+    auth_identity: dict | None = None,
+    subprotocol: str | None = None,
+) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+
+    *auth_identity* is the server-minted ``{user_id, provider}`` recorded at
+    WS-upgrade authentication (``hermes_cli.web_server._ws_auth_reason``); it
+    is stored on the transport as ``WSTransport.auth_identity`` and is the
+    only identity authority for browser-controller registration. Existing
+    callers (stdio-free harnesses, the embedded TUI child) omit it and get a
+    ``None`` transport identity — unchanged behaviour.
+    """
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
     messages = 0
@@ -294,14 +327,22 @@ async def handle_ws(ws: Any) -> None:
     disconnect_reason = "not_connected"
 
     try:
-        await ws.accept()
+        if subprotocol:
+            await ws.accept(subprotocol=subprotocol)
+        else:
+            await ws.accept()
         disconnect_reason = "connected"
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            auth_identity=auth_identity,
+        )
 
         # resolve_skin() reads config + initializes the skin engine —
         # synchronous I/O + CPU work that should not block the event loop
@@ -330,6 +371,15 @@ async def handle_ws(ws: Any) -> None:
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+        # Same once-per-process startup pass for session rows orphaned by a
+        # previous gateway process (#65194): the desktop app and web dashboard
+        # reach the agent through this WS sidecar, not entry.main(). Idempotent
+        # + config-gated inside, so a stdio TUI that already scheduled is a
+        # no-op.
+        try:
+            server._schedule_startup_orphan_sweep()
+        except Exception:
+            _log.warning("startup orphan sweep scheduling failed", exc_info=True)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -431,6 +481,28 @@ async def handle_ws(ws: Any) -> None:
         detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
+
+            # Owner-safely park browser controllers this transport registered.
+            # A reconnect with the same stable identity may deliver a terminal
+            # result for work already in flight; no new dispatch is admitted
+            # while the controller is offline.
+            #
+            # Offloaded via to_thread: disconnect acquires the controller's
+            # send_lock, which a worker-thread dispatch may hold while blocking
+            # on THIS loop to transmit its frame (run_coroutine_threadsafe +
+            # result(timeout=10)). Acquiring it synchronously here would park
+            # the whole event loop behind that 10s send bridge.
+            try:
+                from gateway.browser_control_broker import (
+                    get_browser_control_broker,
+                )
+
+                await asyncio.to_thread(
+                    get_browser_control_broker().disconnect_owner, transport
+                )
+            except Exception:
+                _log.exception("ws browser-controller disconnect failed peer=%s", peer)
+
             transport.close()
 
             try:

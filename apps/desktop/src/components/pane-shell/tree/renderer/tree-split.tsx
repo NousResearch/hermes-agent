@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
 import { $layoutEditMode } from '../../edit-mode'
+import { $workspaceMode, $workspaceOwnerKey, contributesToWorkspace } from '../../workspace-scope'
 import type { LayoutNode, SplitNode } from '../model'
 import { allPaneIds } from '../model'
 import {
@@ -90,6 +91,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  const workspaceMode = useStore($workspaceMode)
+  const workspaceOwnerKey = useStore($workspaceOwnerKey)
   // Scoped to THIS subtree's panes: a sash drag writes size overrides on every
   // pointermove, but only the splits whose subtree actually resized should
   // re-render — not every split in the tree.
@@ -124,7 +127,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // closed) visible so they're rearrangeable — only truly-absent (unregistered)
   // or narrow-collapsed panes stay gone. Restores itself on exit (render-only).
   const paneGone = (id: string) =>
-    !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+    !paneFor(id) ||
+    !contributesToWorkspace(paneFor(id), workspaceMode, workspaceOwnerKey) ||
+    (!editMode && hiddenPanes.has(id)) ||
+    (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
@@ -647,7 +653,12 @@ function Sash({
     <div
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        horizontal ? 'inset-y-0 left-0 w-[9px] -translate-x-1/2' : 'inset-x-0 top-0 h-[9px] -translate-y-1/2',
+        // Asymmetric grab band: only 1px reaches into the leading pane so its
+        // edge-hugging 4px scrollbar stays clickable (the old centered 9px band
+        // swallowed it entirely — the pointer got col-resize instead of the
+        // thumb). The trailing side keeps a generous 7px reach; total grab
+        // width stays ~8px so the sash is no harder to hit.
+        horizontal ? 'inset-y-0 left-0 w-[8px] -translate-x-[1px]' : 'inset-x-0 top-0 h-[8px] -translate-y-[1px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
       onDoubleClick={disabled ? undefined : onDoubleClick}
@@ -661,7 +672,7 @@ function Sash({
       <span
         className={cn(
           'absolute bg-(--ui-stroke-secondary) opacity-10 transition-opacity duration-100 group-hover:opacity-100',
-          horizontal ? 'inset-y-0 left-1/2 w-px -translate-x-1/2' : 'inset-x-0 top-1/2 h-px -translate-y-1/2'
+          horizontal ? 'inset-y-0 left-[1px] w-px -translate-x-1/2' : 'inset-x-0 top-[1px] h-px -translate-y-1/2'
         )}
       />
       {!disabled && (
@@ -669,8 +680,8 @@ function Sash({
           className={cn(
             'absolute bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100',
             horizontal
-              ? 'inset-y-0 left-1/2 w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2'
-              : 'inset-x-0 top-1/2 h-(--vscode-sash-hover-size,0.25rem) -translate-y-1/2'
+              ? 'inset-y-0 left-[1px] w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2'
+              : 'inset-x-0 top-[1px] h-(--vscode-sash-hover-size,0.25rem) -translate-y-1/2'
           )}
         />
       )}

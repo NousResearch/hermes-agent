@@ -37,6 +37,8 @@ delegate_task(tasks=[
 Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
 :::
 
+One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -170,6 +172,39 @@ Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then
 
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
+## The `/review` Command
+
+`/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.
+
+```
+/review                       # review whatever the last 10 messages presented
+/review focus on security     # add extra instructions for the reviewer
+```
+
+What happens:
+
+1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded).
+2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
+3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
+4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
+
+The canonical flow: your main agent opens a PR, you type `/review`, and a second pair of eyes investigates it while you keep working; the review lands back in the chat addressed to the agent that created the PR.
+
+### Review model
+
+By default the reviewer runs on your main model. To pin a dedicated review model, set `auxiliary.review` in `config.yaml`:
+
+```yaml
+auxiliary:
+  review:
+    provider: openrouter               # or nous, anthropic, a direct base_url, ...
+    model: anthropic/claude-opus-4.6   # a strong reviewer model
+```
+
+Credentials resolve exactly like a `delegation.provider` pin (full runtime-provider bundle: base_url, api key, api_mode). `provider: auto` with an empty `model` means "inherit the main agent's model" — the default.
+
+`/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
+
 ## Inherited Tool Access
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
@@ -288,7 +323,27 @@ glance.
 
 ## Steering a Running Subagent
 
-Interrupting a child throws away its in-flight work; often you just want to redirect it. `steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+Interrupting a child throws away its in-flight work; often you just want to redirect it.
+
+### From the parent agent (model-facing)
+
+The parent agent orchestrates its own running children with the same `delegate_task` tool it spawned them with — no separate control tool:
+
+```json
+{"action": "list"}
+{"action": "steer", "subagent_id": "sa-0-1a2b3c4d", "message": "focus on pricing instead"}
+{"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
+```
+
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
+- **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+
+Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
+
+### From the TUI / gateway (session-facing)
+
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -367,6 +422,42 @@ For **durable execution** that must survive session closure or process restart, 
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 
+## Worktree Isolation
+
+By default, subagents share the parent's working directory — fine for research
+and read-heavy work, but parallel children editing the same repo can collide.
+Set `delegation.worktree_isolation: true` to give each child its own git
+worktree, branched from the repo's current `HEAD` (inspired by Muse Code's
+`--subagent-worktree-isolation`):
+
+```yaml
+delegation:
+  worktree_isolation: true   # default: false
+```
+
+With isolation on:
+
+- Each child starts its terminal in `<repo>/.worktrees/subagent-<id>` on its
+  own branch `hermes-subagent/subagent-<id>`, and its goal message tells it to
+  work and commit there.
+- The parent's checkout stays untouched; children can't clobber each other's
+  edits.
+- When a child finishes, its result entry gains a `worktree` field reporting
+  `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
+  reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
+- A worktree left with **no commits and a clean tree is pruned automatically**
+  (`pruned: true`); anything holding work is kept.
+- Pruning requires proof. If a git inspection probe fails — or finalization
+  itself errors — the worktree and branch are kept and the entry carries
+  `inspection_failed: true` plus a `note` — `commits`/`dirty` are then
+  defaults, not measurements, so inspect the worktree rather than assuming
+  the child produced nothing.
+
+Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
+directory, on docker/ssh/modal backends, or if worktree creation fails, the
+setting degrades silently to today's shared-workspace behavior — never an
+error.
+
 ## Delegation vs execute_code
 
 | Factor | delegate_task | execute_code |
@@ -388,6 +479,7 @@ For **durable execution** that must survive session closure or process restart, 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

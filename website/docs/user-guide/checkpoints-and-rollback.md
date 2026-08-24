@@ -40,7 +40,8 @@ In-session slash commands:
 | Command | Description |
 |---------|-------------|
 | `/rollback` | List all checkpoints with change stats |
-| `/rollback <N>` | Restore to checkpoint N (also undoes last chat turn) |
+| `/rollback <N>` | Restore to checkpoint N, keeping your hand-edits (also undoes last chat turn) |
+| `/rollback <N> --all` | Full restore — overwrites your hand-edits too |
 | `/rollback diff <N>` | Preview diff between checkpoint N and current state |
 | `/rollback <N> <file>` | Restore a single file from checkpoint N |
 
@@ -133,7 +134,8 @@ Hermes responds with a formatted list showing change statistics:
   2. eaf4c1f  2026-03-16 04:35  before write_file
   3. b3f9d2e  2026-03-16 04:34  before terminal: sed -i s/old/new/ config.py  (1 file, +1/-1)
 
-  /rollback <N>             restore to checkpoint N
+  /rollback <N>             restore to checkpoint N (keeps your hand-edits)
+  /rollback <N> --all       full restore, overwriting your hand-edits too
   /rollback diff <N>        preview changes since checkpoint N
   /rollback <N> <file>      restore a single file from checkpoint N
 ```
@@ -191,8 +193,33 @@ Behind the scenes, Hermes:
 
 1. Verifies the target commit exists in the shadow store.
 2. Takes a **pre-rollback snapshot** of the current state so you can "undo the undo" later.
-3. Restores tracked files in your working directory.
+3. Restores tracked files in your working directory — **preserving your hand-edits** (see below).
 4. **Undoes the last conversation turn** so the agent's context matches the restored filesystem state.
+
+### User hand-edits are preserved by default
+
+`/rollback <N>` restores only the files Hermes itself changed. Every successful
+`write_file` / `patch` records the file's content hash in an **agent-write
+ledger**; at restore time, any file whose current contents no longer match what
+Hermes last wrote (you edited it afterwards, or Hermes never touched it) is
+**skipped** instead of overwritten, and listed in the output:
+
+```
+✅ Restored to checkpoint a1b2c3d4: before write_file
+↷ Kept your hand-edits: src/config.py, notes.md
+Use /rollback <N> --all to restore those too.
+```
+
+To force the classic full restore that reverts everything — including your own
+edits — add `--all`:
+
+```
+/rollback 1 --all
+```
+
+If the ledger is empty (a store created before this feature, or Hermes hasn't
+written any files in the project yet), `/rollback` falls back to the full
+restore automatically.
 
 ## Single-File Restore
 

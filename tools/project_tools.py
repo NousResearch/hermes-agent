@@ -101,9 +101,17 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
 
     try:
         with pdb.connect_closing() as conn:
-            pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-            pdb.set_active(conn, pid)
-            proj = pdb.get_project(conn, pid)
+            existing = pdb.find_by_primary_path(conn, folder) if folder else None
+            if existing is not None:
+                # Idempotent create: the folder already belongs to a project.
+                # Re-activating it beats minting a duplicate — duplicated
+                # projects render N identical sidebar subtrees (#75820).
+                pdb.set_active(conn, existing.id)
+                proj = existing
+            else:
+                pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
+                pdb.set_active(conn, pid)
+                proj = pdb.get_project(conn, pid)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
 

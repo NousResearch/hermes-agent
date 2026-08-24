@@ -28,6 +28,7 @@ Pinned here, in both directions:
 
 from __future__ import annotations
 
+import threading
 import types
 
 import pytest
@@ -116,12 +117,21 @@ def _resume(**params):
 
 
 def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
-    """The 'session not found' early return must not leak the handle."""
+    """The 'session not found' early return must not leak the handle.
+
+    The stranded-session adoption fallback (#93296 follow-up) may lazily
+    construct the SHARED launch handle via ``_get_db()`` while probing the
+    default store for a donor row; that handle carries ``db_path=None`` and
+    is never closed by design (see module docstring). Only the dedicated
+    profile-scoped open (``db_path=<profile>/state.db``) is the caller's to
+    close, so the leak assertion filters to path-scoped opens.
+    """
     resp = _resume(session_id="missing", profile="work")
 
     assert resp["error"]["code"] == 4007
-    assert len(profile_dbs) == 1
-    assert profile_dbs[0].closed == 1
+    scoped = [db for db in profile_dbs if db.db_path is not None]
+    assert len(scoped) == 1
+    assert scoped[0].closed == 1
 
 
 def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
@@ -158,7 +168,14 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         return db
 
     monkeypatch.setattr("hermes_state.SessionDB", _factory)
-    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: ("live-sid", {}))
+    live_session = {}
+    with server._sessions_lock:
+        server._sessions["live-sid"] = live_session
+    monkeypatch.setattr(
+        server,
+        "_find_live_session_by_key",
+        lambda _key: ("live-sid", live_session),
+    )
     monkeypatch.setattr(
         server,
         "_live_session_payload",
@@ -194,6 +211,50 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
     assert resp["result"]["session_key"] == "s1"
     assert resp["result"]["status"] == "idle"
     assert profile_dbs[0].closed == 1
+
+
+def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeypatch):
+    """Incremental hydration owns the profile handle until its read completes."""
+    history_started = threading.Event()
+    release_history = threading.Event()
+    close_completed = threading.Event()
+
+    class _BlockingDB(_RecordingDB):
+        def close(self):
+            super().close()
+            close_completed.set()
+
+        def get_resume_conversations(self, _target):
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            assert self.closed == 0
+            return ([], [])
+
+    def _factory(db_path=None, **kwargs):
+        db = _BlockingDB(db_path=db_path, **kwargs)
+        db.rows["s1"] = {"id": "s1", "cwd": "", "message_count": 0}
+        profile_dbs.append(db)
+        return db
+
+    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+
+    try:
+        resp = _resume(
+            session_id="s1", profile="work", defer_history=True
+        )
+        sid = resp["result"]["session_id"]
+        db = profile_dbs[0]
+        assert history_started.wait(timeout=1.0)
+        assert db.closed == 0
+
+        release_history.set()
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert close_completed.wait(timeout=1.0)
+        assert db.closed == 1
+    finally:
+        release_history.set()
 
 
 def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monkeypatch):
@@ -287,4 +348,43 @@ def test_resume_never_closes_shared_launch_db(profile_dbs, monkeypatch):
 
     assert resp["error"]["code"] == 4007
     assert profile_dbs == []  # no dedicated handle was opened
+    assert shared.closed == 0
+
+
+def test_resume_eager_never_transfers_shared_launch_db(profile_dbs, monkeypatch):
+    """Regression #91610: an eager resume in the LAUNCH profile resolves the
+    shared ``_get_db()`` handle and used to transfer ownership to the agent
+    unconditionally — session.close() then closed the process-wide database
+    under every unrelated session. The transfer must be gated on owns_db."""
+    shared = _RecordingDB(db_path="launch")
+    shared.rows["s1"] = {"id": "s1", "cwd": ""}
+    monkeypatch.setattr(server, "_get_db", lambda: shared)
+
+    def _fake_make_agent(sid, key, session_db=None, **_kwargs):
+        agent = types.SimpleNamespace(model="test")
+        agent._session_db = session_db  # the agent IS holding the shared handle
+        agent._owns_session_db = False
+        return agent
+
+    def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
+        with server._sessions_lock:
+            server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_init_session", _fake_init_session)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(
+        server, "_stored_session_runtime_overrides", lambda _found: {}
+    )
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
+
+    resp = _resume(session_id="s1", eager_build=True)
+
+    assert resp["result"]["session_key"] == "s1"
+    agent = server._sessions.get(resp["result"]["session_id"], {}).get("agent")
+    assert agent is not None
+    # Ownership never transferred: closing this one session must not own the
+    # process-wide handle, and the shared handle stays open for others.
+    assert agent._owns_session_db is False
     assert shared.closed == 0

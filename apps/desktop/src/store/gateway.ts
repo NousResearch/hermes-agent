@@ -226,11 +226,23 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
 
   g.primaryGateway = gateway
   g.primaryProfile = next
+
+  if (g.activeKey === g.primaryProfile) {
+    setApiRequestConnection(g.primaryConnectionId)
+  }
+}
+
+export function setPrimaryGatewayConnectionId(connectionId: null | string | undefined): void {
+  g.primaryConnectionId = (connectionId ?? '').trim() || null
+
+  if (g.activeKey === g.primaryProfile) {
+    setApiRequestConnection(g.primaryConnectionId)
+  }
 }
 
 /** Publish the registry source owned by the window primary socket. */
 export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId'> | null): void {
-  g.primaryConnectionId = connection?.connectionId?.trim() || null
+  setPrimaryGatewayConnectionId(connection?.connectionId)
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
@@ -276,7 +288,7 @@ export function activeGateway(): HermesGateway | null {
  */
 export function activeGatewayConnectionId(): null | string {
   if (g.activeKey === g.primaryProfile) {
-    return null
+    return g.primaryConnectionId
   }
 
   return g.secondaries.get(g.activeKey)?.connectionId ?? null

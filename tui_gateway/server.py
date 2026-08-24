@@ -3508,6 +3508,159 @@ def _session_db(session: dict):
                 db.close()
 
 
+def _rewind_active_session_history(
+    session: dict,
+    user_ordinal: int,
+    *,
+    require_retryable: bool = False,
+) -> tuple[list[dict], dict, int]:
+    """Rewind one canonical user turn while retaining carrier scaffolding.
+
+    The caller holds ``history_lock``.  Persistent sessions archive the target
+    and tail; a composite carrier's own hidden handoff is inserted in that same
+    transaction.  Memory is installed only after the durable commit and is
+    built from the already-validated prefix plus the returned scaffold row id,
+    so there is no fallible post-commit reload.
+    """
+    from agent.context_compressor import (
+        history_before_user_originated_turn,
+        retryable_user_text,
+        split_user_originated_turn,
+        user_originated_turn_view,
+    )
+    from agent.memory_manager import sanitize_context
+    from agent.tool_dispatch_helpers import (
+        _is_multimodal_tool_result,
+        _multimodal_text_summary,
+    )
+
+    def _comparison_content(message: dict) -> Any:
+        content = message.get("content")
+        if _is_multimodal_tool_result(content):
+            content = _multimodal_text_summary(content)
+        elif isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                elif (
+                    isinstance(part, dict)
+                    and part.get("type") in {"image", "image_url", "input_image"}
+                ):
+                    text_parts.append("[screenshot]")
+            content = "\n".join(text_parts) if text_parts else None
+        if message.get("role") in {"user", "assistant"} and isinstance(content, str):
+            return sanitize_context(content).strip()
+        return content
+
+    history = _history_without_ephemeral_scaffolding(session.get("history", []))
+    user_indices = [
+        index
+        for index, message in enumerate(history)
+        if user_originated_turn_view(message) is not None
+    ]
+    if user_ordinal < 0 or user_ordinal >= len(user_indices):
+        raise ValueError("target user message is no longer in session history")
+    target_index = user_indices[user_ordinal]
+    installed, live_view = history_before_user_originated_turn(history, target_index)
+    rewound_count = len(history) - target_index
+
+    session_key = str(session.get("session_key") or "").strip()
+    persisted = False
+    if session_key:
+        with _session_db(session) as db:
+            if db is None:
+                raise RuntimeError("session database is unavailable")
+            expected_active_ids = db.get_active_message_ids(session_key)
+            durable = db.get_messages_as_conversation(
+                session_key,
+                include_row_ids=True,
+            )
+            durable_user_indices = [
+                index
+                for index, message in enumerate(durable)
+                if user_originated_turn_view(message) is not None
+            ]
+            if len(durable_user_indices) != len(user_indices):
+                raise RuntimeError(
+                    "session history changed before the rewind could be persisted"
+                )
+            durable_target_index = durable_user_indices[user_ordinal]
+            durable_target = durable[durable_target_index]
+            durable_prefix, durable_live_view = history_before_user_originated_turn(
+                durable, durable_target_index
+            )
+            if _comparison_content(durable_live_view) != _comparison_content(live_view):
+                raise RuntimeError(
+                    "session history changed before the rewind could be persisted"
+                )
+            target_row_id = durable_target.get("_row_id")
+            if not isinstance(target_row_id, int):
+                raise RuntimeError("rewind target has no durable row identity")
+            if require_retryable:
+                retryable_user_text(durable_live_view.get("content"))
+            scaffold, _ = split_user_originated_turn(durable_target)
+            result = db.rewind_to_message(
+                session_key,
+                target_row_id,
+                preserve_compaction_handoff=scaffold is not None,
+                expected_active_ids=expected_active_ids,
+                expected_target_content=durable_live_view.get("content"),
+            )
+            if scaffold is not None:
+                replacement_id = result.get("replacement_message_id")
+                if not isinstance(replacement_id, int):
+                    raise RuntimeError(
+                        "rewind commit did not return the replacement scaffold id"
+                    )
+                durable_prefix[-1]["_row_id"] = replacement_id
+                durable_prefix[-1]["_db_persisted"] = True
+                installed[-1] = durable_prefix[-1]
+            # Current clients address destructive follow-ups by durable row id.
+            # Preserve the richer warm content (for example image parts), but
+            # copy row identities when the retained warm/durable shapes align.
+            if len(installed) == len(durable_prefix) and all(
+                warm.get("role") == durable_message.get("role")
+                and bool(warm.get("display_kind"))
+                == bool(durable_message.get("display_kind"))
+                and _comparison_content(warm)
+                == _comparison_content(durable_message)
+                for warm, durable_message in zip(installed, durable_prefix)
+            ):
+                for warm, durable_message in zip(installed, durable_prefix):
+                    row_id = durable_message.get("_row_id")
+                    if isinstance(row_id, int):
+                        warm["_row_id"] = row_id
+            live_view = durable_live_view
+            rewound_count = int(result.get("rewound_count", 0))
+            persisted = True
+    elif require_retryable:
+        retryable_user_text(live_view.get("content"))
+
+    installed = [message.copy() for message in installed]
+    session["history"] = installed
+    session["history_version"] = int(session.get("history_version", 0)) + 1
+    agent = session.get("agent")
+    if agent is not None:
+        agent._session_messages = installed
+        if hasattr(agent, "_last_flushed_db_idx"):
+            agent._last_flushed_db_idx = len(installed) if persisted else 0
+        if hasattr(agent, "_db_flush_scan_prefix"):
+            agent._db_flush_scan_prefix = installed[:] if persisted else None
+    return installed, live_view, rewound_count
+
+
+def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:
+    """Return the durable transcript shape without transient recovery rows."""
+    from run_agent import _is_ephemeral_scaffolding
+
+    return [
+        message.copy()
+        for message in history
+        if not _is_ephemeral_scaffolding(message)
+    ]
+
+
 def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 

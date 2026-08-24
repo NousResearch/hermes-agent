@@ -5876,7 +5876,14 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6013,7 +6020,14 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6071,7 +6085,14 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6121,7 +6142,14 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6202,7 +6230,14 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6298,7 +6333,14 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6343,7 +6385,14 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6497,7 +6546,14 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6586,7 +6642,14 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -10916,6 +10979,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -10976,6 +11040,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -10996,6 +11061,85 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
 
 # ── session.steer ────────────────────────────────────────────────────
+
+
+def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_path):
+    """A checkpoint restore drops the live ask but keeps compacted context."""
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+    from hermes_state import SessionDB
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "abc123"}]
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True, "message": "restored"}
+
+    carrier = {
+        "role": "user",
+        "content": (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+            f"{_SUMMARY_END_MARKER}\n\nREAL ASK"
+        ),
+    }
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("rollback-carrier", source="tui")
+    db.append_message("rollback-carrier", "user", carrier["content"])
+    db.append_message("rollback-carrier", "assistant", "answer")
+    durable = db.get_messages_as_conversation("rollback-carrier")
+    agent = types.SimpleNamespace(
+        _checkpoint_mgr=_Mgr(),
+        _session_messages=list(durable),
+        _last_flushed_db_idx=len(durable),
+        _db_flush_scan_prefix=list(durable),
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        history=list(durable),
+        session_key="rollback-carrier",
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "rollback.restore",
+                "params": {"session_id": "sid", "hash": "abc123"},
+            }
+        )
+
+        assert "result" in resp, resp
+        assert resp["result"]["success"] is True
+        assert resp["result"]["history_removed"] == 2
+        remaining = server._sessions["sid"]["history"]
+        assert len(remaining) == 1
+        assert remaining[0]["display_kind"] == "hidden"
+        assert SUMMARY_PREFIX in remaining[0]["content"]
+        assert "REAL ASK" not in remaining[0]["content"]
+        cold = db.get_messages_as_conversation(
+            "rollback-carrier", include_row_ids=True
+        )
+        assert len(cold) == 1
+        assert cold[0]["content"] == remaining[0]["content"]
+        assert cold[0]["display_kind"] == "hidden"
+        assert cold[0]["_row_id"] == remaining[0]["_row_id"]
+        assert agent._session_messages == remaining
+        assert agent._last_flushed_db_idx == 1
+        assert agent._db_flush_scan_prefix == remaining
+        inactive = db.get_messages_as_conversation(
+            "rollback-carrier", include_inactive=True
+        )
+        assert any("REAL ASK" in str(message.get("content")) for message in inactive)
+        assert any(message.get("content") == "answer" for message in inactive)
+    finally:
+        server._sessions.pop("sid", None)
+        db.close()
 
 
 def test_session_steer_calls_agent_steer_when_agent_supports_it():
@@ -11417,6 +11561,7 @@ def test_session_undo_allowed_when_idle():
     """Regression guard: when not running, /undo still works."""
     server._sessions["sid"] = _session(
         running=False,
+        session_key="",
         history=[
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
@@ -11917,7 +12062,14 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -11977,7 +12129,14 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
@@ -12072,7 +12231,14 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -12175,7 +12341,15 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
             # may take the ordinal-only path past the durability gate.
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            assert reject_active_turn_lease is True
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -12260,6 +12434,12 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     reconcile cross-check must treat `tip_ordinal + prefix_user_count` as
     agreement, not #82756 drift — and the cut stays aimed by the row id.
     """
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+
     tip_history = [
         {"_row_id": 501, "role": "user", "content": "post-compress A"},
         {"_row_id": 502, "role": "assistant", "content": "reply A"},
@@ -12269,6 +12449,16 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     display_prefix = [
         {"role": "user", "content": "pre-compress 1"},
         {"role": "assistant", "content": "pre reply 1"},
+        {
+            # Legacy pure handoffs did not always carry display_kind=hidden.
+            # They are physically user rows but not visible/user-originated
+            # turns, so they must not shift the Desktop lineage ordinal.
+            "role": "user",
+            "content": (
+                f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+                f"{_SUMMARY_END_MARKER}"
+            ),
+        },
         {"role": "user", "content": "pre-compress 2"},
         {"role": "assistant", "content": "pre reply 2"},
     ]
@@ -12276,7 +12466,15 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            assert reject_active_turn_lease is True
             replaced.append((key, list(messages)))
 
     sess = _session(history=list(tip_history), display_history_prefix=display_prefix)
@@ -19642,7 +19840,14 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         def get_messages_as_conversation(self, *_args, **_kwargs):
             return []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     session = _session(
@@ -19753,10 +19958,16 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
             return []
 
         def replace_messages(
-            self, session_id, messages, active_only=False, archive_dropped=False
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
         ):
             captured["active_only"] = active_only
             captured["archive_dropped"] = archive_dropped
+            captured["reject_active_turn_lease"] = reject_active_turn_lease
 
     server._sessions["archive-trunc-sid"] = _session(
         agent=_Agent(),
@@ -19795,6 +20006,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         )
         # #80216: still must not touch rows archived by an earlier compaction.
         assert captured.get("active_only") is True
+        assert captured.get("reject_active_turn_lease") is True
     finally:
         server._sessions.pop("archive-trunc-sid", None)
 
@@ -19816,7 +20028,14 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -19860,7 +20079,14 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     # Production-shaped history: no renderer "id" keys on user dicts.
@@ -19918,7 +20144,14 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
         def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
@@ -20103,6 +20336,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
         db._insert_message_rows(db._conn, session_key, msgs)
         db._conn.commit()
     rid_b = msgs[2]["_row_id"]
+    original_row_ids = [message["_row_id"] for message in msgs]
 
     # Same length + same role pattern, but content positions swapped: a
     # positional stamp would mark live "B" with durable A's row id and the
@@ -20134,6 +20368,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
                     "session_id": sid,
                     "text": "rewind B",
                     "truncate_before_row_id": rid_b,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
@@ -20172,6 +20407,7 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
         db._insert_message_rows(db._conn, session_key, msgs)
         db._conn.commit()
     rid_b = msgs[2]["_row_id"]
+    original_row_ids = [message["_row_id"] for message in msgs]
 
     live_history = [
         {"role": "user", "content": "A"},
@@ -20195,6 +20431,7 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
                     "session_id": sid,
                     "text": "rewind B",
                     "truncate_before_row_id": rid_b,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
@@ -20211,6 +20448,13 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
             ("assistant", "ra"),
             ("assistant", "rb"),
         ]
+        # The live list was too misaligned to bind old survivors to their new
+        # physical rows safely. All requested IDs known to the pre-write active
+        # transcript are therefore cleared; an unrelated archived/ancestor ID
+        # remains absent from the bounded map and keeps its identity.
+        assert resp["result"]["survivor_row_id_map"] == {
+            str(row_id): None for row_id in original_row_ids
+        }
     finally:
         server._sessions.pop(sid, None)
 
@@ -20244,7 +20488,14 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
         def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
@@ -20284,8 +20535,9 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
         server._sessions.pop(sid, None)
 
 
+@pytest.mark.parametrize("turn_isolation", [False, True])
 def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, turn_isolation
 ):
     """#83202 review (consecutive-rewind staleness): replace_messages re-inserts
     the surviving prefix as NEW rows, so the pre-rewind client row ids die on
@@ -20314,6 +20566,16 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     sid = "real-db-consec-rewind-sid"
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": turn_isolation}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_submit_prompt_to_compute_host",
+        lambda *_args, **_kwargs: server._ok("host", {"status": "streaming"}),
+    )
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
@@ -20329,17 +20591,30 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
                     "text": "rewound third",
                     "truncate_before_row_id": original_row_ids[4],
                     "truncate_before_user_ordinal": 2,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
         )
         assert resp1.get("error") is None, resp1
-        survivors = resp1["result"].get("survivor_user_row_ids")
-        # Fresh ids for the two surviving user turns, in visible-user order.
-        assert isinstance(survivors, list) and len(survivors) == 2
-        assert all(isinstance(r, int) for r in survivors)
+        assert "survivor_user_row_ids" not in resp1["result"]
+        row_id_map = resp1["result"].get("survivor_row_id_map")
+        assert isinstance(row_id_map, dict)
+        survivors = [
+            row_id_map[str(original_row_ids[0])],
+            row_id_map[str(original_row_ids[2])],
+        ]
         # They must be NEW rows — the old ids are archived (active=0) now.
         assert set(survivors).isdisjoint(set(original_row_ids))
+        assert row_id_map == {
+            str(original_row_ids[0]): survivors[0],
+            str(original_row_ids[1]): sess["history"][1]["_row_id"],
+            str(original_row_ids[2]): survivors[1],
+            str(original_row_ids[3]): sess["history"][3]["_row_id"],
+            str(original_row_ids[4]): None,
+            str(original_row_ids[5]): None,
+        }
+        assert "999999" not in row_id_map
         sess["running"] = False
 
         # Rewind 2a: the STALE pre-rewind id for "second" must fail closed.
@@ -20382,6 +20657,66 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         # And the second response rebinds again: one surviving user turn.
         survivors2 = resp2["result"].get("survivor_user_row_ids")
         assert isinstance(survivors2, list) and len(survivors2) == 1
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
+    monkeypatch, tmp_path
+):
+    """The bounded map classifies physical active IDs before user;user repair."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "rowid-repaired-wedge.db")
+    session_key = "real-db-rowid-repaired-wedge"
+    db.create_session(session_key, "cli")
+    physical = [
+        {"role": "user", "content": "first fragment"},
+        {"role": "user", "content": "second fragment"},
+        {"role": "assistant", "content": "combined reply"},
+        {"role": "user", "content": "target"},
+        {"role": "assistant", "content": "target reply"},
+    ]
+    with db._lock:
+        db._insert_message_rows(db._conn, session_key, physical)
+        db._conn.commit()
+    physical_ids = [message["_row_id"] for message in physical]
+    repaired = db.get_messages_as_conversation(
+        session_key, repair_alternation=True, include_row_ids=True
+    )
+    # Provider repair merges the wedge and necessarily drops the second
+    # physical user's row identity from the replay view.
+    assert physical_ids[1] not in {
+        server._message_row_id(message) for message in repaired
+    }
+
+    sess = _session(
+        history=[dict(message) for message in repaired], session_key=session_key
+    )
+    sid = "rowid-repaired-wedge-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "retry target",
+                    "truncate_before_row_id": physical_ids[3],
+                    "rebind_survivor_row_ids": [*physical_ids, 999_999],
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert response.get("error") is None, response
+        row_id_map = response["result"]["survivor_row_id_map"]
+        assert row_id_map[str(physical_ids[1])] is None
+        assert "999999" not in row_id_map
     finally:
         server._sessions.pop(sid, None)
 

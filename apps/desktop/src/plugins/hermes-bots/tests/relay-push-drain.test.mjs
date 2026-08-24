@@ -78,9 +78,12 @@ test('subscription is feature-detected, disposed, and the poll backstop stays', 
   const block = pluginSource.slice(start - 400, start + 400)
   assert.match(block, /typeof host\.onEvent === 'function'/)
   assert.match(pluginSource, /relayPushUnsub\(\)/)
-  // The 4s interval poll is untouched — push is an accelerator, not a
-  // replacement (older backends never emit the event).
-  assert.match(pluginSource, /RELAY_DRAIN_INTERVAL_MS = 4_000/)
+  // The interval poll survives as a BACKSTOP — push is the delivery path,
+  // the poll covers older backends that never emit the event and connections
+  // whose events don't reach the tap. #93594 moved it from 4s (its cadence
+  // when the poll WAS the delivery path) to 30s backstop cadence, matching
+  // the live-session status backstop.
+  assert.match(pluginSource, /RELAY_DRAIN_INTERVAL_MS = 30_000/)
   assert.match(pluginSource, /setInterval\(\(\) => void drainRelayOutboxes\(\), RELAY_DRAIN_INTERVAL_MS\)/)
 })
 

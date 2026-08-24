@@ -20,8 +20,10 @@ test('relay loops start in register() and stop on dispose', () => {
   assert.match(pluginSource, /ctx\.onDispose\(stopBotRelay\)/)
   // teardown really clears both timers
   const stop = pluginSource.slice(pluginSource.indexOf('function stopBotRelay'))
-  assert.match(stop.slice(0, 500), /clearInterval\(relayRosterTimer\)/)
-  assert.match(stop.slice(0, 500), /clearInterval\(relayDrainTimer\)/)
+  // 800-char window: stopBotRelay grew a retention release (#93594) ahead of
+  // the timer teardown it also must keep doing.
+  assert.match(stop.slice(0, 800), /clearInterval\(relayRosterTimer\)/)
+  assert.match(stop.slice(0, 800), /clearInterval\(relayDrainTimer\)/)
 })
 
 test('roster loop syncs OTHER connections agents to each gateway', () => {

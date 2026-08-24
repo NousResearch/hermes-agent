@@ -1500,7 +1500,12 @@ function handleSessionsGatewayTransition() {
 // Older backends without the RPCs fail per-call and are skipped — the
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
-const RELAY_DRAIN_INTERVAL_MS = 4_000
+// Backstop cadence only (#93594): the push path below carries envelope latency,
+// so the interval poll exists for older backends and missed events — 30s
+// matches LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS. It was 4s back when the
+// poll WAS the delivery path, which (before route retention) also meant a
+// fresh WebSocket dial + teardown per registered connection every 4s.
+const RELAY_DRAIN_INTERVAL_MS = 30_000
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
 // to ONE drain. The interval poll above stays as the backstop for older
@@ -1517,6 +1522,58 @@ let relayPushDebounceTimer = null
 // the gateway signature is monotone (one event per new envelope, never
 // re-broadcast) — so remember it and re-schedule after the drain finishes.
 let relayDrainRerun = false
+// Relay-route socket retention (#93594): connection id → release fn. While
+// the relay is active each registered connection's pooled socket is pinned
+// open (host.retainProfileSocket) so drain RPCs reuse ONE persistent
+// WebSocket instead of dialing and tearing down a fresh one per tick.
+// Feature-detected — older shells lack the door and fall back to per-call
+// leases. Local routes get a no-op release inside the host (idle-reaper
+// exemption). stopBotRelay releases everything.
+const relayRouteRetentions = new Map()
+
+/** Reconcile retention with the CURRENT connection set: pin new connections,
+ *  release removed ones. Runs on every drain/roster connection fetch. */
+function syncRelayRetention(connections) {
+  if (typeof host.retainProfileSocket !== 'function') {
+    return
+  }
+
+  const live = new Set(connections.map(connection => connection.id))
+
+  for (const [id, release] of [...relayRouteRetentions]) {
+    if (!live.has(id)) {
+      relayRouteRetentions.delete(id)
+      try {
+        release()
+      } catch {
+        // Never let a release failure break the relay loop.
+      }
+    }
+  }
+
+  if (relayDisposed) {
+    return
+  }
+
+  for (const connection of connections) {
+    if (!relayRouteRetentions.has(connection.id)) {
+      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    }
+  }
+}
+
+/** Drop every relay pin — stop/dispose path. */
+function releaseRelayRetention() {
+  for (const release of relayRouteRetentions.values()) {
+    try {
+      release()
+    } catch {
+      // Disposer from an older shell shape — never break teardown.
+    }
+  }
+
+  relayRouteRetentions.clear()
+}
 
 /** One representative route per reachable connection id. */
 async function relayConnections() {
@@ -1661,6 +1718,10 @@ async function drainRelayOutboxes() {
   try {
     const connections = await relayConnections()
 
+    // Retention follows the relay-eligible set: with fewer than two
+    // connections there is nothing to relay, so nothing stays pinned.
+    syncRelayRetention(connections.length >= 2 ? connections : [])
+
     if (connections.length < 2) {
       return
     }
@@ -1788,6 +1849,9 @@ function stopBotRelay() {
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relayDrainRerun = false
+  // Unpin every relay-retained socket (#93594): with the relay stopped the
+  // pooled entries return to dispose-at-refcount-0 semantics.
+  releaseRelayRetention()
 
   if (relayRosterTimer !== null) {
     clearInterval(relayRosterTimer)

@@ -99,11 +99,7 @@ function desktopWindowing(backend: 'cocoa' | 'win32'): HudWindowing {
   }
 }
 
-export function resolveHudWindowing(
-  platform: string,
-  env: NodeJS.ProcessEnv,
-  argv: readonly string[]
-): HudWindowing {
+export function resolveHudWindowing(platform: string, env: NodeJS.ProcessEnv, argv: readonly string[]): HudWindowing {
   if (platform === 'darwin') {
     return desktopWindowing('cocoa')
   }

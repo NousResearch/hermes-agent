@@ -66,10 +66,7 @@ test('asking for a native Wayland surface keeps the click-through path', () => {
     assert.equal(input('linux', WAYLAND_SESSION, argv), 'click-through')
   }
 
-  assert.equal(
-    input('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'wayland' }),
-    'click-through'
-  )
+  assert.equal(input('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'wayland' }), 'click-through')
 })
 
 test('an auto hint follows the session', () => {
@@ -85,10 +82,7 @@ test('asking for X11 on a Wayland session takes the solid / renderer-drag profil
   assert.equal(windowing.input, 'solid')
   assert.equal(windowing.move, 'renderer')
   assert.equal(windowing.clientPlacement, true)
-  assert.equal(
-    input('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }),
-    'solid'
-  )
+  assert.equal(input('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }), 'solid')
 })
 
 test('the explicit switch beats the hint, and the last switch wins', () => {

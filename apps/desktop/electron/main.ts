@@ -12547,8 +12547,6 @@ registerPetOverlayIpc({
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
 const hudIpc = registerHudIpc({
   isMac: IS_MAC,
-  isWindows: IS_WINDOWS,
-  glassSupported: GLASS_SUPPORTED,
   getTranslucencyState: () => translucencyState,
   getHudWindow: () => hudWindow,
   openHudWindow,

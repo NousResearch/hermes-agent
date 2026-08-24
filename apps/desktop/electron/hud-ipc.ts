@@ -8,8 +8,6 @@ import { hudFrostFor, type TranslucencyState } from './translucency'
 
 export interface HudIpcDeps {
   isMac: boolean
-  isWindows: boolean
-  glassSupported: boolean
   /** Main's authoritative translucency state (Settings → Appearance). */
   getTranslucencyState: () => TranslucencyState
   getHudWindow: () => BrowserWindow | null
@@ -20,8 +18,6 @@ export interface HudIpcDeps {
 
 export function registerHudIpc({
   isMac,
-  isWindows,
-  glassSupported,
   getTranslucencyState,
   getHudWindow,
   openHudWindow,
@@ -43,6 +39,10 @@ export function registerHudIpc({
   // view, so it frosts the whole rectangle; the HUD's layout leaves no dead
   // margins for that reason, and it only turns on while the band is showing
   // (idle HUD mode must be the bar and nothing else).
+  //
+  // macOS ONLY. Windows' equivalent (setBackgroundMaterial → the DWM backdrop)
+  // is mutually exclusive with window transparency, so it is not called at all
+  // here — see the note at the bottom of this function.
   //
   // Diffed before issuing: `setVibrancy` carries a 150ms animation that restarts
   // if re-issued, so a repeated call would keep the material from ever settling
@@ -77,9 +77,14 @@ export function registerHudIpc({
       hudWindow.setVibrancy(frost.vibrancy)
     }
 
-    if (isWindows && glassSupported && typeof hudWindow.setBackgroundMaterial === 'function') {
-      hudWindow.setBackgroundMaterial(frost.backgroundMaterial)
-    }
+    // Windows: never touch setBackgroundMaterial on the HUD. Live-verified on
+    // Win11 (Electron 40.10.2, RTX 4090): ANY setBackgroundMaterial call on a
+    // transparent window — including 'none', which is what the idle HUD asks
+    // for — permanently kills per-pixel alpha, and every transparent pixel
+    // composites as opaque white. Neither 'auto' nor a follow-up
+    // setBackgroundColor('#00000000') restores it. The DWM backdrop and window
+    // transparency are mutually exclusive, so the Windows HUD keeps the CSS
+    // tint the sheet already paints and skips the native frost entirely.
   }
 
   ipcMain.handle('hermes:hud:open', async (_event, request) => {

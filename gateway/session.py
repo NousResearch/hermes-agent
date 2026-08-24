@@ -693,13 +693,26 @@ def build_session_key(
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
+    # Carried local fix (0432e37839, re-applied on upstream structure): for
+    # Telegram group chats suppress the participant_id suffix. TG group
+    # messages may or may not carry a user_id (channel posts lack from_user),
+    # so the same group flaps between keys with/without :<user_id> suffix
+    # non-deterministically. DM sessions and non-Telegram platforms retain
+    # per-user isolation.
+    suppress_tg_group_participant = (
+        source.platform == Platform.TELEGRAM and source.chat_type == "group"
+    )
     parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
     if source.platform == Platform.SLACK and source.scope_id:
         parts.append(str(source.scope_id))
     if chat_id:
         parts.append(chat_id)
     # DMs put the participant before the thread; groups/threads put it after.
-    user_part = [str(participant_id)] if isolate_user and participant_id else []
+    user_part = (
+        [str(participant_id)]
+        if isolate_user and participant_id and not suppress_tg_group_participant
+        else []
+    )
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
     return ":".join(str(part) for part in parts)

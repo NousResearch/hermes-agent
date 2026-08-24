@@ -225,6 +225,26 @@ def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
         assert kb.get_task(conn, empty_task).skills == []
 
 
+def test_create_task_accepts_categorized_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="categorized profile skill",
+            assignee="coder",
+            skills=["category:sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["category:sample"]
+
+
 def test_create_task_accepts_enabled_profile_plugin_skill(kanban_home, monkeypatch):
     profile_home = kanban_home / "profiles" / "coder"
     profile_home.mkdir(parents=True)

@@ -1166,6 +1166,21 @@ def _profile_skill_names(
                     name = str(frontmatter.get("name") or skill_md.parent.name).strip()
                     if name and name not in disabled:
                         names.add(name)
+                        # ``skill_view`` also accepts the qualified local form
+                        # ``category:name`` for the direct
+                        # ``<root>/<category>/<name>/SKILL.md`` layout. Keep
+                        # validation in parity with that runtime lookup while
+                        # retaining the frontmatter/bare name above.
+                        try:
+                            relative_parts = skill_md.relative_to(root).parts
+                        except ValueError:
+                            relative_parts = ()
+                        if (
+                            len(relative_parts) == 3
+                            and relative_parts[-1] == "SKILL.md"
+                        ):
+                            category, directory_name, _ = relative_parts
+                            names.add(f"{category}:{directory_name}")
 
             # Plugin skills are registered only after the profile's enabled plugin
             # set has been discovered.  Use the manager scoped to this profile's

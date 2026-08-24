@@ -5215,7 +5215,19 @@ function aliasIdentityFor(bot) {
 // aliasRouteIndex above — which is connection-exact, never name-based.
 function botRosterMeta(bot, metaByName) {
   if (bot?.sourceScoped || bot?.remoteSource) {
-    const route = botConnectionRoute(bot)
+    // A row orphaned by a deleted connection (connectionId gone, e.g. from a
+    // stale persisted group roster) has no route to resolve. botConnectionRoute
+    // fails closed there for routing dispatch — correct for a network call,
+    // but this is a passive meta lookup, and the whole component tree above
+    // display-only code must not crash rendering an unroutable member.
+    let route = null
+
+    try {
+      route = botConnectionRoute(bot)
+    } catch {
+      route = null
+    }
+
     const direct = route ? metaByName?.[botRouteKey(route)] : null
 
     if (direct) {

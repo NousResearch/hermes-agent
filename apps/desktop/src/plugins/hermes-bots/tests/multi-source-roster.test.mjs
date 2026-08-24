@@ -254,6 +254,18 @@ test('default rows use source identity without borrowing another source title', 
   assert.equal(name(active, undefined), 'Hermes')
 })
 
+test('botRosterMeta: a group roster row orphaned by a deleted connection does not throw', () => {
+  const { __botRosterMeta: metaFor } = runtime()
+  // Mirrors the persisted `group-chats` descriptor left behind once its
+  // connection is removed: remoteSource is still true, but connectionId is
+  // gone, so botConnectionRoute has nothing to resolve. This must not crash
+  // rendering the group (#93492) just because one member is unroutable.
+  const orphaned = { name: 'halakukhan', handle: 'halakukhan', connectionId: null, remoteSource: true }
+
+  assert.doesNotThrow(() => metaFor(orphaned, {}))
+  assert.equal(metaFor(orphaned, {}), null)
+})
+
 test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {
   const { __botHandle: botHandle } = runtime()
 

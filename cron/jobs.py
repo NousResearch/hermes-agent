@@ -1348,13 +1348,29 @@ def load_jobs() -> List[Dict[str, Any]]:
             # external tools or hand edits, never by save_jobs(). The public
             # load_jobs() contract and every CRUD/scheduler consumer expect a
             # list; iterating the dict would yield bare id strings and blow up
-            # downstream (e.g. _normalize_job_record -> dict(<str>)). The map
-            # values already carry their own "id", so list(values) is
-            # lossless. (_peek_jobs_unlocked() deliberately does NOT flatten —
+            # downstream (e.g. _normalize_job_record -> dict(<str>)). Flatten
+            # with an id-preserving merge: an inline "id" on the value wins,
+            # otherwise the map key is adopted as the id (external tools often
+            # key by id and omit the inline copy). Non-dict values are junk
+            # (a flattened record would not be a job) — skip them with a
+            # warning instead of crashing downstream.
+            # (_peek_jobs_unlocked() deliberately does NOT flatten —
             # it returns None on a dict-shaped store so the save path never
             # merges against an unrepaired baseline; the flatten lives only
             # here at the load boundary.)
-            jobs = list(jobs.values())
+            skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
+            if skipped:
+                logger.warning(
+                    "Skipping %d non-dict entr%s in id-keyed jobs map: %s",
+                    len(skipped),
+                    "y" if len(skipped) == 1 else "ies",
+                    ", ".join(map(repr, skipped)),
+                )
+            jobs = [
+                {**v, "id": v.get("id") or k}
+                for k, v in jobs.items()
+                if isinstance(v, dict)
+            ]
             needs_shape_repair = True
         if jobs and (_strict_retry or needs_shape_repair):
             # Rewrite into the canonical {"jobs": [...]} form: either the parse

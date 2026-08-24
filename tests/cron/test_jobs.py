@@ -1381,6 +1381,92 @@ class TestJobsJsonIdKeyedMap:
 
         assert load_jobs() == []
 
+    def test_map_value_without_inline_id_adopts_key(self, tmp_cron_dir):
+        """A value lacking an inline "id" gets the map key as its id."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": {
+                "cronkeyonly1": {
+                    "name": "keyed only",
+                    "enabled": True,
+                    "prompt": "no inline id here",
+                    "schedule": {"kind": "interval", "minutes": 15, "display": "every 15m"},
+                },
+                "cron-ignored-key": {
+                    "id": "croninline99",
+                    "name": "inline id wins",
+                    "enabled": True,
+                    "prompt": "inline id present",
+                    "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+                },
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = {j["id"]: j for j in load_jobs()}
+        # Key adopted when the value has no inline id.
+        assert "cronkeyonly1" in loaded
+        assert loaded["cronkeyonly1"]["name"] == "keyed only"
+        # Inline id wins over a differing map key.
+        assert "croninline99" in loaded
+        assert "cron-ignored-key" not in loaded
+
+        # Self-heal persisted the id-merged records.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cronkeyonly1", "croninline99"}
+
+    def test_non_dict_map_values_skipped_with_warning(self, tmp_cron_dir, caplog):
+        """Junk (non-dict) values in the map are skipped, never crash."""
+        import json
+        import logging
+        from cron.jobs import JOBS_FILE, list_jobs, load_jobs
+
+        payload = {
+            "jobs": {
+                "goodjob1": {
+                    "name": "survivor",
+                    "enabled": True,
+                    "prompt": "keep me",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                },
+                "junk-string": "i am not a job",
+                "junk-number": 42,
+                "junk-null": None,
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["goodjob1"]
+        assert any("non-dict" in rec.getMessage() for rec in caplog.records)
+
+        # The reported traceback path also survives the junk.
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"goodjob1"}
+
+        # Self-heal wrote only the valid record, canonical list shape.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
+
+    def test_all_junk_map_values_yield_empty_list(self, tmp_cron_dir):
+        """A map of only junk values flattens to [] without crashing."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(
+            json.dumps({"jobs": {"a": "junk", "b": 1}}), encoding="utf-8"
+        )
+
+        assert load_jobs() == []
+
 
 
 

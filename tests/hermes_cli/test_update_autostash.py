@@ -435,3 +435,64 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
     finally:
         os.chmod(pkg, 0o755)
+
+
+def test_restore_rejects_invalid_python_and_keeps_clean_updated_tree(
+    monkeypatch, tmp_path, capsys
+):
+    """A cleanly-applied stash must not be allowed to brick every agent turn."""
+    import subprocess
+    from hermes_cli import update_cmd
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "tools" / "terminal_tool.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    source.write_text("<<<<<<< Updated upstream\nVALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
+
+    assert exc_info.value.code == 1
+    assert source.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert git("status", "--porcelain").stdout == ""
+    assert git("stash", "list").stdout.strip()
+    output = capsys.readouterr().out
+    assert "made the Hermes agent unexecutable" in output
+    assert "gateway was not restarted" in output
+    assert f"git stash apply {stash_ref}" in output
+
+
+def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
+    prompts = []
+
+    restored = hermes_main._restore_stashed_changes(
+        ["git"],
+        tmp_path,
+        "stash@{0}",
+        prompt_user=True,
+        input_fn=lambda prompt, default: prompts.append((prompt, default)) or "",
+    )
+
+    assert restored is False
+    assert prompts == [("Restore local changes now? [y/N]", "n")]
+    assert "still preserved in git stash" in capsys.readouterr().out

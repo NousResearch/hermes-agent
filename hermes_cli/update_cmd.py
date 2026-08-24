@@ -598,6 +598,29 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
         return False
     return not result.stdout.strip()
 
+def _validate_python_files_syntax(
+    root, relpaths
+) -> tuple[bool, str | None, str | None]:
+    """Compile *relpaths* under *root* without writing bytecode into the tree."""
+    import py_compile
+    import tempfile
+
+    root = Path(root)
+    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+        for relpath in relpaths:
+            path = root / relpath
+            if not path.exists():
+                continue
+            cfile = Path(tmpdir) / (str(relpath).replace("/", "__") + "c")
+            try:
+                py_compile.compile(str(path), cfile=str(cfile), doraise=True)
+            except py_compile.PyCompileError as exc:
+                return False, str(path), str(exc)
+            except OSError as exc:
+                return False, str(path), f"could not read: {exc}"
+    return True, None, None
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -617,27 +640,7 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
     file parsed cleanly.
     """
-    import py_compile
-    import tempfile
-
-    root = Path(root)
-    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
-        for relpath in _UPDATE_CRITICAL_FILES:
-            path = root / relpath
-            if not path.exists():
-                # Missing file is suspicious but not necessarily fatal — a future
-                # refactor may legitimately remove one of these. Skip and move on.
-                continue
-            # Mirror the relative path under the tmpdir so two different
-            # files with the same basename don't collide on the cfile name.
-            cfile = Path(tmpdir) / (relpath.replace("/", "__") + "c")
-            try:
-                py_compile.compile(str(path), cfile=str(cfile), doraise=True)
-            except py_compile.PyCompileError as exc:
-                return False, str(path), str(exc)
-            except OSError as exc:
-                return False, str(path), f"could not read: {exc}"
-    return True, None, None
+    return _validate_python_files_syntax(root, _UPDATE_CRITICAL_FILES)
 
 
 # Modules imported on every agent startup. Unlike _UPDATE_CRITICAL_FILES (which
@@ -2423,6 +2426,72 @@ def _park_stashed_changes(stash_ref: str) -> None:
     print(f"  Restore manually with: git stash apply {stash_ref}")
 
 
+def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str]:
+    """Return untracked, non-ignored paths without Git's quoting ambiguity."""
+    result = subprocess.run(
+        git_cmd + ["ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    if result.returncode != 0:
+        return set()
+    return {path for path in result.stdout.split("\0") if path}
+
+
+def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...]:
+    """Return tracked and untracked Python paths changed from ``HEAD``."""
+    changed = subprocess.run(
+        git_cmd + ["diff", "--name-only", "-z", "HEAD", "--", "*.py"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    paths = set(changed.stdout.split("\0")) if changed.returncode == 0 else set()
+    paths.update(path for path in _git_untracked_paths(git_cmd, cwd) if path.endswith(".py"))
+    paths.discard("")
+    return tuple(sorted(paths))
+
+
+def _reject_unsafe_stash_restore(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+    preexisting_untracked: set[str],
+    failing_target: str,
+    detail: str | None,
+) -> None:
+    """Restore the clean updated tree, preserve the stash, and abort the update."""
+    print()
+    print("✗ Restored local changes made the Hermes agent unexecutable.")
+    print(f"  Health check failed: {failing_target}")
+    if detail:
+        for line in str(detail).splitlines()[:6]:
+            print(f"    {line}")
+
+    restored_untracked = _git_untracked_paths(git_cmd, cwd) - preexisting_untracked
+    subprocess.run(
+        git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True
+    )
+    if restored_untracked:
+        subprocess.run(
+            git_cmd + ["clean", "-fd", "--", *sorted(restored_untracked)],
+            cwd=cwd,
+            capture_output=True,
+        )
+
+    print("  The clean updated tree has been restored; the gateway was not restarted.")
+    print("  Platform connectivity alone does not mean the agent can execute turns.")
+    print(f"  Your local changes remain preserved in stash: {stash_ref}")
+    print(f"  Inspect them with: git stash show --stat {stash_ref}")
+    print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
+    raise SystemExit(1)
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2431,15 +2500,17 @@ def _restore_stashed_changes(
     input_fn=None,
 ) -> bool:
     if prompt_user:
+        remote_prompt = input_fn is not None
+        prompt_suffix = "[y/N]" if remote_prompt else "[Y/n]"
         print()
         print("⚠ Local changes were stashed before updating.")
         print(
             "  Restoring them may reapply local customizations onto the updated codebase."
         )
         print("  Review the result afterward if Hermes behaves unexpectedly.")
-        print("Restore local changes now? [Y/n]")
+        print(f"Restore local changes now? {prompt_suffix}")
         if input_fn is not None:
-            response = input_fn("Restore local changes now? [Y/n]", "y")
+            response = input_fn(f"Restore local changes now? {prompt_suffix}", "n")
         else:
             try:
                 response = input().strip().lower()
@@ -2450,12 +2521,14 @@ def _restore_stashed_changes(
                 # skip-restore path below, which already explains how to
                 # restore manually from git stash.
                 response = "n"
-        if response not in {"", "y", "yes"}:
+        accepted = response in {"y", "yes"} or (not remote_prompt and response == "")
+        if not accepted:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
             print(f"Restore manually with: git stash apply {stash_ref}")
             return False
 
+    preexisting_untracked = _git_untracked_paths(git_cmd, cwd)
     print("→ Restoring local changes...")
     restore = subprocess.run(
         git_cmd + ["stash", "apply", stash_ref],
@@ -2516,6 +2589,31 @@ def _restore_stashed_changes(
         # restore had conflicts.  Let cmd_update continue with pip install,
         # skill sync, and gateway restart.
         return False
+
+    restored_python = _restored_python_paths(git_cmd, cwd)
+    syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(
+        cwd, restored_python
+    )
+    if not syntax_ok:
+        _reject_unsafe_stash_restore(
+            git_cmd,
+            cwd,
+            stash_ref,
+            preexisting_untracked,
+            failing_path or "restored Python source",
+            syntax_error,
+        )
+
+    import_ok, failing_module, import_error = _validate_critical_modules_import(cwd)
+    if not import_ok:
+        _reject_unsafe_stash_restore(
+            git_cmd,
+            cwd,
+            stash_ref,
+            preexisting_untracked,
+            f"agent import {failing_module or 'unknown'}",
+            import_error,
+        )
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:

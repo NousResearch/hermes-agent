@@ -256,6 +256,10 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
             if _should_exclude(rel) or fpath.is_symlink():
                 continue
+            # Never open runtime sockets, FIFOs, or devices. Stat failures remain errors.
+            with suppress(OSError):
+                if not stat.S_ISREG(fpath.stat().st_mode):
+                    continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
                     continue

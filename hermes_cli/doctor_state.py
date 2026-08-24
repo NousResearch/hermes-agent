@@ -378,9 +378,9 @@ def _memory_provider_generic(name: str) -> None:
     """Generic check for other memory providers (openviking, hindsight, etc.)."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
-    if _provider and _provider.is_available():
+    if _provider is not None and _provider.is_available():
         check_ok(f"{name} provider active")
-    elif _provider:
+    elif _provider is not None:
         check_warn(f"{name} configured but not available", "run: hermes memory status")
     else:
         check_warn(f"{name} plugin not found", "run: hermes memory setup")

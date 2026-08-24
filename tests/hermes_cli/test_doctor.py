@@ -9,6 +9,7 @@ import io
 import contextlib
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -383,6 +384,24 @@ class TestDoctorMemoryProviderSection:
         # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
+
+
+    def test_falsey_available_generic_provider_shows_active(self, monkeypatch, tmp_path):
+        """Doctor must use provider existence, not truthiness, for generic plugins."""
+
+        class FalseyProvider:
+            def __bool__(self):
+                """Report false despite being a valid provider instance."""
+                return False
+
+            def is_available(self):
+                """Report the loaded fake provider as available."""
+                return True
+
+        with patch("plugins.memory.load_memory_provider", return_value=FalseyProvider()):
+            out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="falsey")
+
+        assert "falsey provider active" in out
 
 
     def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):

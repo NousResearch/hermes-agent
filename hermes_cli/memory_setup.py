@@ -180,7 +180,7 @@ def _get_available_providers() -> list:
     for name, desc, available in raw:
         try:
             provider = load_memory_provider(name)
-            if not provider:
+            if provider is None:
                 continue
         except Exception:
             continue
@@ -410,7 +410,7 @@ def cmd_status(args) -> None:
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
         display_config = provider_config
-        if provider and hasattr(provider, "get_status_config"):
+        if provider is not None and hasattr(provider, "get_status_config"):
             try:
                 display_config = provider.get_status_config(provider_config)
             except Exception as e:
@@ -422,7 +422,7 @@ def cmd_status(args) -> None:
             for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        if provider:
+        if provider is not None:
             print("\n  Plugin:    installed ✓")
             if provider.is_available():
                 print("  Status:    available ✓")

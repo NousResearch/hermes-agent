@@ -121,3 +121,55 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert "Memory tool:        enabled ✓" in captured
     assert "Memory injection:   enabled ✓" in captured
     assert "User profile:       disabled ✗" in captured
+
+
+def test_falsey_provider_is_listed_and_reported_available(capsys, monkeypatch):
+    """Setup and status must retain a valid provider even when it is falsey."""
+
+    class FalseyProvider:
+        def __bool__(self):
+            """Report false despite being a valid provider instance."""
+            return False
+
+        def get_config_schema(self):
+            """Expose an empty setup schema for this focused fake provider."""
+            return []
+
+        def get_status_config(self, config):
+            """Return a stable status value that proves this method was reached."""
+            return {"mode": config.get("mode", "test")}
+
+        def is_available(self):
+            """Report that the loaded fake provider is available."""
+            return True
+
+    provider = FalseyProvider()
+    monkeypatch.setattr(
+        "plugins.memory.discover_memory_providers",
+        lambda: [("falsey", "Falsey test provider", True)],
+    )
+    monkeypatch.setattr(
+        "plugins.memory.load_memory_provider", lambda _name: provider
+    )
+
+    assert memory_setup._get_available_providers() == [
+        ("falsey", "no setup needed", provider)
+    ]
+
+    config = {
+        "memory": {
+            "provider": "falsey",
+            "memory_enabled": True,
+            "user_profile_enabled": False,
+            "falsey": {"mode": "test"},
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    captured = capsys.readouterr().out
+    assert "Plugin:    installed ✓" in captured
+    assert "Status:    available ✓" in captured
+    assert "mode: test" in captured

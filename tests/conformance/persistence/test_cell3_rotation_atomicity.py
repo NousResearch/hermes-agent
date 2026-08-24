@@ -25,9 +25,10 @@ from pathlib import Path
 import pytest
 
 from tests.conformance.persistence._harness import (
+    effective_mode_or_skip,
     integrity_ok,
     kill9_and_reap,
-    on_disk_journal_mode,
+    make_hermes_home,
     spawn_child,
     wait_for,
 )
@@ -81,32 +82,41 @@ def test_rotation_is_atomic_under_sigkill(tmp_path, requested_mode):
     db_path = tmp_path / "state.db"
     journal = tmp_path / "rotations.jsonl"
 
+    child_env = {}
     if requested_mode is not None:
-        from tests.conformance.persistence._harness import force_journal_mode
+        # Steer the CHILD's own resolver via an isolated HERMES_HOME config:
+        # pre-seeding the file alone is not enough — SessionDB.__init__ runs
+        # apply_wal_with_fallback(), which upgrades a non-WAL file to WAL
+        # whenever the configured mode says so (the resolver's downgrade
+        # gates may still refuse; effective_mode_or_skip audits post-run).
+        child_env["HERMES_HOME"] = str(
+            make_hermes_home(tmp_path, requested_mode.lower())
+        )
 
-        effective = force_journal_mode(db_path, requested_mode)
-        if effective.upper() != requested_mode.upper():
-            pytest.skip(
-                f"journal_mode={requested_mode} not deployable here "
-                f"(got {effective})"
-            )
-
-    child = spawn_child(ROTATOR.format(db_path=str(db_path), journal=str(journal)))
+    child = spawn_child(
+        ROTATOR.format(db_path=str(db_path), journal=str(journal)), env=child_env
+    )
     try:
         wait_for(
             lambda: _completed_rotations(journal) >= 50,
             what=">=50 completed rotations",
+            child=child,
         )
         assert child.poll() is None, (
             f"rotator exited early (rc={child.returncode}): "
-            f"{child.stderr.read().decode(errors='replace')[-1500:]}"
+            f"{(child.stderr.read() if child.stderr else b'').decode(errors='replace')[-1500:]}"
         )
     finally:
         kill9_and_reap(child)
 
-    mode = on_disk_journal_mode(db_path)
+    # A leg that ran in a different mode than requested is no evidence for
+    # the requested mode — skip it rather than silently double-counting WAL.
+    mode = effective_mode_or_skip(db_path, requested_mode)
     acked = _completed_rotations(journal)
-    assert acked >= 50
+    assert acked >= 50, (
+        f"[journal_mode={mode}] only {acked} rotations acknowledged before "
+        "the kill — harness window too small"
+    )
 
     conn = sqlite3.connect(str(db_path))
     try:

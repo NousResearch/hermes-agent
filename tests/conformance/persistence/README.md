@@ -26,10 +26,15 @@ process mid-write.
   interrupt the journal write itself).
 - Every wait is deadline-bounded; coordination uses file barriers, never
   sleeps-for-correctness.
-- Journal-mode matrix per cell: the resolver's default, explicit `DELETE`,
-  and explicit `WAL` — the WAL run **skips** where the environment's
-  downgrade gates refuse it (the tracking issue's 3.50.4 caveat), and every
-  assertion message records the mode actually in effect.
+- Journal-mode matrix (cells 1 and 3): the resolver's default, explicit
+  `DELETE`, and explicit `WAL` — each leg steers the child's own resolver
+  via an isolated `HERMES_HOME` config, then **audits the on-disk mode after
+  the run** and skips when the environment didn't honor the request (e.g.
+  the resolver's WAL-reset downgrade gate, the tracking issue's 3.50.4
+  caveat). A leg that ran in a different mode never counts as evidence for
+  the advertised one. Cell 2 runs on the resolver's default only (the
+  consume-once property is journal-mode-independent: it rests on a single
+  predicated UPDATE).
 
 ## Semantics
 

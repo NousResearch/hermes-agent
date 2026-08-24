@@ -13,8 +13,6 @@ each calls ``SessionDB.claim_handoff()`` on the same pending session.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from tests.conformance.persistence._harness import (
     on_disk_journal_mode,
     reap,
@@ -40,7 +38,10 @@ while not barrier.exists():
 
 db = SessionDB(db_path=db_path)
 won = db.claim_handoff("cell2")
-sys.exit(0 if won else 1)
+# Disjoint codes: 0=won, 10=lost. An unhandled exception exits 1, which must
+# NEVER be confusable with a clean "lost the claim" — a run where one
+# claimant wins and seven CRASH is not a consume-once proof.
+sys.exit(0 if won else 10)
 """
 
 N_CLAIMANTS = 8
@@ -80,7 +81,7 @@ def test_exactly_one_claimant_wins(tmp_path):
     mode = on_disk_journal_mode(db_path)
 
     codes = [rc for rc, _, _ in results]
-    assert all(rc in (0, 1) for rc in codes), (
+    assert all(rc in (0, 10) for rc in codes), (
         f"[journal_mode={mode}] claimant crashed/timed out: {codes}; "
         f"stderr: {[e[-300:] for _, _, e in results if e]}"
     )

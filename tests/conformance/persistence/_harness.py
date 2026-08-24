@@ -35,7 +35,13 @@ POLL_INTERVAL = 0.02
 def spawn_child(script_body: str, *, cwd: Path | None = None, env: dict | None = None) -> subprocess.Popen:
     """Run ``script_body`` in a fresh interpreter with the repo importable."""
     child_env = dict(os.environ)
-    child_env["PYTHONPATH"] = str(REPO_ROOT)
+    # Prepend, don't clobber: CI images may rely on an inherited PYTHONPATH
+    # for dependencies — losing it would fail child imports while the parent
+    # collects fine, surfacing only as an opaque wait_for deadline.
+    inherited = child_env.get("PYTHONPATH")
+    child_env["PYTHONPATH"] = (
+        f"{REPO_ROOT}{os.pathsep}{inherited}" if inherited else str(REPO_ROOT)
+    )
     child_env["PYTHONUNBUFFERED"] = "1"
     if env:
         child_env.update(env)
@@ -48,12 +54,31 @@ def spawn_child(script_body: str, *, cwd: Path | None = None, env: dict | None =
     )
 
 
-def wait_for(predicate, *, deadline: float = CHILD_DEADLINE, what: str = "condition") -> None:
-    """Poll ``predicate`` until true or fail loudly at the deadline."""
+def wait_for(
+    predicate,
+    *,
+    deadline: float = CHILD_DEADLINE,
+    what: str = "condition",
+    child: "subprocess.Popen | None" = None,
+) -> None:
+    """Poll ``predicate`` until true or fail loudly at the deadline.
+
+    When ``child`` is given and it exits before the predicate turns true,
+    fail IMMEDIATELY with its captured stderr — a crashed writer must be an
+    instant diagnostic, not a 60s opaque deadline.
+    """
     end = time.monotonic() + deadline
     while time.monotonic() < end:
         if predicate():
             return
+        if child is not None and child.poll() is not None:
+            err = b""
+            if child.stderr is not None:
+                err = child.stderr.read() or b""
+            raise AssertionError(
+                f"child exited early (rc={child.returncode}) while waiting "
+                f"for {what}; stderr:\n{err.decode(errors='replace')[-2000:]}"
+            )
         time.sleep(POLL_INTERVAL)
     raise AssertionError(f"deadline ({deadline}s) waiting for {what}")
 
@@ -91,21 +116,6 @@ def on_disk_journal_mode(db_path: Path) -> str:
         conn.close()
 
 
-def force_journal_mode(db_path: Path, mode: str) -> str:
-    """Set an explicit journal mode on a fresh DB; return the effective mode.
-
-    SQLite may refuse the switch (downgrade gates, live readers); callers
-    compare the returned mode and ``pytest.skip`` when the request didn't
-    stick — mirroring the resolver's behavior instead of fighting it.
-    """
-    conn = sqlite3.connect(str(db_path))
-    try:
-        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
-        return str(row[0]) if row else "unknown"
-    finally:
-        conn.close()
-
-
 def integrity_ok(db_path: Path) -> bool:
     conn = sqlite3.connect(str(db_path))
     try:
@@ -113,3 +123,37 @@ def integrity_ok(db_path: Path) -> bool:
         return bool(row) and str(row[0]).lower() == "ok"
     finally:
         conn.close()
+
+
+def make_hermes_home(base: Path, journal_mode: str) -> Path:
+    """Create an isolated HERMES_HOME whose config pins ``database.journal_mode``.
+
+    The journal-mode matrix legs must steer the CHILD's own resolver:
+    pre-seeding the DB file alone is not enough, because ``SessionDB.__init__``
+    runs ``apply_wal_with_fallback()`` which upgrades a non-WAL file to WAL
+    whenever the configured mode (default ``wal``) says so — on healthy
+    SQLite the DELETE leg would silently run in WAL.
+    """
+    home = base / f"hermes-home-{journal_mode}"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"database:\n  journal_mode: {journal_mode}\n", encoding="utf-8"
+    )
+    return home
+
+
+def effective_mode_or_skip(db_path: Path, requested_mode: str | None) -> str:
+    """Record the on-disk journal mode; skip if a requested leg wasn't honored.
+
+    A leg that ran in a different mode than advertised must never count as
+    green evidence for the advertised mode.
+    """
+    import pytest
+
+    mode = on_disk_journal_mode(db_path)
+    if requested_mode is not None and mode.upper() != requested_mode.upper():
+        pytest.skip(
+            f"journal_mode={requested_mode} not honored by this environment "
+            f"(effective {mode}) — matrix leg not probeable here"
+        )
+    return mode

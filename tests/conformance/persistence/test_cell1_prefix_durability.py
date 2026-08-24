@@ -19,9 +19,10 @@ from pathlib import Path
 import pytest
 
 from tests.conformance.persistence._harness import (
+    effective_mode_or_skip,
     integrity_ok,
     kill9_and_reap,
-    on_disk_journal_mode,
+    make_hermes_home,
     spawn_child,
     wait_for,
 )
@@ -31,7 +32,7 @@ import json, sys
 from pathlib import Path
 from hermes_state import SessionDB
 
-db_path = Path(sys.argv[0]) if False else Path({db_path!r})
+db_path = Path({db_path!r})
 journal = Path({journal!r})
 db = SessionDB(db_path=db_path)
 db.create_session("cell1", source="conformance")
@@ -78,37 +79,43 @@ def test_acknowledged_appends_survive_sigkill(tmp_path, requested_mode):
     db_path = tmp_path / "state.db"
     journal = tmp_path / "acked.jsonl"
 
+    child_env = {}
     if requested_mode is not None:
-        # Pre-create the DB file in the requested mode; skip when the
-        # environment refuses it (resolver downgrade gates — the tracking
-        # issue's 3.50.4 WAL caveat).
-        from tests.conformance.persistence._harness import force_journal_mode
+        # Steer the CHILD's own resolver via an isolated HERMES_HOME config:
+        # pre-seeding the file alone is not enough — SessionDB.__init__ runs
+        # apply_wal_with_fallback(), which upgrades a non-WAL file to WAL
+        # whenever the configured mode says so (the resolver's downgrade
+        # gates may still refuse; effective_mode_or_skip audits post-run).
+        child_env["HERMES_HOME"] = str(
+            make_hermes_home(tmp_path, requested_mode.lower())
+        )
 
-        effective = force_journal_mode(db_path, requested_mode)
-        if effective.upper() != requested_mode.upper():
-            pytest.skip(
-                f"journal_mode={requested_mode} not deployable here "
-                f"(got {effective})"
-            )
-
-    child = spawn_child(WRITER.format(db_path=str(db_path), journal=str(journal)))
+    child = spawn_child(
+        WRITER.format(db_path=str(db_path), journal=str(journal)), env=child_env
+    )
     try:
         wait_for(
             lambda: len(_acknowledged(journal)) >= 200,
             what=">=200 acknowledged appends",
+            child=child,
         )
         # The kill must interrupt a LIVE writer — a child that already
         # exited would turn this into a clean-shutdown test.
         assert child.poll() is None, (
             f"writer exited early (rc={child.returncode}): "
-            f"{child.stderr.read().decode(errors='replace')[-1500:]}"
+            f"{(child.stderr.read() if child.stderr else b'').decode(errors='replace')[-1500:]}"
         )
     finally:
         kill9_and_reap(child)
 
-    mode = on_disk_journal_mode(db_path)
+    # A leg that ran in a different mode than requested is no evidence for
+    # the requested mode — skip it rather than silently double-counting WAL.
+    mode = effective_mode_or_skip(db_path, requested_mode)
     acked = _acknowledged(journal)
-    assert len(acked) >= 200
+    assert len(acked) >= 200, (
+        f"[journal_mode={mode}] only {len(acked)} acknowledged appends "
+        "journaled before the kill — harness window too small"
+    )
 
     pass1 = _recover(db_path)
     pass2 = _recover(db_path)

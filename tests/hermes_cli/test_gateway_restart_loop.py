@@ -250,6 +250,25 @@ class TestGatewayLifecyclePattern:
     def test_python_argv_stripping_stays_narrow(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
+    def test_inert_heredoc_body_prose_not_blocked(self):
+        # #88336: a quoted-delimiter heredoc feeding a data sink is inert
+        # data — runbook prose inside it must not block.
+        text = (
+            "cat > /tmp/runbook.md <<'EOF'\n"
+            "If the box is wedged, a human can run: hermes gateway restart\n"
+            "EOF"
+        )
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Executable heredoc (shell consumer) must stay blocked.
+        "bash <<EOF\nhermes gateway restart\nEOF",
+        # Unquoted delimiter = expansion-capable = fail open to scanning.
+        "cat > /tmp/x <<EOF\nhermes gateway restart\nEOF",
+    ])
+    def test_non_inert_heredocs_still_scanned(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
 
 class TestProfileFlagGatewayLifecycle:
     """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's

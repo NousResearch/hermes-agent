@@ -237,6 +237,15 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     """
     if not text:
         return False
+    # Heredoc bodies that are provably inert data (quoted delimiter, data-sink
+    # consumer like `cat > file <<'EOF'`) are masked before scanning (#88336):
+    # a runbook line "a human can run: hermes gateway restart" inside such a
+    # body is documentation, not a command this shell will execute. The
+    # stripper fails open on ANY ambiguity (unquoted delimiter, shell
+    # consumer, unterminated body), so executable heredocs are still scanned.
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True

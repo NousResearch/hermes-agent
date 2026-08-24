@@ -875,3 +875,112 @@ class TestLocalContextProbeTTLCache:
         assert first is None
         assert second is None
         assert detect.call_count == 2, "None result was wrongly cached; retry did not re-probe"
+
+
+class TestQueryLocalContextLengthMaxTokensNotContext:
+    """Regression: `max_tokens` (an output-completion cap) must NOT be treated
+    as a context length.
+
+    OpenAI-compatible gateways (e.g. TokenHub serving DeepSeek V4 Flash)
+    advertise a real context window via `context_size` / `max_input_tokens`
+    while also carrying a smaller `max_tokens` output cap. The probe used to
+    fall through to `max_tokens`, mis-detecting a 1M-window model as 393K.
+    """
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_models_list_prefers_context_size_over_max_tokens(self):
+        """/v1/models list: `context_size` wins over `max_tokens`."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "id": "deepseek-v4-flash",
+                    "context_size": 1048576,
+                    "max_input_tokens": 1048576,
+                    "max_tokens": 393216,
+                }
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp  # /v1/models/deepseek-v4-flash
+            return list_resp  # /v1/models
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("deepseek-v4-flash", "http://127.0.0.1:8080/v1")
+
+        assert result == 1048576
+
+    def test_models_detail_prefers_max_input_tokens_over_max_tokens(self):
+        """/v1/models/{model} detail: `max_input_tokens` wins over `max_tokens`."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(200, {
+            "id": "deepseek-v4-flash",
+            "context_size": 1048576,
+            "max_input_tokens": 1048576,
+            "max_tokens": 393216,
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = detail_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("deepseek-v4-flash", "http://127.0.0.1:8080/v1")
+
+        assert result == 1048576
+
+    def test_models_list_max_tokens_only_returns_none(self):
+        """A model that ONLY exposes `max_tokens` (no real context key) must not
+        be reported as having that output cap as its context length."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "id": "mystery-model",
+                    "max_tokens": 393216,
+                }
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp
+            return list_resp
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("mystery-model", "http://127.0.0.1:8080/v1")
+
+        assert result is None

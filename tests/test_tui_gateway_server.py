@@ -15423,6 +15423,175 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             server._sessions.pop(k, None)
 
 
+def test_session_create_persists_seeded_branch_child(monkeypatch):
+    """A desktop branch (session.create with parent_session_id + seeded
+    messages) must persist its row + transcript immediately (#93959).
+
+    The renderer re-fetches the fresh child via REST and defer_history
+    hydration right after create; both read the DB. An unpersisted child
+    404s/hydrates empty, the client fail-latch refuses to bind it, and the
+    user gets an infinite spinner whose optimistic row vanishes on restart.
+    """
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    seen: dict = {}
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            seen["parent_title"] = key
+            return "My Parent Session"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            seen["created"] = key
+            seen["parent"] = kwargs.get("parent_session_id")
+            seen["branched_from"] = (kwargs.get("model_config") or {}).get("_branched_from")
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            seen["messages"] = list(messages)
+
+        def set_session_title(self, key, title):
+            seen["title"] = title
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    seeded = [
+        {"role": "user", "content": "hello from parent"},
+        {"role": "assistant", "content": "parent reply"},
+    ]
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "cols": 96,
+                "source": "desktop",
+                "parent_session_id": "20260823_084113_6de211",
+                "messages": seeded,
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    key = resp["result"]["stored_session_id"]
+
+    # Row persisted up front with lineage linkage and a lineage title —
+    # not deferred to the first prompt.
+    assert seen.get("created") == key
+    assert seen.get("parent") == "20260823_084113_6de211"
+    assert seen.get("branched_from") == "20260823_084113_6de211"
+    assert seen.get("title") == "My Parent Session #2"
+
+    # Seeded transcript copied into the durable row so REST prefetch and
+    # defer_history hydration both find it immediately.
+    assert len(seen.get("messages") or []) == 2
+    assert seen["messages"][0]["content"] == "hello from parent"
+
+    # The live record no longer queues the title — the DB already holds it.
+    runtime_sid = resp["result"]["session_id"]
+    assert server._sessions[runtime_sid]["pending_title"] is None
+
+    server._sessions.pop(runtime_sid, None)
+
+
+def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
+    """Best-effort persistence: a broken DB must not fail session.create."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    class _BrokenDB:
+        def get_session_title(self, key):
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "source": "desktop",
+                "parent_session_id": "parent-1",
+                "messages": [{"role": "user", "content": "seed"}],
+            },
+        }
+    )
+
+    # Create itself still succeeds — the lazy first-prompt path remains as
+    # the fallback for the seed.
+    assert "result" in resp
+
+    server._sessions.pop(resp["result"]["stored_session_id"], None)
+
+
+def test_session_create_without_parent_still_defers_row(monkeypatch):
+    """Plain drafts keep the lazy-row contract: no parent + no explicit branch
+    intent means no eager persistence (the original draft-hygiene invariant)."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    calls: dict = {"create": 0}
+
+    class _FakeDB:
+        def create_session(self, *a, **k):
+            calls["create"] += 1
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    server._sessions[sid]["agent_ready"].wait(timeout=2.0)
+
+    assert calls["create"] == 0, "plain drafts must not persist eagerly"
+
+    server._sessions.pop(sid, None)
+
 def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_path):
     """The branched agent must be built under the parent profile's secrets.
 

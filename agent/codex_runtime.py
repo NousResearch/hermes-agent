@@ -1097,6 +1097,10 @@ def _consume_codex_event_stream(
     # state at the terminal event so the tool call executes instead of being
     # silently dropped.
     pending_function_calls: Dict[str, Dict[str, Any]] = {}
+    # First-observed (sequence, output_index) per announced item id, so items
+    # confirmed later via output_item.done keep their announced stream
+    # position when merged with settled pending calls.
+    announced_output_order: Dict[str, tuple] = {}
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
@@ -1157,20 +1161,32 @@ def _consume_codex_event_stream(
                     commentary_text_deltas = []
             else:
                 active_message_phase = None
+            # First-observed ordering metadata for EVERY announced item (not
+            # just function calls): when this item later lands via
+            # output_item.done, the done path must reuse the announced
+            # sequence/index instead of allocating a fresh tail position, or
+            # a mixed announced/pending stream without output_index values
+            # reorders the calls (review P1 on PR #92767).
+            item_id = str(_item_field(item, "id", ""))
+            if item_id and item_id not in announced_output_order:
+                announced_output_order[item_id] = (
+                    next_output_sequence,
+                    _event_field(event, "output_index", None),
+                )
+                next_output_sequence += 1
             if "function_call" in str(item_type):
                 has_tool_calls = True
-                item_id = str(_item_field(item, "id", ""))
                 if item_id:
+                    announced_sequence, announced_index = announced_output_order[item_id]
                     # Seed from the announced item's own arguments when the
                     # backend attaches them up front, and remember the stream
                     # position so a settled call keeps its place in the output.
                     pending_function_calls[item_id] = {
                         "item": item,
                         "arguments": str(_item_field(item, "arguments", "") or ""),
-                        "output_index": _event_field(event, "output_index", None),
-                        "sequence": next_output_sequence,
+                        "output_index": announced_index,
+                        "sequence": announced_sequence,
                     }
-                    next_output_sequence += 1
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -1255,12 +1271,26 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
-                collected_output_indexes.append(_event_field(event, "output_index", None))
-                collected_output_sequences.append(next_output_sequence)
-                next_output_sequence += 1
+                # Reuse the first-observed position when this item was
+                # announced earlier via output_item.added; a fresh tail
+                # sequence is allocated only for genuinely unannounced items.
+                # The .done event's own output_index wins when present, with
+                # the announced index as its fallback.
+                done_id = str(_item_field(done_item, "id", ""))
+                announced_sequence, announced_index = announced_output_order.get(
+                    done_id, (None, None)
+                )
+                done_index = _event_field(event, "output_index", None)
+                if done_index is None:
+                    done_index = announced_index
+                if announced_sequence is None:
+                    announced_sequence = next_output_sequence
+                    next_output_sequence += 1
+                collected_output_indexes.append(done_index)
+                collected_output_sequences.append(announced_sequence)
                 # Confirmed by the authoritative per-item done event; remove
                 # from pending so it is not settled twice.
-                pending_function_calls.pop(str(_item_field(done_item, "id", "")), None)
+                pending_function_calls.pop(done_id, None)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:

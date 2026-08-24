@@ -280,3 +280,120 @@ def test_missing_done_output_index_preserves_observed_order():
         "function_call",
         "message",
     ]
+
+
+def test_announced_call_confirmed_by_done_keeps_first_observed_order():
+    """Reviewer P1 witness (round 2): two announced calls without any
+    ``output_index``; the FIRST one later lands via ``.done``. The done path
+    must reuse the announced sequence instead of allocating a fresh tail
+    position, or the calls invert to [B, A]."""
+    events = [
+        SimpleNamespace(
+            type="response.created",
+            response=SimpleNamespace(id="resp_1"),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_a",
+                call_id="call_a",
+                name="tool_A",
+                arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_a",
+            delta='{"step": 1}',
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_b",
+                call_id="call_b",
+                name="tool_B",
+                arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_b",
+            delta='{"step": 2}',
+        ),
+        # The EARLIER announced call is the one confirmed by .done.
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_a",
+                call_id="call_a",
+                name="tool_A",
+                arguments='{"step": 1}',
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(id="resp_1", status="completed", output=None),
+        ),
+    ]
+    final = _consume_codex_event_stream(events, model="gpt-test")
+    order = [
+        getattr(item, "name", None)
+        for item in final.output
+        if getattr(item, "type", "") == "function_call"
+    ]
+    assert order == ["tool_A", "tool_B"], (
+        f"done-confirmed call lost its announced position: {order}"
+    )
+
+
+def test_announced_non_function_item_precedes_pending_call():
+    """Reviewer P1 witness (round 2, part b): an announced non-function item
+    (message) that precedes a still-pending function call must keep its
+    leading position after the message lands via ``.done``."""
+    events = [
+        SimpleNamespace(
+            type="response.created",
+            response=SimpleNamespace(id="resp_1"),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(type="message", id="msg_1"),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_z",
+                call_id="call_z",
+                name="tool_Z",
+                arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_z",
+            delta='{"k": 1}',
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="message",
+                id="msg_1",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="hi")],
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(id="resp_1", status="completed", output=None),
+        ),
+    ]
+    final = _consume_codex_event_stream(events, model="gpt-test")
+    types = [getattr(item, "type", None) for item in final.output]
+    assert types == ["message", "function_call"], (
+        f"announced message lost its leading position: {types}"
+    )

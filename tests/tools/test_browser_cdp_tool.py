@@ -233,8 +233,8 @@ def test_print_to_pdf_base64_passes_through_unredacted(cdp_server):
 
 
 def test_binary_payload_flag_keeps_secret_redaction_off_method_list(cdp_server):
-    """Fail-closed pin: only the two binary-payload methods skip redaction;
-    any other method's text output keeps full secret redaction."""
+    """Fail-closed pin: methods without a binary payload field keep full
+    secret redaction; the listed methods pass their payload through."""
     fake_key = "sk-" + "CDPSECRETSTILLREDACTED1234567890"
     cdp_server.on(
         "Runtime.evaluate",
@@ -252,6 +252,90 @@ def test_binary_payload_flag_keeps_secret_redaction_off_method_list(cdp_server):
         browser_cdp_tool.browser_cdp(method="Page.captureScreenshot")
     )
     assert shot_result["result"]["data"] == "gAAAA" + "B" * 60
+
+
+def test_binary_payload_field_sibling_string_still_redacted(cdp_server):
+    """Path-scoped exemption: on a binary-bearing result only the payload
+    field skips redaction; a sibling string keeps full secret redaction,
+    proving the exemption cannot widen to the whole result object."""
+    fake_key = "sk-" + "CDPSECRETSIBLING1234567890"
+    shot_b64 = "iVBORw0KGgoAAAANSUhEUg+" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": shot_b64, "note": fake_key},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.captureScreenshot"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == shot_b64
+    assert "CDPSECRETSIBLING" not in json.dumps(result)
+    assert result["result"]["note"].startswith("sk-")
+
+
+def test_get_response_body_base64_discriminator_passes_through(cdp_server):
+    """Network.getResponseBody with base64Encoded: true — the body is opaque
+    base64 bytes and must remain byte-identical (#94138 review on #94142)."""
+    body_b64 = "q9Z7" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Network.getResponseBody",
+        lambda params, sid: {"body": body_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["body"] == body_b64
+
+
+def test_get_response_body_text_discriminator_still_redacts(cdp_server):
+    """Same method with base64Encoded: false — the body is text and a real
+    secret in it must still be redacted."""
+    fake_key = "sk-" + "CDPSECRETBODY1234567890"
+    cdp_server.on(
+        "Network.getResponseBody",
+        lambda params, sid: {"body": f"leak {fake_key} here", "base64Encoded": False},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert "CDPSECRETBODY" not in json.dumps(result)
+
+
+def test_io_read_base64_discriminator_passes_through(cdp_server):
+    """IO.read honors the same discriminator contract for its data field."""
+    chunk_b64 = "AAA" + "gAAAA" + "C" * 60 + "="
+    cdp_server.on(
+        "IO.read",
+        lambda params, sid: {"data": chunk_b64, "base64Encoded": True, "eof": True},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="IO.read"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == chunk_b64
+    assert result["result"]["eof"] is True
+
+
+def test_fetch_get_response_body_base64_discriminator_passes_through(cdp_server):
+    """Fetch.getResponseBody pins the same body/base64Encoded contract."""
+    body_b64 = "zz7+" + "gAAAA" + "D" * 60 + "=="
+    cdp_server.on(
+        "Fetch.getResponseBody",
+        lambda params, sid: {"body": body_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Fetch.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["body"] == body_b64
 
 
 # ---------------------------------------------------------------------------

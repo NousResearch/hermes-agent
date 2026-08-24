@@ -43,37 +43,62 @@ _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
 }
 
 
-_BINARY_PAYLOAD_CDP_METHODS = {
-    # Methods whose result is dominated by a base64-encoded binary payload.
-    # redact_sensitive_text's Fernet pattern ("gAAAA" + base64 alphabet) can
-    # match arbitrary spans inside such payloads — collapsing them to
-    # "first6...last4" and corrupting the decoded screenshot/PDF (#94138).
-    # The payload is binary, not free text the model reads, so redaction has
-    # no secret to protect there; every other method keeps full redaction.
-    "Page.captureScreenshot",
-    "Page.printToPDF",
+_CDP_BINARY_RESULT_FIELDS: Dict[str, frozenset] = {
+    # Protocol carriers whose result.<field> is an opaque base64 payload with
+    # no discriminator flag of their own. redact_sensitive_text's Fernet
+    # pattern ("gAAAA" + base64 alphabet) can match arbitrary spans inside
+    # such payloads — collapsing them to "first6...last4" and corrupting the
+    # decoded bytes (#94138). The payload is binary, not free text the model
+    # reads, so redaction has no secret to protect there. The generic
+    # body/read methods (Network.getResponseBody, Fetch.getResponseBody,
+    # IO.read, Network.streamResourceContent) are NOT here: they carry a
+    # base64Encoded sibling and go through the discriminator below.
+    "Page.captureScreenshot": frozenset({"data"}),
+    "Page.printToPDF": frozenset({"data"}),
 }
 
+# Generic body/read methods signal "this string is opaque base64 bytes" via a
+# sibling boolean. Honor the protocol discriminator anywhere it appears: the
+# flag is type information, so it is safe to trust even for methods not
+# listed above (#94138 review on #94142).
+_BASE64_DISCRIMINATED_FIELDS = frozenset({"body", "data", "bufferedData"})
 
-def _redact_cdp_output(value: Any, *, binary_payload: bool = False) -> Any:
+
+def _redact_cdp_output(value: Any, *, exempt_fields: frozenset = frozenset()) -> Any:
     """Redact browser-originated CDP result data before returning it.
 
-    When *binary_payload* is set (the calling method's result is a base64
-    binary payload, see ``_BINARY_PAYLOAD_CDP_METHODS``), strings pass
-    through unchanged so the payload stays byte-identical (#94138).
+    Policy: semantic text is redacted; opaque bytes stay byte-identical
+    (#94138). *exempt_fields* names the calling method's top-level binary
+    payload fields (``_CDP_BINARY_RESULT_FIELDS``), so only those exact
+    ``method.result.<field>`` slots skip redaction — sibling fields keep
+    full redaction. Any dict whose ``base64Encoded`` sibling is exactly
+    ``True`` exempts its ``body``/``data``/``bufferedData`` string the same
+    way; ``base64Encoded: false`` or absent means the value is text and is
+    redacted.
     """
     from agent.redact import redact_sensitive_text
 
     if isinstance(value, str):
-        if binary_payload:
-            return value
         return redact_sensitive_text(value, force=True)
     if isinstance(value, list):
-        return [_redact_cdp_output(item, binary_payload=binary_payload) for item in value]
+        return [_redact_cdp_output(item) for item in value]
     if isinstance(value, tuple):
-        return tuple(_redact_cdp_output(item, binary_payload=binary_payload) for item in value)
+        return tuple(_redact_cdp_output(item) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_cdp_output(item, binary_payload=binary_payload) for key, item in value.items()}
+        base64_flagged = value.get("base64Encoded") is True
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            if (
+                isinstance(item, str)
+                and (
+                    key in exempt_fields
+                    or (base64_flagged and key in _BASE64_DISCRIMINATED_FIELDS)
+                )
+            ):
+                redacted[key] = item
+            else:
+                redacted[key] = _redact_cdp_output(item)
+        return redacted
     return value
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
@@ -545,7 +570,8 @@ def browser_cdp(
         "success": True,
         "method": method,
         "result": _redact_cdp_output(
-            result, binary_payload=method in _BINARY_PAYLOAD_CDP_METHODS
+            result,
+            exempt_fields=_CDP_BINARY_RESULT_FIELDS.get(method, frozenset())
         ),
     }
     if target_id:

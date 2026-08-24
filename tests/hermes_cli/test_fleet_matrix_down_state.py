@@ -95,6 +95,27 @@ def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
     assert fleet[0]["state"] == "down"
 
 
+def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
+    """A record whose start_time matches the live process is not recycled."""
+    from gateway.status import _get_process_start_time
+
+    pid = os.getpid()
+    _setup(
+        monkeypatch,
+        tmp_path,
+        {
+            "pid": pid,
+            "start_time": _get_process_start_time(pid),
+            "gateway_state": "running",
+            "code_sha": "HEADSHA",
+            "kind": "hermes-gateway",
+        },
+    )
+    fleet = ur.collect_fleet_versions(pre_restart_pids=[pid])
+    assert len(fleet) == 1
+    assert fleet[0]["state"] == "current"
+
+
 def test_live_gateway_rows_unchanged(monkeypatch, tmp_path):
     """The live-pid path is untouched by the down-state addition."""
     _setup(

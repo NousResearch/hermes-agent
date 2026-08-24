@@ -391,6 +391,12 @@ def collect_fleet_versions(
                 # stop, startup failure, stale record from a long-dead
                 # gateway) keeps the historical no-row behavior so the
                 # feature's rollout can't false-positive.
+                #
+                # ``_pre_restart`` is a bare set of PIDs, not (pid, start_time)
+                # pairs, so a recycled PID from gateway A landing in B's stale
+                # record could still mislabel B as down if A's PID happened to
+                # be in the pre-restart snapshot — inherent to the snapshot's
+                # data model, not something this guard can fix on its own.
                 gw_state = record.get("gateway_state")
                 if (
                     pid in _pre_restart

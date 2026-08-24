@@ -9,16 +9,28 @@
 // fall back to the legacy `dashboard --no-open` invocation. Both produce the
 // exact same headless gateway; `serve` is just the decoupled name.
 //
+// `--ws-only` is an even newer flag: it bypasses the FastAPI/uvicorn dashboard
+// entirely and runs a bare `websockets` server that calls `handle_ws` directly.
+// When a runtime understands `serve` but NOT `--ws-only`, the flag is silently
+// dropped by the runtime's argparse (it would fail "unrecognized arguments" on
+// older versions). The `sourceDeclaresWsOnly` check gates this: only emit
+// `--ws-only` when the runtime's source actually registers it.
+//
 // These helpers are pure so they can be unit-tested without Electron.
 
 /**
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
+ * @param {object} [opts] runtime capability flags.
+ * @param {boolean} [opts.wsOnly=true] emit `--ws-only` (the slim WS server)
+ *   when true. Set to false for a runtime that doesn't understand the flag.
  */
-export function serveBackendArgs(profile?: string) {
+export function serveBackendArgs(profile?: string, opts?: { wsOnly?: boolean }) {
   const head = profile ? ['--profile', profile] : []
+  const wsOnly = opts?.wsOnly !== false // default true
 
-  return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
+  const tail = wsOnly ? ['--ws-only'] : []
+  return [...head, 'serve', '--host', '127.0.0.1', '--port', '0', ...tail]
 }
 
 /**
@@ -34,7 +46,9 @@ export function dashboardFallbackArgs(args) {
     return args.slice()
   }
 
-  return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
+  // `--ws-only` is serve-only; strip it when falling back to `dashboard`.
+  const rest = args.slice(i + 1).filter(a => a !== '--ws-only')
+  return [...args.slice(0, i), 'dashboard', '--no-open', ...rest]
 }
 
 /**
@@ -45,4 +59,14 @@ export function dashboardFallbackArgs(args) {
  */
 export function sourceDeclaresServe(dashboardPySource) {
   return /add_parser\(\s*["']serve["']/.test(String(dashboardPySource || ''))
+}
+
+/**
+ * True when a runtime's `hermes_cli/subcommands/dashboard.py` source registers
+ * the `--ws-only` flag on the `serve` subcommand. Used to gate emitting the
+ * flag: an older runtime that knows `serve` but not `--ws-only` would reject
+ * it as an unrecognized argument.
+ */
+export function sourceDeclaresWsOnly(dashboardPySource) {
+  return /["']--ws-only["']/.test(String(dashboardPySource || ''))
 }

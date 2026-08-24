@@ -39,6 +39,7 @@ from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
+from tui_gateway.event_replay import _stamp_event
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -2009,12 +2010,8 @@ def write_json(obj: dict) -> bool:
         params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            from tui_gateway.event_replay import _stamp_event
-
             _stamp_event(obj)
             return t.write(obj)
-
-    from tui_gateway.event_replay import _stamp_event
 
     _stamp_event(obj)
     return (current_transport() or _stdio_transport).write(obj)

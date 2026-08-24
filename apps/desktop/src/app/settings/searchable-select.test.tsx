@@ -163,7 +163,7 @@ describe('ConfigField list editing', () => {
     render(<ConfigField onChange={onChange} schema={listSchema} schemaKey="test.list" value={['first']} />)
 
     const input = screen.getByRole('textbox') as HTMLInputElement
-    fireEvent.focus(input)
+    input.focus()
     fireEvent.change(input, { target: { value: 'first, second' } })
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
 

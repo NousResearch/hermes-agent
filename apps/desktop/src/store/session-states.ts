@@ -42,13 +42,14 @@ import {
   $selectedStoredSessionId,
   $sessions,
   clearReadBaseline,
+  knownSessionProfile,
   lineageAliases,
   markSessionRead,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
   setSessions
 } from './session'
-import type { SessionProfileRoute } from './session-request-router'
+import { requestForSessionProfile, type SessionOwnerScope, type SessionProfileRoute } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
@@ -736,6 +737,45 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
 
 export function sessionTileOwnerRoute(storedSessionId: string): SessionProfileRoute | undefined {
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
+}
+
+/**
+ * Sync owner resolution for a session id that may be a RUNTIME or a STORED id.
+ * Tile route first (exact connectionId+profile, survives relaunch), then the
+ * known session profile (row or open-time hint). Returns undefined when no
+ * owner is known — the caller falls back to ambient, never to "active".
+ */
+export function knownOwnerForSession(sessionId: null | string | undefined): SessionOwnerScope {
+  if (!sessionId) {
+    return undefined
+  }
+
+  const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+
+  return sessionTileOwnerRoute(storedSessionId) ?? knownSessionProfile($sessions.get(), storedSessionId)
+}
+
+/**
+ * Dispatch a session-scoped RPC through the OWNER of `sessionId` (tile route →
+ * known profile), falling back to the ambient dispatcher only when no owner is
+ * known. This is the client half of #91684: approval.respond (and siblings)
+ * sent on the ambient socket land on whatever backend is active, which for a
+ * cross-profile session is a backend that never held the approval.
+ */
+export function requestForOwnedSession<T>(
+  sessionId: null | string | undefined,
+  ambientRequest: <R>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<R>,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<T> {
+  return requestForSessionProfile<T>(knownOwnerForSession(sessionId), ambientRequest, method, params, timeoutMs, signal)
 }
 
 /** Resolve a session id THAT MAY BE A RUNTIME ID to the stored id its tile

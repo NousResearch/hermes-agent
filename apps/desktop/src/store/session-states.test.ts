@@ -4,7 +4,7 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $selectedStoredSessionId } from '@/store/session'
+import { $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
@@ -12,12 +12,14 @@ import {
   blankDraftTile,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  knownOwnerForSession,
   markSelectionRestore,
   nextSessionTileForWorkspace,
   openSessionTile,
   orderTilesByTree,
   patchSessionTile,
   releaseSessionTranscript,
+  requestForOwnedSession,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -573,5 +575,55 @@ describe('sessionTileOwnerRoute', () => {
     $sessionTiles.set([])
 
     expect(sessionTileOwnerRoute('missing')).toBeUndefined()
+  })
+})
+
+describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', () => {
+  beforeEach(() => {
+    // Earlier suites leave profile-scoped tile buckets behind; pin the profile
+    // BEFORE seeding tiles so the bucket subscriber cannot clobber the seed.
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+  })
+  afterEach(() => {
+    $sessionTiles.set([])
+    setSessions([])
+  })
+
+  it('resolves the tile owner route first, translating a runtime id to its stored id', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'conn-a', profile: 'work' },
+        runtimeId: 'rt-1',
+        storedSessionId: 'stored-1'
+      }
+    ])
+
+    expect(knownOwnerForSession('rt-1')).toEqual({ connectionId: 'conn-a', profile: 'work' })
+    expect(knownOwnerForSession('stored-1')).toEqual({ connectionId: 'conn-a', profile: 'work' })
+  })
+
+  it('falls back to the session row profile when no tile route exists', () => {
+    setSessions([{ id: 'stored-2', profile: 'loki' } as never])
+
+    expect(knownOwnerForSession('stored-2')).toBe('loki')
+  })
+
+  it('returns undefined (ambient) when no owner is known, and for null ids', () => {
+    expect(knownOwnerForSession('unknown-session')).toBeUndefined()
+    expect(knownOwnerForSession(null)).toBeUndefined()
+    expect(knownOwnerForSession(undefined)).toBeUndefined()
+  })
+
+  it('requestForOwnedSession dispatches ambient with the exact 2-arg shape when no owner is known', async () => {
+    const ambient = vi.fn(async (method: string, params?: Record<string, unknown>) => ({ method, params }))
+
+    await requestForOwnedSession('unknown-session', ambient as never, 'approval.respond', {
+      choice: 'once',
+      session_id: 'unknown-session'
+    })
+
+    expect(ambient).toHaveBeenCalledTimes(1)
+    expect(ambient.mock.calls[0]).toEqual(['approval.respond', { choice: 'once', session_id: 'unknown-session' }])
   })
 })

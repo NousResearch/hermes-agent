@@ -599,6 +599,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # Bounds memory during extended outages; oldest events are dropped first.
     HELD_INBOUND_MAX = 64
     _GENERAL_TOPIC_THREAD_ID = "1"
+    # send() can race a disconnect/reconnect window: the final reply is
+    # generated, Telegram drops, and send() used to fail immediately with
+    # "Not connected" (retryable=False). The delivery ledger then held the
+    # answer until the next gateway boot — hours later. Wait briefly for
+    # _bot (or a replacement adapter the reconnect watcher just installed)
+    # so a 10–20s blip delivers now. Same idea as QQBot._wait_for_reconnection.
+    _RECONNECT_WAIT_SECONDS = 15.0
+    _RECONNECT_POLL_INTERVAL = 0.5
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
@@ -895,6 +903,53 @@ class TelegramAdapter(BasePlatformAdapter):
         if not getattr(self, "_fatal_error_code", None):
             return False
         return not bool(getattr(self, "_fatal_error_retryable", True))
+
+    def _replacement_telegram_adapter(self) -> Optional["TelegramAdapter"]:
+        """Return the live Telegram adapter if the reconnect watcher replaced us.
+
+        The background reconnect watcher builds a *new* adapter and puts it in
+        ``runner.adapters``. An in-flight ``send()`` still holds the old
+        instance whose ``_bot`` stays None. Waiting only on ``self._bot``
+        would miss that replacement and still drop the final reply.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        adapters = getattr(runner, "adapters", None) or {}
+        live = adapters.get(self.platform)
+        if live is not None and live is not self and getattr(live, "_bot", None):
+            return live
+        return None
+
+    async def _wait_for_reconnection(self) -> bool:
+        """Wait for ``_bot`` or a replacement adapter after a transient drop.
+
+        Returns True if sending can proceed (this instance or a replacement
+        is connected). Returns False if still disconnected when the wait
+        expires, or if the failure is permanently fatal.
+        """
+        if self._bot or self._replacement_telegram_adapter() is not None:
+            return True
+        if self._is_permanent_fatal():
+            return False
+        wait_s = float(getattr(self, "_RECONNECT_WAIT_SECONDS", 15.0))
+        poll_s = float(getattr(self, "_RECONNECT_POLL_INTERVAL", 0.5))
+        logger.info(
+            "[%s] Not connected — waiting for reconnection (up to %.0fs)",
+            self.name, wait_s,
+        )
+        waited = 0.0
+        while waited < wait_s:
+            await asyncio.sleep(poll_s)
+            waited += poll_s
+            if self._is_permanent_fatal():
+                return False
+            if self._bot or self._replacement_telegram_adapter() is not None:
+                logger.info("[%s] Reconnected after %.1fs", self.name, waited)
+                return True
+        logger.warning(
+            "[%s] Still not connected after %.0fs",
+            self.name, wait_s,
+        )
+        return False
 
     def _should_drop_delayed_delivery(self) -> bool:
         """True once teardown/fatal-error started — delayed flushes must not dispatch.
@@ -5204,7 +5259,20 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.send(chat_id, content, reply_to, metadata)
+            if self._is_permanent_fatal() or not await self._wait_for_reconnection():
+                return SendResult(
+                    success=False,
+                    error="Not connected",
+                    retryable=not self._is_permanent_fatal(),
+                )
+            live = self._replacement_telegram_adapter()
+            if not self._bot and live is not None:
+                return await live.send(chat_id, content, reply_to, metadata)
+            if not self._bot:
+                return SendResult(success=False, error="Not connected", retryable=True)
 
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):

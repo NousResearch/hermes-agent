@@ -10638,7 +10638,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const announced = await Promise.race([
     waitForDashboardPortAnnouncement(child, { describeOutputTail: () => outputTail.describe(), readyFile }),
     startFailed
-  ])
+  ]) as { port: number; token?: string }
 
   const port = announced.port
   // The slim --ws-only server emits its token on the ready line; the
@@ -11102,7 +11102,7 @@ async function startHermes() {
         readyFile
       }),
       backendStartFailed
-    ])
+    ]) as { port: number; token?: string }
 
     const port = announced.port
     const announcedToken = announced.token

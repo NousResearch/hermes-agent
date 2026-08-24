@@ -26,6 +26,7 @@ from hermes_state_common import (
     FTS_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     FTS_TRIGRAM_SQL,
     LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL,
@@ -299,6 +300,83 @@ class SessionSchemaMixin:
         )
         return len(to_drop)
 
+    @staticmethod
+    def _execute_ddl_script_transactional(
+        cursor: sqlite3.Cursor, ddl: str
+    ) -> None:
+        """Execute a DDL script without ``executescript``'s implicit commit."""
+        statement = ""
+        for line in ddl.splitlines():
+            statement += line + "\n"
+            if sqlite3.complete_statement(statement):
+                cursor.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise sqlite3.OperationalError("incomplete FTS DDL statement")
+
+    def _migrate_bounded_tool_fts_triggers(
+        self, cursor: sqlite3.Cursor, *, legacy: bool
+    ) -> None:
+        """Replace FTS triggers without rebuilding historical indexes.
+
+        Existing rows keep their original full-content token stream. The
+        durable high-water id makes new tool rows use the bounded prefix in
+        both INSERT and matching external-content delete/update operations.
+        Trigger replacement is one savepoint so no concurrent writer can land
+        in a trigger gap.
+        """
+        marker = cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
+        ).fetchone()
+        if marker is not None:
+            return
+
+        trigram_present = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts_trigram'"
+        ).fetchone() is not None
+        names = _FTS_BASE_TRIGGERS
+        if legacy and trigram_present:
+            names += _FTS_TRIGRAM_TRIGGERS
+        existing = self._fts_trigger_count(cursor, names)
+        has_messages = cursor.execute(
+            "SELECT 1 FROM messages LIMIT 1"
+        ).fetchone() is not None
+        table_present = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts'"
+        ).fetchone() is not None
+        self._fts_tool_prefix_migration_requires_rebuild = bool(
+            table_present and has_messages and existing < len(names)
+        )
+
+        cursor.execute("SAVEPOINT bounded_tool_fts")
+        try:
+            high_water = cursor.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages"
+            ).fetchone()[0]
+            cursor.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+            )
+            for name in names:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+            if legacy:
+                self._execute_ddl_script_transactional(cursor, LEGACY_FTS_SQL)
+                if trigram_present:
+                    self._execute_ddl_script_transactional(
+                        cursor, LEGACY_FTS_TRIGRAM_SQL
+                    )
+            else:
+                self._execute_ddl_script_transactional(cursor, FTS_SQL)
+            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
+        except BaseException:
+            cursor.execute("ROLLBACK TO SAVEPOINT bounded_tool_fts")
+            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
+            raise
+
     def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
         """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
         row = cursor.execute(
@@ -343,6 +421,14 @@ class SessionSchemaMixin:
         *,
         include_trigram: bool = True,
     ) -> None:
+        high_water = cursor.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM messages"
+        ).fetchone()[0]
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+        )
         # Both FTS tables are external-content (v23+): the special 'rebuild'
         # command wipes the inverted index and repopulates it from the
         # content source (messages for the standard index, the tool-row-
@@ -373,6 +459,14 @@ class SessionSchemaMixin:
         'rebuild' source, so we DELETE + reinsert the concatenated content
         the legacy triggers produced. Never touches the v23 shape.
         """
+        high_water = cursor.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM messages"
+        ).fetchone()[0]
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+        )
         cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
@@ -1488,6 +1582,10 @@ class SessionSchemaMixin:
             # v23 view/external tables entirely. Fresh installs and opted-in
             # DBs have no legacy inline FTS, so they get the v23 DDL.
             legacy_fts = self._db_has_legacy_inline_fts(cursor)
+            if not self._fts_stale:
+                self._migrate_bounded_tool_fts_triggers(
+                    cursor, legacy=legacy_fts
+                )
             if self._fts_stale:
                 if self._recover_stale_fts(cursor, legacy=legacy_fts):
                     # CJK was detached alongside the corrupt base indexes and
@@ -1506,6 +1604,8 @@ class SessionSchemaMixin:
                 base_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
                     < len(_FTS_BASE_TRIGGERS)
+                ) or getattr(
+                    self, "_fts_tool_prefix_migration_requires_rebuild", False
                 )
                 trigram_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)
@@ -1533,6 +1633,8 @@ class SessionSchemaMixin:
                 base_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
                     < len(_FTS_BASE_TRIGGERS)
+                ) or getattr(
+                    self, "_fts_tool_prefix_migration_requires_rebuild", False
                 )
                 trigram_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)

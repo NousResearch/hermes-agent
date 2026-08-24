@@ -22,6 +22,8 @@ from hermes_state_common import (
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
+    FTS_TOOL_CONTENT_PREFIX_CHARS,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
@@ -152,11 +154,14 @@ class SessionSearchMixin:
                 lo, hi = hw - 1000, hw + 1000
                 conn.execute(
                     "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    "SELECT m.id, "
+                    "CASE WHEN m.role = 'tool' AND m.id > ? "
+                    "THEN substr(COALESCE(m.content, ''), 1, ?) "
+                    "ELSE m.content END, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize d WHERE d.id = m.id)",
-                    (lo, hi),
+                    (hw, FTS_TOOL_CONTENT_PREFIX_CHARS, lo, hi),
                 )
                 if include_trigram:
                     conn.execute(
@@ -568,6 +573,11 @@ class SessionSearchMixin:
                     "('fts_rebuild_progress', '0') "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                 )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
+            )
             return hw
 
         hw = conn.execute(
@@ -576,6 +586,7 @@ class SessionSearchMixin:
         for k, v in (
             ("fts_rebuild_high_water", str(hw)),
             ("fts_rebuild_progress", "0"),
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
         ):
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
@@ -1760,6 +1771,24 @@ class SessionSearchMixin:
         if not query:
             return []
 
+        # New oversized tool results only index a bounded prefix to keep the
+        # foreground write transaction short. An explicit tool-role search is
+        # the opt-in full-body path and scans canonical rows via LIKE.
+        if role_filter and "tool" in role_filter:
+            matches = self._search_messages_like_fallback(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                include_inactive=include_inactive,
+            )
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields
+            )
+
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(
@@ -2398,6 +2427,14 @@ class SessionSearchMixin:
                 )
                 return 0
             with self._lock:
+                high_water = self._conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM messages"
+                ).fetchone()[0]
+                self._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+                )
                 for tbl in self._FTS_TABLES:
                     if not self._fts_table_exists(tbl):
                         continue

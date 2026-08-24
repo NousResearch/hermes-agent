@@ -23,11 +23,15 @@ interface PressState {
 /**
  * HUD-only: press and hold the composer, then drag to move the window.
  *
- * The only way to move the HUD. An `-webkit-app-region: drag` handle is the
- * obvious alternative and cannot work here: the window manager takes a drag
- * region's mouse input whole, which starves `useHudClickThrough` of the moves
- * it decides solidity from, so the window is already transparent by the time
- * the press lands and it falls through to the app behind. See click-through.ts.
+ * The way to move the HUD on macOS/Windows. An `-webkit-app-region: drag`
+ * handle is the obvious alternative and cannot work THERE: the window manager
+ * takes a drag region's mouse input whole, which starves `useHudClickThrough`
+ * of the moves it decides solidity from, so the window is already transparent
+ * by the time the press lands and it falls through to the app behind. See
+ * click-through.ts. On Linux the composer bar itself is a native drag region
+ * instead (root drag + input no-drag), so this gesture is only the fallback
+ * for presses that land on the interactive surface — and a no-op for position
+ * on native Wayland, where the compositor owns placement.
  *
  * Deltas are read in SCREEN coordinates. Client coordinates are relative to the
  * window we are moving, so a window that keeps up with the cursor reports the

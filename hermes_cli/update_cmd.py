@@ -7522,7 +7522,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # An indeterminate check (offline, rate-limited, old
                 # driver) keeps the installed version — `hermes update`
                 # must stay fast; `hermes computer-use install --upgrade`
-                # remains the force path.
+                # remains the force path. Windows also defers confirmed
+                # updates and contract repairs to that explicit command
+                # because the upstream installer may prompt for console/UAC
+                # consent that this hidden updater cannot provide.
                 install_cua_driver(
                     upgrade=True,
                     require_confirmed_update=True,

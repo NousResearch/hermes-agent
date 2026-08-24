@@ -339,6 +339,42 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
+    // #93911: bot_relay.deliver's backend contract tolerates ~1320s (120s turn
+    // lock + a 600s turn, doubled by the bounded retry). Without a way to pass
+    // that bound through, every such call died at the pool's generic 30s
+    // deadline and surfaced as an unclassified failure.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'bot_relay.deliver', { message: 'hi', profile: 'backend-worker' }, 1_320_000)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'bot_relay.deliver',
+      { message: 'hi', profile: 'backend-worker' },
+      1_320_000
+    )
+  })
+
+  it('leaves callers that pass no timeout on the pool default', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'profiles.list', {})
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', 'profiles.list', {})
+  })
+
   it('fails closed when a descriptor omits connection or target profile identity', async () => {
     await expect(
       host.requestProfile(

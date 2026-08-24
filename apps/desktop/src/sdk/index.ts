@@ -231,20 +231,26 @@ const $viewport = atom<ViewportRect>(readViewport())
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<T> {
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
+    // Omit the bound entirely when unset so callers stay on the pool default.
+    return timeoutMs === undefined
+      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
+      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
   }
 
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
-    return requestGatewayForProfile<T>(route, method, params)
+    return timeoutMs === undefined
+      ? requestGatewayForProfile<T>(route, method, params)
+      : requestGatewayForProfile<T>(route, method, params, timeoutMs)
   }
 
   const roster = await getAgentRoster()
@@ -256,7 +262,9 @@ async function requestPluginProfile<T>(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
-    return requestGatewayForProfile<T>(profile, method, params)
+    return timeoutMs === undefined
+      ? requestGatewayForProfile<T>(profile, method, params)
+      : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
   }
 
   throw new Error(
@@ -1247,12 +1255,18 @@ export const host = {
   /** Gateway JSON-RPC through a credential-free route descriptor without
    *  foregrounding it. Passing a bare profile is the v1/local compatibility
    *  overload; registry callers must pass the descriptor so duplicate names
-   *  remain unambiguous. */
+   *  remain unambiguous.
+   *
+   *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
+   *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
+   *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
+   *  to keep the default. */
   requestProfile: async <T>(
     route: PluginProfileRoute | string,
     method: string,
-    params: Record<string, unknown> = {}
-  ): Promise<T> => requestPluginProfile<T>(route, method, params),
+    params: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

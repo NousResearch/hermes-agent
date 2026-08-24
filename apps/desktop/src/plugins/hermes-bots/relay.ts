@@ -33,6 +33,13 @@ const RELAY_ROSTER_INTERVAL_MS = 60_000
 // poll WAS the delivery path, which (before route retention) also meant a
 // fresh WebSocket dial + teardown per registered connection every 4s.
 const RELAY_DRAIN_INTERVAL_MS = 30_000
+// #93911: a delivered turn runs on the target gateway, so the client must
+// outlive the backend's own bound — worst case is the turn lock wait
+// (bot_mode.turn_wait_seconds, default 120s) plus a 600s turn, doubled when
+// the retry policy grants one bounded re-run (methods_bot_relay.py). Without
+// this the call fell to the pool's generic 30s deadline and every long turn
+// (Computer Use, deep research) came back as an unclassified failure.
+const RELAY_DELIVER_TIMEOUT_MS = 1_320_000
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
 // to ONE drain. The interval poll above stays as the backstop for older
@@ -365,10 +372,15 @@ async function drainRelayOutboxes() {
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
         try {
-          const res = await host.requestProfile<{ reply?: string }>(target.route, 'bot_relay.deliver', {
-            profile: String(envelope?.target_profile || ''),
-            message: String(envelope?.message || '')
-          })
+          const res = await host.requestProfile<{ reply?: string }>(
+            target.route,
+            'bot_relay.deliver',
+            {
+              profile: String(envelope?.target_profile || ''),
+              message: String(envelope?.message || '')
+            },
+            RELAY_DELIVER_TIMEOUT_MS
+          )
 
           clearBotAttention(attentionKey)
           await postReply({

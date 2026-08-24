@@ -54,6 +54,22 @@ This skill is loaded automatically by the review dispatcher. Start with `kanban_
 
 A requested-changes transition returns the task to its original implementer. When that implementer requests review again without naming a reviewer, the persisted reviewer provenance routes the re-review back to the same reviewer profile.
 
+## Structured reviewer-result V1
+
+When an integration emits a machine-readable result, validate schema version 1
+before routing it. Accept only `APPROVED`, `CHANGES_REQUESTED`, or `BLOCKED`.
+Each finding must have a unique `finding_id`, one of `low|medium|high|critical`,
+affected files or areas, concrete required changes, and verification evidence.
+`BLOCKED` requires `ambiguity_or_blocker_reason`; `CHANGES_REQUESTED` requires
+at least one concrete finding; `APPROVED` must not contain findings.
+
+Rejected, vague, contradictory, or blocked input must not create correction
+cards or alter graph links/statuses. It may be retained as a sanitized audit
+event. A validated changes result creates or reuses one deterministic builder
+correction linked to the reviewed task; after three cycles use native escalation
+without creating another correction. Approval and blocking must use the native
+completion and block lifecycle APIs.
+
 ## Review Lenses
 
 Vary how you look at the work on each round instead of repeating the same inspection. Decorrelated lenses catch different defect classes: a cold read of the artifact surfaces design and correctness problems that the implementer's narrative would have framed away, execution surfaces claims that do not reproduce, and a strict contract audit surfaces quiet scope drift. Repeating the round-1 lens on round 3 mostly re-finds what round 1 already found.

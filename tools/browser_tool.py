@@ -2637,7 +2637,26 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
     orphaned). By the time this is called, the caller has already burned its
     full timeout budget waiting for a graceful exit — there's nothing to gain
     from waiting again here, only more delay on an already-timed-out call.
+
+    Delegates to :func:`agent.deadline.kill_process_tree` (#85125 4d): same
+    ``taskkill /T /F`` on Windows and killpg-when-group-leader on POSIX, plus
+    a psutil descendant sweep that also reaches descendants that ``setsid``'d
+    into their own session (agent-browser's detached daemon grandchild).
+    SIGKILL-only instead of the old zero-grace SIGTERM→SIGKILL pair — the
+    grace period was already zero, so the observable effect is identical.
+    Any delegation failure falls back to the original local implementation
+    (:func:`_legacy_kill_process_tree`); never raises either way.
     """
+    try:
+        from agent.deadline import kill_process_tree as _deadline_kill_tree
+
+        _deadline_kill_tree(proc.pid)
+    except Exception:
+        _legacy_kill_process_tree(proc)
+
+
+def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable."""
     if os.name == "nt":
         try:
             subprocess.run(

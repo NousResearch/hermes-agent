@@ -34,7 +34,9 @@ def _stub(monkeypatch, *, managed: bool):
     monkeypatch.setattr(
         skill_usage,
         "set_pinned",
-        lambda name, pinned: calls.append((name, pinned)),
+        # Combined #93149 + #93002 semantics: set_pinned() returns True when
+        # the write landed; the stub records the call and reports success.
+        lambda name, pinned: (calls.append((name, pinned)), True)[1],
     )
     return calls
 

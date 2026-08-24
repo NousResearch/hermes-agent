@@ -6821,9 +6821,40 @@ def run_job(
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
+            # Fail-closed completion booking (#93820): the run may only be
+            # recorded as cron_complete when the session's LAST message row is
+            # a real assistant reply — a plain answer or the [SILENT] sentinel
+            # (both are assistant-text rows, so both classify as 'complete').
+            # A turn that died after a tool call, mid-API-wait, or without any
+            # assistant text leaves the last row as a tool result / pending
+            # call / user prompt and must not surface as a healthy run.
+            # session_lifecycle_statuses is the existing cost-bounded
+            # classifier for exactly this shape. Only a POSITIVELY recognized
+            # pathological status downgrades the booking: an unknown value
+            # (newer classifier shape, test doubles) keeps the historical
+            # reason, and so does a failed probe — classification is
+            # best-effort metadata and must not mislabel a healthy run.
+            _end_reason = "cron_complete"
+            try:
+                _statuses = _session_db.session_lifecycle_statuses(
+                    [_final_cron_session_id]
+                )
+                _lifecycle = _statuses.get(_final_cron_session_id)
+                if _lifecycle in ("interrupted", "error", "empty"):
+                    _end_reason = "cron_incomplete_no_output"
+                    logger.warning(
+                        "Job '%s': session ended without a final assistant "
+                        "message (lifecycle=%s) — booking run as %s",
+                        job_id, _lifecycle, _end_reason,
+                    )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': session lifecycle classification failed: %s",
+                    job_id, e,
+                )
             try:
                 _session_db.end_session(
-                    _final_cron_session_id, "cron_complete"
+                    _final_cron_session_id, _end_reason
                 )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)

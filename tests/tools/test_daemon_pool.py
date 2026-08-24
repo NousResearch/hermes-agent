@@ -42,6 +42,19 @@ def test_idle_worker_reuse():
         pool.shutdown(wait=True)
 
 
+def test_initializer_runs_under_the_active_stdlib_worker_contract():
+    local = threading.local()
+
+    def initialize():
+        local.initialized = True
+
+    pool = DaemonThreadPoolExecutor(max_workers=1, initializer=initialize)
+    try:
+        assert pool.submit(lambda: getattr(local, "initialized", False)).result(timeout=10)
+    finally:
+        pool.shutdown(wait=True)
+
+
 def test_wedged_worker_does_not_block_interpreter_exit():
     """A worker stuck in a long sleep must not hold the process open.
 

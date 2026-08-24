@@ -65,10 +65,35 @@ export function applyZoomLevel(webContents, level) {
 // fallbacks before re-applying the persisted level.
 export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
+// Linux settle-verify: a re-assert can land while the compositor is still
+// reconfiguring the window's surface (Cosmic tiled mode fires a resize storm
+// the moment a new session window opens, and the final event can arrive before
+// the new scale is committed), in which case Chromium drops the just-applied
+// zoom and the window stays stuck at the wrong scale until the next
+// transition. After the debounced re-assert we therefore re-check a few times
+// at a settle delay; each re-assert is drift-guarded (see
+// restorePersistedZoomLevel), so a window that already matches the persisted
+// level costs nothing and the chain is bounded.
+export const ZOOM_REASSERT_SETTLE_DELAY_MS = 300
+export const ZOOM_REASSERT_MAX_SETTLE_CHECKS = 3
+
 export function zoomReassertWindowEvents(platform = process.platform) {
   return platform === 'linux'
     ? ['show', 'restore', 'focus', 'resize', 'move']
     : ['show', 'restore', 'focus', 'resized', 'moved']
+}
+
+// Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,
+// Ctrl+Tab session switching, tile activation) — not just the cross-app
+// alt-tab the Windows high-DPI immediate-reassert guard (#50837) targets.
+// An undebounced reassert on every such focus event re-applies the persisted
+// zoom level mid-interaction, producing a visible zoom/DPI jump. Debounce
+// `focus` alongside `resize`/`move` on Linux; Windows alt-tab keeps its
+// immediate path because `platform` is `win32` there.
+const DEBOUNCED_REASSERT_EVENTS = new Set(['resize', 'move'])
+
+export function isDebouncedReassertEvent(event, platform = process.platform) {
+  return DEBOUNCED_REASSERT_EVENTS.has(event) || (platform === 'linux' && event === 'focus')
 }
 
 export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
@@ -77,6 +102,33 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
   }
 
   let resizeTimer
+  let settleTimer
+  let settleChecks = 0
+
+  const scheduleSettleCheck = () => {
+    if (platform !== 'linux') {
+      return
+    }
+
+    settleChecks += 1
+
+    if (settleChecks > ZOOM_REASSERT_MAX_SETTLE_CHECKS) {
+      return
+    }
+
+    settleTimer = setTimeout(() => {
+      if (!win.isDestroyed?.()) {
+        reassert()
+        scheduleSettleCheck()
+      }
+    }, ZOOM_REASSERT_SETTLE_DELAY_MS)
+  }
+
+  const reassertWithSettleCheck = () => {
+    settleChecks = 0
+    reassert()
+    scheduleSettleCheck()
+  }
 
   for (const event of zoomReassertWindowEvents(platform)) {
     win.on(event, () => {
@@ -84,8 +136,9 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
         return
       }
 
-      if (event !== 'resize' && event !== 'move') {
-        reassert()
+      if (!isDebouncedReassertEvent(event, platform)) {
+        clearTimeout(settleTimer)
+        reassertWithSettleCheck()
 
         return
       }
@@ -93,7 +146,8 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
       clearTimeout(resizeTimer)
       resizeTimer = setTimeout(() => {
         if (!win.isDestroyed?.()) {
-          reassert()
+          clearTimeout(settleTimer)
+          reassertWithSettleCheck()
         }
       }, ZOOM_RESIZE_REASSERT_DELAY_MS)
     })

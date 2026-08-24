@@ -24,6 +24,7 @@ import os
 import json
 import re
 import asyncio
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
@@ -1214,21 +1215,57 @@ def _match_tool_arg_condition(condition: Any, args: Dict[str, Any]) -> bool:
     return True
 
 
+# Per-turn repeat-block tracker for required-arg validation. Keyed by
+# (session_id, turn_id, tool_name, frozen missing-set) so a model that keeps
+# re-emitting the exact same malformed call accumulates an escalation even
+# though blocked calls are otherwise excluded from failure-loop accounting.
+_validation_block_counts: "OrderedDict[Any, int]" = OrderedDict()
+_VALIDATION_BLOCK_COUNTS_CAP = 200
+
+
+def _bump_validation_block_count(key: Tuple[Any, ...]) -> int:
+    """Increment the per-turn repeat counter for a blocked call shape."""
+    try:
+        count = _validation_block_counts.get(key, 0) + 1
+        _validation_block_counts[key] = count
+        while len(_validation_block_counts) > _VALIDATION_BLOCK_COUNTS_CAP:
+            _validation_block_counts.popitem(last=False)
+        return count
+    except Exception:
+        return 1
+
+
+def _ordinal(n: int) -> str:
+    """Format a small positive integer as an English ordinal (1st, 2nd, 3rd, 11th...)."""
+    try:
+        if 10 <= n % 100 <= 20:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix}"
+    except Exception:
+        return f"{n}th"
+
+
 def validate_required_tool_args(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     *,
     session_id: str = "",
     turn_id: str = "",
+    tlg: Optional[Any] = None,
 ) -> Optional[str]:
     """Return a block message if the tool call is missing required arguments, else None.
 
     1) Schema required: Checks parameters.required from ToolRegistry.get_schema(tool_name).
        Missing keys or None values are reported as missing.
-    2) Conditional required: Reads tool_loop_guardrails.conditional_required from config,
-       matches conditions against args, and checks require/require_any lists.
+    2) Conditional required: Uses tool_loop_guardrails.conditional_required from the
+       resolved ToolCallGuardrailConfig (``tlg``) when provided, else falls back to the
+       bundled defaults. Conditions are matched against args; require/require_any lists
+       are checked.
     3) Message assembly: Produces an actionable guidance string for the model:
        "Tool {tool_name} is missing required argument(s): {missing}. {arg: description}"
+       Repeated identical block shapes within one turn escalate the message.
     """
     if not tool_name:
         return None
@@ -1256,27 +1293,20 @@ def validate_required_tool_args(
                 if args_dict.get(req) is None and req not in missing:
                     missing.append(req)
 
-    # 2) Conditional rules: read tool_loop_guardrails.conditional_required from config
-    try:
-        from hermes_cli.config import load_config_readonly
+    # 2) Conditional rules: use the resolved ToolCallGuardrailConfig when given,
+    #    otherwise fall back to bundled defaults (keeps direct-call tests simple).
+    if tlg is not None:
+        cond_map = getattr(tlg, "conditional_required", None) or {}
+    else:
+        cond_map = {}
+        try:
+            from hermes_cli.config_defaults import DEFAULT_CONFIG
 
-        cfg = load_config_readonly() or {}
-    except Exception:
-        cfg = {}
-
-    tlg_cfg = cfg.get("tool_loop_guardrails")
-    if not isinstance(tlg_cfg, dict):
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-        tlg_cfg = DEFAULT_CONFIG.get("tool_loop_guardrails") or {}
-
-    cond_map = tlg_cfg.get("conditional_required")
-    if not isinstance(cond_map, dict):
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-        cond_map = (
-            (DEFAULT_CONFIG.get("tool_loop_guardrails") or {}).get("conditional_required") or {}
-        )
+            cond_map = (
+                (DEFAULT_CONFIG.get("tool_loop_guardrails") or {}).get("conditional_required") or {}
+            )
+        except Exception:
+            cond_map = {}
 
     rules = cond_map.get(tool_name) if isinstance(cond_map, dict) else None
     if rules:
@@ -1317,6 +1347,23 @@ def validate_required_tool_args(
     msg = f"Tool {tool_name} is missing required argument(s): {missing_str}."
     if hints:
         msg += " " + " ".join(hints)
+
+    # Escalate when the exact same malformed call shape is repeated within one
+    # turn: blocked calls are excluded from failure-loop accounting, so without
+    # this a weak model could re-emit the identical call forever with no hard
+    # stop. The count is keyed per (session, turn, tool, missing-set).
+    try:
+        key = (session_id, turn_id, tool_name, tuple(sorted(missing)))
+        repeat = _bump_validation_block_count(key)
+        if repeat >= 3:
+            msg += (
+                f" This is the {_ordinal(repeat)} time this exact call was blocked this turn — "
+                "stop retrying this shape. Read the tool schema, fix the arguments, "
+                "or switch to an alternative tool."
+            )
+    except Exception:
+        pass
+
     return msg
 
 
@@ -1550,20 +1597,24 @@ def handle_function_call(
                 return result
 
         # Pre-tool-call required-argument validation (tool_loop_guardrails.pre_tool_validation).
-        # Runs after plugin hooks so plugins keep priority to modify/supply args;
-        # blocks before execution so broken calls never enter failure-loop accounting.
+        # The toggle and rule table resolve through ToolCallGuardrailConfig so there is a
+        # single authority for the feature's configuration. Runs after plugin hooks so
+        # plugins keep priority to modify/supply args; blocks before execution so broken
+        # calls never enter failure-loop accounting.
         try:
             from hermes_cli.config import load_config_readonly
+            from agent.tool_guardrails import ToolCallGuardrailConfig
 
-            _agent_cfg = load_config_readonly() or {}
-            _tlg_cfg = _agent_cfg.get("tool_loop_guardrails") or {}
-            _req_validation_enabled = _tlg_cfg.get("pre_tool_validation", True)
-            if _req_validation_enabled:
+            _guardrail_cfg = ToolCallGuardrailConfig.from_mapping(
+                (load_config_readonly() or {}).get("tool_loop_guardrails") or {}
+            )
+            if _guardrail_cfg.pre_tool_validation:
                 _req_msg = validate_required_tool_args(
                     function_name,
                     function_args,
                     session_id=session_id or "",
                     turn_id=turn_id or "",
+                    tlg=_guardrail_cfg,
                 )
                 if _req_msg is not None:
                     _req_result = tool_error(_req_msg)

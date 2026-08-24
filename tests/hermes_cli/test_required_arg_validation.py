@@ -252,3 +252,58 @@ def test_e2e_pre_tool_validation_disabled_in_config(monkeypatch, tmp_path):
     result = json.loads(result_raw)
     assert result.get("custom") == "dispatched"
     assert dispatch_mock.called
+
+
+def test_repeated_malformed_call_escalates_in_same_turn():
+    """The exact same malformed call shape repeated in one turn escalates the message."""
+    sess, turn = "s_rep", "t_rep"
+    args = {"action": "create", "name": "x"}
+    msgs = [
+        validate_required_tool_args("skill_manage", args, session_id=sess, turn_id=turn)
+        for _ in range(3)
+    ]
+    # 1st and 2nd are plain actionable blocks
+    assert msgs[0] is not None and "stop retrying" not in msgs[0]
+    assert msgs[1] is not None and "stop retrying" not in msgs[1]
+    # 3rd escalates with a hard stop warning
+    assert msgs[2] is not None
+    assert "3rd time" in msgs[2] and "stop retrying" in msgs[2]
+
+
+def test_repeated_block_count_is_per_turn():
+    """The repeat counter resets per (session, turn) — a new turn starts fresh."""
+    args = {"action": "create", "name": "x"}
+    for i in range(2):
+        m = validate_required_tool_args(
+            "skill_manage", args, session_id="s_turn", turn_id=f"turn_{i}"
+        )
+        assert m is not None and "stop retrying" not in m
+    # Same session, same shape, but a fresh turn: no escalation on first call
+    m = validate_required_tool_args(
+        "skill_manage", args, session_id="s_turn", turn_id="turn_new"
+    )
+    assert m is not None and "stop retrying" not in m
+
+
+def test_validate_uses_resolved_guardrail_config():
+    """The resolved ToolCallGuardrailConfig is the single authority for conditional rules."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {
+            "conditional_required": {
+                "skill_manage": [
+                    {"condition": {"action": "custom_op"}, "require": ["custom_field"]}
+                ]
+            }
+        }
+    )
+    # Matches the rule from the resolved config object (not bundled defaults)
+    m = validate_required_tool_args(
+        "skill_manage",
+        {"action": "custom_op"},
+        session_id="s_cfg",
+        turn_id="t_cfg",
+        tlg=cfg,
+    )
+    assert m is not None and "custom_field" in m

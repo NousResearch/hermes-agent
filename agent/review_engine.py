@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -89,9 +90,64 @@ def snapshot_recent_messages(
     return out
 
 
+def collect_parent_loaded_skills(
+    parent_agent,
+    messages: List[Dict[str, Any]],
+    limit: int = 8,
+) -> List[str]:
+    """Names of skills the parent agent was operating under.
+
+    Two sources, both surface-independent:
+
+    * Launch-preloaded skills (``hermes -s``, kanban lanes, TUI skills env):
+      their activation notes are embedded in the parent's
+      ``ephemeral_system_prompt`` with a stable marker
+      (see ``agent.skill_commands.build_preloaded_skills_prompt``).
+    * Mid-session loads: ``skill_view`` tool calls in the parent's
+      conversation history (assistant ``tool_calls`` entries).
+
+    Order: preloaded first, then history loads, deduped, capped at ``limit``
+    (a reviewer told to load 30 skills would burn its budget before working).
+    """
+    names: List[str] = []
+    seen: set = set()
+
+    def _add(name: str) -> None:
+        cleaned = (name or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            names.append(cleaned)
+
+    prompt = str(getattr(parent_agent, "ephemeral_system_prompt", "") or "")
+    for match in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt):
+        _add(match.group(1))
+
+    for message in messages or []:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            fn = tool_call.get("function") or {}
+            if fn.get("name") != "skill_view":
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                continue
+            # Only whole-skill loads seed the reviewer; a reference-file read
+            # (file_path=...) is a detail of the parent's task, and the
+            # reviewer loading the main SKILL.md covers it.
+            if isinstance(args, dict) and not args.get("file_path"):
+                _add(str(args.get("name") or ""))
+
+    return names[:limit]
+
+
 def build_review_task(
     snapshot: List[Dict[str, str]],
     user_prompt: str = "",
+    loaded_skills: Optional[List[str]] = None,
 ) -> tuple:
     """Compose the reviewer subagent's (goal, context) pair."""
     goal = (
@@ -121,6 +177,16 @@ def build_review_task(
         lines.append(message["text"])
         lines.append("")
     lines.append("--- End of conversation excerpt ---")
+    if loaded_skills:
+        skill_list = ", ".join(loaded_skills)
+        lines.append("")
+        lines.append(
+            "The primary agent was operating under these loaded skills: "
+            f"{skill_list}. Before reviewing, load each with "
+            "skill_view(name=...) and treat their conventions, invariants, "
+            "and review standards as binding for your assessment — the work "
+            "was produced under them and must be judged against them."
+        )
     if user_prompt.strip():
         lines.append("")
         lines.append("Additional review instructions from the user:")
@@ -189,7 +255,8 @@ def start_review(
     if not snapshot:
         raise ValueError("Nothing to review yet — the conversation is empty.")
 
-    goal, context = build_review_task(snapshot, user_prompt)
+    loaded_skills = collect_parent_loaded_skills(parent_agent, messages)
+    goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task

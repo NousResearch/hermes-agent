@@ -269,6 +269,120 @@ def test_start_review_requires_agent():
 
 
 # ---------------------------------------------------------------------------
+# collect_parent_loaded_skills — reviewer inherits the parent's working skills
+# ---------------------------------------------------------------------------
+
+def test_collect_skills_from_preloaded_prompt_and_history():
+    from agent.review_engine import collect_parent_loaded_skills
+
+    parent = MagicMock()
+    parent.ephemeral_system_prompt = (
+        '[IMPORTANT: The user launched this CLI session with the '
+        '"hermes-agent-dev" skill preloaded. Treat its instructions as '
+        'active guidance for the duration of this session unless the user '
+        'overrides them.]'
+    )
+    msgs = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "skill_view",
+                          "arguments": '{"name": "github-pr-workflow"}'}},
+            # reference-file read of an already-counted skill: skipped
+            {"function": {"name": "skill_view",
+                          "arguments": '{"name": "hermes-agent-dev", '
+                                       '"file_path": "references/x.md"}'}},
+            {"function": {"name": "read_file",
+                          "arguments": '{"path": "/tmp/x"}'}},
+        ]},
+        # duplicate load coalesces
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "skill_view",
+                          "arguments": '{"name": "github-pr-workflow"}'}},
+        ]},
+    ]
+    names = collect_parent_loaded_skills(parent, msgs)
+    assert names == ["hermes-agent-dev", "github-pr-workflow"]
+
+
+def test_collect_skills_empty_when_none_loaded():
+    from agent.review_engine import collect_parent_loaded_skills
+
+    parent = MagicMock()
+    parent.ephemeral_system_prompt = None
+    assert collect_parent_loaded_skills(parent, [
+        {"role": "user", "content": "hi"},
+    ]) == []
+
+
+def test_collect_skills_caps_at_limit():
+    from agent.review_engine import collect_parent_loaded_skills
+
+    parent = MagicMock()
+    parent.ephemeral_system_prompt = ""
+    msgs = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "skill_view",
+                          "arguments": json.dumps({"name": f"skill-{i}"})}}
+        ]}
+        for i in range(15)
+    ]
+    assert len(collect_parent_loaded_skills(parent, msgs)) == 8
+
+
+def test_briefing_includes_loaded_skills_instruction():
+    snap = [{"role": "user", "text": "review my PR"}]
+    _, context = build_review_task(snap, "", ["hermes-agent-dev", "xitter"])
+    assert "hermes-agent-dev, xitter" in context
+    assert "skill_view" in context
+    assert "binding" in context
+
+
+def test_briefing_omits_skills_block_when_none():
+    _, context = build_review_task([{"role": "user", "text": "hi"}], "")
+    assert "operating under these loaded skills" not in context
+
+
+def test_start_review_threads_loaded_skills_into_context(monkeypatch):
+    import tools.delegate_tool as dt
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    built = {}
+
+    def fake_build(**kw):
+        built.update(kw)
+        return fake_child
+
+    monkeypatch.setattr(dt, "_build_child_agent", fake_build)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(
+        dt, "_run_single_child",
+        lambda *a, **k: {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+            "exit_reason": "completed",
+        },
+    )
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+
+    parent = _fake_parent()
+    parent.ephemeral_system_prompt = (
+        'session with the "hermes-agent-dev" skill preloaded.'
+    )
+    msgs = [
+        {"role": "user", "content": "open a PR"},
+        {"role": "assistant", "content": "PR #9 opened"},
+    ]
+    result = start_review(parent, msgs, "")
+    assert result["status"] == "dispatched"
+    assert "hermes-agent-dev" in built["context"]
+    assert "skill_view" in built["context"]
+
+
+# ---------------------------------------------------------------------------
 # Registry sync: `review` must be a first-class slot in every aux-task surface
 # ---------------------------------------------------------------------------
 

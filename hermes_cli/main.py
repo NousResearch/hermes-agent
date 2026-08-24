@@ -572,17 +572,9 @@ def _apply_profile_override() -> None:
     # 1. Check for explicit -p / --profile flag. Historically this worked even
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
     # The exception is command-argv passthrough regions such as `mcp add --args`.
-    value_flags = {
-        "-z", "--oneshot",
-        "-m", "--model",
-        "--provider",
-        "-t", "--toolsets",
-        "-r", "--resume",
-        "-s", "--skills",
-        "--usage-file",
-        "--in",
-    }
-    optional_value_flags = {"-c", "--continue"}
+    from hermes_cli._parser import top_level_value_flag_sets
+
+    value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -11908,33 +11900,6 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 )
 
 
-# Top-level flags that take a value. Needed by ``_first_positional_argv``
-# so that in ``hermes -m gpt5 chat``, ``gpt5`` is correctly skipped as a
-# flag value rather than misclassified as a subcommand. Kept in sync with
-# the top-level flags declared in ``hermes_cli/_parser.py``.
-#
-# Correctness-safe either way: missing an entry here only makes the
-# fast-path bail out too eagerly (we run plugin discovery when we didn't
-# need to); extra entries would make us skip a real positional.
-_TOP_LEVEL_VALUE_FLAGS = frozenset(
-    {
-        "-z", "--oneshot",
-        "-m", "--model",
-        "--provider",
-        "-t", "--toolsets",
-        "-r", "--resume",
-        "-s", "--skills",
-        "--usage-file",
-        "--in",
-        # ``-c / --continue`` is nargs='?' (optional value). Treat it as
-        # value-taking: if the next token is a subcommand-looking word
-        # the user almost certainly meant it as the session name, and
-        # either interpretation keeps us on the safe side.
-        "-c", "--continue",
-    }
-)
-
-
 def _first_positional_argv() -> str | None:
     """Return the first non-flag, non-flag-value token in ``sys.argv[1:]``.
 
@@ -11947,6 +11912,10 @@ def _first_positional_argv() -> str | None:
     bar`` flags degrade gracefully (``bar`` may be wrongly classified as
     a positional, which at worst forces a one-time plugin discovery).
     """
+    from hermes_cli._parser import top_level_value_flag_sets
+
+    required_value_flags, optional_value_flags = top_level_value_flag_sets()
+    value_flags = required_value_flags | optional_value_flags
     argv = sys.argv[1:]
     i = 0
     while i < len(argv):
@@ -11961,7 +11930,7 @@ def _first_positional_argv() -> str | None:
             if "=" in tok:
                 i += 1
                 continue
-            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+            if tok in value_flags and i + 1 < len(argv):
                 i += 2
                 continue
             i += 1

@@ -1,4 +1,4 @@
-import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
 export interface SessionProfileRoute {
   connectionId: string
@@ -38,6 +38,56 @@ function routeParams(route: SessionProfileRoute, params: Record<string, unknown>
   }
 
   return { ...params, profile: route.targetProfile }
+}
+
+function promptSessionId(method: string, params: Record<string, unknown>): string {
+  return method === 'prompt.submit' && typeof params.session_id === 'string' ? params.session_id.trim() : ''
+}
+
+const TERMINAL_TURN_ACK_STATUSES = new Set(['complete', 'completed', 'error'])
+
+function turnKeepsRunning(result: unknown): boolean {
+  if (!result || typeof result !== 'object' || !('status' in result)) {
+    // Older gateways may ACK without the newer structured status. Retaining
+    // until the terminal event is safer than recreating the client-gone cut.
+    return true
+  }
+
+  const status = (result as { status?: unknown }).status
+
+  // Queued, redirected and future status values are non-terminal by default.
+  // Releasing only an explicit terminal ACK avoids recreating client_gone
+  // when a gateway accepts a turn without calling it "streaming".
+  return typeof status !== 'string' || !TERMINAL_TURN_ACK_STATUSES.has(status)
+}
+
+async function withRoutedTurnLease<T>(
+  connectionId: null | string,
+  profile: string,
+  method: string,
+  params: Record<string, unknown>,
+  request: () => Promise<T>
+): Promise<T> {
+  const sessionId = promptSessionId(method, params)
+
+  if (!sessionId) {
+    return request()
+  }
+
+  const release = await retainGatewayForSessionTurn(connectionId, profile, sessionId)
+
+  try {
+    const result = await request()
+
+    if (!turnKeepsRunning(result)) {
+      release()
+    }
+
+    return result
+  } catch (error) {
+    release()
+    throw error
+  }
 }
 
 /**
@@ -88,9 +138,13 @@ export function requestForSessionProfile<T>(
 
     const routedParams = routeParams(ownerProfile, params)
 
-    return timeoutMs === undefined && signal === undefined
-      ? requestGatewayForAgent<T>(connectionId, normKey(ownerProfile.profile), method, routedParams)
-      : requestGatewayForAgent<T>(connectionId, normKey(ownerProfile.profile), method, routedParams, timeoutMs, signal)
+    const profile = normKey(ownerProfile.profile)
+
+    return withRoutedTurnLease(connectionId, profile, method, routedParams, () =>
+      timeoutMs === undefined && signal === undefined
+        ? requestGatewayForAgent<T>(connectionId, profile, method, routedParams)
+        : requestGatewayForAgent<T>(connectionId, profile, method, routedParams, timeoutMs, signal)
+    )
   }
 
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
@@ -105,5 +159,9 @@ export function requestForSessionProfile<T>(
       : ambientRequest<T>(method, params, timeoutMs, signal)
   }
 
-  return requestGatewayForProfile<T>(normKey(ownerProfile), method, params, timeoutMs, signal)
+  const profile = normKey(ownerProfile)
+
+  return withRoutedTurnLease(null, profile, method, params, () =>
+    requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal)
+  )
 }

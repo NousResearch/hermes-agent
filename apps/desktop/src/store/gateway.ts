@@ -110,6 +110,10 @@ interface GatewayRegistryState {
   secondaries: Map<string, Secondary>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
+  /** Routed prompt sockets held until their terminal turn event arrives. */
+  turnLeases: Map<string, () => void>
+  /** Debounced releases so an immediate chained turn can reuse its lease. */
+  turnLeaseReleaseTimers: Map<string, ReturnType<typeof setTimeout>>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
   $activeProfile: ReturnType<typeof atom<string>>
 }
@@ -126,6 +130,8 @@ function createRegistryState(): GatewayRegistryState {
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
     openedSecondaryScopes: new Set<string>(),
+    turnLeases: new Map<string, () => void>(),
+    turnLeaseReleaseTimers: new Map<string, ReturnType<typeof setTimeout>>(),
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
@@ -151,6 +157,10 @@ function gatewayState(): GatewayRegistryState {
   if (import.meta.hot) {
     const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
     store[STATE_KEY] ??= createRegistryState()
+
+    // Existing dev-HMR containers predate whole-turn leases.
+    store[STATE_KEY].turnLeases ??= new Map()
+    store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
 
     return store[STATE_KEY]
   }
@@ -558,17 +568,25 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 
   // Events keep carrying the bare profile — session routing is profile-keyed
   // everywhere. connectionId rides along for surfaces that need the source.
-  entry.offEvent = gateway.onEvent(event =>
+  entry.offEvent = gateway.onEvent(event => {
     g.config?.onEvent({ ...event, profile, ...(connectionId ? { connectionId } : {}) })
-  )
+    releaseTerminalTurnLease(entry.scope, event)
+  })
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 
     if (state === 'open') {
       entry.reconnectAttempt = 0
       clearTimer(entry)
-    } else if ((state === 'closed' || state === 'error') && entry.wantOpen) {
-      scheduleReconnect(entry)
+    } else if (state === 'closed' || state === 'error') {
+      // A dead socket cannot emit the terminal event that normally releases
+      // its turn lease. Drop the orphaned lease before deciding whether this
+      // route is still retained/active enough to reconnect.
+      releaseTurnLeasesForScope(scope)
+
+      if (entry.wantOpen) {
+        scheduleReconnect(entry)
+      }
     }
   })
 
@@ -915,6 +933,124 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
   return release
 }
 
+const turnLeaseKey = (scope: string, sessionId: string): string => `${scope}\u0000${sessionId}`
+const TURN_LEASE_SETTLE_DELAY_MS = 500
+
+function cancelTurnLeaseRelease(key: string): void {
+  const timer = g.turnLeaseReleaseTimers.get(key)
+
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    g.turnLeaseReleaseTimers.delete(key)
+  }
+}
+
+function releaseTurnLeasesForScope(scope: string): void {
+  const prefix = `${scope}\u0000`
+
+  for (const [key, timer] of [...g.turnLeaseReleaseTimers]) {
+    if (key.startsWith(prefix)) {
+      clearTimeout(timer)
+      g.turnLeaseReleaseTimers.delete(key)
+    }
+  }
+
+  for (const [key, release] of [...g.turnLeases]) {
+    if (key.startsWith(prefix)) {
+      release()
+    }
+  }
+}
+
+/**
+ * Keep a routed Desktop prompt's socket alive after prompt.submit ACKs.
+ *
+ * Routed requests normally own a per-request lease. prompt.submit ACKs as soon
+ * as the background turn starts, so releasing that lease at RPC completion
+ * detaches the runtime session while the model is still working; the gateway's
+ * 20-second orphan guard then interrupts it as `client_gone`. Hold one lease per
+ * (route, runtime session) until message.complete/session.info settles the turn.
+ */
+export async function retainGatewayForSessionTurn(
+  connectionId: null | string,
+  profile: string,
+  sessionId: string
+): Promise<() => void> {
+  const scope = registryBackendScopeKey(connectionId, normKey(profile))
+  const key = turnLeaseKey(scope, sessionId)
+
+  cancelTurnLeaseRelease(key)
+
+  // A busy-session redirect/queue can submit again while the original turn is
+  // still retained. The existing lease owns that turn; the extra submit must
+  // not replace or release it. The no-op means "another caller owns the
+  // shared lease", not "this caller acquired a separately releasable lease".
+  if (g.turnLeases.has(key)) {
+    return () => undefined
+  }
+
+  const releaseRoute = await retainGatewayForAgent(connectionId, profile)
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+
+    if (g.turnLeases.get(key) === release) {
+      g.turnLeases.delete(key)
+    }
+
+    cancelTurnLeaseRelease(key)
+    releaseRoute()
+  }
+
+  g.turnLeases.set(key, release)
+
+  return release
+}
+
+function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
+  const sessionId = String(event.session_id || '').trim()
+
+  if (!sessionId) {
+    return
+  }
+
+  const key = turnLeaseKey(scope, sessionId)
+
+  if (event.type === 'message.start') {
+    // The gateway emits settled session.info before immediately chaining a
+    // queued/goal follow-up. Keep the same route alive for that next turn.
+    cancelTurnLeaseRelease(key)
+
+    return
+  }
+
+  if (event.type === 'session.reclaimed') {
+    g.turnLeases.get(key)?.()
+
+    return
+  }
+
+  const payload = event.payload as Record<string, unknown> | undefined
+
+  if (event.type === 'session.info' && payload?.running === false && !g.turnLeaseReleaseTimers.has(key)) {
+    // session.info(false) is the authoritative settled edge, but auto-followup
+    // emits message.start immediately after it. A short debounce lets that
+    // frame cancel release while still reclaiming ordinary completed turns.
+    g.turnLeaseReleaseTimers.set(
+      key,
+      setTimeout(() => {
+        g.turnLeaseReleaseTimers.delete(key)
+        g.turnLeases.get(key)?.()
+      }, TURN_LEASE_SETTLE_DELAY_MS)
+    )
+  }
+}
+
 // Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
 // (store/profile). Runs the same spawn + connect chain as a real switch, so by
 // click time ensureGatewayForProfile finds an open socket and just activates
@@ -1228,7 +1364,6 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      entry.activeRequests > 0 ||
       // Bot-relay retention (#93594): the relay pins its remote routes for
       // its whole active lifetime; the live-work pruner must not undo that
       // pin between drain ticks or the socket churn returns.
@@ -1243,6 +1378,19 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       continue
     }
 
+    // The route is no longer live work. Release turn leases first so their
+    // counted request holds cannot outlive a disposed route or leave a stale
+    // release closure attached to a later same-key socket.
+    releaseTurnLeasesForScope(key)
+
+    if (g.secondaries.get(key) !== entry) {
+      continue
+    }
+
+    if (entry.activeRequests > 0) {
+      continue
+    }
+
     disposeSecondary(entry)
     g.secondaries.delete(key)
   }
@@ -1251,6 +1399,18 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
 }
 
 export function closeSecondaryGateways(): void {
+  for (const timer of g.turnLeaseReleaseTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  g.turnLeaseReleaseTimers.clear()
+
+  for (const release of [...g.turnLeases.values()]) {
+    release()
+  }
+
+  g.turnLeases.clear()
+
   for (const entry of g.secondaries.values()) {
     disposeSecondary(entry)
   }

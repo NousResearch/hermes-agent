@@ -13,12 +13,18 @@ const secondaryGateways: Array<{
   close: ReturnType<typeof vi.fn>
   connect: ReturnType<typeof vi.fn>
   connectionState: string
+  emit: (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void
+  emitState: (state: string) => void
   request: ReturnType<typeof vi.fn>
 }> = []
+
+let promptAckStatus: null | string = null
 
 vi.mock('@/hermes', () => ({
   HermesGateway: class {
     connectionState = 'closed'
+    eventHandler: ((event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) | null = null
+    stateHandler: ((state: string) => void) | null = null
     connect = vi.fn(async () => {
       this.connectionState = 'open'
     })
@@ -27,11 +33,25 @@ vi.mock('@/hermes', () => ({
         throw new Error('gateway is not connected')
       }
 
-      return { method, params }
+      return method === 'prompt.submit' && promptAckStatus ? { status: promptAckStatus } : { method, params }
     })
     close = vi.fn()
-    onEvent = vi.fn(() => () => {})
-    onState = vi.fn(() => () => {})
+    emit = (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => this.eventHandler?.(event)
+    emitState = (state: string) => this.stateHandler?.(state)
+    onEvent = vi.fn((handler: (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) => {
+      this.eventHandler = handler
+
+      return () => {
+        this.eventHandler = null
+      }
+    })
+    onState = vi.fn((handler: (state: string) => void) => {
+      this.stateHandler = handler
+
+      return () => {
+        this.stateHandler = null
+      }
+    })
 
     constructor() {
       secondaryGateways.push(this)
@@ -78,6 +98,7 @@ function makePrimary() {
 
 beforeEach(() => {
   secondaryGateways.length = 0
+  promptAckStatus = null
   configureGatewayRegistry({ onEvent: vi.fn() })
   closeSecondaryGateways()
 })
@@ -309,6 +330,121 @@ describe('requestForSessionProfile', () => {
       1_800_000,
       controller.signal
     )
+  })
+
+  it('keeps a routed prompt socket alive until the turn terminal event (#client-gone)', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    await requestForSessionProfile(
+      { connectionId: 'local', profile: 'default' },
+      ambient as never,
+      'prompt.submit',
+      { session_id: 'rt-bot-chat', text: 'research this' }
+    )
+
+    // prompt.submit ACKs immediately while the model keeps running. Releasing
+    // the request-scoped socket here detaches the runtime session; the backend
+    // then interrupts it on the 20-second client-gone timer.
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    vi.useFakeTimers()
+
+    secondaryGateways[0].emit({
+      payload: { running: false },
+      session_id: 'rt-bot-chat',
+      type: 'session.info'
+    })
+
+    // A chained goal/queue turn starts immediately after the settled frame;
+    // it must cancel the pending release and inherit the live socket.
+    secondaryGateways[0].emit({ session_id: 'rt-bot-chat', type: 'message.start' })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    secondaryGateways[0].emit({
+      payload: { running: false },
+      session_id: 'rt-bot-chat',
+      type: 'session.info'
+    })
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
+
+  it.each(['queued', 'redirected', 'future-nonterminal'])('retains a routed socket for non-terminal ACK status %s', async status => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    promptAckStatus = status
+
+    await requestForSessionProfile(
+      'loki',
+      ambient as never,
+      'prompt.submit',
+      { session_id: `rt-${status}`, text: 'continue' }
+    )
+
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+  })
+
+  it.each(['complete', 'completed', 'error'])('releases a routed socket for terminal ACK status %s', async status => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    promptAckStatus = status
+
+    await requestForSessionProfile(
+      'loki',
+      ambient as never,
+      'prompt.submit',
+      { session_id: `rt-${status}`, text: 'finish' }
+    )
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('releases turn leases when their route is pruned and creates a fresh route next time', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+    const route = { connectionId: 'source-a', profile: 'worker' }
+
+    await requestForSessionProfile(route, ambient as never, 'prompt.submit', {
+      session_id: 'rt-pruned',
+      text: 'work'
+    })
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+
+    await requestForSessionProfile(route, ambient as never, 'session.resume', { session_id: 'rt-pruned' })
+    expect(secondaryGateways).toHaveLength(2)
+  })
+
+  it('releases a retained turn when its owning socket closes without a terminal event', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    await requestForSessionProfile('loki', ambient as never, 'prompt.submit', {
+      session_id: 'rt-socket-closed',
+      text: 'work'
+    })
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    secondaryGateways[0].emitState('closed')
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
   })
 
   it('routes an owner that IS the primary profile onto the primary socket (no active comparison)', async () => {

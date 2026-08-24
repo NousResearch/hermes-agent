@@ -1126,6 +1126,33 @@ def _spawn_death_supervisor():
         return None
 
 
+def _prune_dead_supervised_pgids() -> set:
+    """Forget supervised groups that have no members left; return what went.
+
+    Caller must hold ``_death_supervisor_lock``.  Probing with signal 0 is a
+    pure existence question -- it cannot terminate anything -- so this is safe
+    to run on every registration change.  It narrows, but cannot close, the
+    window where a group dies and its pgid is recycled before we notice; see
+    the residual-risk note in ``tools/mcp_death_supervisor.py``.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # windows-footgun: ok - POSIX-only, guarded
+        return set()
+    stale = set()
+    for pgid in list(_supervised_pgids):
+        try:
+            killpg(pgid, 0)
+        except ProcessLookupError:
+            stale.add(pgid)
+        except (PermissionError, OSError):
+            # Exists but is not ours to signal, or the probe itself failed.
+            # Keep it: dropping coverage on an ambiguous answer is the more
+            # expensive mistake of the two.
+            pass
+    _supervised_pgids.difference_update(stale)
+    return stale
+
+
 def _update_death_supervisor(verb: str, pgids) -> None:
     """Register or unregister process groups with the shared supervisor.
 
@@ -1145,6 +1172,16 @@ def _update_death_supervisor(verb: str, pgids) -> None:
         else:
             _supervised_pgids.difference_update(wanted)
 
+        # Drop groups with nothing left alive. A registration outlives the
+        # server only while some member survives -- e.g. an orphaned grandchild
+        # that teardown failed to kill, which we deliberately keep registered.
+        # Once that group is finally empty the pgid can be recycled by an
+        # unrelated process, and a stale registration would have us reap a
+        # stranger. The orphan sweep already unregisters what it reaps, but it
+        # is not guaranteed to run in a given process, so prune here too --
+        # signal 0 cannot kill anything, it only asks whether the group exists.
+        stale = _prune_dead_supervised_pgids()
+
         proc = _death_supervisor
         if proc is None or proc.poll() is not None:
             if verb == "unregister" and proc is None:
@@ -1155,10 +1192,12 @@ def _update_death_supervisor(verb: str, pgids) -> None:
             if proc is None:
                 return
             # A fresh supervisor knows nothing. Replay live coverage, which
-            # already reflects this call's mutation.
+            # already reflects this call's mutation and the prune above, so
+            # pruned groups simply never reach the replacement.
             payload = "".join(f"register {pgid}\n" for pgid in _supervised_pgids)
         else:
             payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
+            payload += "".join(f"unregister {pgid}\n" for pgid in stale)
 
         try:
             proc.stdin.write(payload)
@@ -1166,6 +1205,10 @@ def _update_death_supervisor(verb: str, pgids) -> None:
         except (BrokenPipeError, ValueError, OSError):
             # It exited between poll() and write(). Drop it so the next call
             # respawns and replays, rather than writing into a dead pipe.
+            # Recovery is deliberately two-step: this call gives up, and the
+            # next one sees ``poll()`` non-None and rebuilds coverage from
+            # ``_supervised_pgids``. Nothing is lost in between because that
+            # set, not the pipe, is the record of what needs reaping.
             _death_supervisor = None
 
 

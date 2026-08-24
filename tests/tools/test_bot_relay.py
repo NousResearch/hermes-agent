@@ -121,6 +121,24 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
+def test_claim_preserves_durable_enqueue_order_not_uuid_order(root, monkeypatch):
+    target = _rows()[1]
+    uuids = iter(("f" * 32, "0" * 32))
+    monkeypatch.setattr(bot_relay.uuid, "uuid4", lambda: type("U", (), {"hex": next(uuids)})())
+
+    first = bot_relay.enqueue_envelope(
+        root, target=target, message="first", sender_profile="work", sender_handle="work"
+    )
+    second = bot_relay.enqueue_envelope(
+        root, target=target, message="second", sender_profile="work", sender_handle="work"
+    )
+
+    assert second["id"] < first["id"], "fixture deliberately reverses UUID lexical order"
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [envelope["message"] for envelope in claimed] == ["first", "second"]
+    assert [envelope["sequence"] for envelope in claimed] == [1, 2]
+
+
 def test_write_reply_validates_envelope_id(root):
     with pytest.raises(ValueError):
         bot_relay.write_reply(root, "../../etc/passwd", reply="x")
@@ -134,6 +152,56 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     cmd = bot_relay.waiter_command(root, env)
     assert ("b" * 32) in cmd and "-c" in cmd
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
+
+
+def test_roster_rejects_connection_id_outside_handle_charset(root):
+    bad = [
+        {"profile": "researcher", "handle": "researcher", "connection_id": "vps'); print(1)"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "foo'bar"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "ssh vps"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "a" * 65},
+    ]
+    assert bot_relay.write_remote_roster(root, bad) == 0
+    good = {
+        "profile": "researcher",
+        "handle": "researcher",
+        "connection_id": "ssh-vps",
+    }
+    assert bot_relay.write_remote_roster(root, [good]) == 1
+
+
+def test_waiter_command_repr_encodes_hostile_connection_id(root):
+    import ast
+    import shlex
+
+    inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
+    env = {
+        "id": "c" * 32,
+        "target_handle": "researcher",
+        "target_connection": inj,
+    }
+    cmd = bot_relay.waiter_command(root, env)
+    parts = shlex.split(cmd)
+    code = parts[parts.index("-c") + 1]
+    compile(code, "<waiter>", "exec")
+    tree = ast.parse(code)
+    opens = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "open"
+    ]
+    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
+    assert len(opens) == 1
+
+    # A quote in the id used to SyntaxError the waiter. It must compile.
+    quoted = bot_relay.waiter_command(
+        root,
+        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
+    )
+    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
+    compile(qcode, "<waiter-quote>", "exec")
 
 
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────
@@ -310,16 +378,18 @@ def test_cleanup_bot_relay_artifacts_sweeps_stale_plaintext(tmp_path, monkeypatc
     )
     base = bot_relay.relay_root(tmp_path)
     stale_reply = bot_relay.write_reply(tmp_path, stale_env["id"], reply="done")
+    stale_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{stale_env['id']}.json"))
+    fresh_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{fresh_env['id']}.json"))
     old = _time.time() - bot_relay.STALE_AFTER_SECONDS - 1
-    _os.utime(base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json", (old, old))
+    _os.utime(stale_path, (old, old))
     _os.utime(stale_reply, (old, old))
 
     removed = bot_relay.cleanup_bot_relay_artifacts()
 
     assert removed == 2
-    assert not (base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json").exists()
+    assert not stale_path.exists()
     assert not stale_reply.exists()
-    assert (base / bot_relay.OUTBOX_DIR / f"{fresh_env['id']}.json").exists()
+    assert fresh_path.exists()
 
 
 def test_cleanup_bot_relay_artifacts_missing_dir_is_zero(tmp_path, monkeypatch):

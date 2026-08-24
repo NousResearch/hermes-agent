@@ -1213,7 +1213,9 @@ def test_source_intermediate_symlink_and_special_file_fail_closed(tmp_path: Path
             source2, (*artifacts(), "unexpected-fifo")
         )
 
-    source3, _sealed3 = candidate_source(tmp_path / "scratch-socket")
+    # AF_UNIX paths are capped at 108 bytes on Linux. Use the per-process
+    # pytest root but skip the long test-name component of ``tmp_path``.
+    source3, _sealed3 = candidate_source(tmp_path.parent / "sock")
     sock = socket.socket(socket.AF_UNIX)
     try:
         sock.bind(str(source3 / "unexpected.sock"))

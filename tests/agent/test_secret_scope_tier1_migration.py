@@ -93,6 +93,48 @@ class TestAuthzPlatformGateEnv:
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
 
+    def test_scope_machinery_error_fails_closed(self, monkeypatch):
+        from gateway.authz_mixin import _platform_gate_env
+
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        monkeypatch.setattr(
+            "agent.secret_scope.current_secret_scope",
+            lambda: (_ for _ in ()).throw(RuntimeError("scope unavailable")),
+        )
+
+        assert _platform_gate_env("GATEWAY_ALLOW_ALL_USERS", "") == ""
+
+
+class TestAuthzAuthEnv:
+    """_auth_env must follow _platform_gate_env isolation (no os.environ
+    fallthrough on a scoped miss under multiplex)."""
+
+    def test_scoped_value_wins(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+        ss.set_multiplex_active(True)
+        with _Scope({"TELEGRAM_ALLOWED_USERS": "222"}):
+            assert _auth_env("TELEGRAM_ALLOWED_USERS") == "222"
+
+    def test_scoped_miss_returns_default_not_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "profile-A")
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
+        ss.set_multiplex_active(True)
+        with _Scope({"UNRELATED": "x"}):
+            assert _auth_env("TELEGRAM_ALLOWED_USERS") == ""
+            assert _auth_env("GATEWAY_ALLOW_ALL_USERS") == ""
+            assert _auth_env("TELEGRAM_ALLOW_ALL_USERS") == ""
+
+    def test_single_profile_legacy_env(self, monkeypatch):
+        from gateway.authz_mixin import _auth_env
+
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
+        assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
+
 
 # ── Cluster B: matrix startup reads (Slack pattern) ────────────────────────
 

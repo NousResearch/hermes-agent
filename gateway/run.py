@@ -2750,7 +2750,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         ).strip().lower()
         if dm_policy != "open" and group_policy != "open":
             continue
-        gateway_allow_all = os.getenv(
+        gateway_allow_all = _getenv(
             "GATEWAY_ALLOW_ALL_USERS", ""
         ).lower() in {"true", "1", "yes"}
         platform_opted_in = gateway_allow_all or (
@@ -28162,12 +28162,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 thread_id=getattr(source, "thread_id", None),
                 parent_chat_id=getattr(source, "parent_chat_id", None),
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
+                "Profile route matching failed for %s/%s; rejecting routing",
                 source.platform, source.chat_id, exc_info=True,
             )
-            return None
+            raise ProfileRouteRejected("profile-routes") from exc
         if matched:
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -28230,18 +28230,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if explicit_profile and not profile_exists(name):
                 logger.warning(
                     "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
+                    "rejecting the explicit profile route",
                     explicit_profile,
                     source.platform.value,
                     source.chat_id,
                     getattr(source, "guild_id", None),
                 )
-                return get_hermes_home()
+                raise ProfileRouteRejected(explicit_profile)
             return profile_dir
         except ProfileRouteRejected:
             raise
-        except Exception:
-            # Catch normalization errors, path errors, etc.
+        except Exception as exc:
+            # An explicit identity must never widen to the ambient/default
+            # profile when normalization or path resolution fails.
+            if explicit_profile:
+                logger.warning(
+                    "Failed to resolve profile directory for source %s/%s "
+                    "(guild_id=%s), rejecting explicit profile %s",
+                    source.platform.value,
+                    source.chat_id,
+                    getattr(source, "guild_id", None),
+                    explicit_profile,
+                    exc_info=True,
+                )
+                raise ProfileRouteRejected(explicit_profile) from exc
+            # No profile identity was selected at all: retain the historical
+            # active-home fallback for single-profile callers.
             logger.warning(
                 "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
                 "falling back to global HERMES_HOME: %s",

@@ -30,6 +30,8 @@ out of the public helpers.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import logging
 import os
@@ -40,7 +42,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,12 @@ ROSTER_FILE = "roster.json"
 OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
+LOCKS_DIR = "locks"
+OUTBOX_SEQUENCE_FILE = "outbox-sequence"
+
+# Fallback wait budget for a queued delivery turn when config is unreadable.
+# The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
+TURN_WAIT_SECONDS_FALLBACK = 120
 
 # A reply must arrive before the waiter gives up. Cross-connection turns can
 # be slow (remote model, cold gateway) — generous, but bounded.
@@ -67,7 +75,7 @@ def relay_root(root: Path | str) -> Path:
 
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
-    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
+    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR, LOCKS_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -92,7 +100,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         return None
     if not handle:
         handle = "hermes" if profile == "default" else profile
-    if not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(profile):
+    if (
+        not _HANDLE_RE.match(handle)
+        or not _HANDLE_RE.match(profile)
+        or not _HANDLE_RE.match(connection_id)
+    ):
         return None
     out = {
         "profile": profile,
@@ -203,6 +215,51 @@ def remote_target_forms(roster: list[dict]) -> list[str]:
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
+def _next_outbox_sequence(base: Path) -> int:
+    """Allocate one durable, per-sender outbox sequence under an OS lock.
+
+    Desktop instances may drain different sender roots in arbitrary order, so
+    this intentionally promises FIFO only within one sender outbox.  A global
+    cross-gateway order would need a shared authority and is not invented here.
+    """
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - Windows has no supported relay lock yet
+        raise RuntimeError("cross-process relay ordering requires fcntl") from exc
+
+    lock_path = base / LOCKS_DIR / f"{OUTBOX_SEQUENCE_FILE}.lock"
+    counter_path = base / OUTBOX_SEQUENCE_FILE
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            try:
+                current = int(counter_path.read_text(encoding="utf-8").strip() or "0")
+            except FileNotFoundError:
+                current = 0
+            except ValueError as exc:
+                raise RuntimeError("invalid relay outbox sequence state") from exc
+            sequence = current + 1
+            tmp_fd, tmp = tempfile.mkstemp(dir=str(base), prefix=".outbox-sequence-", suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(f"{sequence}\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, counter_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            return sequence
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def enqueue_envelope(
     root: Path | str,
     *,
@@ -213,9 +270,11 @@ def enqueue_envelope(
 ) -> dict:
     """Queue a cross-connection DM for the Desktop relay. Returns envelope."""
     base = _ensure_dirs(root)
+    sequence = _next_outbox_sequence(base)
     envelope = {
         "id": uuid.uuid4().hex,
         "created_at": int(time.time()),
+        "sequence": sequence,
         "from_profile": sender_profile,
         "from_handle": sender_handle,
         "target_connection": target["connection_id"],
@@ -223,7 +282,9 @@ def enqueue_envelope(
         "target_handle": target["handle"],
         "message": message,
     }
-    path = base / OUTBOX_DIR / f"{envelope['id']}.json"
+    # Lexical filename order matches the durable sequence so claiming does not
+    # need a non-atomic read-before-rename sort. UUID keeps collision safety.
+    path = base / OUTBOX_DIR / f"{sequence:020d}-{envelope['id']}.json"
     fd, tmp = tempfile.mkstemp(dir=str(base / OUTBOX_DIR), prefix=".env-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(envelope, f, ensure_ascii=False)
@@ -322,22 +383,28 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     interpreter.
     """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
-    label = f"@{envelope['target_handle']} on {envelope['target_connection']}"
+    label = (
+        f"@{envelope.get('target_handle', '')} "
+        f"on {envelope.get('target_connection', '')}"
+    )
+    # Encode label with !r so roster fields cannot break out of the generated
+    # python -c source (quotes, parens, or extra statements in connection_id).
     code = (
         "import json,os,sys,time\n"
         f"p = {reply_path!r}\n"
+        f"label = {label!r}\n"
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        f"            print('Delivery to {label} failed: ' + d['error'])\n"
+        "            print('Delivery to ' + label + ' failed: ' + d['error'])\n"
         "            sys.exit(1)\n"
-        f"        print('Reply from {label}:')\n"
+        "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
         "    time.sleep(2)\n"
-        f"print('No reply from {label} within {REPLY_WAIT_SECONDS}s. The message may "
+        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"
     )
@@ -363,3 +430,103 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
         "--query-file",
         query_file,
     ]
+
+
+# ── per-profile turn lock (#93091) ───────────────────────────────────────────
+#
+# Two deliveries into the SAME target profile must never run their Bot Chat
+# turns concurrently: deliveries spawn separate ``hermes`` subprocesses, so
+# an in-memory mutex is useless — the lock is a per-profile lockfile under
+# ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn
+# execution window. flock is released by the kernel when the holder's fd
+# closes (including process death), so a crashed turn can never wedge the
+# profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and
+# then fails with a structured 'target_busy' refusal instead of blocking
+# forever.
+
+
+class TurnBusyError(RuntimeError):
+    """A delivery turn is already running for the target profile.
+
+    ``reason`` is 'target_busy' — extends the #93091 item-1 structured
+    refusal enum. ``waited_seconds`` is roughly how long the caller queued
+    behind the current turn before giving up.
+    """
+
+    reason = "target_busy"
+
+    def __init__(self, profile: str, waited_seconds: float):
+        self.profile = profile
+        self.waited_seconds = waited_seconds
+        super().__init__(
+            f"target_busy: another delivery turn is already running for "
+            f"profile '{profile}' — queued behind it for ~{int(round(waited_seconds))}s "
+            "without it finishing. The message was NOT delivered; retry shortly."
+        )
+
+
+def turn_wait_seconds() -> float:
+    """Wait budget for a queued delivery turn (config, lazily read)."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        val = cfg_get(load_config(), "bot_mode", "turn_wait_seconds", default=None)
+        if val is not None:
+            return max(0.0, float(val))
+    except Exception:
+        logger.debug("bot_mode.turn_wait_seconds read failed", exc_info=True)
+    return float(TURN_WAIT_SECONDS_FALLBACK)
+
+
+def turn_lock_path(root: Path | str, profile: str) -> Path:
+    """Per-profile lockfile path (short — safe on macOS temp roots)."""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(profile or ""))[:64] or "_"
+    return relay_root(root) / LOCKS_DIR / f"{safe}.lock"
+
+
+@contextlib.contextmanager
+def acquire_turn_lock(
+    root: Path | str, profile: str, timeout_seconds: float | None = None
+) -> Iterator[Path]:
+    """Hold ``profile``'s cross-process turn lock for the ``with`` body.
+
+    Non-blocking flock probe + short-sleep retry loop up to the budget
+    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given), so
+    waiters eventually acquire or fail within the budget without deadlocking.
+    Raises :class:`TurnBusyError` when the budget is exhausted. On platforms
+    without ``fcntl`` (Windows) the lock degrades to a no-op — those
+    installs never had this race path in production.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — Windows
+        yield turn_lock_path(root, profile)
+        return
+
+    budget = turn_wait_seconds() if timeout_seconds is None else max(0.0, float(timeout_seconds))
+    path = turn_lock_path(root, profile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        start = time.monotonic()
+        deadline = start + budget
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                now = time.monotonic()
+                if now >= deadline:
+                    raise TurnBusyError(profile, now - start)
+                time.sleep(min(0.1, max(0.005, deadline - now)))
+        try:
+            yield path
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover — kernel releases on close anyway
+                pass
+    finally:
+        os.close(fd)

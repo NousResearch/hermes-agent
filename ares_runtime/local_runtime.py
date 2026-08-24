@@ -297,11 +297,33 @@ class AresLocalRuntime:
             self._atomic_link(self.paths.previous_link, current[1])
         self._atomic_link(self.paths.current_link, target)
 
+    def _restore_release_pair(
+        self,
+        current: tuple[str, Path] | None,
+        previous: tuple[str, Path] | None,
+    ) -> None:
+        """Restore the exact pre-transition current/previous pointer pair."""
+
+        if current is None:
+            self.paths.current_link.unlink(missing_ok=True)
+        else:
+            self._atomic_link(self.paths.current_link, current[1])
+        if previous is None:
+            self.paths.previous_link.unlink(missing_ok=True)
+        else:
+            self._atomic_link(self.paths.previous_link, previous[1])
+
     def _build_environment(self, source: Path) -> dict[str, str]:
         """Return a clean build environment scoped to this Ares installation."""
 
         environment = os.environ.copy()
-        for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"):
+        for name in (
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+            "UV_PROJECT_ENVIRONMENT",
+        ):
             environment.pop(name, None)
         # Candidate builds must be profile-isolated and must resolve the Node
         # version that the Ares runtime owns, never an ambient system Node.
@@ -319,6 +341,14 @@ class AresLocalRuntime:
         """Return the process environment for the isolated Ares agent home."""
 
         environment = os.environ.copy()
+        for name in (
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+            "UV_PROJECT_ENVIRONMENT",
+        ):
+            environment.pop(name, None)
         environment["HERMES_HOME"] = str(self.paths.agent_home)
         environment["ARES_MANAGED_RUNTIME"] = "1"
         return environment
@@ -399,14 +429,12 @@ class AresLocalRuntime:
         if not python.is_file():
             raise AresLocalRuntimeError("stable Ares Python is missing during Context Governor setup")
         program = """
-from pathlib import Path
 import shutil
-import yaml
 from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config_readonly
 from plugins.context_engine._context_governor.key_state import ContextGovernorKeyError, ContextGovernorKeyState
 
-config_path = Path(get_hermes_home()) / 'config.yaml'
-config = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.is_file() else {}
+config = load_config_readonly() or {}
 if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
     binary = shutil.which('context-governor')
     if not binary:
@@ -781,34 +809,34 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             branch = "main"
         with self.locked():
             old_active = self._release_from_link(self.paths.current_link, "current")
+            old_previous = self._release_from_link(self.paths.previous_link, "previous")
             legacy_active = self._systemctl("is-active", "--quiet", "hermes-gateway.service", required=False)
             self._materialize(str(source), revision, desktop=desktop)
             seeded = self._seed_agent_home(seed_from)
             self._provision_context_governor_key(self._release_source(revision))
             self._activate(revision)
-            self._write_config(
-                remote=remote,
-                branch=branch,
-                upstream_remote=upstream_remote,
-                upstream_branch=upstream_branch,
-            )
-            self._install_launcher()
-            if gateway:
-                self._install_gateway_unit()
-                try:
+            try:
+                self._write_config(
+                    remote=remote,
+                    branch=branch,
+                    upstream_remote=upstream_remote,
+                    upstream_branch=upstream_branch,
+                )
+                self._install_launcher()
+                if gateway:
+                    self._install_gateway_unit()
                     self._handoff_gateway(legacy_active=legacy_active)
-                except Exception:
-                    if old_active is not None:
-                        self._atomic_link(self.paths.current_link, old_active[1])
-                        # The launcher resolves through `current`; regenerate it
-                        # before reviving the prior gateway, otherwise a failed
-                        # candidate can strand rollback on its new wrapper.
-                        self._install_launcher()
+            except Exception:
+                self._restore_release_pair(old_active, old_previous)
+                if old_active is not None:
+                    # The launcher resolves through `current`; regenerate it
+                    # before reviving the prior gateway, otherwise a failed
+                    # candidate can strand rollback on its new wrapper.
+                    self._install_launcher()
+                    if gateway:
                         self._systemctl("enable", "ares-gateway.service", required=False)
                         self._systemctl("restart", "ares-gateway.service", required=False)
-                    else:
-                        self.paths.current_link.unlink(missing_ok=True)
-                    raise
+                raise
         return revision, seeded
 
     def update(self, *, desktop: bool) -> tuple[str, bool]:
@@ -831,6 +859,7 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                 ):
                     return current[0], False
             old_active = current
+            old_previous = self._release_from_link(self.paths.previous_link, "previous")
             revision = self._materialize_upstream_candidate(
                 downstream_remote=remote,
                 downstream_revision=downstream_revision,
@@ -849,8 +878,8 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                     if not self._systemctl("is-active", "--quiet", "ares-gateway.service", required=False):
                         raise AresLocalRuntimeError("Ares gateway did not remain active after update")
                 except Exception:
+                    self._restore_release_pair(old_active, old_previous)
                     if old_active is not None:
-                        self._atomic_link(self.paths.current_link, old_active[1])
                         self._systemctl("restart", "ares-gateway.service", required=False)
                     raise
             return revision, True
@@ -933,13 +962,10 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             except Exception as exc:
                 checks.append(("SQLite runtime", False, f"probe failed: {type(exc).__name__}"))
         context_probe = """
-from pathlib import Path
 import json
-import yaml
-from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config_readonly
 
-config_path = Path(get_hermes_home()) / 'config.yaml'
-config = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.is_file() else {}
+config = load_config_readonly() or {}
 engine = (config or {}).get('context', {}).get('engine', 'compressor')
 if engine == 'ri-context-governor':
     from plugins.context_engine._context_governor import ContextGovernorEngine

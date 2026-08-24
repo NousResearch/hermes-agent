@@ -432,7 +432,14 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
         current = capability_fingerprint(home)
         if current == "unavailable":
             return False
-        return m.group(1) != current
+        stale = m.group(1) != current
+        if stale:
+            # The fingerprint is deliberately uncached, but the rendered
+            # protocol section is process-cached for prompt stability. Refresh
+            # that projection exactly when the epoch changes so the rebuild
+            # cannot persist a new epoch over an old teammate roster.
+            get_bot_mode_protocol_section(home, force_refresh=True)
+        return stale
     except Exception:
         return False
 

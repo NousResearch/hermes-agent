@@ -684,6 +684,42 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+# Known API-key prefixes per provider.  Only providers listed here get
+# prefix validation; everyone else is fail-open (unknown formats pass).
+# This exists so an obviously malformed key in .env (truncated paste, wrong
+# provider's key in the wrong var, etc.) doesn't silently shadow a valid
+# credential-pool entry and produce opaque 401s (#93593).
+KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
+    # All OpenRouter keys are issued as sk-or-... (currently sk-or-v1-).
+    "openrouter": ("sk-or-",),
+}
+
+
+def _secret_matches_declared_prefix(provider_id: str, value: str) -> bool:
+    """Return False only when the provider declares key prefixes and none match.
+
+    Providers without a declared prefix always pass (fail-open): we never
+    hard-reject unknown key formats, only skip values that provably don't
+    belong to a provider whose key format we know.
+    """
+    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
+    if not prefixes:
+        return True
+    return any(value.startswith(p) for p in prefixes)
+
+
+def _warn_malformed_secret(provider_id: str, source: str) -> None:
+    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ())
+    logger.warning(
+        "Ignoring %s for provider %r: value does not match the expected key "
+        "prefix (%s). Falling back to the next credential source. Fix or "
+        "remove the malformed key to silence this warning.",
+        source,
+        provider_id,
+        " or ".join(prefixes),
+    )
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -708,20 +744,42 @@ def _resolve_api_key_provider_secret(
         # in the user's .env file isn't shadowed by a stale shell export
         # inherited from a parent process (Codex CLI, test runners, etc.).
         val = (get_env_value_prefer_dotenv(env_var) or "").strip()
-        if has_usable_secret(val):
-            return val, env_var
+        if not has_usable_secret(val):
+            continue
+        if not _secret_matches_declared_prefix(provider_id, val):
+            # A provably malformed key (declared prefix mismatch) must not
+            # shadow a valid credential-pool entry (#93593). Warn and keep
+            # looking instead of returning it.
+            _warn_malformed_secret(provider_id, env_var)
+            continue
+        return val, env_var
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
+            # Prefer the pool's own selection (peek), but iterate the rest of
+            # the entries too so one malformed entry doesn't block a valid one.
+            candidates = []
             entry = pool.peek()
-            if entry:
+            if entry is not None:
+                candidates.append(entry)
+            try:
+                for extra in pool.entries():
+                    if extra is not None and all(extra is not c for c in candidates):
+                        candidates.append(extra)
+            except Exception:
+                pass
+            for entry in candidates:
                 key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
                 key = str(key).strip()
-                if has_usable_secret(key):
-                    return key, f"credential_pool:{provider_id}"
+                if not has_usable_secret(key):
+                    continue
+                if not _secret_matches_declared_prefix(provider_id, key):
+                    _warn_malformed_secret(provider_id, f"credential_pool:{provider_id}")
+                    continue
+                return key, f"credential_pool:{provider_id}"
     except Exception:
         pass
 

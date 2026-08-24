@@ -79,6 +79,10 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._fetch_picker_live_models",
+        lambda *_args, **_kwargs: None,
+    )
 
     user_providers = {
         "local-ollama": {
@@ -524,12 +528,14 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
 
     probed = {}
 
-    def _fake_fetch(api_key, api_url, **kwargs):
+    def _fake_fetch(api_key, api_url, *_args, **kwargs):
         probed["called"] = True
         probed["api_key"] = api_key
         return ["live-model-1", "live-model-2", "live-model-3"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._fetch_picker_live_models", _fake_fetch
+    )
 
     user_providers = {
         "local-ollama": {

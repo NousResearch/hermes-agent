@@ -241,10 +241,13 @@ def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> N
 
 def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, monkeypatch) -> None:
     runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
     old_revision = "a" * 40
     new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
     old_source = _release(runtime, old_revision)
     _release(runtime, new_revision)
+    runtime._activate(prior_revision)
     runtime._activate(old_revision)
     source = tmp_path / "candidate"
     source.mkdir()
@@ -274,9 +277,153 @@ def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, mon
         runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
 
     assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
     assert "cd \"$runtime_root\"" in runtime.paths.launcher_path.read_text(encoding="utf-8")
     assert ("enable", "ares-gateway.service") in calls
     assert ("restart", "ares-gateway.service") in calls
+
+
+def test_update_failure_restores_complete_pointer_pair(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(prior_revision)
+    runtime._activate(old_revision)
+    runtime.paths.unit_path.parent.mkdir(parents=True)
+    runtime.paths.unit_path.write_text("unit", encoding="utf-8")
+
+    monkeypatch.setattr(
+        runtime,
+        "_read_config",
+        lambda: {
+            "remote": "downstream",
+            "branch": "main",
+            "upstream_remote": "upstream",
+            "upstream_branch": "main",
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_remote_revision",
+        lambda remote, _branch: "d" * 40 if remote == "downstream" else "u" * 40,
+    )
+    monkeypatch.setattr(runtime, "_release_metadata", lambda _revision: {})
+    monkeypatch.setattr(
+        runtime,
+        "_materialize_upstream_candidate",
+        lambda **_kwargs: new_revision,
+    )
+    monkeypatch.setattr(runtime, "_install_gateway_unit", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_systemctl",
+        lambda *args, **_kwargs: False if args[:2] == ("is-active", "--quiet") else True,
+    )
+    monkeypatch.setattr("ares_runtime.local_runtime.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(AresLocalRuntimeError, match="did not remain active"):
+        runtime.update(desktop=False)
+
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
+
+
+def test_setup_pre_handoff_failure_restores_complete_pointer_pair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(prior_revision)
+    runtime._activate(old_revision)
+    source = tmp_path / "candidate"
+    source.mkdir()
+
+    def git_output(_source: Path, *args: str) -> str:
+        values = {
+            ("rev-parse", "--is-inside-work-tree"): "true",
+            ("rev-parse", "HEAD"): new_revision,
+            ("remote", "get-url", "origin"): str(source),
+            ("symbolic-ref", "--quiet", "--short", "HEAD"): "main",
+        }
+        return values[args]
+
+    monkeypatch.setattr(runtime, "_git_output", git_output)
+    monkeypatch.setattr(runtime, "_materialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_seed_agent_home", lambda *_args: False)
+    monkeypatch.setattr(runtime, "_provision_context_governor_key", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime,
+        "_write_config",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("config failed")),
+    )
+    monkeypatch.setattr(runtime, "_systemctl", lambda *args, **_kwargs: False)
+
+    with pytest.raises(RuntimeError, match="config failed"):
+        runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
+
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
+
+
+def test_agent_environment_strips_ambient_python_import_controls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        monkeypatch.setenv(name, f"/hostile/{name.lower()}")
+
+    environment = runtime._agent_environment()
+
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        assert name not in environment
+
+
+def test_build_environment_strips_all_python_import_controls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        monkeypatch.setenv(name, f"/hostile/{name.lower()}")
+
+    environment = runtime._build_environment(source)
+
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+    ):
+        assert name not in environment
+    assert environment["UV_PROJECT_ENVIRONMENT"] == str(source / ".venv")
 
 
 def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> None:

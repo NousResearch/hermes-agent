@@ -7170,9 +7170,10 @@ class BasePlatformAdapter(ABC):
                 profile_route_rejected = True
             except Exception:
                 logger.warning(
-                    "Profile resolution failed for %s/%s, defaulting to active profile",
+                    "Profile resolution failed for %s/%s; rejecting routing",
                     self.platform, chat_id, exc_info=True,
                 )
+                profile_route_rejected = True
 
         source = SessionSource(
             platform=self.platform,

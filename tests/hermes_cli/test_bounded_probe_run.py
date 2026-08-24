@@ -23,6 +23,7 @@ exercise the same code path through the ``bounded_git_probe`` delegation.
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -173,18 +174,63 @@ def test_windows_probe_encoding_is_utf8_off_windows(monkeypatch):
     assert sc.windows_probe_encoding() == "utf-8"
 
 
+def _windows_host(monkeypatch, *, oem, ansi):
+    """Put ``windows_probe_encoding`` on a Windows host whose ``GetOEMCP`` answers *oem*.
+
+    *oem* is the code page the call returns, or an exception it raises.  Faking
+    ``ctypes.windll`` is what makes these tests platform-independent: off Windows
+    the attribute does not exist, so the OEM branch raises for a reason that has
+    nothing to do with the case under test, and a Windows runner takes the OEM
+    branch for real and never reaches the fallback at all.
+    """
+    import ctypes
+
+    import hermes_cli._subprocess_compat as sc
+
+    def get_oem_cp():
+        if isinstance(oem, BaseException):
+            raise oem
+        return oem
+
+    monkeypatch.setattr(sc, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        types.SimpleNamespace(kernel32=types.SimpleNamespace(GetOEMCP=get_oem_cp)),
+        raising=False,
+    )
+    monkeypatch.setattr(sc.locale, "getencoding", lambda: ansi)
+    monkeypatch.setattr(sc.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    return sc
+
+
+def test_windows_probe_encoding_prefers_the_oem_code_page(monkeypatch):
+    """A console-mode child writes in the OEM code page, not the ANSI one.
+
+    Measured on a us-EN Win11 host: ``GetOEMCP()`` is 437 while ``GetACP()`` is
+    1252, and a spawned command line carrying an e-acute came back as the byte
+    ``0x82``, which is where cp437 keeps that letter.  cp1252 reads ``0x82`` as a
+    low quotation mark instead, so resolving the ANSI page first would corrupt
+    the very scan this codec exists to decode.
+    """
+    sc = _windows_host(monkeypatch, oem=437, ansi="cp1252")
+
+    assert sc.windows_probe_encoding() == "cp437"
+
+
 def test_windows_probe_encoding_falls_back_to_the_locale_code_page(monkeypatch):
     """When the OEM code page can't be read, use the ANSI one -- never
     ``getpreferredencoding(False)``, which follows Python UTF-8 Mode and would
     answer ``utf-8`` on a CP932 host that Hermes started in UTF-8 Mode."""
-    import hermes_cli._subprocess_compat as sc
+    sc = _windows_host(monkeypatch, oem=OSError(1, "GetOEMCP unavailable"), ansi="cp932")
 
-    monkeypatch.setattr(sc, "IS_WINDOWS", True)
-    monkeypatch.setattr(sc.locale, "getencoding", lambda: "cp932")
-    monkeypatch.setattr(sc.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    assert sc.windows_probe_encoding() == "cp932"
 
-    # ``ctypes.windll`` does not exist off Windows, so the OEM probe raises and
-    # the locale fallback is what this asserts.
+
+def test_windows_probe_encoding_falls_back_when_the_oem_page_is_zero(monkeypatch):
+    """``GetOEMCP`` answers 0 when it fails, and ``cp0`` is not a codec."""
+    sc = _windows_host(monkeypatch, oem=0, ansi="cp932")
+
     assert sc.windows_probe_encoding() == "cp932"
 
 

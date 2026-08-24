@@ -429,15 +429,39 @@ def _validate_workdir(workdir: str) -> str | None:
     return None
 
 
+def _in_delegated_child_context() -> bool:
+    """Return True while running inside a delegate_task child.
+
+    Subagents execute on worker threads of the parent process, so they
+    inherit process-wide interactivity signals (``HERMES_INTERACTIVE=1`` set
+    by the CLI at startup) that do NOT mean *this* execution context can
+    reach the user. A child that passes the interactive gate with no sudo
+    callback falls through to the raw ``/dev/tty`` prompt — printed mid-TUI
+    from a background thread, racing siblings for the tty, and blocking the
+    child for the full timeout. Children must always behave as headless for
+    sudo prompting. The ContextVar is set by ``delegated_child_context()``
+    around every child run and propagates through ``contextvars.copy_context``
+    onto the executor thread.
+    """
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        return is_delegated_child_context()
+    except Exception:
+        return False
+
+
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
-    Check for sudo failure and add helpful message for messaging contexts.
-    
-    Returns enhanced output if sudo failed in messaging context, else original.
+    Check for sudo failure and add helpful message for headless contexts
+    (messaging gateway sessions and delegate_task subagents).
+
+    Returns enhanced output if sudo failed in such a context, else original.
     """
     is_gateway = env_var_enabled("HERMES_GATEWAY_SESSION")
-    
-    if not is_gateway:
+    is_delegated_child = _in_delegated_child_context()
+
+    if not is_gateway and not is_delegated_child:
         return output
     
     # Check for sudo failure indicators
@@ -450,6 +474,12 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     for failure in sudo_failures:
         if failure in output:
             from hermes_constants import display_hermes_home as _dhh
+            if is_delegated_child:
+                return output + (
+                    "\n\n💡 Tip: Subagents cannot prompt for a sudo password. "
+                    f"Add SUDO_PASSWORD to {_dhh()}/.env on the agent machine, "
+                    "or run the command without sudo."
+                )
             return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
@@ -1053,9 +1083,16 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None
 
     has_sudo_prompt_callback = _get_sudo_password_callback() is not None
+    # delegate_task children inherit the parent's process-wide
+    # HERMES_INTERACTIVE=1 (and, on a recycled worker thread, potentially a
+    # stale thread-local callback), but there is no user on the other side of
+    # this execution context: prompting from a subagent thread fights the
+    # parent's TUI for /dev/tty and blocks the child for the full timeout.
+    # Children always behave as headless — configured SUDO_PASSWORD, the
+    # session cache, and the NOPASSWD probe above all still work.
     should_prompt_for_sudo = (
         env_var_enabled("HERMES_INTERACTIVE") or has_sudo_prompt_callback
-    )
+    ) and not _in_delegated_child_context()
     if not has_configured_password and not sudo_password and should_prompt_for_sudo:
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
@@ -3459,7 +3496,10 @@ def terminal_tool(
             )
             if sudo_cache_cleared:
                 has_sudo_prompt_callback = _get_sudo_password_callback() is not None
-                if has_sudo_prompt_callback or env_var_enabled("HERMES_INTERACTIVE"):
+                can_reprompt = (
+                    has_sudo_prompt_callback or env_var_enabled("HERMES_INTERACTIVE")
+                ) and not _in_delegated_child_context()
+                if can_reprompt:
                     output += (
                         "\n\n⚠️ Sudo authentication failed — cached password "
                         "cleared. You will be prompted again on the next sudo "

@@ -527,7 +527,19 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     lock in ``tools.bot_relay``. Peer transports (stdin mode) run on the
     remote gateway; their turn is locked THERE by its own deliver path.
     """
-    if stdin_file or len(argv) < 3 or argv[0] != "hermes" or argv[1] != "-p":
+    # The CLI element is matched by basename: local_delivery_command now
+    # resolves the venv-relative hermes next to this gateway's interpreter
+    # (#93590 — service contexts lack PATH), so argv[0] may be an absolute
+    # path (and on Windows carries the .exe suffix). Split on both
+    # separators so the shape matches regardless of which platform built
+    # the argv.
+    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if (
+        stdin_file
+        or len(argv) < 3
+        or cli not in ("hermes", "hermes.exe")
+        or argv[1] != "-p"
+    ):
         return contextlib.nullcontext()
     from tools.bot_relay import acquire_turn_lock
 

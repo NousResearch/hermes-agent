@@ -104,6 +104,59 @@ class TestGatewayQuickCommands:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_exec_command_receives_command_and_exact_origin(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "where": {
+                    "type": "exec",
+                    "command": (
+                        "printf '%s|%s|%s|%s|%s' "
+                        '"$HERMES_COMMAND_NAME" "$HERMES_COMMAND_ARGS" '
+                        '"$HERMES_ORIGIN_PLATFORM" "$HERMES_ORIGIN_CHAT_ID" '
+                        '"$HERMES_ORIGIN_THREAD_ID"'
+                    ),
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("where", "wallet HYPE")
+        event.source.chat_id = "-1003958174857"
+        event.source.thread_id = "3822"
+        result = await runner._handle_message(event)
+
+        assert result == "where|wallet HYPE|telegram|-1003958174857|3822"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_clears_inherited_thread_origin(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "where": {
+                    "type": "exec",
+                    "command": "printf '%s' \"${HERMES_ORIGIN_THREAD_ID-unset}\"",
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        event = self._make_event("where")
+        event.source.thread_id = None
+        monkeypatch.setenv("HERMES_ORIGIN_THREAD_ID", "stale-thread")
+
+        result = await runner._handle_message(event)
+
+        assert result == "unset"
+
+    @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
         from gateway.run import GatewayRunner

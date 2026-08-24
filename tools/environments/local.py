@@ -1907,27 +1907,72 @@ class LocalEnvironment(BaseEnvironment):
                     if pgid is None:
                         raise
 
+                # Snapshot the descendant set BEFORE the first signal: once
+                # the wrapper dies its children reparent to init and a parent
+                # walk finds nothing (same rationale as agent/deadline.py
+                # kill_process_tree).  A descendant that called ``setsid``
+                # escapes the process group entirely and would survive the
+                # group-kill below — the #71148 class, terminal flavor
+                # (issue #84967's local sibling).  The snapshot must never
+                # break the kill path, so any failure just yields an empty
+                # sweep set.
+                descendants: list = []
+                try:
+                    import psutil
+
+                    descendants = psutil.Process(proc.pid).children(recursive=True)
+                except Exception:
+                    descendants = []
+
+                def _sweep_escaped_descendants() -> None:
+                    """SIGKILL snapshotted survivors outside the (dead) group.
+
+                    Runs after the TERM→KILL group escalation so in-group
+                    members keep their SIGTERM grace window; only escapees
+                    (own setsid sessions) are force-killed.  psutil's
+                    identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
+                    """
+                    for child in descendants:
+                        try:
+                            if not child.is_running():
+                                continue
+                            try:
+                                if os.getpgid(child.pid) == pgid:
+                                    continue  # group-kill already covers it
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                            child.kill()
+                        except Exception:
+                            continue
+
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
 
                 # Wait on the process group, not just the shell wrapper. Under
                 # load the wrapper can exit before grandchildren do; returning
                 # at that point leaves orphaned process-group members behind.
                 if _wait_for_group_exit(pgid, 1.0):
+                    _sweep_escaped_descendants()
                     return
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
                 _wait_for_group_exit(pgid, 2.0)
                 try:
                     proc.wait(timeout=0.2)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                _sweep_escaped_descendants()
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()

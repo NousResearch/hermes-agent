@@ -7020,6 +7020,94 @@ async function ensureGroupChatSession(group, member) {
 
 const GROUP_TURN_TIMEOUT_MS = 180000
 const GROUP_TURN_POLL_MS = 2000
+
+// --- group-turn session-lease helpers (#93602) ------------------------------
+// A member turn is a session-scoped RPC SEQUENCE (resume → attach → submit →
+// poll) issued with the runtime id its first RPC minted. requestForBot routes
+// each RPC through a per-request socket lease (retained:false secondaries in
+// store/gateway), so between two RPCs the refcount can hit 0, the leased
+// socket closes, the gateway detaches the runtime session on WS disconnect,
+// and the orphan reaper frees it — the next RPC then fails 4001 "not in
+// memory" and the bot goes silent in the room.
+
+/** 4001-class "the runtime session was reaped" failure. Distinct from 4007
+ *  ("genuinely never existed"), which must keep flowing to session.create. */
+function isSessionGoneError(error) {
+  if (!error || error.code === 4007) {
+    return false
+  }
+
+  if (error.code === 4001) {
+    return true
+  }
+
+  // Duck-typed (not instanceof): gateway errors can cross realm boundaries.
+  const message = typeof error?.message === 'string' ? error.message : typeof error === 'string' ? error : ''
+
+  return message.includes('not in memory') || /session not found/i.test(message)
+}
+// --- end group-turn session-lease helpers ---
+
+/** Hold the member's pooled socket open for the WHOLE turn. Feature-detected:
+ *  hosts without retainProfile (or members on the active gateway, which never
+ *  closes mid-turn) get a no-op release. A failed acquire must not kill the
+ *  turn — the catch-retry on submit still covers the race. */
+async function retainGroupTurnRoute(member) {
+  const noop = () => undefined
+
+  let route = null
+
+  try {
+    route = botConnectionRoute(member)
+  } catch {
+    return noop
+  }
+
+  if (!route || typeof host.retainProfile !== 'function') {
+    return noop
+  }
+
+  try {
+    const release = await host.retainProfile(route)
+
+    return typeof release === 'function' ? release : noop
+  } catch {
+    return noop
+  }
+}
+
+/** prompt.submit with one belt-and-braces retry: when the runtime session was
+ *  reaped between minting and submitting (4001 class), re-resume via the
+ *  STORED id — the durable identity — to mint a fresh runtime id, and submit
+ *  exactly once more. Returns the runtime id the submit actually landed on so
+ *  the poll loop keeps a live fallback target. */
+async function submitGroupTurnPrompt(member, runtime, stored, text) {
+  try {
+    await requestForBot(member, 'prompt.submit', { session_id: runtime, text })
+
+    return runtime
+  } catch (error) {
+    if (!isSessionGoneError(error) || !stored) {
+      throw error
+    }
+
+    const res = await requestForBot(member, 'session.resume', {
+      session_id: stored,
+      profile: member.name,
+      omit_messages: true
+    })
+    const fresh = res?.session_id
+
+    if (!fresh) {
+      throw error
+    }
+
+    await requestForBot(member, 'prompt.submit', { session_id: fresh, text })
+
+    return fresh
+  }
+}
+
 // A member turn that is VISIBLY still working (session reports
 // inflight/running) keeps its slot alive up to this hard cap. The base
 // timeout alone silently dropped long real turns: a 7-minute research run
@@ -7174,6 +7262,20 @@ async function answerGroupClarify(entry, member, answers) {
  *  records a stranded marker so the finished reply can be harvested into
  *  the room at the member's next turn instead of being lost. */
 async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
+  // #93602: hold the member's route socket for the whole turn. Without the
+  // lease, every RPC below rides its own request-scoped socket lease; the
+  // socket that minted `runtime` can close between RPCs, the gateway reaps
+  // the runtime session, and prompt.submit dies 4001 — the bot goes silent.
+  const releaseTurnLease = await retainGroupTurnRoute(member)
+
+  try {
+    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
+  } finally {
+    releaseTurnLease()
+  }
+}
+
+async function runGroupChatMemberTurnLeased(group, member, prompt, thread, images) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
@@ -7244,7 +7346,10 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
 
-  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: turnText })
+  // #93602: one-shot recovery when the runtime session was reaped between
+  // minting and submitting. Tracks the runtime id the submit landed on so
+  // the poll fallback below targets a live session.
+  const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
 
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -7256,7 +7361,7 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
 
     try {
       state = await requestForBot(member, 'session.resume', {
-        session_id: stored || runtime,
+        session_id: stored || liveRuntime,
         profile: member.name
       })
     } catch {

@@ -57,6 +57,7 @@ const {
   pruneSecondaryGateways,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  retainGatewayForAgent,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -368,5 +369,96 @@ describe('requestGatewayForAgent', () => {
     expect(secondaryGateways[0].close).toHaveBeenCalled()
     expect(onActiveConnectionChanged).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
+  })
+})
+
+describe('retainGatewayForAgent (#93602)', () => {
+  function installRegistryDesktop() {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+  }
+
+  it('holds the registry socket across multiple leased requests — no mid-turn disposal', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('mini', 'helper')
+
+    // The whole member-turn RPC sequence: each call takes and releases its own
+    // per-request lease. Without the retain, refcount 0 between calls disposes
+    // the socket and the runtime session with it.
+    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
+    await requestGatewayForAgent('mini', 'helper', 'image.attach_bytes', { session_id: 'rt-1' })
+    await requestGatewayForAgent('mini', 'helper', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+    expect(secondaryGateways[0].request).toHaveBeenCalledTimes(3)
+
+    release()
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('release is idempotent — a double release never underflows into a foreign disposal', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent('mini', 'helper')
+    release()
+    release()
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+
+    // A fresh retain still works after the double release.
+    const again = await retainGatewayForAgent('mini', 'helper')
+    await requestGatewayForAgent('mini', 'helper', 'prompt.submit', { session_id: 'rt-2', text: 'hi' })
+    expect(secondaryGateways[1].close).not.toHaveBeenCalled()
+    again()
+    expect(secondaryGateways[1].close).toHaveBeenCalledOnce()
+  })
+
+  it('without the retain, the leased socket closes after each request (the #93602 race)', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installRegistryDesktop()
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
+
+    // Refcount hit 0 → disposed: this is the socket close that reaps the
+    // runtime session server-side and makes the later prompt.submit 4001.
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+
+  it('plain-profile retain leases the pooled profile socket and releases it', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) =>
+        profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+      )
+    )
+    await ensureGatewayForProfile('default')
+
+    const release = await retainGatewayForAgent(null, 'worker')
+    await requestGatewayForProfile('worker', 'session.create', { title: 'g' })
+    await requestGatewayForProfile('worker', 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    release()
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
   })
 })

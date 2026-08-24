@@ -774,6 +774,80 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 }
 
+/**
+ * Hold `profile`'s socket open across a multi-RPC sequence without activating
+ * it (#93602). Every requestGatewayForProfile/requestGatewayForAgent call is a
+ * per-request lease: at refcount 0 a non-retained secondary is disposed, so a
+ * session-scoped sequence (session.create → attach → prompt.submit) minted a
+ * runtime id on a socket that closed between calls — the gateway detached the
+ * session on WS disconnect and the next RPC hit 4001 "not in memory". Callers
+ * acquire this lease before the first session-scoped RPC and release it in a
+ * `finally`; the refcount keeps the socket (and the session it minted) alive
+ * for the whole sequence. Primary/shared-primary routes return a no-op release.
+ */
+export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+  const key = normKey(profile)
+  const scope = registryBackendScopeKey(connectionId, key)
+
+  if (scope === key) {
+    // Plain-profile route: gatewayForProfile's request lease IS the retain —
+    // hold it until the caller releases.
+    const route = await gatewayForProfile(key, true)
+
+    return route.release
+  }
+
+  if (!window.hermesDesktop?.getConnectionFor) {
+    // No registry dialing in this build — nothing to hold; the request path
+    // will throw its own actionable error.
+    return () => undefined
+  }
+
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, connectionId)
+
+  // Existing dev-HMR entries predate request leases/ownership.
+  if (!Number.isFinite(entry.activeRequests)) {
+    entry.activeRequests = 0
+  }
+
+  if (typeof entry.retained !== 'boolean') {
+    entry.retained = true
+  }
+
+  entry.wantOpen = true
+  entry.activeRequests += 1
+
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+
+    if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
+      disposeSecondary(entry)
+
+      if (g.secondaries.get(entry.scope) === entry) {
+        g.secondaries.delete(entry.scope)
+      }
+    }
+  }
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return release
+}
+
 // Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
 // (store/profile). Runs the same spawn + connect chain as a real switch, so by
 // click time ensureGatewayForProfile finds an open socket and just activates

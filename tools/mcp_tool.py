@@ -1073,32 +1073,100 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
-def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
-    """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
+# ---------------------------------------------------------------------------
+# Shared parent-death supervisor
+# ---------------------------------------------------------------------------
+# If this Hermes process dies without running its cleanup path (kill -9, OOM,
+# crash, force-quit), stdio MCP children reparent to init and run forever.
+# macOS has no PR_SET_PDEATHSIG, so something has to outlive us and reap them.
+#
+# We keep ONE supervisor process for all stdio servers and tell it which process
+# groups to reap over a pipe.  It detects our death as EOF on that pipe -- exact
+# and instant -- rather than by polling getppid().  This replaced a design that
+# wrapped every server command in its own poller, which cost ~10 MB resident per
+# server (measured 9.8 MB physical footprint on macOS/arm64) and needed a signal
+# forwarding layer, because wrapping put the real server in a different session
+# from the pgid we tracked for killpg.  See tools/mcp_death_supervisor.py.
+#
+# POSIX-only (relies on process groups), matching the platform scope of the
+# killpg-based orphan cleanup below.
+_death_supervisor = None  # Optional[subprocess.Popen]
+_death_supervisor_lock = threading.Lock()
+# Process groups the supervisor is currently reaping on our behalf.  Replayed
+# verbatim if the supervisor has to be respawned, so a respawn never silently
+# drops coverage for servers that are still running.
+_supervised_pgids: set = set()
 
-    On POSIX, the watchdog records this process's PID and later detects parent
-    death directly through ``getppid()``. Returns the (command, args) unchanged
-    on non-POSIX platforms or if the PID cannot be read.
+
+def _spawn_death_supervisor():
+    """Start the shared supervisor, or return None if it cannot be started."""
+    import subprocess
+
+    supervisor = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "mcp_death_supervisor.py"
+    )
+    try:
+        # start_new_session=True is load-bearing, not hygiene: shutdown paths
+        # killpg this process's own group, which would kill the supervisor
+        # before it could reap anything.
+        return subprocess.Popen(
+            [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=_get_mcp_stderr_log(),
+            start_new_session=True,
+            close_fds=True,
+            text=True,
+        )
+    except Exception:
+        # Never let supervisor bookkeeping failure block a real MCP connection.
+        # The graceful shutdown paths still reap normally; we only lose the
+        # ungraceful-exit safety net.
+        logger.debug("Could not start the MCP parent-death supervisor", exc_info=True)
+        return None
+
+
+def _update_death_supervisor(verb: str, pgids) -> None:
+    """Register or unregister process groups with the shared supervisor.
+
+    ``verb`` is ``"register"`` or ``"unregister"``.  Failures are swallowed:
+    losing the ungraceful-exit safety net must never fail a live MCP session.
     """
     if os.name != "posix":
-        # Relies on process groups (os.getpgid/os.killpg); no POSIX
-        # equivalent wired up here yet, matching the existing killpg-based
-        # orphan cleanup's platform scope (Windows falls back to plain
-        # os.kill there too).
-        return command, args
-    try:
-        my_pid = os.getpid()
-    except Exception:
-        # Never let watchdog bookkeeping failure block a real MCP connection.
-        return command, args
-    watchdog_args = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
-        "--ppid", str(my_pid),
-        "--",
-        command,
-        *args,
-    ]
-    return sys.executable, watchdog_args
+        return
+    wanted = {int(pgid) for pgid in pgids}
+    if not wanted:
+        return
+
+    global _death_supervisor
+    with _death_supervisor_lock:
+        if verb == "register":
+            _supervised_pgids.update(wanted)
+        else:
+            _supervised_pgids.difference_update(wanted)
+
+        proc = _death_supervisor
+        if proc is None or proc.poll() is not None:
+            if verb == "unregister" and proc is None:
+                # Nothing was ever registered, so there is nothing to tell.
+                return
+            proc = _spawn_death_supervisor()
+            _death_supervisor = proc
+            if proc is None:
+                return
+            # A fresh supervisor knows nothing. Replay live coverage, which
+            # already reflects this call's mutation.
+            payload = "".join(f"register {pgid}\n" for pgid in _supervised_pgids)
+        else:
+            payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
+
+        try:
+            proc.stdin.write(payload)
+            proc.stdin.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            # It exited between poll() and write(). Drop it so the next call
+            # respawns and replays, rather than writing into a dead pipe.
+            _death_supervisor = None
 
 
 # ---------------------------------------------------------------------------
@@ -3243,9 +3311,10 @@ class MCPServerTask:
         # it with a wall-clock timeout so a stalled SSL handshake can't freeze
         # MCP discovery / gateway startup (#29184). The check is fail-open, so
         # on timeout we log and proceed rather than blocking indefinitely.
-        # NOTE: must run against the REAL command/args — the watchdog wrap
-        # below rewrites argv to `python -m tools.mcp_stdio_watchdog …`,
-        # which would silently turn the preflight into a no-op.
+        # NOTE: must run against the REAL command/args. Anything that rewrites
+        # argv to point at a wrapper or a resolved binary has to happen AFTER
+        # this call, or the preflight silently inspects the wrapper instead of
+        # the package and becomes a no-op.
         from tools.osv_check import check_package_for_malware
         try:
             malware_error = await asyncio.wait_for(
@@ -3263,18 +3332,6 @@ class MCPServerTask:
             raise ValueError(
                 f"MCP server '{self.name}': {malware_error}"
             )
-
-        # Wrap the real command in a parent-death watchdog supervisor so an
-        # ungraceful exit of this Hermes process (kill -9, crash, force-quit)
-        # can't leave the stdio MCP child (and its own descendants, e.g.
-        # mcp-remote's spawned `node`) running forever. On a clean exit,
-        # MCPServerTask.shutdown() / _kill_orphaned_mcp_children() still do
-        # the reaping as before -- this only covers the case where that code
-        # never gets to run. POSIX-only (relies on process groups); no-op
-        # elsewhere, matching existing killpg-based cleanup's platform scope.
-        # Applied AFTER the OSV preflight so the check inspects the real
-        # package, not the watchdog wrapper.
-        command, args = _wrap_command_with_watchdog(command, args)
 
         server_params = StdioServerParameters(
             command=command,
@@ -3365,6 +3422,14 @@ class MCPServerTask:
                                 _pid,
                                 exc_info=True,
                             )
+                    # Hand the pgroups to the shared parent-death supervisor so
+                    # an ungraceful exit of this process (kill -9, crash,
+                    # force-quit) can't leave this server -- or its own
+                    # descendants, e.g. mcp-remote's spawned `node` -- running
+                    # forever. The graceful paths (MCPServerTask.shutdown,
+                    # _kill_orphaned_mcp_children) still reap as before; this
+                    # only covers the case where they never get to run.
+                    _update_death_supervisor("register", new_pgids.values())
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
@@ -3417,6 +3482,11 @@ class MCPServerTask:
             if new_pids:
                 from gateway.status import _pid_exists
                 _killpg = getattr(os, "killpg", None)
+                # Groups with nothing left alive; the supervisor is told to
+                # forget them after the lock is released. Groups that ARE still
+                # alive stay registered on purpose, so the supervisor still
+                # reaps them if this process dies before the orphan sweep runs.
+                released_pgids: list = []
                 with _lock:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
@@ -3442,7 +3512,10 @@ class MCPServerTask:
                         else:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
-                            _stdio_pgids.pop(pid, None)
+                            dropped = _stdio_pgids.pop(pid, None)
+                            if dropped is not None:
+                                released_pgids.append(dropped)
+                _update_death_supervisor("unregister", released_pgids)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
@@ -8895,6 +8968,10 @@ def _kill_orphaned_mcp_children(
             "Force-killed MCP process %d (%s) after SIGTERM timeout",
             pid, server_name,
         )
+
+    # These groups are reaped. Release them last, so a crash partway through
+    # the SIGTERM/SIGKILL dance still leaves the supervisor holding them.
+    _update_death_supervisor("unregister", pgids.values())
 
 
 def _stop_mcp_loop_if_idle() -> bool:

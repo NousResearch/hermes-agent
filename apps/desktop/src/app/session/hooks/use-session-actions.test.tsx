@@ -18,7 +18,7 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -38,6 +38,7 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setConnection,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
@@ -80,7 +81,8 @@ vi.mock('@/store/profile', async importOriginal => ({
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  requestGatewayForAgent: vi.fn()
+  requestGatewayForAgent: vi.fn(),
+  requestGatewayForProfile: vi.fn()
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
@@ -1992,7 +1994,43 @@ describe('resumeSession warm-cache mapping integrity', () => {
       .mockResolvedValue({ messages: [] } as never)
     vi.mocked(requestGatewayForAgent).mockReset()
     clearClarifyRequest()
+    vi.mocked(requestGatewayForProfile).mockReset()
+    setConnection(null)
     vi.restoreAllMocks()
+  })
+
+  it('pins an untagged row to the active registry connection instead of the same-named local profile', async () => {
+    setConnection({ connectionId: 'hermes01', mode: 'remote' } as never)
+    setSessions([storedSession({ id: 'remote-stored', profile: 'default' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'remote-stored' } as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: {},
+      messages: [],
+      resumed: 'remote-stored',
+      session_id: 'remote-runtime'
+    } as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({
+      info: {},
+      messages: [],
+      resumed: 'remote-stored',
+      session_id: 'wrong-local-runtime'
+    } as never)
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('remote-stored', true)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'hermes01',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'remote-stored' })
+    )
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('pins metadata, transcript, resume, activate, and usage to the captured connection', async () => {

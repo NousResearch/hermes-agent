@@ -48,6 +48,7 @@ import {
 import { setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionStoredIdRotation,
+  $connection,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -788,6 +789,17 @@ export function useSessionActions({
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
       const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      // A connection switch clears/reloads the session rows before this path
+      // runs, so an untagged row belongs to the connection that supplied the
+      // current list. Capture that source before the async metadata lookup. If
+      // we reduce it to the profile string `default`, requestForSessionProfile
+      // resolves the local default socket and sends an SSH session id to the
+      // wrong machine ("resume failed: session not found").
+      const ambientConnection = $connection.get()
+
+      const ambientConnectionId =
+        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
+
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
@@ -795,14 +807,17 @@ export function useSessionActions({
         return
       }
 
+      const resolvedConnectionId = ownerRoute?.connectionId || storedForProfile?.connection_id || ambientConnectionId
+
       // A row spliced from a CONNECTED registry gateway (#88880) carries its
-      // owning connection — activate THAT gateway, not a same-named local
-      // profile. Rows without the tag keep the legacy profile path.
-      const sessionOwner: SessionOwnerScope =
-        ownerRoute ||
-        (storedForProfile?.connection_id
+      // owning connection. A row fetched directly after activating a registry
+      // gateway can be untagged, so retain the captured ambient connection too.
+      // Either way, route by the composite (connection, profile), never by a
+      // same-named profile alone.
+      const sessionOwner: SessionOwnerScope = ownerRoute ||
+        (resolvedConnectionId
           ? {
-              connectionId: storedForProfile.connection_id,
+              connectionId: resolvedConnectionId,
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
@@ -810,19 +825,13 @@ export function useSessionActions({
       // All-profiles / plugin navigation must not steal chrome API-home:
       // dial the owning backend without moving $activeGatewayProfile.
       if ($showAllProfiles.get()) {
-        if (ownerRoute?.connectionId || storedForProfile?.connection_id) {
-          await openGatewayForAgent(
-            ownerRoute?.connectionId || storedForProfile?.connection_id || null,
-            ownerRoute?.profile || sessionProfile || 'default'
-          )
+        if (resolvedConnectionId) {
+          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
         } else if (sessionProfile) {
           await openGatewayForProfile(normalizeProfileKey(sessionProfile))
         }
-      } else if (ownerRoute?.connectionId || storedForProfile?.connection_id) {
-        await ensureGatewayAgent(
-          ownerRoute?.connectionId || storedForProfile?.connection_id || null,
-          ownerRoute?.profile || sessionProfile || 'default'
-        )
+      } else if (resolvedConnectionId) {
+        await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
       } else {
         await ensureGatewayProfile(sessionProfile)
       }
@@ -842,10 +851,10 @@ export function useSessionActions({
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
         requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
 
-      const sessionRestScope = ownerRoute
+      const sessionRestScope = resolvedConnectionId
         ? {
-            connectionId: ownerRoute.connectionId,
-            profile: ownerRoute.targetProfile || ownerRoute.profile
+            connectionId: resolvedConnectionId,
+            profile: ownerRoute?.targetProfile || ownerRoute?.profile || sessionProfile || 'default'
           }
         : storedForProfile?.connection_id
           ? {

@@ -1656,11 +1656,20 @@ export function useSessionActions({
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
         }
 
-        // Load the branch as the primary session so it opens in the main
-        // workspace, not just a sidebar row. resumeSession reuses the runtime
-        // warm-cached above (ensureSessionState/updateSessionState) instead of
-        // an extra resume RPC.
-        await resumeSession(routedSessionId)
+        // Only take over the main pane when the chat being branched is the one
+        // already open there — branching a background/sidebar session must
+        // not yank the user's current view away from what they're looking at
+        // (the #69750 focus-stealing bug, reintroduced if this fires
+        // unconditionally). resumeSession reuses the runtime warm-cached above
+        // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
+        if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
+          await resumeSession(routedSessionId)
+        } else {
+          openSessionTile(routedSessionId, 'center')
+          patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
+          revealTreePane(`session-tile:${routedSessionId}`)
+        }
+
         broadcastSessionsChanged()
 
         return true
@@ -1674,7 +1683,15 @@ export function useSessionActions({
         }, 0)
       }
     },
-    [copy, creatingSessionRef, ensureSessionState, requestGateway, resumeSession, updateSessionState]
+    [
+      copy,
+      creatingSessionRef,
+      ensureSessionState,
+      requestGateway,
+      resumeSession,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
   )
 
   // Branch the open chat — optionally from a specific message — off its live transcript.

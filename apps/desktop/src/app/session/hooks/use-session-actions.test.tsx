@@ -1437,6 +1437,7 @@ describe('branchStoredSession desktop source tagging', () => {
         navigate={navigate}
         onReady={branch => (branchStoredSession = branch)}
         requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
       />
     )
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
@@ -1449,6 +1450,56 @@ describe('branchStoredSession desktop source tagging', () => {
     // It must not ALSO exist as a tile: a session is either the main thread or
     // a tile, never both (resumeSession closes any tile with the same id).
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
+  })
+
+  it('keeps the current view when branching a different session from the sidebar (does not reintroduce #69750)', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    // The user is looking at "stored-other" and right-clicks a DIFFERENT,
+    // unrelated session ("stored-parent") in the sidebar to branch it.
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-other')
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const navigate = vi.fn()
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        navigate={navigate}
+        onReady={branch => (branchStoredSession = branch)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-other"
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    // Branching a session that is not the one currently open must not steal
+    // the user's active view — "stored-other" stays selected.
+    expect($selectedStoredSessionId.get()).toBe('stored-other')
+    // The branch instead opens as its own tile.
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {

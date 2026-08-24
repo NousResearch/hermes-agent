@@ -28,12 +28,16 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderClarify(ui: ReactNode) {
-  return render(
+function clarifyTree(ui: ReactNode) {
+  return (
     <I18nProvider configClient={null} initialLocale="en">
       {ui}
     </I18nProvider>
   )
+}
+
+function renderClarify(ui: ReactNode) {
+  return render(clarifyTree(ui))
 }
 
 function settledClarifyProps(
@@ -86,9 +90,9 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
     requestId: 'request-1',
     sessionId: 'session-1'
   })
-  renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+  const { rerender } = renderClarify(<ClarifyTool {...liveClarifyProps()} />)
 
-  return request
+  return { request, rerender }
 }
 
 describe('ClarifyTool live card stays mounted across settle', () => {
@@ -111,17 +115,34 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
   })
 
-  it('holds the card through the gap between answering and the settled result', () => {
+  it('holds the card through the gap between answering and the settled result', async () => {
+    const { request, rerender } = renderLiveClarify()
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalled()
+    })
+
+    // tool.complete is what swaps in the settled card; the turn can already
+    // read as not-running in that gap.
+    messageRunning = false
+    rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+  })
+
+  it('demotes when the turn is stopped after the card was live but never answered', () => {
     renderLiveClarify()
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
 
-    // Answering clears the request; the settled card only arrives with
-    // tool.complete, and the turn can already read as not-running by then.
     messageRunning = false
     act(() => clearClarifyRequest('request-1', 'session-1'))
 
-    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
   })
 
   it('paints the question from tool args instead of a spinner while request_id is still racing', () => {
@@ -137,7 +158,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 
 describe('ClarifyTool choice selection', () => {
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
-    const request = renderLiveClarify({ multiSelect: true })
+    const { request } = renderLiveClarify({ multiSelect: true })
     const staging = screen.getByRole('button', { name: /staging/ })
     const production = screen.getByRole('button', { name: /production/ })
 
@@ -165,7 +186,7 @@ describe('ClarifyTool choice selection', () => {
   })
 
   it('keeps single-select replacement and plain-string submission', async () => {
-    const request = renderLiveClarify()
+    const { request } = renderLiveClarify()
     const staging = screen.getByRole('button', { name: /staging/ })
     const production = screen.getByRole('button', { name: /production/ })
 
@@ -357,7 +378,7 @@ describe('ClarifyTool keyboard navigation', () => {
   })
 
   it('selects by number and confirms the answer with Enter', async () => {
-    const request = renderLiveClarify()
+    const { request } = renderLiveClarify()
 
     fireEvent.keyDown(window, { key: '2' })
     fireEvent.keyDown(window, { key: 'Enter' })
@@ -371,7 +392,7 @@ describe('ClarifyTool keyboard navigation', () => {
   })
 
   it('stages a highlighted multi-select choice with Enter and submits it with Continue', async () => {
-    const request = renderLiveClarify({ multiSelect: true })
+    const { request } = renderLiveClarify({ multiSelect: true })
     const production = screen.getByRole('button', { name: /production/ })
 
     fireEvent.keyDown(window, { key: 'ArrowDown' })
@@ -405,7 +426,7 @@ describe('ClarifyTool keyboard navigation', () => {
   })
 
   it('does not intercept keyboard events while an action button has focus', () => {
-    const request = renderLiveClarify()
+    const { request } = renderLiveClarify()
     const skip = screen.getByRole('button', { name: 'Skip' })
 
     skip.focus()

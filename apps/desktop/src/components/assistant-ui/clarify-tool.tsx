@@ -375,34 +375,36 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
-  // settled card. Latch that this card was live so that gap doesn't demote it.
-  const [wasLive, setWasLive] = useState(false)
-
-  if (request && !wasLive) {
-    setWasLive(true)
-  }
+  // settled card. Latch submit so that gap doesn't demote; Stop also clears
+  // the request and must still collapse an unanswered card.
+  const [answered, setAnswered] = useState(false)
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  // The turn's running flag alone can't decide that: `session.info` reports
-  // running=false while clarify is blocking on the user, and demoting there
-  // remounts the question as a tool row and jumps the transcript. The live
-  // request is the real signal — every path that ends a turn (complete, stop,
-  // error) clears it for the session, so a request that never arrived on a
-  // settled turn means there is nothing left to answer.
-  if (!messageRunning && !request && !wasLive) {
+  // `session.info` reports running=false while clarify is blocking, so the
+  // running flag alone would remount the question as a tool row. Keep the
+  // card while a request is open or this instance already submitted.
+  if (!messageRunning && !request && !answered) {
     return <ToolFallback {...props} />
   }
 
   // Batch: the gateway request carries qid-keyed questions. Args alone can't
   // drive the form (no qids to respond with), so batch waits for the request.
   if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending request={request} />
+    return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} request={request} />
+  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
 }
 
-function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs; request: ClarifyRequest | null }) {
+function ClarifyToolSinglePending({
+  fromArgs,
+  onAnswered,
+  request
+}: {
+  fromArgs: ClarifyArgs
+  onAnswered: () => void
+  request: ClarifyRequest | null
+}) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -472,6 +474,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
           answer
         })
         triggerHaptic('submit')
+        onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         // tool.complete lands next → ClarifyToolSettled.
       } catch (error) {
@@ -479,7 +482,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, onAnswered, ready]
   )
 
   const trimmedDraft = draft.trim()
@@ -916,7 +919,13 @@ const emptyStage = { choices: [] as string[], draft: '' }
  * back-to-back and completes the batch. Staged answers stay editable up to
  * that moment. The per-question wire protocol is unchanged (the TUI/CLI
  * still lock incrementally); this card just batches its locks at the end. */
-function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }) {
+function ClarifyToolBatchPending({
+  onAnswered,
+  request
+}: {
+  onAnswered: () => void
+  request: ClarifyRequest | null
+}) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -1003,13 +1012,14 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
       }
 
       triggerHaptic('submit')
+      onAnswered()
       // tool.complete lands next → ClarifyToolBatchSettled.
       clearClarifyRequest(request.requestId, request.sessionId)
     } catch (error) {
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, questions, request, stagedAnswer])
+  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1034,6 +1044,7 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
       return
     }
 
+    onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
     try {
@@ -1041,7 +1052,7 @@ function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }
     } catch {
       // The tool times out on its own; a failed skip must never block the UI.
     }
-  }, [gateway, request])
+  }, [gateway, onAnswered, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

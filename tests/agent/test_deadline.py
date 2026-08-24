@@ -575,7 +575,7 @@ def test_async_timeout_marks_backend_once():
     backend = asyncio.run(drive())
     assert len(backend.reasons) == 1
     assert "phase3a" in backend.reasons[0]
-    assert "0.1" in backend.reasons[0]  # rounded timeout present
+    assert "timed out after 0.1" in backend.reasons[0]
 
 
 def test_async_completion_never_marks_backend():
@@ -650,3 +650,68 @@ def test_mark_suspect_raising_never_corrupts_the_result():
     result = asyncio.run(drive())
     assert result.timed_out
     assert result.label == "phase3a-boom"
+
+
+def test_sync_completion_never_marks_backend():
+    from agent.deadline import run_bounded_sync
+
+    backend = _RecordingBackend()
+    result = run_bounded_sync(
+        lambda: "ok", 5.0, label="phase3a-sync-ok", backend=backend
+    )
+    assert not result.timed_out and result.value == "ok"
+    assert backend.reasons == []
+
+
+def test_sync_mark_happens_before_on_timeout():
+    """The review-round ordering contract: mark BEFORE owner cleanup, so a
+    recycle in on_timeout never sees an unmarked backend (and a healed
+    replacement never inherits a stale flag)."""
+    from agent.deadline import run_bounded_sync
+
+    backend = _RecordingBackend()
+    seen_at_cleanup: list[int] = []
+
+    def on_timeout():
+        seen_at_cleanup.append(len(backend.reasons))
+
+    result = run_bounded_sync(
+        lambda: time.sleep(10),
+        0.05,
+        label="phase3a-order-sync",
+        on_timeout=on_timeout,
+        backend=backend,
+    )
+    assert result.timed_out
+    assert seen_at_cleanup == [1]  # mark already applied when cleanup ran
+
+
+def test_async_mark_happens_before_on_abandon_cleanup():
+    """Pins the scheduling invariant the inline mark relies on: on_abandon
+    is ensure_future'd (can't start until the next loop tick), so the
+    synchronous mark always lands first. An offloaded (to_thread) mark
+    would break this — this test is the guard against that 'fix'."""
+    from agent.deadline import run_bounded_async
+
+    backend = _RecordingBackend()
+    seen_at_cleanup: list[int] = []
+    cleaned = asyncio.Event()
+
+    async def _cleanup():
+        seen_at_cleanup.append(len(backend.reasons))
+        cleaned.set()
+
+    async def never():
+        await asyncio.Event().wait()
+
+    async def drive():
+        result = await run_bounded_async(
+            never(), 0.05, label="phase3a-order-async",
+            on_abandon=_cleanup, backend=backend,
+        )
+        await asyncio.wait_for(cleaned.wait(), timeout=5.0)
+        return result
+
+    result = asyncio.run(drive())
+    assert result.timed_out
+    assert seen_at_cleanup == [1]  # mark already applied when cleanup started

@@ -71,7 +71,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,12 @@ class SuspectableBackend(Protocol):
     instead of returning a poisoned handle to the cache. Consumers adopt
     incrementally (Phase 3b, one backend per PR), so the layer fails open:
     backends without the protocol are simply never marked.
+
+    Adopter contract: ``mark_suspect`` MUST be cheap, non-blocking, and
+    must not acquire locks the guarded operation may hold. It runs inline —
+    on the event loop in the async flavor, and on the caller's thread in
+    the sync flavor while the wedged worker is still alive. Set a flag;
+    do the expensive health-check/recycle work in ``ensure_healthy``.
     """
 
     def mark_suspect(self, reason: str) -> None: ...
@@ -426,6 +432,11 @@ async def run_bounded_async(
             cleanup.add_done_callback(_consume_abandoned)
         # Phase 3a (#85125): the abandoned task may leave the backend
         # half-wedged; flag it so the owner recycles before reuse.
+        # Deliberately INLINE on the loop (adopter contract: mark_suspect is
+        # cheap and non-blocking). Running it synchronously guarantees the
+        # mark happens-before this BoundedResult returns AND before the
+        # ensure_future'd on_abandon cleanup can start (next loop tick) — an
+        # offloaded mark would race both.
         _mark_backend_suspect(backend, label, timeout_s)
         logger.warning(
             "[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s
@@ -507,8 +518,7 @@ def run_bounded_sync(
         # recycle/re-init in on_timeout never gets a stale flag on the healed
         # replacement. The sync flavor runs the mark inline — the protocol
         # contract requires mark_suspect to be cheap.
-        if backend is not None:
-            _mark_backend_suspect(backend, label, timeout_s)
+        _mark_backend_suspect(backend, label, timeout_s)
         if on_timeout is not None:
             try:
                 on_timeout()

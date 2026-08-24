@@ -267,6 +267,28 @@ def test_create_task_accepts_environment_scoped_profile_skill(kanban_home):
     assert kb.get_task(conn, task_id).skills == ["environment-skill"]
 
 
+def test_create_task_platform_validation_is_creator_runtime_only(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    skill_dir = profile_home / "skills" / "platform-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: platform-skill\ndescription: Platform contract test.\n"
+        "platforms: [windows]\n---\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="platform-skill.*coder"):
+            kb.create_task(
+                conn,
+                title="creator platform mismatch",
+                assignee="coder",
+                skills=["platform-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
 def test_create_task_accepts_categorized_profile_skill(kanban_home):
     profile_home = kanban_home / "profiles" / "coder"
     skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
@@ -652,6 +674,54 @@ def test_profile_skill_resolution_serializes_home_and_workspace_context(
         ("alpha", str(workspace_a)),
     ]
     assert os.environ.get("TERMINAL_CWD") is None
+
+
+def test_create_task_concurrent_public_skill_validation_is_profile_scoped(
+    kanban_home, tmp_path
+):
+    """The public creator path must not mix profile homes under concurrency."""
+    profiles = {
+        "alpha": ("alpha-skill", tmp_path / "alpha-workspace"),
+        "beta": ("beta-skill", tmp_path / "beta-workspace"),
+    }
+    for profile, (skill, workspace) in profiles.items():
+        profile_home = kanban_home / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        _write_profile_skill(profile_home, skill)
+        workspace.mkdir()
+
+    db_path = tmp_path / "concurrent-create.db"
+
+    def create_for(profile: str) -> str:
+        skill, workspace = profiles[profile]
+        with kb.connect(db_path) as conn:
+            return kb.create_task(
+                conn,
+                title=f"{profile} task",
+                assignee=profile,
+                workspace_kind="dir",
+                workspace_path=str(workspace),
+                skills=[skill],
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        task_ids = list(executor.map(create_for, profiles))
+
+    with kb.connect(db_path) as conn:
+        assert {kb.get_task(conn, task_id).skills[0] for task_id in task_ids} == {
+            "alpha-skill",
+            "beta-skill",
+        }
+
+
+def test_project_worktree_skill_validation_anchor_is_not_runtime_path(tmp_path):
+    repo = tmp_path / "repo"
+    anchor = kb._skill_validation_workspace(
+        "worktree", None, board=None, project_repo=str(repo)
+    )
+
+    assert anchor == repo / ".worktrees" / "__kanban_skill_validation__"
+    assert not anchor.exists()
 
 
 def _write_project_skill(repo: Path, name: str) -> None:

@@ -1428,10 +1428,12 @@ def _skill_validation_workspace(
     """Return the worker cwd when it is safely derivable before insertion.
 
     Project-local skills must never be resolved from the creator's cwd.  A
-    concrete absolute ``dir`` path is already the worker workspace; a
-    project-linked worktree can use its known repository anchor.  For other
-    workspace shapes, project discovery is deliberately omitted until runtime
-    rather than guessing from this process's cwd.
+    concrete absolute ``dir`` path is already the worker workspace.  A
+    project-linked worktree has no materialized task directory until after
+    insertion, so its synthetic path is only a validation anchor used to
+    discover repository-relative skills; it must not be treated as the worker
+    runtime path.  For other workspace shapes, project discovery is deliberately
+    omitted until runtime rather than guessing from this process's cwd.
     """
     if workspace_path:
         candidate = Path(workspace_path).expanduser()

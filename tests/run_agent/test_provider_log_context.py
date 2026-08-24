@@ -97,6 +97,19 @@ class TestModelProviderFields:
         for key in ("provider=", "base_url=", "model="):
             assert key in fields
 
+    def test_whitespace_padded_values_are_stripped(self):
+        """Trailing/config whitespace must not corrupt the key=value shape."""
+        agent = SimpleNamespace(
+            provider="custom ",
+            base_url="https://api.kilo.ai/api/gateway/v1/ ",
+            model="stealth/ox-alpha",
+        )
+        assert model_provider_fields(agent) == (
+            "provider=custom "
+            "base_url=https://api.kilo.ai/api/gateway/v1/ "
+            "model=stealth/ox-alpha"
+        )
+
     def test_empty_strings_render_as_unknown(self):
         agent = SimpleNamespace(provider="", base_url="", model="")
         assert model_provider_fields(agent) == (
@@ -132,13 +145,14 @@ def test_successful_api_call_log_carries_provider_base_url_and_model(caplog):
     summaries = [r for r in caplog.records if "API call #" in r.getMessage()]
     assert summaries, "expected the per-call success summary log line"
     matched = [_FRAGMENT_RE.search(r.getMessage()) for r in summaries]
-    hits = [m for m in matched if m]
-    assert hits, (
-        "API call summary line is missing the canonical "
+    # Contract: EVERY summary line carries the complete fragment — a partial
+    # fragment must fail loudly here rather than be filtered out silently.
+    assert matched and all(matched), (
+        "some API call summary line lacks the complete canonical "
         "provider=/base_url=/model= fragment; got: "
         f"{[r.getMessage() for r in summaries]}"
     )
-    provider, base_url, model = hits[-1].groups()
+    provider, base_url, model = matched[-1].groups()
     assert provider == "custom"
     assert base_url == "https://api.kilo.ai/api/gateway/v1/"
     assert model == "stealth/ox-alpha"

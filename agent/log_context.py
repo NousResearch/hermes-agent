@@ -23,7 +23,7 @@ def model_provider_fields(agent: Any) -> str:
     Missing values render as ``unknown`` so the keys stay greppable even on
     partially-initialized agents.
     """
-    provider = str(getattr(agent, "provider", "") or "unknown")
-    base_url = str(getattr(agent, "base_url", "") or "unknown")
-    model = str(getattr(agent, "model", "") or "unknown")
+    provider = str(getattr(agent, "provider", "") or "unknown").strip()
+    base_url = str(getattr(agent, "base_url", "") or "unknown").strip()
+    model = str(getattr(agent, "model", "") or "unknown").strip()
     return f"provider={provider} base_url={base_url} model={model}"

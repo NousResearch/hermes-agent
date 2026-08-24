@@ -65,17 +65,8 @@ logger = logging.getLogger(__name__)
 # hermes_state (module-level DEFAULT_DB_PATH) is not forced at load time.
 _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
-def _model_provider_log_fields(agent: Any) -> str:
-    """Return the canonical ``provider=… base_url=… model=…`` log fragment.
-
-    Thin wrapper so conversation-loop call sites share one formatting
-    convention (see ``agent/log_context.py``). Kept local to this module so
-    tests can patch it without touching every caller.
-    """
-    return model_provider_fields(agent)
-
-
-# Shared by _apply_active_turn_redirect and the api_messages ghost-row filter so both sites cannot drift.
+# Scaffold marker used by _apply_active_turn_redirect and the ghost-row filter
+# in the api_messages loop. Module-level so both sites can never drift.
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
 
@@ -755,7 +746,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             "Stored system prompt for session %s has stale runtime identity; "
             "rebuilding. %s",
             agent.session_id,
-            _model_provider_log_fields(agent),
+            model_provider_fields(agent),
         )
 
     if conversation_history and stored_state in ("null", "empty"):
@@ -1541,6 +1532,7 @@ def _run_conversation_turn(
         if _pg.action == "break":
             break
         if _pg.action == "continue":
+
             continue
         _run_phase(announce_api_call, agent, s)
 
@@ -1570,6 +1562,7 @@ def _run_conversation_turn(
             if _v.action == "return":
                 return _v.result
             if _v.action == "break":
+
 
                 break
             if _v.action == "continue":

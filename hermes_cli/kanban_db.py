@@ -1157,6 +1157,36 @@ def _profile_skill_names(
                 name = str(frontmatter.get("name") or skill_md.parent.name).strip()
                 if name and name not in disabled:
                     names.add(name)
+
+        # Plugin skills are registered only after the profile's enabled plugin
+        # set has been discovered.  Use the manager scoped to this profile's
+        # home; consulting the caller's active manager would leak skills across
+        # profiles in a multiplexed process.
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            for entry in get_plugin_manager().list_plugin_skill_metadata():
+                qualified_name = str(entry.get("name") or "").strip()
+                if not qualified_name:
+                    continue
+                frontmatter = entry.get("frontmatter")
+                if not isinstance(frontmatter, dict):
+                    frontmatter = {}
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if not skill_matches_environment(frontmatter):
+                    continue
+                if qualified_name in disabled:
+                    continue
+                namespace, _, bare_name = qualified_name.partition(":")
+                if bare_name in disabled or namespace in disabled:
+                    continue
+                names.add(qualified_name)
+        except Exception:
+            # A broken or unavailable plugin must not hide ordinary profile
+            # and project skills from validation.
+            pass
         return names
     finally:
         if previous_home is None:

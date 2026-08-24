@@ -225,6 +225,88 @@ def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
         assert kb.get_task(conn, empty_task).skills == []
 
 
+def test_create_task_accepts_enabled_profile_plugin_skill(kanban_home, monkeypatch):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {
+                    "name": "enabled-plugin:plugin-skill",
+                    "frontmatter": {},
+                }
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="plugin skill",
+            assignee="coder",
+            skills=["enabled-plugin:plugin-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["enabled-plugin:plugin-skill"]
+
+
+def test_create_task_rejects_unavailable_plugin_skill_without_insert(
+    kanban_home, monkeypatch
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: []
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="missing-plugin:skill"):
+            kb.create_task(
+                conn,
+                title="missing plugin skill",
+                assignee="coder",
+                skills=["missing-plugin:skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_disabled_profile_plugin_skill(kanban_home, monkeypatch):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: '[\"disabled-plugin:plugin-skill\"]'\n",
+        encoding="utf-8",
+    )
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {
+                    "name": "disabled-plugin:plugin-skill",
+                    "frontmatter": {},
+                }
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="disabled-plugin:plugin-skill"):
+            kb.create_task(
+                conn,
+                title="disabled plugin skill",
+                assignee="coder",
+                skills=["disabled-plugin:plugin-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
 def test_create_task_resolves_profile_relative_external_skill_dir(kanban_home):
     profile_home = kanban_home / "profiles" / "coder"
     profile_home.mkdir(parents=True)

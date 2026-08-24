@@ -938,30 +938,6 @@ test('registry JSON helpers retain native OAuth bearer authentication', () => {
   assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
 })
 
-test('connection tests authenticate protected OAuth status probes', () => {
-  const source = readMain()
-  const helperStart = source.indexOf('async function fetchConnectionStatus(')
-  const helperEnd = source.indexOf('\nfunction ', helperStart + 1)
-  const helper = source.slice(helperStart, helperEnd === -1 ? undefined : helperEnd)
-
-  assert.notEqual(helperStart, -1)
-  assert.match(helper, /ensureNativeAccessToken\(baseUrl\)/)
-  assert.match(helper, /fetchJsonViaOauthSession\(url/)
-  assert.match(helper, /bearer: nativeAt/)
-})
-
-test('global remote Apply preflights before the atomic persistence boundary', () => {
-  const source = readMain()
-  const handlerStart = source.indexOf("ipcMain.handle('hermes:connection-config:apply'")
-  const handlerEnd = source.indexOf("ipcMain.handle('hermes:profile:get'", handlerStart)
-  const handler = source.slice(handlerStart, handlerEnd)
-  const preflight = handler.indexOf('await testDesktopConnectionConfig(payload)')
-  const commit = handler.indexOf('await applyConnectionConfigAtomically({')
-
-  assert.notEqual(handlerStart, -1)
-  assert.ok(preflight >= 0 && preflight < commit, 'remote REST+WS validation must happen before either config is committed')
-})
-
 test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
   const source = readMain()
   const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')

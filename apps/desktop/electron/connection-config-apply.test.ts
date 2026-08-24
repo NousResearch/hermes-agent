@@ -69,4 +69,50 @@ describe('applyConnectionConfigAtomically', () => {
 
     expect(writes).toEqual(['config:remote-config', 'config:local-config', 'registry:local-registry'])
   })
+
+  it('preflights before writing either store', async () => {
+    const events: string[] = []
+
+    await applyConnectionConfigAtomically({
+      previousConfig: 'local-config',
+      previousRegistry: 'local-registry',
+      nextConfig: 'remote-config',
+      nextRegistry: 'remote-registry',
+      preflight: async () => {
+        events.push('preflight')
+      },
+      writeConfig: value => events.push(`config:${value}`),
+      writeRegistry: value => events.push(`registry:${value}`),
+      apply: async () => {
+        events.push('activate')
+      }
+    })
+
+    expect(events).toEqual(['preflight', 'config:remote-config', 'registry:remote-registry', 'activate'])
+  })
+
+  it('leaves both stores untouched when the preflight rejects', async () => {
+    const writeConfig = vi.fn()
+    const writeRegistry = vi.fn()
+    const apply = vi.fn()
+
+    await expect(
+      applyConnectionConfigAtomically({
+        previousConfig: 'local-config',
+        previousRegistry: 'local-registry',
+        nextConfig: 'remote-config',
+        nextRegistry: 'remote-registry',
+        preflight: async () => {
+          throw new Error('gateway unreachable')
+        },
+        writeConfig,
+        writeRegistry,
+        apply
+      })
+    ).rejects.toThrow('gateway unreachable')
+
+    expect(writeConfig).not.toHaveBeenCalled()
+    expect(writeRegistry).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+  })
 })

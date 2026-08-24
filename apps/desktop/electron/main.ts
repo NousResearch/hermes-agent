@@ -9783,6 +9783,12 @@ async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
   const url = `${baseUrl}/api/status`
 
   if (authMode === 'oauth') {
+    // Native PKCE bearer first, OAuth session cookies second — the same two
+    // credentials real traffic uses, in the same order. A refresh failure is
+    // NOT a silent downgrade to an anonymous probe: the cookie path is still
+    // an authenticated request, and if neither credential works the probe
+    // fails, which is the correct answer for a gateway we cannot reach with
+    // the credentials we hold.
     const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
 
     if (nativeAt) {
@@ -13349,18 +13355,15 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const scope = key || ''
   const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
 
-  // Exercise the same authenticated REST + real WebSocket legs before either
-  // config file changes. A rejected OAuth session or blocked /api/ws leaves
-  // the previous primary/current connection intact.
-  if (!key && modeIsRemoteLike(config.mode)) {
-    await testDesktopConnectionConfig(payload)
-  }
-
   await applyConnectionConfigAtomically({
     previousConfig,
     previousRegistry,
     nextConfig: config,
     nextRegistry,
+    // Exercise the same authenticated REST + real WebSocket legs before either
+    // config file changes. A rejected OAuth session or blocked /api/ws leaves
+    // the previous primary/current connection intact.
+    preflight: !key && modeIsRemoteLike(config.mode) ? () => testDesktopConnectionConfig(payload) : undefined,
     writeConfig: writeDesktopConnectionConfig,
     writeRegistry: writeDesktopConnectionsRegistry,
     apply: () =>

@@ -700,11 +700,11 @@ def _install_safe_python_generation(
     # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
     # user isn't stuck on every `hermes update` with no path to a fixed
     # runtime (issue #76106).  The requires-python constraint
-    # (>=3.11,<3.14) and the downstream import smoke-test gate
+    # (>=3.11,<3.15) and the downstream import smoke-test gate
     # compatibility; we only need to stay inside that window.
     cur_major, cur_minor = current.python_version[:2]
     fb_tried: set[tuple[int, int, int]] = set(tried_versions)
-    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+    for next_minor in range(cur_minor + 1, 15):  # up to 3.14
         next_request = f"{cur_major}.{next_minor}"
         print(
             f"  → No fixed {cur_major}.{cur_minor} build available; "

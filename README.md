@@ -73,7 +73,7 @@ Ares does **not** claim that every optional service is installed, that every nat
 
 - Git
 - [uv](https://docs.astral.sh/uv/)
-- Python **3.11–3.13** (`pyproject.toml` rejects Python 3.14)
+- Python **3.11–3.14**
 - A model provider configured through the normal Hermes setup flow
 
 The Ares bootstrap targets Unix-like shells: Linux, macOS, and WSL. The upstream `scripts/install.ps1` remains in the tree for Hermes compatibility testing; it is not an Ares-isolated PowerShell bootstrap.

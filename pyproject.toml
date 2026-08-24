@@ -5,14 +5,12 @@ name = "hermes-agent"
 version = "0.20.5"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# Upper bound is load-bearing, not cosmetic. uv resolves the project's
-# Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# The SQLite WAL-reset remediation needs a fixed interpreter. A real isolated
+# cp314 admission probe installed pydantic==2.13.4 / pydantic-core==2.46.4
+# from wheels and imported them successfully, so the former <3.14 safety cap
+# is stale. Keep a finite ceiling: every future minor still needs the same
+# locked-sync and import-smoke admission before it can become an Ares runtime.
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]

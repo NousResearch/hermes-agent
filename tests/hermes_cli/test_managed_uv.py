@@ -952,15 +952,20 @@ class TestMinorLineFallForward:
     def test_returns_none_with_bounded_attempts_when_all_minors_exhausted(
         self, tmp_path, monkeypatch
     ):
-        """When every build on every supported minor line (3.11-3.13) is
+        """When every build on every supported minor line (3.11-3.14) is
         vulnerable, the provisioner must give up with None -- and the total
         install workload must stay bounded by _MAX_PATCH_RETRIES per line."""
         import hermes_cli.managed_uv as managed_uv
 
         install_calls = []
-        resolutions = {"3.11": (3, 11, 14), "3.12": (3, 12, 30), "3.13": (3, 13, 30)}
+        resolutions = {
+            "3.11": (3, 11, 14),
+            "3.12": (3, 12, 30),
+            "3.13": (3, 13, 30),
+            "3.14": (3, 14, 30),
+        }
         patch_lists = {}
-        for minor in (11, 12, 13):
+        for minor in (11, 12, 13, 14):
             versions = [(3, minor, v) for v in range(30, 10, -1)]  # 20 patches
             patch_lists[f"3.{minor}"] = versions
             for version in versions:
@@ -984,13 +989,14 @@ class TestMinorLineFallForward:
 
         cap = managed_uv._MAX_PATCH_RETRIES
         # Per line: one bare request + at most _MAX_PATCH_RETRIES explicit
-        # patches; three lines total (3.11, 3.12, 3.13) and nothing beyond
-        # 3.13 (requires-python is <3.14).
+        # patches; four lines total (3.11 through 3.14) and nothing beyond
+        # 3.14 (requires-python is <3.15).
         assert install_calls.count("3.11") == 1
         assert install_calls.count("3.12") == 1
         assert install_calls.count("3.13") == 1
-        assert not any(call.startswith("3.14") for call in install_calls)
-        for minor in (11, 12, 13):
+        assert install_calls.count("3.14") == 1
+        assert not any(call.startswith("3.15") for call in install_calls)
+        for minor in (11, 12, 13, 14):
             explicit = [
                 call for call in install_calls
                 if call.startswith(f"3.{minor}.")
@@ -998,7 +1004,7 @@ class TestMinorLineFallForward:
             assert len(explicit) <= cap, (
                 f"3.{minor} explicit retries must be capped at {cap}: {explicit}"
             )
-        assert len(install_calls) <= 3 * (1 + cap)
+        assert len(install_calls) <= 4 * (1 + cap)
 
 
 class TestListAvailablePatches:

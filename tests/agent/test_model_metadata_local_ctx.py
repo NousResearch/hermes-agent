@@ -951,9 +951,11 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
 
         assert result == 1048576
 
-    def test_models_list_max_tokens_only_returns_none(self):
-        """A model that ONLY exposes `max_tokens` (no real context key) must not
-        be reported as having that output cap as its context length."""
+    def test_models_list_max_tokens_only_falls_back(self):
+        """A model that ONLY exposes `max_tokens` (no real context key) still
+        resolves — max_tokens is preserved as an explicit last-resort fallback
+        because some servers report nothing else. It must only ever win when
+        no genuine context-window key is present."""
         from agent.model_metadata import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
@@ -983,4 +985,85 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("mystery-model", "http://127.0.0.1:8080/v1")
 
-        assert result is None
+        assert result == 393216, (
+            "max_tokens-only servers must still resolve via the last-resort fallback"
+        )
+
+
+class TestReconcileSelfHealsPoisonedCache:
+    """Cache self-heal: once the probe stops misreading max_tokens, a cache
+    entry poisoned by the old probe (issue #93412: 1M endpoint cached as
+    393216) must be rewritten UPWARD by _reconcile_local_cached_context_length
+    on the next live probe."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = body
+        return resp
+
+    def test_poisoned_cache_entry_rewritten_upward(self):
+        from agent.model_metadata import _reconcile_local_cached_context_length
+
+        model = "deepseek-v4-flash"
+        base = "http://127.0.0.1:8080/v1"
+        poisoned = 393216      # old probe read the max_tokens output cap
+        real_window = 1048576  # context_size the fixed probe now reports
+
+        with patch(
+            "agent.model_metadata._query_local_context_length",
+            return_value=real_window,
+        ), patch(
+            "agent.model_metadata._invalidate_cached_context_length"
+        ) as mock_invalidate, patch(
+            "agent.model_metadata.save_context_length"
+        ) as mock_save:
+            result = _reconcile_local_cached_context_length(model, base, poisoned)
+
+        assert result == real_window
+        mock_invalidate.assert_called_once_with(model, base)
+        mock_save.assert_called_once_with(model, base, real_window)
+
+    def test_poisoned_cache_heals_end_to_end_from_probe_payload(self):
+        """Full path: live endpoint serves the issue's payload
+        (context_size 1048576 + max_tokens 393216); reconcile must overwrite
+        the poisoned 393216 cache entry with 1048576."""
+        from agent.model_metadata import _reconcile_local_cached_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "id": "deepseek-v4-flash",
+                    "context_size": 1048576,
+                    "max_tokens": 393216,
+                }
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp
+            return list_resp
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock), \
+             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = _reconcile_local_cached_context_length(
+                "deepseek-v4-flash", "http://127.0.0.1:8080/v1", 393216
+            )
+
+        assert result == 1048576
+        mock_invalidate.assert_called_once()
+        mock_save.assert_called_once_with(
+            "deepseek-v4-flash", "http://127.0.0.1:8080/v1", 1048576
+        )

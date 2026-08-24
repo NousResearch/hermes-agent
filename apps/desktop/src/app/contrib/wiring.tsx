@@ -825,7 +825,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshHermesConfig,
     refreshMessagingSessions,
     refreshSessions,
-    requestGateway
+    requestGateway,
+    updateSessionState
   })
 
   // Electron-main / OS / cross-window integrations: update polling, ⌘W close,

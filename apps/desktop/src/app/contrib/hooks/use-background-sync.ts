@@ -23,6 +23,7 @@ import {
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTiles,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -63,6 +64,89 @@ export interface ActiveTranscriptRefreshDeps {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+/**
+ * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
+ * slice 1). Bot canonical chats live here — never in $sessions /
+ * $messagingSessions (they carry the core `hidden` flag), so the main-pane
+ * reconcile path's resolveSession() bails on them and a background delivery
+ * never reaches an open bot chat. Each tile carries its own stored↔runtime id
+ * pair, so no resolution step is needed; refreshes are signature-gated per
+ * tile so a no-change event costs nothing, and a busy tile is skipped (its own
+ * stream owns the view while streaming).
+ */
+export async function reconcileTileTranscripts({
+  requestSequenceRef,
+  busyRef,
+  signatureRef,
+  updateSessionState
+}: {
+  busyRef: MutableRefObject<boolean>
+  requestSequenceRef: MutableRefObject<number>
+  signatureRef: MutableRefObject<Map<string, string>>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
+}): Promise<void> {
+  const tiles = $sessionTiles.get()
+
+  for (const tile of tiles) {
+    const storedSessionId = tile.storedSessionId
+    const runtimeSessionId = tile.runtimeId
+
+    if (!runtimeSessionId) {
+      // Resume not yet bound — the tile's own stream owns the view.
+      continue
+    }
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      continue
+    }
+
+    if ($activeSessionId.get() === runtimeSessionId) {
+      // The main pane reconcile already owns this surface.
+      continue
+    }
+
+    const requestId = ++requestSequenceRef.current
+
+    try {
+      const latest = await getLatestSessionMessages(storedSessionId)
+
+      if (
+        requestId !== requestSequenceRef.current ||
+        busyRef.current ||
+        $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId) === false
+      ) {
+        // Tile closed or superseded mid-read — discard.
+        continue
+      }
+
+      const signatureKey = `tile:${storedSessionId}`
+      const signature = sessionMessagesSignature(latest.messages)
+
+      if (signatureRef.current.get(signatureKey) === signature) {
+        continue
+      }
+
+      signatureRef.current.set(signatureKey, signature)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({
+          ...state,
+          messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: the next change event retries.
+    }
+  }
 }
 
 /** Reconcile one persisted transcript snapshot into the currently viewed session. */
@@ -322,6 +406,11 @@ interface BackgroundSyncParams {
   refreshMessagingSessions: () => Promise<unknown> | unknown
   refreshSessions: () => Promise<unknown> | unknown
   requestGateway: GatewayRequester
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }
 
 /** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
@@ -389,13 +478,22 @@ export function useBackgroundSync({
   refreshHermesConfig,
   refreshMessagingSessions,
   refreshSessions,
-  requestGateway
+  requestGateway,
+  updateSessionState
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const sessionsChangeTick = useStore($sessionsChangeTick)
   const activeTranscriptBusy = useStore($busy)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
+  // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
+  // transcript signatures, so no-change ticks and closed tiles cost nothing.
+  const tileRequestSequenceRef = useRef(0)
+  const tileSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptBusyRef = useRef(false)
+  useEffect(() => {
+    activeTranscriptBusyRef.current = activeTranscriptBusy
+  }, [activeTranscriptBusy])
 
   const requestActiveTranscriptRefresh = useCallback(
     (preservePending: boolean) => {
@@ -536,6 +634,16 @@ export function useBackgroundSync({
       void refreshSessions()
       void refreshMessagingSessions()
       requestActiveTranscriptRefresh(true)
+      // Bot canonical chats live in workspace tiles, never in the main-pane
+      // selection — without this they never see background deliveries
+      // (#93942 scenario A). Signature-gated per tile, so no-change ticks
+      // cost nothing.
+      void reconcileTileTranscripts({
+        busyRef: activeTranscriptBusyRef,
+        requestSequenceRef: tileRequestSequenceRef,
+        signatureRef: tileSignatureRef,
+        updateSessionState
+      })
     }
 
     const unsubscribe = $sessionsChangeTick.listen(() => {

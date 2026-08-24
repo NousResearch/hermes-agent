@@ -243,8 +243,8 @@ async def test_fallback_disabled_skips_doh_discovery_on_connect(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fallback_discovery_timeout_falls_back_to_plain_connect(monkeypatch):
-    """A stuck DoH fallback lookup must not block Telegram cold connect."""
+async def test_fallback_discovery_timeout_uses_seed_ipv4(monkeypatch):
+    """A stuck DoH lookup must not block connect; seed IPv4 IPs are used instead."""
     adapter = _make_adapter()
     polling_app = _lifecycle_app()
 
@@ -263,9 +263,10 @@ async def test_fallback_discovery_timeout_falls_back_to_plain_connect(monkeypatc
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", stuck_discovery)
 
     assert await adapter.connect() is True
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
 
@@ -300,9 +301,10 @@ async def test_non_finite_fallback_discovery_timeout_uses_finite_default(monkeyp
     monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", deadline)
 
     assert await adapter.connect() is True
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs.get("transport")
+    assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+    assert transport._fallback_ips == list(tg_adapter.SEED_FALLBACK_IPS)
     await adapter.disconnect()
 
 

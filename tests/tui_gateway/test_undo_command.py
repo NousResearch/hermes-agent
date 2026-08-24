@@ -106,5 +106,7 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
     # Default /undo backs up one user turn — "question 3"
     assert result["message"] == "question 3"
     assert "Undid" in result["notice"]
+    assert s["history"]
+    assert all("_row_id" in message for message in s["history"])
 
 

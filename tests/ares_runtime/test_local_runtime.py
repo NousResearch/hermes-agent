@@ -8,8 +8,7 @@ import tomllib
 
 import pytest
 
-from ares_runtime import local_runtime
-from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _parser, main
+from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _desktop_launch_arguments, _parser
 
 
 def _runtime(tmp_path: Path) -> AresLocalRuntime:
@@ -128,7 +127,7 @@ def test_upstream_candidate_applies_downstream_delta_in_staging(tmp_path: Path, 
     downstream_revision = _commit(downstream, "Ares patch")
 
     (upstream / "upstream.txt").write_text("new Hermes feature\n", encoding="utf-8")
-    upstream_revision = _commit(upstream, "upstream update")
+    upstream_revision = _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     monkeypatch.setattr(runtime, "_build_runtime", lambda source, *, desktop: None)
@@ -164,7 +163,7 @@ def test_update_activates_only_the_verified_upstream_candidate(tmp_path: Path, m
     _commit(downstream, "Ares patch")
 
     (upstream / "upstream.txt").write_text("new Hermes feature\n", encoding="utf-8")
-    _commit(upstream, "upstream update")
+    _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     runtime._write_config(
@@ -179,22 +178,10 @@ def test_update_activates_only_the_verified_upstream_candidate(tmp_path: Path, m
 
     assert changed is True
     assert runtime.active_release()[0] == candidate_revision
-    assert runtime.paths.launcher_path.is_file()
     assert runtime._release_metadata(candidate_revision)["upstream_revision"] == _git(
         upstream, "rev-parse", "HEAD"
     )
     assert runtime.update(desktop=False) == (candidate_revision, False)
-
-    # A successful build remains a retryable candidate if its gateway handoff
-    # failed.  The next attempt must promote it without rebuilding a second
-    # candidate from the same revisions.
-    runtime.paths.current_link.unlink()
-    monkeypatch.setattr(
-        runtime,
-        "_materialize_upstream_candidate",
-        lambda **_kwargs: pytest.fail("rebuilt an already verified candidate"),
-    )
-    assert runtime.update(desktop=False) == (candidate_revision, True)
 
 
 def test_upstream_candidate_conflict_never_publishes_a_release(tmp_path: Path, monkeypatch) -> None:
@@ -210,7 +197,7 @@ def test_upstream_candidate_conflict_never_publishes_a_release(tmp_path: Path, m
     downstream_revision = _commit(downstream, "Ares patch")
 
     (upstream / "shared.txt").write_text("Hermes change\n", encoding="utf-8")
-    upstream_revision = _commit(upstream, "upstream update")
+    upstream_revision = _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     monkeypatch.setattr(runtime, "_build_runtime", lambda source, *, desktop: None)
@@ -228,39 +215,16 @@ def test_upstream_candidate_conflict_never_publishes_a_release(tmp_path: Path, m
     assert not runtime.paths.releases_dir.exists() or not any(runtime.paths.releases_dir.iterdir())
 
 
-def test_upstream_change_is_not_masked_by_staging_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    upstream = _repository(tmp_path / "upstream")
-    (upstream / "base.txt").write_text("base\n", encoding="utf-8")
-    stale_revision = _commit(upstream, "base")
-    (upstream / "new.txt").write_text("new upstream revision\n", encoding="utf-8")
-    _commit(upstream, "upstream update")
+def test_desktop_launch_uses_xwayland_only_when_available() -> None:
+    executable = Path("/tmp/Ares")
 
-    downstream = tmp_path / "downstream"
-    subprocess.run(["git", "clone", str(upstream), str(downstream)], check=True)
-    downstream_revision = _git(downstream, "rev-parse", "HEAD")
-    runtime = _runtime(tmp_path)
-    cleanup_options: list[bool] = []
-
-    def _rmtree_that_can_only_ignore_errors(_path: Path, *, ignore_errors: bool = False) -> None:
-        cleanup_options.append(ignore_errors)
-        if not ignore_errors:
-            raise OSError("simulated cleanup race")
-
-    monkeypatch.setattr(local_runtime.shutil, "rmtree", _rmtree_that_can_only_ignore_errors)
-
-    with pytest.raises(AresLocalRuntimeError, match="upstream changed"):
-        runtime._materialize_upstream_candidate(
-            downstream_remote=str(downstream),
-            downstream_revision=downstream_revision,
-            upstream_remote=str(upstream),
-            upstream_branch="main",
-            upstream_revision=stale_revision,
-            desktop=False,
-        )
-
-    assert cleanup_options == [True]
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0"}) == [
+        str(executable),
+        "--ozone-platform=x11",
+    ]
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"XDG_SESSION_TYPE": "wayland"}) == [str(executable)]
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"DISPLAY": ":0"}) == [str(executable)]
+    assert _desktop_launch_arguments(executable, platform="darwin", environment={"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}) == [str(executable)]
 
 
 def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> None:
@@ -270,45 +234,49 @@ def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> N
     launcher = runtime.paths.launcher_path.read_text(encoding="utf-8")
 
     assert str(runtime.paths.current_link) in launcher
+    assert "cd \"$runtime_root\"" in launcher
     assert "-m ares_runtime.local_runtime" in launcher
-    assert 'cd "$runtime_root"' in launcher
-    assert f"export HERMES_HOME={str(runtime.paths.agent_home)!r}" in launcher
-    assert "export ARES_MANAGED_RUNTIME=1" in launcher
     assert "Coding" not in launcher
 
 
-def test_build_environment_is_scoped_to_the_ares_agent_home(tmp_path: Path) -> None:
+def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, monkeypatch) -> None:
     runtime = _runtime(tmp_path)
-    environment = runtime._build_environment(tmp_path / "candidate")
-
-    assert environment["HERMES_HOME"] == str(runtime.paths.agent_home)
-    assert environment["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "candidate" / ".venv")
-    assert runtime._agent_environment()["ARES_MANAGED_RUNTIME"] == "1"
-
-
-def test_runtime_build_uses_supported_editable_source_install(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = _runtime(tmp_path)
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(old_revision)
     source = tmp_path / "candidate"
-    python = source / ".venv" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.touch()
-    calls: list[list[str]] = []
+    source.mkdir()
 
-    import hermes_cli.managed_uv as managed_uv
+    def git_output(_source: Path, *args: str) -> str:
+        if args == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if args == ("rev-parse", "HEAD"):
+            return new_revision
+        if args == ("remote", "get-url", "origin"):
+            return str(source)
+        if args == ("symbolic-ref", "--quiet", "--short", "HEAD"):
+            return "main"
+        raise AssertionError(args)
 
-    monkeypatch.setattr(managed_uv, "ensure_uv", lambda: Path("/managed/uv"))
-    monkeypatch.setattr(
-        runtime,
-        "_run",
-        lambda command, **_kwargs: calls.append([str(value) for value in command]),
-    )
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runtime, "_git_output", git_output)
+    monkeypatch.setattr(runtime, "_materialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_seed_agent_home", lambda *_args: False)
+    monkeypatch.setattr(runtime, "_provision_context_governor_key", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_write_config", lambda **_kwargs: None)
+    monkeypatch.setattr(runtime, "_install_gateway_unit", lambda: None)
+    monkeypatch.setattr(runtime, "_handoff_gateway", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("handoff failed")))
+    monkeypatch.setattr(runtime, "_systemctl", lambda *args, **_kwargs: calls.append(args) or True)
 
-    runtime._build_runtime(source, desktop=False)
+    with pytest.raises(RuntimeError, match="handoff failed"):
+        runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
 
-    sync = calls[0]
-    assert sync == ["/managed/uv", "sync", "--locked", "--extra", "all", "--no-dev"]
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert "cd \"$runtime_root\"" in runtime.paths.launcher_path.read_text(encoding="utf-8")
+    assert ("enable", "ares-gateway.service") in calls
+    assert ("restart", "ares-gateway.service") in calls
 
 
 def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> None:
@@ -318,7 +286,6 @@ def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> Non
     unit = runtime.paths.unit_path.read_text(encoding="utf-8")
 
     assert f"ExecStart={runtime.paths.launcher_path} gateway foreground" in unit
-    assert "Environment=ARES_MANAGED_RUNTIME=1" in unit
     assert "TimeoutStopSec=210" in unit
 
 
@@ -367,6 +334,16 @@ def test_ares_runtime_is_included_in_the_noneditable_distribution() -> None:
     assert "ares_runtime" in data["tool"]["setuptools"]["packages"]["find"]["include"]
 
 
+def test_runtime_builder_uses_editable_python_and_managed_node() -> None:
+    source = Path(__file__).parents[2] / "ares_runtime" / "local_runtime.py"
+    implementation = source.read_text(encoding="utf-8")
+
+    assert "--no-editable" not in implementation
+    assert "from hermes_cli.managed_uv import ensure_uv" in implementation
+    assert "self._managed_npm()" in implementation
+    assert '[npm, "ci", "--include=dev"]' in implementation
+
+
 def test_chat_command_leaves_hermes_options_for_the_runtime() -> None:
     args, passthrough = _parser().parse_known_args(
         ["chat", "--oneshot", "Reply with exactly ARES_RUNTIME_OK"]
@@ -374,61 +351,6 @@ def test_chat_command_leaves_hermes_options_for_the_runtime() -> None:
 
     assert args.command == "chat"
     assert passthrough == ["--oneshot", "Reply with exactly ARES_RUNTIME_OK"]
-
-
-def test_role_gate_command_preserves_allowed_exit_and_consumer_note(tmp_path: Path, capsys) -> None:
-    request = tmp_path / "allowed.json"
-    request.write_text(
-        json.dumps(
-            {
-                "role": "role.public_evidence_editor",
-                "action": "publication_ready",
-                "payload": {"claim_blockers": [], "evidence_blockers": []},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        main(["role-gate", "--request", str(request)])
-
-    assert exc_info.value.code == 0
-    output = capsys.readouterr().out
-    assert '"allowed": true' in output
-    assert "not connected to every Ares runtime or publication path" in output
-
-
-def test_role_gate_command_preserves_rejected_exit(tmp_path: Path, capsys) -> None:
-    request = tmp_path / "rejected.json"
-    request.write_text(
-        json.dumps(
-            {
-                "role": "role.public_evidence_editor",
-                "action": "publication_ready",
-                "payload": {"claim_blockers": ["missing source"], "evidence_blockers": []},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        main(["role-gate", "--request", str(request)])
-
-    assert exc_info.value.code == 1
-    assert '"allowed": false' in capsys.readouterr().out
-
-
-def test_role_gate_command_preserves_malformed_exit(tmp_path: Path, capsys) -> None:
-    request = tmp_path / "malformed.json"
-    request.write_text("{}", encoding="utf-8")
-
-    with pytest.raises(SystemExit) as exc_info:
-        main(["role-gate", "--request", str(request)])
-
-    assert exc_info.value.code == 2
-    captured = capsys.readouterr()
-    assert '"code": "invalid_request"' in captured.out
-    assert "role-gate consumer limitation" in captured.err
 
 
 def test_doctor_uses_the_strict_context_governor_probe() -> None:

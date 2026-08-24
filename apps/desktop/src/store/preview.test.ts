@@ -8,6 +8,7 @@ import {
   $previewTarget,
   beginPreviewServerRestart,
   closePreviewForSource,
+  closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
   openPreview,
@@ -125,6 +126,30 @@ describe('preview store', () => {
     expect(closePreviewForSource('http://localhost:5174')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
     expect(closePreviewForSource('http://localhost:5174')).toBe(false)
+  })
+
+  it('closes a tab whose url or label matches even when source differs', () => {
+    openPreview(
+      { kind: 'url', label: 'HN', source: 'https://news.ycombinator.com', url: 'https://news.ycombinator.com/' },
+      'tool-result'
+    )
+
+    expect(closePreviewMatching('https://news.ycombinator.com/')).toBe(true)
+    expect($previewTabs.get()).toHaveLength(0)
+
+    openPreview({ ...fileTarget('/work/demo.html'), label: 'Demo' }, 'tool-result')
+
+    expect(closePreviewMatching('Demo')).toBe(true)
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('does not wipe the rail on an empty or unknown close query', () => {
+    openPreview(fileTarget('/work/keep.html'), 'file-browser')
+
+    expect(closePreviewMatching()).toBe(false)
+    expect(closePreviewMatching('   ')).toBe(false)
+    expect(closePreviewMatching('https://missing.example')).toBe(false)
+    expect($previewTabs.get()).toHaveLength(1)
   })
 
   it('persists file and url tabs but never artifacts, whose content is memory-only', () => {

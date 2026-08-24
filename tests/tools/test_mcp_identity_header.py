@@ -138,7 +138,7 @@ def _drive_http(server, config):
     kwargs passed to ``httpx.AsyncClient``. Mirrors the pattern in
     ``test_mcp_client_cert.py``.
     """
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool import MCPServerTask, sdk_httpx
 
     captured: dict = {}
 
@@ -178,7 +178,7 @@ def _drive_http(server, config):
     async def _drive():
         with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
              patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-             patch("httpx.AsyncClient", DummyAsyncClient), \
+             patch.object(sdk_httpx(), "AsyncClient", DummyAsyncClient), \
              patch("tools.mcp_tool.streamable_http_client",
                    return_value=DummyTransportCtx()), \
              patch("tools.mcp_tool.ClientSession", DummySession), \

@@ -8,6 +8,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 """
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import functools
 import importlib.metadata
@@ -69,6 +70,73 @@ def _resolve_git_executable() -> Optional[str]:
 
 class PluginOperationError(Exception):
     """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+
+
+class PluginScanBlocked(PluginOperationError):
+    """Plugin failed the security scan and was not installed.
+
+    Carries the ScanResult so callers (CLI, dashboard) can render the
+    findings report alongside the error message.
+    """
+
+    def __init__(self, message: str, scan_result=None):
+        super().__init__(message)
+        self.scan_result = scan_result
+
+
+def _scan_on_install_enabled() -> bool:
+    """Whether install/update-time plugin security scanning is enabled.
+
+    On by default (inspired by Claude Cowork's skill & plugin security
+    scanning). Disable via ``plugins.scan_on_install: false`` in config.yaml.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return bool(cfg_get(config, "plugins", "scan_on_install", default=True))
+    except Exception:
+        return True
+
+
+def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None):
+    """Scan *plugin_dir* and enforce the install policy.
+
+    Verdicts: safe → proceed; caution → needs confirmation (``force=True``
+    or a truthy ``scan_decision_cb(result)``); dangerous → always blocked.
+    Raises :class:`PluginScanBlocked` when the plugin may not be installed.
+    Returns the ScanResult (or None when scanning is disabled).
+    """
+    if not _scan_on_install_enabled():
+        return None
+
+    from tools.plugin_guard import (
+        format_scan_report,
+        scan_plugin,
+        should_allow_plugin_install,
+    )
+
+    result = scan_plugin(plugin_dir, source=identifier)
+    allowed, reason = should_allow_plugin_install(result, force=force)
+
+    if allowed is None and scan_decision_cb is not None:
+        try:
+            if scan_decision_cb(result):
+                allowed = True
+                reason = "Caution verdict accepted by user"
+        except Exception:
+            logger.exception("plugin scan decision callback failed")
+
+    if allowed is not True:
+        raise PluginScanBlocked(
+            f"Security scan blocked plugin install: {reason}\n\n"
+            f"{format_scan_report(result)}\n"
+            "Review the findings above. Install only plugins from sources "
+            "you trust. (Scanning can be configured via "
+            "plugins.scan_on_install in config.yaml.)",
+            scan_result=result,
+        )
+    logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
+    return result
 
 
 # Minimum manifest version this installer understands.
@@ -417,7 +485,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
             if secret:
                 value = masked_secret_prompt(f"  {name}: ").strip()
             else:
-                value = input(f"  {name}: ").strip()
+                value = line_input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
             return
@@ -491,7 +559,6 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 
 _EXACT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _INSTALL_METADATA_FILE = ".install-metadata.json"
-
 
 def _install_metadata_path() -> Path:
     return get_hermes_home() / "plugins" / _INSTALL_METADATA_FILE
@@ -646,7 +713,11 @@ def _scrub_cloned_origin(repo: Path, git_exe: str, git_url: str) -> None:
 
 
 def _install_plugin_core(
-    identifier: str, *, force: bool, ref: Optional[str] = None
+    identifier: str,
+    *,
+    force: bool,
+    ref: Optional[str] = None,
+    scan_decision_cb=None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
@@ -751,6 +822,18 @@ def _install_plugin_core(
                     f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
                     f"Run {recommended_update_command()} to update Hermes.",
                 ) from None
+
+        # Security scan the clone BEFORE anything is moved into place
+        # (see ``tools/plugin_guard.py``; inspired by Claude Cowork's skill
+        # & plugin scanning). ``scan_decision_cb`` is called with the
+        # ScanResult for caution verdicts and may return True to accept the
+        # risk interactively. Raises PluginScanBlocked when blocked.
+        _scan_plugin_tree(
+            tmp_target,
+            identifier,
+            force=force,
+            scan_decision_cb=scan_decision_cb,
+        )
 
         if target.exists() and not force:
             raise PluginOperationError(
@@ -907,12 +990,33 @@ def cmd_install(
     else:
         console.print(f"[dim]Cloning {git_url}...[/dim]")
 
+    def _interactive_scan_decision(scan_result) -> bool:
+        """Prompt the user to accept a caution-verdict plugin (Cowork 'warn')."""
+        from tools.plugin_guard import format_scan_report
+
+        console.print()
+        console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
+        console.print(format_scan_report(scan_result))
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+        try:
+            answer = input(
+                "  Install anyway? Only continue if you trust the source. [y/N]: ",
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in {"y", "yes"}
+
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
             ref=ref,
+            scan_decision_cb=_interactive_scan_decision,
         )
+    except PluginScanBlocked as e:
+        console.print(f"[red]Blocked:[/red] {e}")
+        sys.exit(1)
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
@@ -1026,6 +1130,39 @@ def cmd_update(name: str) -> None:
             install_record["revision"] = _git_head_revision(target, git_exe)
             metadata[target.name] = install_record
             _write_install_metadata(metadata)
+
+    # Re-scan after update — Cowork re-scans skills/plugins on edit, and an
+    # update can introduce malicious content into a previously clean plugin.
+    # The pull has already mutated the tree, so a dangerous verdict disables
+    # the plugin rather than leaving it active.
+    if _scan_on_install_enabled():
+        from tools.plugin_guard import (
+            format_scan_report,
+            scan_plugin,
+            should_allow_plugin_install,
+        )
+
+        scan_result = scan_plugin(target, source=name)
+        allowed, reason = should_allow_plugin_install(scan_result)
+        if allowed is not True:
+            console.print()
+            console.print(
+                f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}",
+            )
+            console.print(format_scan_report(scan_result))
+            if scan_result.verdict == "dangerous":
+                enabled = _get_enabled_set()
+                disabled = _get_disabled_set()
+                if name in enabled or name not in disabled:
+                    enabled.discard(name)
+                    disabled.add(name)
+                    _save_enabled_set(enabled)
+                    _save_disabled_set(disabled)
+                console.print(
+                    f"[red]Plugin '{name}' has been disabled.[/red] Review the "
+                    f"findings, then re-enable with `hermes plugins enable {name}` "
+                    f"if you trust them.",
+                )
 
     # Same stale-bytecode class as the main checkout (#6207/#60242): the
     # pull just changed .py files under this plugin dir, so drop any
@@ -1200,14 +1337,14 @@ def _save_enabled_set(enabled: set) -> None:
 def _resolve_plugin_key(name: str) -> Optional[str]:
     """Resolve a user-supplied plugin identifier to its canonical registry key.
 
-    Accepts either the bare manifest name (``nemo_relay``), the directory
-    name, or the full path-derived key (``observability/nemo_relay``) and
+    Accepts either the bare manifest name (``langfuse``), the directory
+    name, or the full path-derived key (``observability/langfuse``) and
     returns the canonical key the loader gates on (``manifest.key`` or, for a
     flat plugin, the bare name). Returns ``None`` when no plugin matches.
 
     This is the single normalization point so ``hermes plugins enable`` /
     ``disable`` write the same key that ``PluginManager`` matches against —
-    nested category plugins (e.g. ``observability/nemo_relay``) included.
+    nested category plugins (e.g. ``observability/langfuse``) included.
     """
     entries = _discover_all_plugins()
     # 1. Exact match on canonical key or manifest name — always unambiguous.
@@ -1215,8 +1352,8 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
         # entry = (name, version, description, source, dir_path, key)
         if name == entry[5] or name == entry[0]:
             return entry[5]
-    # 2. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
-    #    "observability/nemo_relay"), but only when it resolves to exactly one
+    # 2. Fall back to a bare leaf-name match (e.g. "langfuse" ->
+    #    "observability/langfuse"), but only when it resolves to exactly one
     #    plugin so we never silently pick the wrong same-named nested plugin.
     leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
     if len(leaf_matches) == 1:
@@ -1276,8 +1413,19 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     trusted and never prompted.
     """
     from rich.console import Console
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_PLUGIN_KEYS,
+        RELAY_PLUGINS_CONFIG_ENV,
+    )
 
     console = Console()
+    if name in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{name}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
+
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
     resolved = _resolve_plugin_key_and_source(name)
@@ -1285,6 +1433,13 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
+
+    if key in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{key}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
@@ -1721,11 +1876,14 @@ def _discover_all_plugins() -> list:
     """
     seen: dict = {}  # key -> (name, version, description, source, path, key)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
+    # Bundled (<repo>/plugins/<name>/), excluding memory/, context_engine/
+    # and model-providers/ — model providers load through the dedicated
+    # provider registry (providers/__init__.py), not the general PluginManager
+    # opt-in surface, so listing them as toggleable plugins is misleading.
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
-        (repo_plugins, "bundled", {"memory", "context_engine"}),
+        (repo_plugins, "bundled", {"memory", "context_engine", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
@@ -2500,6 +2658,27 @@ def dashboard_install_plugin(
             identifier,
             force=force,
         )
+    except PluginScanBlocked as exc:
+        findings = []
+        if exc.scan_result is not None:
+            findings = [
+                {
+                    "pattern_id": f.pattern_id,
+                    "severity": f.severity,
+                    "category": f.category,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                }
+                for f in exc.scan_result.findings
+            ]
+        return {
+            "ok": False,
+            "error": str(exc),
+            "scan_blocked": True,
+            "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
+            "scan_findings": findings,
+        }
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 

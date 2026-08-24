@@ -497,10 +497,26 @@ class WebSocketRelayTransport:
         # normal fast backoff, not the dormant cadence.
         self._dormant = False
         headers = self._upgrade_headers()
+        # WAN-friendly keepalive: customer gateways cross WAN paths to the
+        # connector; the websockets library default (ping_interval=20,
+        # ping_timeout=20) gives the peer only a 20s pong deadline, which
+        # produces spurious `1011 keepalive ping timeout` closes under
+        # transient latency / event-loop stalls (Coatue incident 2026-08-18).
+        # ping_timeout=60 tolerates such stalls while still detecting a dead
+        # link within ~90s worst case (30s interval + 60s pong deadline).
         if headers:
-            self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                additional_headers=headers,
+                ping_interval=30,
+                ping_timeout=60,
+            )
         else:
-            self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                ping_interval=30,
+                ping_timeout=60,
+            )
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # Send one hello PER fronted identity (Phase 1.5 Shape A). The connector
         # accumulates them into its advertised set (the first sets the session
@@ -791,11 +807,46 @@ class WebSocketRelayTransport:
             bot_id = self._bot_id_for(platform)
             if bot_id:
                 frame["botId"] = bot_id
+        frame_sent = False
         try:
             await self._send(frame)
+            frame_sent = True
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
-            return {"success": False, "error": "relay outbound timed out"}
+            # AMBIGUOUS by contract (PR 85796 review): the frame reached the
+            # wire — only the acknowledgement is missing. The connector may
+            # well have applied it (draft frame appended, stream sealed).
+            # Consumers that need to distinguish "connector rejected this"
+            # from "outcome unknown" key on this flag; the fail-fast paths
+            # above (closing / not connected) never sent anything and are
+            # definite non-delivery, so they stay unmarked.
+            return {
+                "success": False,
+                "error": "relay outbound timed out",
+                "ambiguous": True,
+            }
+        except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
+            # No `is None` check can close the window where the socket dies
+            # BETWEEN the liveness guard above and the actual write — the
+            # reader's finally hasn't cleared _ws yet, so _send raises
+            # ConnectionClosed straight into callers whose contract is a
+            # result dict (RelayAdapter.send consumes it with no try).
+            # Report it like every other failed send. CancelledError is a
+            # BaseException, so cancellation still propagates.
+            #
+            # Ambiguity contract (PR 85796): a raise from the WRITE means the
+            # frame never reached the wire — definite non-delivery, no flag.
+            # A failure surfaced by the FUTURE (e.g. disconnect() failing
+            # pending mid-flight) means the frame WAS sent and only the
+            # outcome is unknown — mark it ambiguous like the timeout above.
+            logger.debug("relay %s send failed", frame_type, exc_info=True)
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": f"relay send failed: {exc}",
+            }
+            if frame_sent:
+                result["ambiguous"] = True
+            return result
         finally:
             self._pending.pop(request_id, None)
 
@@ -806,50 +857,91 @@ class WebSocketRelayTransport:
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:
-        assert self._ws is not None
+        # Bind the socket this reader serves: the finally below must only
+        # clear _ws if it still points at THIS socket (a supervisor re-dial
+        # may have already installed a fresh one by the time we unwind).
+        ws = self._ws
         buf = ""
         try:
-            async for chunk in self._ws:
-                buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
-                # Newline-delimited frames; keep any trailing partial line.
-                *lines, buf = buf.split("\n")
-                for line in lines:
-                    if line.strip():
-                        await self._handle_frame(line)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
-            # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
-            # successful handshake this is a REVOCATION (opt-out / deprovision) —
-            # the per-gateway secret is gone, so reconnecting is futile. Latch a
-            # terminal "auth revoked" state and DON'T re-dial. Before any
-            # successful handshake a 4401 stays retryable (cold-start race).
-            if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
-                self._auth_revoked = True
-                if not self._closing:
-                    logger.warning(
-                        "relay ws closed 4401 (unauthorized) after a successful handshake — "
-                        "treating as a revoked relay credential (opt-out); not reconnecting"
+            if ws is None:
+                # Scheduled without a socket (a lifecycle bug, not a normal
+                # path). The old `assert` here escaped BEFORE the finally
+                # existed to fail pending futures — the one exit that could
+                # still strand waiters for the full outbound timeout. Fall
+                # through to the finally instead; it settles them all.
+                logger.error("relay ws read loop started with no socket")
+                return
+            try:
+                async for chunk in self._ws:
+                    buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
+                    # Newline-delimited frames; keep any trailing partial line.
+                    *lines, buf = buf.split("\n")
+                    for line in lines:
+                        if line.strip():
+                            await self._handle_frame(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
+                # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
+                # successful handshake this is a REVOCATION (opt-out / deprovision) —
+                # the per-gateway secret is gone, so reconnecting is futile. Latch a
+                # terminal "auth revoked" state and DON'T re-dial. Before any
+                # successful handshake a 4401 stays retryable (cold-start race).
+                if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
+                    self._auth_revoked = True
+                    if not self._closing:
+                        logger.warning(
+                            "relay ws closed 4401 (unauthorized) after a successful handshake — "
+                            "treating as a revoked relay credential (opt-out); not reconnecting"
+                        )
+                elif not self._closing:
+                    logger.warning("relay ws read loop ended: %s", exc)
+            # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
+            # NOT a deliberate disconnect(), kick the reconnect supervisor so the
+            # gateway re-dials + re-handshakes (which triggers the connector's
+            # buffered-flip drain on the new handshake). Self-scheduling: the reader
+            # ends here, the supervisor re-dials and starts a fresh reader.
+            # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
+            # we deliberately do NOT reconnect — the secret is dead until the
+            # instance is recreated, so spinning would just reproduce the failure.
+            if (
+                self._reconnect
+                and not self._closing
+                and not self._auth_revoked
+                and (self._supervisor is None or self._supervisor.done())
+            ):
+                self._supervisor = asyncio.create_task(
+                    self._reconnect_loop(), name="relay-ws-reconnect"
+                )
+        finally:
+            # The socket this reader served is dead. Drop the handle (identity-
+            # guarded: a re-dial that already installed a FRESH socket must not
+            # be clobbered) so every `self._ws is None` liveness check — send,
+            # _request_response, go_idle, go_dormant — reports "not connected"
+            # for the whole outage. Without this, _ws kept pointing at the dead
+            # socket on every reader exit that arms NO supervisor (terminal
+            # 4401 revocation, reconnect=False transports), and a send there
+            # registered a future nothing could resolve: a full
+            # _outbound_timeout_s (~30s) wedge — including the revocation
+            # path's own fatal-error notification. disconnect() owns the
+            # handle during deliberate teardown, so leave it alone then.
+            if self._ws is ws and not self._closing:
+                self._ws = None
+            # The reader is the ONLY thing that can resolve a pending
+            # outbound_result future — once it exits (socket dropped, error,
+            # or cancellation cleanup) every in-flight _request_response waiter
+            # is unresolvable and would otherwise block the full
+            # _outbound_timeout_s (~30s) on a dead socket (Coatue incident
+            # 2026-08-18: stuck sends after a 1011 keepalive close). Fail them
+            # NOW with the dict shape callers expect (never an exception on
+            # the outbound path). list() snapshot: set_result wakes waiters
+            # whose finally-pop would otherwise mutate the dict mid-iteration.
+            for _rid, fut in list(self._pending.items()):
+                if not fut.done():
+                    fut.set_result(
+                        {"success": False, "error": "relay transport connection lost"}
                     )
-            elif not self._closing:
-                logger.warning("relay ws read loop ended: %s", exc)
-        # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
-        # NOT a deliberate disconnect(), kick the reconnect supervisor so the
-        # gateway re-dials + re-handshakes (which triggers the connector's
-        # buffered-flip drain on the new handshake). Self-scheduling: the reader
-        # ends here, the supervisor re-dials and starts a fresh reader.
-        # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
-        # we deliberately do NOT reconnect — the secret is dead until the
-        # instance is recreated, so spinning would just reproduce the failure.
-        if (
-            self._reconnect
-            and not self._closing
-            and not self._auth_revoked
-            and (self._supervisor is None or self._supervisor.done())
-        ):
-            self._supervisor = asyncio.create_task(
-                self._reconnect_loop(), name="relay-ws-reconnect"
-            )
+            self._pending.clear()
 
     @staticmethod
     def _close_code_of(exc: BaseException) -> Optional[int]:

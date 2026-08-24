@@ -246,10 +246,12 @@ class GatewaySlashCommandsMixin:
 
         _old_sid = old_entry.session_id if old_entry else None
 
-        # Fire plugin on_session_finalize hook (session boundary)
+        # Fire plugin on_session_finalize hook (session boundary).
+        # Off-loop + bounded: finalize hooks can block arbitrarily
+        # (observability trace exports) and this handler runs on the
+        # gateway event loop (see GatewayRunner._finalize_session_off_loop).
         try:
-            from hermes_cli.lifecycle import finalize_session
-            finalize_session(
+            await self._finalize_session_off_loop(
                 session_id=_old_sid,
                 platform=source.platform.value if source.platform else "",
                 reason="new_session",
@@ -609,6 +611,7 @@ class GatewaySlashCommandsMixin:
         # single source of truth; reading it here keeps /status accurate
         # without duplicating token writes into two stores.
         db_total_tokens = 0
+        persisted_route: dict[str, Any] = {}
         if self._session_db:
             try:
                 title = await self._session_db.get_session_title(session_entry.session_id)
@@ -627,6 +630,14 @@ class GatewaySlashCommandsMixin:
                     )
             except Exception:
                 db_total_tokens = 0
+            try:
+                route = await self._session_db.get_dominant_session_model_route(
+                    session_entry.session_id
+                )
+                if isinstance(route, dict):
+                    persisted_route = route
+            except Exception:
+                persisted_route = {}
 
         # Resolve model/context for cockpit-style status. Prefer the live or
         # cached agent because it carries the actual runtime route and context
@@ -649,20 +660,33 @@ class GatewaySlashCommandsMixin:
         model_name = ""
         provider_name = ""
         base_url = ""
+        route_resolved = False
         context_used = 0
         context_total = 0
         if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
-            model_name = _clean_str(getattr(status_agent, "model", ""))
-            provider_name = _clean_str(getattr(status_agent, "provider", ""))
-            base_url = _clean_str(getattr(status_agent, "base_url", ""))
+            live_model = _clean_str(getattr(status_agent, "model", ""))
+            live_provider = _clean_str(getattr(status_agent, "provider", ""))
+            if live_model and live_provider:
+                model_name = live_model
+                provider_name = live_provider
+                base_url = _clean_str(getattr(status_agent, "base_url", ""))
+                route_resolved = True
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
-        model_name = model_name or _clean_str(session_row.get("model"))
-        provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
-        base_url = base_url or _clean_str(session_row.get("billing_base_url"))
+        persisted_model = _clean_str(persisted_route.get("model"))
+        persisted_provider = _clean_str(persisted_route.get("billing_provider"))
+        if not route_resolved and persisted_model and persisted_provider:
+            model_name = persisted_model
+            provider_name = persisted_provider
+            base_url = _clean_str(persisted_route.get("billing_base_url"))
+            route_resolved = True
+        if not route_resolved:
+            model_name = _clean_str(session_row.get("model"))
+            provider_name = _clean_str(session_row.get("billing_provider"))
+            base_url = _clean_str(session_row.get("billing_base_url"))
         context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
 
         user_config: dict[str, Any] = {}
@@ -796,7 +820,7 @@ class GatewaySlashCommandsMixin:
         # Resolve current-context size + window with cascading fallbacks.
         #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
         #   model : agent.model → SessionDB row model
-        #   window: compressor.context_length → get_model_context_length(model)
+        #   window: compressor.context_length → effective gateway model route
         used = 0
         context_length = 0
         if ctx is not None:
@@ -815,6 +839,26 @@ class GatewaySlashCommandsMixin:
                     model_name = _clean_str(row.get("model", ""))
             except Exception:
                 model_name = ""
+
+        if not context_length:
+            try:
+                from gateway.run import (
+                    _profile_runtime_scope,
+                    _resolve_gateway_model_context,
+                )
+
+                def _resolve_nonresident_context():
+                    if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                        profile_home = self._resolve_profile_home_for_source(source)
+                        with _profile_runtime_scope(profile_home):
+                            return _resolve_gateway_model_context(model_name or None)
+                    return _resolve_gateway_model_context(model_name or None)
+
+                resolved = await asyncio.to_thread(_resolve_nonresident_context)
+                model_name = model_name or resolved.model
+                context_length = _int_value(resolved.context_length)
+            except Exception:
+                context_length = 0
 
         if not context_length and model_name:
             try:
@@ -1770,7 +1814,7 @@ class GatewaySlashCommandsMixin:
         excluded_provs = []
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
-            cfg = _load_gateway_config()
+            cfg = _load_gateway_config(config_path=config_path)
             if cfg:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
@@ -2747,6 +2791,27 @@ class GatewaySlashCommandsMixin:
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
+            # Resume must restart work, not just flip persisted state
+            # (#75362): enqueue the canonical continuation through the
+            # adapter FIFO — the same path the post-turn judge uses — so
+            # the next turn fires as soon as this reply is delivered. A
+            # real user message already queued still preempts naturally,
+            # and pause/clear's stale-continuation cleanup recognizes it.
+            prompt = mgr.next_continuation_prompt()
+            try:
+                adapter = self.adapters.get(event.source.platform) if event.source else None
+                _quick_key = self._session_key_for_source(event.source) if event.source else None
+                if prompt and adapter and _quick_key:
+                    cont_event = MessageEvent(
+                        text=prompt,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=None,
+                        channel_prompt=None,
+                    )
+                    self._enqueue_fifo(_quick_key, cont_event, adapter)
+            except Exception as exc:
+                logger.debug("goal resume: continuation enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
         if lower == "done":
@@ -3069,6 +3134,10 @@ class GatewaySlashCommandsMixin:
         except Exception as exc:
             logger.debug("loop manager unavailable: %s", exc)
             return None, None
+        # Warm the SessionDB cache off-loop. A cold cache drops the first
+        # /loop write while the reply claims the loop was set (same class
+        # as the /goal false-ack fix).
+        await self._warm_goals_session_db("loop manager")
         try:
             session_entry = await self.async_session_store.get_or_create_session(event.source)
         except Exception:
@@ -3348,6 +3417,16 @@ class GatewaySlashCommandsMixin:
         cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
         arg = event.get_command_args().strip()
 
+        # --all / --force: classic full restore, overwriting user edits too.
+        restore_all = False
+        arg_parts = []
+        for tok in arg.split():
+            if tok.lower() in ("--all", "--force"):
+                restore_all = True
+            else:
+                arg_parts.append(tok)
+        arg = " ".join(arg_parts)
+
         if not arg:
             checkpoints = mgr.list_checkpoints(cwd)
             return format_checkpoint_list(checkpoints, cwd)
@@ -3367,13 +3446,22 @@ class GatewaySlashCommandsMixin:
         except ValueError:
             target_hash = arg
 
-        result = mgr.restore(cwd, target_hash)
+        result = mgr.restore(cwd, target_hash, safe=not restore_all)
         if result["success"]:
-            return t(
+            msg = t(
                 "gateway.rollback.restored",
                 hash=result["restored_to"],
                 reason=result["reason"],
             )
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_user_edits",
+                    files=shown + more,
+                )
+            return msg
         return t("gateway.rollback.restore_failed", error=result["error"])
 
     async def _handle_diff_command(self, event: MessageEvent) -> str:
@@ -5306,10 +5394,19 @@ class GatewaySlashCommandsMixin:
             try:
                 _entry_for_billing = await self.async_session_store.get_or_create_session(source)
                 persisted = await self._session_db.get_session(_entry_for_billing.session_id) or {}
+                route = await self._session_db.get_dominant_session_model_route(
+                    _entry_for_billing.session_id
+                )
+                persisted_route = route if isinstance(route, dict) else {}
             except Exception:
                 persisted = {}
-            provider = provider or persisted.get("billing_provider")
-            base_url = base_url or persisted.get("billing_base_url")
+                persisted_route = {}
+            if persisted_route.get("billing_provider"):
+                provider = persisted_route["billing_provider"]
+                base_url = persisted_route.get("billing_base_url")
+            else:
+                provider = persisted.get("billing_provider")
+                base_url = persisted.get("billing_base_url")
 
         if wants_reset:
             normalized_provider = str(provider or "").strip().lower()
@@ -5943,8 +6040,11 @@ class GatewaySlashCommandsMixin:
                 import textwrap
                 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-                # hermes_cmd is a list of argv parts we can pass directly
-                # (no shell-quoting needed).
+                # Invoke the updater as a module under this interpreter rather
+                # than through hermes_cmd (venv\Scripts\hermes.exe): the shim
+                # launcher holds its own file open for the whole run, and the
+                # update has to replace it. Going through python.exe maps no
+                # shim, so the entry points can be rewritten freely.
                 helper = textwrap.dedent(
                     """
                     import os, subprocess, sys
@@ -5964,7 +6064,8 @@ class GatewaySlashCommandsMixin:
                     [
                         sys.executable, "-c", helper,
                         str(output_path), str(exit_code_path),
-                        *hermes_cmd, "update", "--gateway",
+                        sys.executable, "-m", "hermes_cli.main",
+                        "update", "--gateway",
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

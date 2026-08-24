@@ -55,6 +55,9 @@ class TestToggleToolsetInstallOnEnable:
         monkeypatch.setattr(
             tools_config, "_resolved_cua_driver_cmd", lambda: None
         )
+        monkeypatch.setattr(
+            tools_config, "_cua_driver_install_ready", lambda: False
+        )
 
         resp = self.client.put(
             "/api/tools/toolsets/computer_use", json={"enabled": True}
@@ -77,6 +80,9 @@ class TestToggleToolsetInstallOnEnable:
         monkeypatch.setattr(
             tools_config, "_resolved_cua_driver_cmd", lambda: "/usr/bin/cua-driver"
         )
+        monkeypatch.setattr(
+            tools_config, "_cua_driver_install_ready", lambda: True
+        )
 
         resp = self.client.put(
             "/api/tools/toolsets/computer_use", json={"enabled": True}
@@ -92,6 +98,9 @@ class TestToggleToolsetInstallOnEnable:
         monkeypatch.setattr(
             tools_config, "_resolved_cua_driver_cmd", lambda: None
         )
+        monkeypatch.setattr(
+            tools_config, "_cua_driver_install_ready", lambda: False
+        )
 
         resp = self.client.put(
             "/api/tools/toolsets/computer_use", json={"enabled": False}
@@ -106,6 +115,9 @@ class TestToggleToolsetInstallOnEnable:
 
         monkeypatch.setattr(
             tools_config, "_resolved_cua_driver_cmd", lambda: None
+        )
+        monkeypatch.setattr(
+            tools_config, "_cua_driver_install_ready", lambda: False
         )
 
         def _boom(subcommand, name, **kwargs):

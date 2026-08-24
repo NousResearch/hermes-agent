@@ -4,7 +4,7 @@ Tests for mcp_serve — Hermes MCP server.
 Three layers of tests:
 1. Unit tests — helpers, content extraction, attachment parsing
 2. EventBridge tests — queue mechanics, cursors, waiters, concurrency
-3. End-to-end tests — call actual MCP tools through FastMCP's tool manager
+3. End-to-end tests — call actual MCP tools through the MCPServer's public API
    with real session data in SQLite and sessions.json
 """
 
@@ -228,7 +228,9 @@ class _FakeToolManager:
         return list(self._tools.values())
 
 
-class _FakeFastMCP:
+class _FakeMCPServer:
+    """Stand-in for ``mcp.server.MCPServer`` (``FastMCP`` before mcp 2.0)."""
+
     def __init__(self, *args, **kwargs):
         self._tool_manager = _FakeToolManager()
 
@@ -239,6 +241,17 @@ class _FakeFastMCP:
 
         return decorator
 
+    async def call_tool(self, name, args=None):
+        """Dispatch straight to the handler, with no schema validation.
+
+        Mirrors ``MCPServer.call_tool``'s name so ``_run_tool`` works against
+        either server, but deliberately skips the SDK's pydantic coercion:
+        the parameter-coercion tests exist to prove the handlers' own
+        ``_coerce_int`` guards hold when a client sends a wrongly-typed value,
+        which the real server would reject before the handler ever ran.
+        """
+        return await self._tool_manager.call_tool(name, args)
+
 
 @pytest.fixture
 def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
@@ -248,7 +261,7 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
     monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
-    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
 
     bridge = mcp_serve.EventBridge()
     server = mcp_serve.create_mcp_server(event_bridge=bridge)
@@ -505,7 +518,7 @@ class TestEventBridge:
 
 
 # ---------------------------------------------------------------------------
-# 3. END-TO-END TESTS — call MCP tools through FastMCP server
+# 3. END-TO-END TESTS — call MCP tools through the MCP server
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -523,11 +536,24 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
 
 
 def _run_tool(server, name, args=None):
-    """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
+    """Call an MCP tool through the server's public API and return parsed JSON.
+
+    Goes through ``MCPServer.call_tool`` rather than the private
+    ``_tool_manager`` the FastMCP-era version reached into: mcp 2.0's
+    ``ToolManager.call_tool`` gained a required ``context`` argument, and the
+    public method is what an actual MCP client exercises anyway. It returns a
+    ``CallToolResult``, so unwrap the text content block our tools produce.
+    """
     result = asyncio.get_event_loop().run_until_complete(
-        server._tool_manager.call_tool(name, args or {})
+        server.call_tool(name, args or {})
     )
-    return json.loads(result) if isinstance(result, str) else result
+    if isinstance(result, str):  # FastMCP-era shape
+        return json.loads(result)
+    text = "".join(
+        block.text for block in (getattr(result, "content", None) or [])
+        if getattr(block, "text", None)
+    )
+    return json.loads(text) if text else result
 
 
 @pytest.fixture

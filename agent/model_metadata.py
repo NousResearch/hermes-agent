@@ -501,13 +501,19 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000,
     "minimax": 204800,
-    # GLM — GLM-5.2 ships with a 1M context window (verified empirically:
-    # needle-in-a-haystack retrieval at 789K prompt tokens succeeded with
-    # zero errors on api.z.ai/api/coding/paas/v4).  Older GLM models
-    # (5, 5.1, 5-turbo) are ~202K.  Longest-key-first substring matching
-    # ensures "glm-5.2" resolves to 1M while older variants still hit the
-    # generic 202K fallback.
+    # GLM — GLM-5.2 and GLM-5.3 ship with a 1M context window.  GLM-5.2 was
+    # verified empirically (needle-in-a-haystack retrieval at 789K prompt
+    # tokens succeeded with zero errors on api.z.ai/api/coding/paas/v4).
+    # GLM-5.3 uses the same base model (all gains are post-training) with
+    # 1M context / 128K max output per docs.z.ai/guides/llm/glm-5.3
+    # (verified 2026-08-14).  Older GLM models (5, 5.1, 5-turbo) are ~202K.
+    # Longest-key-first substring matching ensures "glm-5.2"/"glm-5.3"
+    # resolve to 1M while older variants still hit the generic 202K fallback.
     "glm-5.2": 1_048_576,
+    # OpenRouter's free GLM-5.2 variant is capped at 256K (live metadata,
+    # 2026-08-21) — longer key wins over the 1M paid entry above.
+    "glm-5.2:free": 256_000,
+    "glm-5.3": 1_048_576,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
@@ -556,8 +562,22 @@ DEFAULT_CONTEXT_LENGTHS = {
     "hy3-preview": 262144,
     # Tencent — Hy3 (GA successor to Hy3 Preview), same 256K window.
     "hy3": 262144,
+    # OpenCode Zen — "Ox Alpha" stealth model (x-preview-f-free). 1M context
+    # per OpenCode's launch announcement (2026-08-20); free, ZDR.
+    "x-preview-f": 1_048_576,
+    # OpenRouter — same "Ox Alpha" stealth model under its OpenRouter slug
+    # (stealth/ox-alpha). 1M context per OpenRouter live metadata (2026-08-20).
+    "ox-alpha": 1_048_576,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
+    # EXCEPT 3.5 Lightning, which ships a 1M window (OpenRouter live metadata
+    # + OpenCode Zen free tier, verified 2026-08-21).
+    "nemotron-3.5-lightning": 1_000_000,
     "nemotron": 131072,
+    # Poolside Laguna 2.1 (s/xs) — 256K window per OpenRouter live metadata
+    # (2026-08-21). Covers laguna-s-2.1:free, laguna-xs-2.1:free, and the
+    # OpenCode Zen laguna-s-2.1-free slug via substring matching.
+    "laguna-s-2.1": 262144,
+    "laguna-xs-2.1": 262144,
     # Arcee
     "trinity": 262144,
     # OpenRouter
@@ -1659,9 +1679,27 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # OpenAI-compatible relays may reject a request whose output cap exceeds
+        # the model's separate completion-token limit, e.g.
+        #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+        # This is independent of the input context window.
+        "exceeds model" in error_lower
+        and "maximum output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
+
+    # Generic model-output-cap form:
+    #   "max_tokens (98304) exceeds model's maximum output tokens (65536)"
+    _m_max_output = re.search(
+        r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        error_lower,
+    )
+    if _m_max_output:
+        _cap = int(_m_max_output.group(1))
+        if _cap >= 1:
+            return _cap
 
     # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
     # The upper bound is the available output cap.
@@ -1726,11 +1764,28 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     # Available output = window - input. When the input alone is at or over
     # the window this stays None, so the caller correctly falls through to
     # compression instead of futilely shrinking the output cap.
+    #
+    # Caveat: when max_tokens is the BINDING constraint, vLLM does not report
+    # the real prompt size at all.  It back-computes a lower bound from the
+    # constraint itself -- "at least N input tokens" where
+    # N == window + 1 - requested_output -- so window - N is always exactly
+    # requested_output - 1.  Subtracting the caller's safety margin then walks
+    # the cap down ~65 tokens per retry while the reported input walks up by
+    # the same amount, burning every compression attempt without ever fitting.
+    # Detect that degenerate case and halve the requested cap instead: it
+    # carries the same guarantee (strictly below what was rejected) and
+    # converges in one or two retries.
     _m_vllm_input = re.search(
         r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
     )
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
+        _m_requested_out = re.search(r'requested (\d+)\s*output tokens', error_lower)
+        if 'at least' in error_lower and _m_requested_out:
+            _requested_out = int(_m_requested_out.group(1))
+            if _available >= _requested_out - 1:
+                # The budget is derived from the constraint, not measured.
+                return max(1, _requested_out // 2)
         if _available >= 1:
             return _available
 
@@ -1782,6 +1837,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
+        or ("exceeds model" in error_lower
+            and "maximum output tokens" in error_lower)
     )
     if not output_cap_signal:
         return False
@@ -2341,11 +2398,169 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.6-sol": 272_000,
     "gpt-5.6-terra": 272_000,
     "gpt-5.6-luna": 272_000,
+    "gpt-daybreak-blue-latest": 272_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
 }
+
+# Codex OAuth advertises 272K via /backend-api/codex/models for these
+# families, but the backend actually ACCEPTS far more. OpenAI enabled the
+# large-context window for ChatGPT-subscription Codex accounts on
+# Aug 16 2026 (announced by @thsottiaux; previously API-key-only).
+# Verified live against chatgpt.com/backend-api/codex/responses the same
+# day: 911,276 input tokens completed OK on gpt-5.6-sol; ~925K+ rejected
+# with ``context_length_exceeded`` (the 1.05M window minus reserved output
+# headroom). gpt-5.6-terra, gpt-5.6-luna, and gpt-5.4 all completed 900,026
+# tokens OK. gpt-5.5 and gpt-5.4-mini still rejected >272K, so their
+# advertisement is real enforcement and they are NOT listed. 900K keeps
+# ≥11K margin under the observed ceiling and matches the compaction point
+# Codex's own client config documents for the 1M window.
+#
+# OPT-IN ONLY (Aug 2026 policy, Teknium): the large window is exposed via
+# explicit ``-900k`` picker variants (e.g. ``gpt-5.6-sol-900k``) — the base
+# slugs keep the advertised 272K so the cheaper limit is the default. A
+# week of the 900K default burned through subscription usage for people
+# who never asked for it. The variant suffix is a Hermes-side alias: it is
+# stripped before the model id hits the wire (see
+# ``strip_codex_context_variant_suffix`` callers in agent/transports/codex.py
+# and agent/auxiliary_client.py).
+#
+# The bump is applied ONLY when the resolved value (live probe or fallback
+# table) is exactly the known-stale 272,000 advertisement — if OpenAI moves
+# the advertised number in either direction (the gpt-5.6 family shifted
+# 272K → 372K → 272K during July 2026), the catalog is trusted again and
+# this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
+# dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
+# backend 400s them — so over-matching there is moot). ``gpt-5.4`` is EXACT:
+# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 500K), so
+# prefix-matching the 5.4 family would over-report for mini.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
+}
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
+    "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
+    "gpt-daybreak-blue-latest": 900_000,  # exact Daybreak/Sol alias verified at 911,276
+}
+
+# The advertised value the verified-above table is allowed to override.
+_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000
+
+# Hermes-side picker suffix that opts a Codex slug into the live-verified
+# large window. Never sent on the wire.
+CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"
+
+# The ONLY base slugs eligible for a ``-900k`` variant: routable,
+# live-verified models. gpt-5.6 family-prefix matching is deliberately NOT
+# used here — it would synthesize dead variants for ``-pro`` slugs (the
+# Codex backend 400s them) and accept arbitrary future descendants that
+# were never probed. Dated snapshots of the routable 5.6 bases are allowed
+# via _CODEX_900K_SNAPSHOT_RE.
+_CODEX_900K_ELIGIBLE_BASES = frozenset({
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.4",                    # exact; gpt-5.4-mini enforces 272K
+    "gpt-daybreak-blue-latest",   # verified Sol alias
+})
+_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+_CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _bare_codex_slug(model: Optional[str]) -> str:
+    """Lowercased slug with any ``vendor/`` namespace removed.
+
+    Display/auxiliary callers pass ids like ``openai/gpt-5.6-sol-900k``;
+    the main-agent path normalizes the namespace away earlier, but this
+    resolver must accept both shapes (#92797 review).
+    """
+    return (model or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def is_codex_900k_base(model: Optional[str]) -> bool:
+    """True when *model* (a BASE slug, no suffix) may carry a ``-900k`` variant.
+
+    Single source of truth for the eligibility check — used by picker
+    synthesis, context resolution, `/model` validation, and wire stripping
+    so the four sites can never drift apart.
+    """
+    slug = _bare_codex_slug(model)
+    if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return False
+    if slug in _CODEX_900K_ELIGIBLE_BASES:
+        return True
+    # Dated snapshots of the routable 5.6 bases (gpt-5.6-sol-2026-07-09).
+    for base in _CODEX_900K_SNAPSHOT_BASES:
+        if slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(
+            slug[len(base) + 1:]
+        ):
+            return True
+    return False
+
+
+def is_codex_context_variant(model: Optional[str]) -> bool:
+    """True when the model id is a VALID ``-900k`` opt-in variant.
+
+    Requires both the suffix and an eligible base — ``gpt-5.5-900k`` is not
+    a variant, it's an invalid alias.
+    """
+    slug = _bare_codex_slug(model)
+    if not slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return False
+    return is_codex_900k_base(slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)])
+
+
+def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
+    """Return the wire-safe slug with a VALID ``-900k`` suffix removed.
+
+    The suffix is a Hermes picker alias (``gpt-5.6-sol-900k``); the Codex
+    backend only knows the base slug. Stripping is conditional on base
+    eligibility: an ineligible alias like ``gpt-5.5-900k`` is returned
+    unchanged so it fails honestly at the API instead of silently running
+    as a different model. Case-insensitive; preserves any ``vendor/``
+    namespace prefix.
+    """
+    raw = (model or "").strip()
+    if not raw.lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return raw
+    base = raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    if is_codex_900k_base(base):
+        return base
+    return raw
+
+
+def has_codex_context_variant(model_bare: str) -> bool:
+    """True when a Codex BASE slug should get a synthetic ``-900k`` entry.
+
+    Thin alias over :func:`is_codex_900k_base` kept for the picker call
+    sites' readability.
+    """
+    return is_codex_900k_base(model_bare)
+
+
+def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
+    """Return the live-verified Codex cap for an OPTED-IN slug, or ``None``.
+
+    The large window is opt-in: only VALID ``-900k`` picker variants
+    (e.g. ``gpt-5.6-sol-900k``) resolve to the verified cap. Base slugs
+    keep the advertised 272K so the cheaper default limit applies unless
+    the user explicitly selects the large-context variant; ineligible
+    aliases (``gpt-5.5-900k``) never resolve here.
+    """
+    slug = _bare_codex_slug(model_bare)
+    if not slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return None
+    base = slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    if not is_codex_900k_base(base):
+        return None
+    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(base)
+    if exact is not None:
+        return exact
+    for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items():
+        if base == key or base.startswith(key + "-") or base.startswith(key + "."):
+            return ctx
+    return None
 
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
@@ -2474,24 +2689,49 @@ def _resolve_codex_oauth_context_length_with_source(
     if not model_bare:
         return None, ""
 
+    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
+        """Lift a known-stale 272K advertisement to the live-verified cap.
+
+        Only fires for explicit ``-900k`` picker variants (opt-in), and only
+        when the resolved value is EXACTLY the stale 272,000 advertisement
+        for a slug we have probed above it (see
+        ``_verified_codex_ctx_for_slug``). Any other advertised value —
+        higher or lower — is trusted as a real server-side change.
+        """
+        bumped = _verified_codex_ctx_for_slug(model_bare)
+        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            logger.debug(
+                "Codex OAuth context for %s: advertised %d raised to "
+                "live-verified %d", model_bare, ctx, bumped,
+            )
+            return bumped, source
+        return ctx, source
+
+    # ``-900k`` variants are Hermes picker aliases — the Codex catalog only
+    # knows the base slug, so resolve against the stripped id. Also drop any
+    # ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the main-agent
+    # path normalizes it away before reaching here, but display/auxiliary
+    # callers pass it through (#92797 review).
+    lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
+
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
         live_source = "live" if fresh_probe else "memory"
-        if model_bare in live:
-            return live[model_bare], live_source
+        if lookup_bare in live:
+            return _apply_verified_bump(live[lookup_bare], live_source)
         # Case-insensitive match in case casing drifts
-        model_lower = model_bare.lower()
+        model_lower = lookup_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
-                return ctx, live_source
+                return _apply_verified_bump(ctx, live_source)
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
-    model_lower = model_bare.lower()
+    model_lower = lookup_bare.lower()
     for slug, ctx in sorted(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):
         if slug in model_lower:
-            return ctx, "fallback"
+            return _apply_verified_bump(ctx, "fallback")
 
     return None, ""
 

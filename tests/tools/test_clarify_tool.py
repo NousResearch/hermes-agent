@@ -8,6 +8,7 @@ from tools.clarify_tool import (
     clarify_tool,
     check_clarify_requirements,
     MAX_CHOICES,
+    MAX_QUESTIONS,
     CLARIFY_SCHEMA,
     _flatten_choice,
 )
@@ -156,6 +157,27 @@ class TestClarifySchema:
         """multi_select should default to false (not in required)."""
         # The model should treat it as false when omitted
         assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
+
+
+    def test_schema_description_advertises_batching(self):
+        """The top-level description must tell the model it can batch.
+
+        The `questions` parameter description alone is not enough — the
+        model decides HOW to call from the tool description, so the batch
+        capability has to be surfaced there or it keeps asking one
+        question per call.
+        """
+        description = CLARIFY_SCHEMA["description"]
+        assert "questions" in description
+        assert "one call" in description.lower()
+
+
+    def test_schema_questions_param_is_optional_and_capped(self):
+        """`questions` stays optional (single-question calls unchanged) and
+        carries the batch cap so the model sees the limit."""
+        params = CLARIFY_SCHEMA["parameters"]
+        assert "questions" not in params["required"]
+        assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
 
 
 class TestClarifyToolMultiSelect:
@@ -360,3 +382,291 @@ class TestRegistryMultiSelectPassThrough:
         ))
         assert seen["multi"] is False
         assert result["user_response"] == "a"
+
+
+class TestClarifyBatchValidation:
+    """Validation of the `questions` batch parameter (issue #18450)."""
+
+    def test_batch_takes_precedence_over_question(self):
+        """When both are present, `questions` wins and `question` is ignored."""
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "blue"}}
+
+        result = json.loads(clarify_tool(
+            "ignored single question",
+            questions=[{"question": "What color?"}],
+            callback=cb,
+        ))
+        assert "responses" in result
+        assert len(result["responses"]) == 1
+        assert result["responses"][0]["question"] == "What color?"
+        assert seen["questions"][0]["question"] == "What color?"
+
+    def test_batch_rejects_more_than_five(self):
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": f"Q{i}?"} for i in range(6)],
+            callback=lambda *a, **k: "",
+        ))
+        assert "error" in result
+
+    def test_batch_rejects_blank_question_text(self):
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "Real?"}, {"question": "   "}],
+            callback=lambda *a, **k: "",
+        ))
+        assert "error" in result
+
+    def test_batch_rejects_non_list(self):
+        result = json.loads(clarify_tool(
+            "", questions={"question": "Q?"}, callback=lambda *a, **k: "",
+        ))
+        assert "error" in result
+
+    def test_batch_empty_list_falls_back_to_single_question(self):
+        """An empty questions array degrades to the single-question path."""
+        def cb(question, choices):
+            assert question == "Single?"
+            return "yes"
+
+        result = json.loads(clarify_tool("Single?", questions=[], callback=cb))
+        assert result["user_response"] == "yes"
+        assert "responses" not in result
+
+    def test_batch_choices_flattened_capped_and_labelled_per_question(self):
+        """Each question gets the full choice pipeline: flatten, cap, label."""
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "a", "q1": "Loose layout"}}
+
+        clarify_tool(
+            "",
+            questions=[
+                {"question": "Pick letter", "choices": ["a", "b", "c", "d", "e", "f"]},
+                {"question": "Pick layout", "choices": [
+                    {"description": "Loose layout"}, "Tight",
+                ]},
+            ],
+            callback=cb,
+        )
+        q0, q1 = seen["questions"]
+        assert len(q0["choices"]) == MAX_CHOICES
+        assert q0["choices"][0] == "a (Recommended)"
+        assert q1["choices"] == ["Loose layout (Recommended)", "Tight"]
+
+    def test_batch_internal_ids_are_stable_and_model_id_echoed(self):
+        """Wire ids are q0..qN. A model-supplied id only shows in results."""
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "A", "q1": "B"}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[
+                {"id": "approach", "question": "Which approach?"},
+                {"question": "Timeline?"},
+            ],
+            callback=cb,
+        ))
+        assert [q["qid"] for q in seen["questions"]] == ["q0", "q1"]
+        assert result["responses"][0]["id"] == "approach"
+        assert "id" not in result["responses"][1]
+
+    def test_batch_multi_select_needs_choices(self):
+        """multi_select is only honored when the question has choices."""
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "free text"}}
+
+        clarify_tool(
+            "",
+            questions=[{"question": "Thoughts?", "multi_select": True}],
+            callback=cb,
+        )
+        assert seen["questions"][0]["multi_select"] is False
+
+
+class TestClarifyBatchDispatch:
+    """Batch-capable callbacks get the list once. Legacy callbacks loop."""
+
+    def test_batch_callback_receives_list_once(self):
+        calls = []
+
+        def cb(question, choices, multi_select=False, questions=None):
+            calls.append(questions)
+            return {"answers": {"q0": "x", "q1": "y"}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "One?"}, {"question": "Two?"}],
+            callback=cb,
+        ))
+        assert len(calls) == 1
+        assert [r["user_response"] for r in result["responses"]] == ["x", "y"]
+
+    def test_batch_callback_json_string_response(self):
+        """A _block-style bridge returns the answers as a JSON string."""
+        def cb(question, choices, multi_select=False, questions=None):
+            return json.dumps({"answers": {"q0": "picked"}})
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "One?"}], callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == "picked"
+
+    def test_batch_recommended_label_stripped_per_question(self):
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": questions[0]["choices"][0]}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "Pick", "choices": ["Rebase", "Merge"]}],
+            callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == "Rebase"
+        assert result["responses"][0]["choices_offered"] == ["Rebase", "Merge"]
+
+    def test_batch_multi_select_answer_parsed_to_list(self):
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": '["red", "blue"]'}}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{
+                "question": "Colors?",
+                "choices": ["red", "blue", "green"],
+                "multi_select": True,
+            }],
+            callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == ["red", "blue"]
+
+    def test_batch_timed_out_flag_passthrough_with_partials(self):
+        """Timeout keeps the locked answers and sets the top-level flag."""
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": "kept"}, "timed_out": True}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "One?"}, {"question": "Two?"}],
+            callback=cb,
+        ))
+        assert result["timed_out"] is True
+        assert result["responses"][0]["user_response"] == "kept"
+        assert result["responses"][1]["user_response"] == ""
+
+    def test_batch_empty_response_is_skip_not_timeout(self):
+        """A cancel-all resolves every answer empty with no timed_out flag."""
+        def cb(question, choices, multi_select=False, questions=None):
+            return ""
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "One?"}], callback=cb,
+        ))
+        assert result["responses"][0]["user_response"] == ""
+        assert "timed_out" not in result
+
+    def test_legacy_callback_gets_sequential_calls_in_order(self):
+        """A callback without `questions` support is looped per question."""
+        calls = []
+
+        def legacy_cb(question, choices, multi_select=False):
+            calls.append((question, tuple(choices or []) or None, multi_select))
+            return f"answer to {question}"
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[
+                {"question": "One?", "choices": ["a", "b"]},
+                {"question": "Two?"},
+            ],
+            callback=legacy_cb,
+        ))
+        assert [c[0] for c in calls] == ["One?", "Two?"]
+        assert calls[0][1] == ("a (Recommended)", "b")
+        assert calls[1][1] is None
+        assert [r["user_response"] for r in result["responses"]] == [
+            "answer to One?", "answer to Two?",
+        ]
+        assert "timed_out" not in result
+
+    def test_legacy_loop_aborts_on_timeout_and_keeps_partials(self):
+        """The loop stops on the first timeout. Collected answers survive."""
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+        calls = []
+
+        def legacy_cb(question, choices):
+            calls.append(question)
+            if len(calls) == 2:
+                return TIMEOUT_RESPONSE
+            return "answered"
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[
+                {"question": "One?"}, {"question": "Two?"}, {"question": "Three?"},
+            ],
+            callback=legacy_cb,
+        ))
+        assert calls == ["One?", "Two?"]
+        assert result["timed_out"] is True
+        assert [r["user_response"] for r in result["responses"]] == [
+            "answered", "", "",
+        ]
+
+    def test_legacy_loop_skip_continues(self):
+        """An explicit empty answer is a skip. The loop continues."""
+        calls = []
+
+        def legacy_cb(question, choices):
+            calls.append(question)
+            return "" if len(calls) == 1 else "second"
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "One?"}, {"question": "Two?"}],
+            callback=legacy_cb,
+        ))
+        assert calls == ["One?", "Two?"]
+        assert [r["user_response"] for r in result["responses"]] == ["", "second"]
+        assert "timed_out" not in result
+
+    def test_single_question_result_shape_unchanged(self):
+        """No `questions` arg keeps the historic result keys exactly."""
+        def cb(question, choices):
+            return "blue"
+
+        result = json.loads(clarify_tool(
+            "Color?", choices=["red", "blue"], callback=cb,
+        ))
+        assert set(result.keys()) == {"question", "choices_offered", "user_response"}
+
+
+class TestRegistryBatchPassThrough:
+    """The registered handler forwards `questions` from tool args."""
+
+    def test_handler_passes_questions(self):
+        from tools.registry import registry
+        entry = registry.get_entry("clarify")
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "yes"}}
+
+        result = json.loads(entry.handler(
+            {"questions": [{"question": "Go?"}]},
+            callback=cb,
+        ))
+        assert seen["questions"][0]["question"] == "Go?"
+        assert result["responses"][0]["user_response"] == "yes"

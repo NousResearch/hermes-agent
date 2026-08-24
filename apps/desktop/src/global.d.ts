@@ -1,4 +1,5 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
+import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -31,6 +32,10 @@ declare global {
       }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
+      // Credential-free routes across the union connection registry. The
+      // optional profile list is used only by the single-local v1 fallback;
+      // endpoint and auth material never crosses the IPC boundary.
+      getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -91,7 +96,7 @@ declare global {
         setIgnoreMouse: (ignore: boolean) => void
         moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
-        setVibrancy: (on: boolean) => Promise<{ ok: boolean }>
+        setFrost: (showing: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
         onGoto: (callback: (sessionId: string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
@@ -139,10 +144,23 @@ declare global {
         ) => Promise<{ ok: boolean; connection: DesktopRegistryConnection; registry: DesktopConnectionsRegistry }>
         remove: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setPrimary: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setLaunchMode?: (
+          mode: 'last-used' | 'primary'
+        ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
-        updateAll?: () => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
+        // excludeIds skips connections the caller updates through another
+        // path (the everything-update flow's active backend + local client).
+        updateAll?: (options?: {
+          excludeIds?: string[]
+        }) => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
+        // Registry lifecycle push: fired when a connection is removed or
+        // materially edited so the renderer can dispose (and re-dial) the
+        // secondary gateways scoped to it. Optional: older Electron mains
+        // don't emit it.
+        onChanged?: (callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void) => () => void
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
@@ -189,6 +207,10 @@ declare global {
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      /** Full-source read for runtime desktop plugins (readFileText truncates
+       *  at the 512 KiB preview cap). Absent on older shells — callers fall
+       *  back to readFileText and must reject a `truncated` result. */
+      readPluginSource?: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       /** Native save dialog; returns the chosen path or null on cancel. */
       selectSavePath?: (options?: {
@@ -204,6 +226,22 @@ declare global {
         saved: boolean
       }>
       saveImageFromUrl: (url: string) => Promise<boolean>
+      /** Edit verb against the window's focused element (the custom context
+       *  menu's Cut/Copy/Paste/Select all). */
+      contextMenuEdit?: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => Promise<void>
+      /** Copy the image under the LAST context-menu gesture (Chromium tracks
+       *  its coordinates on the main-process context-menu event). */
+      contextMenuCopyImage?: () => Promise<void>
+      /** Replace the misspelled word or add it to the dictionary. */
+      contextMenuSpellcheck?: (action: { kind: 'add' | 'replace'; word: string }) => Promise<void>
+      /** Add a word to the spell-check dictionary of a webview guest's
+       *  session (the tag exposes no session API). */
+      contextMenuGuestAddWord?: (payload: { webContentsId: number; word: string }) => Promise<void>
+      /** Spell-check facts for the gesture that opened the current menu;
+       *  fires shortly after the DOM contextmenu event. */
+      onContextMenuSpellcheck?: (
+        callback: (payload: { misspelledWord: string; suggestions: string[] }) => void
+      ) => () => void
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
@@ -217,13 +255,20 @@ declare global {
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
-      setTranslucency?: (payload: { intensity: number }) => void
+      /** Main-process fact: this OS can back glass with a native material. */
+      glassSupported?: boolean
+      /** Main-process fact: this OS can do any translucency at all (not Linux). */
+      translucencySupported?: boolean
+      setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      /** A site's icon as a data URL, or '' when it has none we can read.
+       *  Resolved and cached in the main process (electron/favicon.ts). */
+      resolveFavicon?: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
@@ -232,6 +277,8 @@ declare global {
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>
+        /** Synchronous zoom factor of this window (1 = 100%). */
+        factor?: () => number
         setPercent: (percent: number) => void
         onChanged: (callback: (payload: { level: number; percent: number }) => void) => () => void
       }
@@ -254,6 +301,8 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
+      logsRoot?: () => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:
@@ -340,16 +389,37 @@ declare global {
         start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
+      reachPreviewUrl?: (url: string) => Promise<string>
       onClosePreviewRequested?: (callback: () => void) => () => void
+      onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onDeepLink?: (
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
+      probePluginRepo?: (payload: { identifier?: string; repo?: string }) => Promise<{
+        ok: boolean
+        agent: boolean
+        desktop: boolean
+        agentName?: string | null
+        desktopName?: string | null
+        warnings?: string[]
+        insecure?: boolean
+        error?: string
+      }>
+      installDesktopPlugin?: (payload: {
+        identifier?: string
+        repo?: string
+        force?: boolean
+      }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
+      /** Plugin (and other session-less) notification body/action activation. */
+      onNotificationActivate?: (
+        callback: (payload: { actionId?: string; activate?: string; notifyId?: string; tag?: string }) => void
+      ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
@@ -441,6 +511,11 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+  /** True when the running renderer bundle predates desktop changes in the
+   *  installed source tree (runtime updated, app binary not rebuilt/swapped). */
+  bundleOutOfSync?: boolean
+  /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
+  bundleCommitsBehind?: null | number
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
@@ -497,8 +572,21 @@ export interface DesktopUpdateStatus {
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
+export interface DesktopUpdateBlocker {
+  pid: number
+  name: string
+  cmdline: string
+  kind: 'local-preview' | 'other'
+  safeToStop: boolean
+  label?: string
+  port?: number
+  createTime?: number
+}
+
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+  /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers. */
+  stopSafeBlockers?: boolean
 }
 
 export interface DesktopUpdateApplyResult {
@@ -506,6 +594,7 @@ export interface DesktopUpdateApplyResult {
   branch?: string
   error?: string
   message?: string
+  blockers?: DesktopUpdateBlocker[]
   /** True when no staged updater exists (CLI install) and the user should run
    *  `hermes update` themselves. `command` is the exact line to run. */
   manual?: boolean
@@ -559,6 +648,15 @@ export interface DesktopUpdateProgress {
   at: number
 }
 
+export interface DesktopPluginProfileRoute {
+  // Registry source identity. Pair with profile; profile names are not unique
+  // across sources.
+  connectionId: string
+  mode: 'local' | 'remote'
+  profile: string
+  targetProfile: string
+}
+
 export interface HermesConnection {
   baseUrl: string
   darwinMajor?: number
@@ -580,9 +678,14 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
-  // The registry connection this descriptor was resolved through (absent on
-  // legacy v1/primary paths). Set by getConnectionFor.
+  // The registry connection this descriptor resolves to. Registry-scoped
+  // secondaries carry it directly; legacy primary remotes preserve it from
+  // their selected stored route before dialing.
   connectionId?: string
+  // True only when getConnectionFor explicitly resolved a v2 registry route.
+  // An inferred connectionId identifies the visible source but its v1 profile
+  // name may still be a client-side routing alias rather than a backend profile.
+  registryScoped?: boolean
   // True only when `profile` is a request scope on the shared primary backend.
   // A pooled backend also carries `profile`, so presence alone cannot identify
   // the shared-primary routing case.
@@ -722,12 +825,27 @@ export interface DesktopRegistryConnection {
   remoteProfile?: string
   tokenSet: boolean
   tokenPreview: null | string
+  // Names of the stored extra gateway headers (Cloudflare Access etc.);
+  // header VALUES are secrets and never cross the IPC boundary. Optional so
+  // fixtures/older payloads without the field remain valid.
+  headerNames?: string[]
+  // Last-known stable backend identity (the /api/status `install_id`).
+  // Present once a roster enumeration or connection test has seen it; two
+  // connections sharing it are one physical backend registered under two
+  // addresses (display-only "Same backend as …" hint in Settings).
+  installId?: string
 }
 
 export interface DesktopConnectionsRegistry {
   version: number
   // id of the connection that owns the window/primary backend.
   primary: string
+  // Preserve old installs by defaulting to the explicit primary; users may
+  // instead resume the last successfully opened source.
+  launchMode?: 'last-used' | 'primary'
+  // Last source the Sessions workspace opened successfully. Optional for
+  // compatibility with an older Electron main during a rolling app update.
+  lastUsed?: string
   // Whether OS-keychain-backed encryption (Electron safeStorage) is available;
   // false drives the plain-text token opt-in on keyring-less Linux.
   secureTokenStorage: boolean
@@ -744,6 +862,11 @@ export interface DesktopRegistryConnectionInput {
   // Plaintext token to store (encrypted at rest); omit to keep the saved one.
   token?: string
   allowPlainTextToken?: boolean
+  // Extra gateway headers for remote/cloud entries (access proxies such as
+  // Cloudflare Access). The map is authoritative when present: name → new
+  // plaintext value (encrypted at rest), or null to keep the stored secret
+  // for that name. Omit the field entirely to keep the saved set unchanged.
+  headers?: Record<string, null | string>
   org?: string
   host?: string
   user?: string
@@ -760,6 +883,7 @@ export interface DesktopRosterAgent {
   connectionKind: DesktopConnectionKind
   connectionLabel: string
   profile: string
+  targetProfile?: string
   handle: string
 }
 
@@ -771,6 +895,8 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    // Stable backend identity (/api/status install_id) when known.
+    installId?: string
   }[]
 }
 
@@ -879,10 +1005,21 @@ export interface DesktopCloudAgentSignInResult {
 export interface DesktopBootProgress {
   error: string | null
   fakeMode: boolean
+  /** True when the boot failure is a Nous Cloud agent that is down (HTTP 502/503/504). */
+  isCloudBackendDown?: boolean
   message: string
   phase: string
   progress: number
+  /**
+   * True when the boot failure carried by `error` was a TRANSIENT remote
+   * failure (dropped SSH/HTTP registered connection, mint timeout) that the
+   * renderer may retry automatically. Absent/false on success updates,
+   * local failures, and confirmed reauth rejections.
+   */
+  retryable?: boolean
   running: boolean
+  /** Structured HTTP status when the boot failure carried one (e.g. 503). */
+  statusCode?: number | null
   timestamp: number
 }
 
@@ -972,6 +1109,12 @@ export interface HermesApiRequest {
   // (window) backend. Read-only cross-profile data is served by the primary, so
   // this is only needed for profile-scoped live/settings calls.
   profile?: string | null
+  // Route this REST call to a specific REGISTERED gateway connection (v2
+  // registry). Data owned by a remote gateway — cron jobs and their run
+  // sessions — lives in that host's state.db, so requests for it must resolve
+  // through the owning connection, not the local profile pool. Omit / '' to
+  // keep the legacy profile-routed path; explicit 'local' forces this device.
+  connectionId?: string | null
 }
 
 export interface HermesNotification {
@@ -982,7 +1125,13 @@ export interface HermesNotification {
   sessionId?: string
   /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
   tag?: string
-  actions?: { id: string; text: string }[]
+  /** Absolute icon path for Electron `Notification`. */
+  icon?: string
+  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
+  activate?: string
+  /** Renderer handle for onActivate / onAction callbacks. */
+  notifyId?: string
+  actions?: { id: string; text: string; activate?: string }[]
 }
 
 export interface HermesPreviewTarget {
@@ -1173,6 +1322,8 @@ export interface HermesSelectPathsOptions {
   defaultPath?: string
   directories?: boolean
   multiple?: boolean
+  /** Backend profile that produced defaultPath; Electron uses it for WSL gating. */
+  profile?: string
   filters?: Array<{ name: string; extensions: string[] }>
 }
 

@@ -256,8 +256,8 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 
     tools_command(first_install=True, config=config)
 
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
     # video_gen should NOT appear in the manual configure list — it's auto-configured
     assert "video_gen" not in configured
 
@@ -760,6 +760,26 @@ class TestImagegenModelPicker:
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
 
+    def test_plugin_picker_falls_back_when_default_is_missing_from_catalog(self):
+        """A stale cross-provider model must not become an unindexable row."""
+        from hermes_cli.tools_config import _configure_imagegen_model_for_plugin
+
+        catalog = {
+            "openai/gpt-5.4-image-2": {"strengths": "quality"},
+            "google/gemini-3-pro-image": {"strengths": "fallback"},
+        }
+        config = {"image_gen": {"model": "gpt-image-2-medium"}}
+        with (
+            patch(
+                "hermes_cli.tools_config._plugin_image_gen_catalog",
+                return_value=(catalog, "also-missing"),
+            ),
+            patch("hermes_cli.tools_config._prompt_choice", return_value=0),
+        ):
+            _configure_imagegen_model_for_plugin("openrouter", config)
+
+        assert config["image_gen"]["model"] == "openai/gpt-5.4-image-2"
+
 
 
 
@@ -1047,6 +1067,36 @@ def test_agent_disabled_toolsets_still_wins():
     """The other way to say no — a global suppression list applied last."""
     config = _saved_list_from_before()
     config["agent"] = {"disabled_toolsets": sorted(_RECENTLY_SHIPPED_TOOLSETS)}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_json_array_string_form_still_wins():
+    """#86661: the suppression list may arrive as a JSON-array string (e.g.
+    `hermes config set agent.disabled_toolsets '["memory"]'`). It must be
+    parsed, not treated as one dead toolset name that filters nothing."""
+    config = _saved_list_from_before()
+    import json as _json
+
+    config["agent"] = {
+        "disabled_toolsets": _json.dumps(sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
+    """Single-quoted Python-literal form (as written by some config editors)
+    must resolve the same way as the JSON form."""
+    config = _saved_list_from_before()
+    quoted = ", ".join(repr(ts) for ts in sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    config["agent"] = {"disabled_toolsets": f"[{quoted}]"}
 
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 

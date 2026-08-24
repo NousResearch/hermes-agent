@@ -16,6 +16,7 @@ from hermes_cli.config import (
     get_env_path,
     get_hermes_home,
     get_project_root,
+    is_nix_install_method,
     recommended_update_command_for_method,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -63,6 +64,7 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
@@ -89,8 +91,11 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     if method == "docker":
         command = recommended_update_command_for_method(method)
         action = f"run `{command}`, then recreate all Hermes containers"
-    elif method in {"nix", "nixos"}:
+    elif is_nix_install_method(method):
+        # The Nix helper is prose guidance, not a literal shell command.
         action = recommended_update_command_for_method(method)
+    elif method == "apt":
+        action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"
     return (
@@ -118,18 +123,48 @@ def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
 
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
 def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     """Return (journal mode, error) from the file header without opening the database.
 
     Header byte 18 is 2 for WAL and 1 for a rollback journal. Opening the
     database through the SQLite engine — even read-only — creates -wal/-shm
     sidecar files, which a diagnostic must not do.
+
+    The byte read is routed through ``read_header_bytes_preopen`` rather than
+    a bare ``open()``: closing *any* descriptor for a database file cancels
+    this process's POSIX advisory locks on it, so a raw read would drop the
+    locks a live connection is holding (see ``hermes_cli.sqlite_safe_read``).
+    ``run_doctor`` is also called in-process by the dashboard console, which
+    holds live ``SessionDB`` connections. The helper refuses in that case and
+    the mode is reported as unreadable instead.
     """
-    try:
-        with open(db_path, "rb") as fh:
-            header = fh.read(20)
-    except OSError as exc:
-        return None, str(exc)
+    from hermes_cli.sqlite_safe_read import (
+        has_live_connection,
+        read_header_bytes_preopen,
+    )
+
+    header = read_header_bytes_preopen(db_path, length=20)
+    if header is None:
+        if has_live_connection(db_path):
+            return None, "database is open in this process"
+        return None, _unreadable_reason(db_path)
     if len(header) == 0:
         return None, "file is empty"
     if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):
@@ -259,6 +294,60 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
         return "(runtime-gated; loaded only for dispatcher-spawned workers)"
     return ""
 
+
+def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
+    """Return doctor rows for web search/extract provider readiness (#78412).
+
+    Each row is ``(status, label, detail)`` where *status* is ``ok`` or ``warn``.
+    Uses the same active-provider resolvers as the tools, but reports readiness
+    from ``is_available()`` so an explicitly selected but unconfigured backend
+    does not look healthy.
+    """
+    rows: list[tuple[str, str, str]] = []
+    try:
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+        )
+        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+
+        # Doctor runs in a fresh process — bundled web providers register
+        # during plugin discovery, which nothing has triggered yet here.
+        # Without this the registry is empty and every row reads
+        # "no provider selected or registered" (idempotent, cheap on rerun).
+        _ensure_web_plugins_loaded()
+    except Exception:
+        return rows
+
+    for capability, getter in (
+        ("web search", get_active_search_provider),
+        ("web extract", get_active_extract_provider),
+    ):
+        try:
+            provider = getter()
+        except Exception:
+            provider = None
+        if provider is None:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    "(no provider selected or registered)",
+                )
+            )
+            continue
+        name = getattr(provider, "name", None) or type(provider).__name__
+        if _provider_is_ready(provider):
+            rows.append(("ok", capability, f"({name})"))
+        else:
+            rows.append(
+                (
+                    "warn",
+                    capability,
+                    f"({name} selected; provider not configured)",
+                )
+            )
+    return rows
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
@@ -490,6 +579,46 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
     return findings
 
 
+def collect_relay_plugin_cutover_findings(
+    raw_config: dict | None,
+    env_map: dict | None,
+) -> list[tuple[str, str]]:
+    """Return actionable findings for the removed Hermes Relay plugin."""
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_EXPORT_ENV_VARS,
+        RELAY_PLUGINS_CONFIG_ENV,
+        configured_legacy_relay_env_vars,
+        legacy_relay_plugin_keys,
+    )
+
+    findings: list[tuple[str, str]] = []
+    if isinstance(raw_config, dict):
+        plugins = raw_config.get("plugins")
+        if isinstance(plugins, dict):
+            for key in legacy_relay_plugin_keys(plugins.get("enabled")):
+                findings.append(
+                    (
+                        f"plugins.enabled: {key}",
+                        f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}",
+                    )
+                )
+
+    effective_env = dict(env_map or {})
+    for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
+        if name not in effective_env and os.environ.get(name) is not None:
+            effective_env[name] = os.environ[name]
+    if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
+        for name in configured_legacy_relay_env_vars(effective_env):
+            findings.append(
+                (
+                    name,
+                    f"move exporter settings to {RELAY_PLUGINS_CONFIG_ENV}; "
+                    "this variable is now ignored",
+                )
+            )
+    return findings
+
+
 def report_deprecated_config_and_env(
     raw_config: dict | None = None,
     env_map: dict | None = None,
@@ -500,18 +629,26 @@ def report_deprecated_config_and_env(
     (empty when nothing deprecated is present). Does not mutate config/env and
     does not append to the blocking ``issues`` list.
     """
-    findings = collect_deprecated_config_keys(raw_config)
-    findings.extend(collect_deprecated_env_vars(env_map))
+    deprecated = collect_deprecated_config_keys(raw_config)
+    deprecated.extend(collect_deprecated_env_vars(env_map))
+    relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
+    findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
         return findings
 
-    for legacy, replacement in findings:
+    for legacy, replacement in deprecated:
         check_warn(
             f"Deprecated: {legacy}",
             f"(use {replacement} instead)",
         )
         check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
+    for legacy, replacement in relay_cutover:
+        check_warn(
+            f"Breaking Relay migration: {legacy}",
+            f"({replacement})",
+        )
+        check_info(f"Migrate {legacy}: {replacement}")
     return findings
 
 
@@ -2752,11 +2889,26 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
+        # Web is split into search/extract readiness rows so an explicitly
+        # selected but unconfigured backend cannot look healthy (#78412).
+        web_rows = []
+        if "web" in available or any(item.get("name") == "web" for item in unavailable):
+            web_rows = _doctor_web_capability_rows()
+            if web_rows:
+                available = [tid for tid in available if tid != "web"]
+                unavailable = [item for item in unavailable if item.get("name") != "web"]
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
-        
+
+        for status, label, detail in web_rows:
+            if status == "ok":
+                check_ok(label, detail)
+            else:
+                check_warn(label, detail)
+
         for item in unavailable:
             env_vars = item.get("missing_vars") or item.get("env_vars") or []
             if env_vars:
@@ -2769,7 +2921,8 @@ def run_doctor(args):
         # current CLI platform. Default-off or explicitly disabled toolsets may
         # still show warnings above, but should not pollute the final summary.
         api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
-        if api_disabled:
+        web_not_ready = any(status != "ok" for status, _, _ in web_rows)
+        if api_disabled or web_not_ready:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")

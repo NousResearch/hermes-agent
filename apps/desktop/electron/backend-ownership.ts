@@ -7,21 +7,33 @@ export interface BackendIdentity {
 
 export interface BackendOwnershipEntry extends BackendIdentity {
   command?: string
+  /** PID of the Electron parent that spawned this backend, when known. */
+  parentPid?: number
+  /** Start marker of that parent, so a reused PID is not mistaken for it. */
+  parentStartMarker?: string
 }
 
 export interface BackendOwnershipStore {
   read: () => string | null
   write: (contents: string) => void
+  /** Move an unreadable ownership file aside (e.g. rename to `.corrupt`) so
+   *  its contents survive for inspection instead of being rewritten away.
+   *  Optional: stores that can't quarantine simply skip the sweep. */
+  quarantine?: () => void
 }
 
 export interface BackendOwnershipDeps {
   matchesIdentity: (identity: BackendIdentity) => Promise<boolean | undefined>
+  /** True when the recorded parent is still running; undefined when unknown. */
+  matchesParent: (entry: BackendOwnershipEntry) => Promise<boolean | undefined>
   stop: (identity: BackendIdentity) => Promise<void> | void
   store: BackendOwnershipStore
 }
 
 export interface BackendClaim extends BackendIdentity {
   command?: string
+  parentPid?: number
+  parentStartMarker?: string
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -54,12 +66,30 @@ function identitiesMatch(left: BackendIdentity, right: BackendIdentity): boolean
 }
 
 export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[] {
+  return parseBackendOwnershipDetailed(contents).entries
+}
+
+/** Parse result that distinguishes "empty/valid" from "unreadable". A corrupt
+ *  ownership file must NOT read as an empty roster: `reapOrphans` rewrites the
+ *  file with its survivors, so treating garbage as `[]` permanently erased the
+ *  records of still-running backends — the exact shape of the #89298 report
+ *  (ownership file gone, 28 leaked serve processes nothing will ever reap). */
+export function parseBackendOwnershipDetailed(contents: unknown): {
+  corrupt: boolean
+  entries: BackendOwnershipEntry[]
+} {
+  const text = String(contents ?? '')
+
+  if (!text.trim()) {
+    return { corrupt: false, entries: [] }
+  }
+
   let parsed: unknown
 
   try {
-    parsed = JSON.parse(String(contents ?? ''))
+    parsed = JSON.parse(text)
   } catch {
-    return []
+    return { corrupt: true, entries: [] }
   }
 
   const values = Array.isArray(parsed)
@@ -88,12 +118,20 @@ export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[
       entry.command = candidate.command
     }
 
+    if (Number.isInteger(candidate.parentPid) && Number(candidate.parentPid) > 0) {
+      entry.parentPid = candidate.parentPid
+    }
+
+    if (isNonEmptyString(candidate.parentStartMarker)) {
+      entry.parentStartMarker = candidate.parentStartMarker
+    }
+
     if (!entries.some(existing => identitiesMatch(existing, entry))) {
       entries.push(entry)
     }
   }
 
-  return entries
+  return { corrupt: false, entries }
 }
 
 export function serializeBackendOwnership(entries: BackendOwnershipEntry[]): string {
@@ -107,7 +145,8 @@ export function serializeBackendOwnership(entries: BackendOwnershipEntry[]): str
  * cleanup before reporting failure to the caller.
  */
 export function createBackendOwnership(deps: BackendOwnershipDeps) {
-  const read = () => parseBackendOwnership(deps.store.read())
+  const readDetailed = () => parseBackendOwnershipDetailed(deps.store.read())
+  const read = () => readDetailed().entries
   const write = (entries: BackendOwnershipEntry[]) => deps.store.write(serializeBackendOwnership(entries))
 
   return {
@@ -125,6 +164,14 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
 
       if (typeof claim.command === 'string') {
         entry.command = claim.command
+      }
+
+      if (Number.isInteger(claim.parentPid) && Number(claim.parentPid) > 0) {
+        entry.parentPid = claim.parentPid
+      }
+
+      if (isNonEmptyString(claim.parentStartMarker)) {
+        entry.parentStartMarker = claim.parentStartMarker
       }
 
       try {
@@ -157,11 +204,46 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
     },
 
     async reapOrphans(): Promise<number[]> {
-      const entries = read()
+      const { corrupt, entries } = readDetailed()
+
+      // An unreadable ownership file yields zero parsed entries — rewriting
+      // survivors ([]) here would DESTROY the only record of any backends the
+      // corrupt file described, guaranteeing they leak forever (#89298).
+      // Preserve the evidence for inspection and skip the sweep.
+      if (corrupt) {
+        try {
+          deps.store.quarantine?.()
+        } catch {
+          // Quarantine is best-effort; the important part is not rewriting.
+        }
+
+        return []
+      }
+
       const survivors: BackendOwnershipEntry[] = []
       const reaped: number[] = []
 
       for (const entry of entries) {
+        // A backend whose Electron parent is still running is NOT an orphan:
+        // reaping it would kill a live instance's session. This is what stops
+        // a second launch from SIGTERMing the running instance's backend even
+        // if it reaches reapOrphans (see main.ts startHermes + #87295).
+        let parentAlive: boolean | undefined
+
+        try {
+          parentAlive = await deps.matchesParent(entry)
+        } catch {
+          survivors.push(entry)
+
+          continue
+        }
+
+        if (parentAlive === true) {
+          survivors.push(entry)
+
+          continue
+        }
+
         let matches: boolean | undefined
 
         try {

@@ -290,7 +290,7 @@ def main() -> None:
     args = parser.parse_args()
     print(
         json.dumps(
-            verify(json.loads(args.manifest.read_text(encoding="utf-8")), args.candidate_root),
+            verify(json.loads(args.manifest.read_text()), args.candidate_root),
             sort_keys=True,
         )
     )

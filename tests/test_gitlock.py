@@ -55,14 +55,31 @@ def _touch(path: Path, age_seconds: float) -> None:
     os.utime(path, (old, old))
 
 
-def test_clear_removes_stale_shallow_lock(repo: Path) -> None:
+@pytest.fixture
+def no_git_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the process guard: pretend no git process is running.
+
+    The removal tests exercise the sweep itself, not the guard.  Without
+    this pin they are flaky on CI: the parallel per-file test runner is
+    almost always running a real ``git`` subprocess somewhere, the
+    ``pgrep -x git`` probe hits, and the sweep (correctly) refuses to
+    remove anything — failing the assertion for reasons unrelated to the
+    code under test.  The guard's own behavior is pinned separately in
+    :func:`test_clear_skips_sweep_while_git_running`.
+    """
+    import hermes_cli.gitlock as gitlock
+
+    monkeypatch.setattr(gitlock, "_git_proc_running", lambda: False)
+
+
+def test_clear_removes_stale_shallow_lock(repo: Path, no_git_running: None) -> None:
     _touch(repo / ".git" / "shallow.lock", STALE_LOCK_MIN_AGE_SECONDS + 60)
     removed = clear_stale_git_locks(repo)
     assert str(repo / ".git" / "shallow.lock") in removed
     assert not (repo / ".git" / "shallow.lock").exists()
 
 
-def test_clear_removes_all_stale_lock_kinds(repo: Path) -> None:
+def test_clear_removes_all_stale_lock_kinds(repo: Path, no_git_running: None) -> None:
     for name in LOCK_NAMES:
         _touch(repo / ".git" / name, STALE_LOCK_MIN_AGE_SECONDS + 60)
     removed = clear_stale_git_locks(repo)
@@ -71,7 +88,18 @@ def test_clear_removes_all_stale_lock_kinds(repo: Path) -> None:
         assert not (repo / ".git" / name).exists()
 
 
-def test_clear_keeps_young_lock(repo: Path) -> None:
+def test_clear_skips_sweep_while_git_running(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A running git process must block the sweep even for stale locks."""
+    import hermes_cli.gitlock as gitlock
+
+    monkeypatch.setattr(gitlock, "_git_proc_running", lambda: True)
+    _touch(repo / ".git" / "shallow.lock", STALE_LOCK_MIN_AGE_SECONDS + 60)
+    removed = clear_stale_git_locks(repo)
+    assert removed == []
+    assert (repo / ".git" / "shallow.lock").exists()
+
+
+def test_clear_keeps_young_lock(repo: Path, no_git_running: None) -> None:
     _touch(repo / ".git" / "shallow.lock", 1)  # 1 second old — presumably live
     removed = clear_stale_git_locks(repo)
     assert removed == []

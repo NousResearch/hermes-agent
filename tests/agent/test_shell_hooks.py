@@ -251,6 +251,34 @@ class TestCallbackSubprocess:
 
 
 
+    def test_modify_canonical_parsing(self, tmp_path):
+        """Shell hook returning canonical modify is parsed correctly."""
+        script = _write_script(
+            tmp_path, "mod_canon.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "modify", "args": {"path": "/safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"path": "/unsafe"})
+        assert result == {"action": "modify", "args": {"path": "/safe"}}
+
+    def test_modify_claude_code_parsing(self, tmp_path):
+        """Shell hook returning Claude-Code modify is normalised."""
+        script = _write_script(
+            tmp_path, "mod_cc.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "modify", "tool_input": {"content": "safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"content": "danger"})
+        assert result == {"action": "modify", "args": {"content": "safe"}}
+
 
 # ── config parsing ────────────────────────────────────────────────────────
 

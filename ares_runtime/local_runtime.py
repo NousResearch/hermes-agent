@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import importlib.util
 import json
 import os
 import re
@@ -23,7 +22,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Mapping, Sequence
 
 
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -34,6 +33,24 @@ _DEFAULT_UPSTREAM_BRANCH = "main"
 
 class AresLocalRuntimeError(RuntimeError):
     """Raised when the explicit local-runtime contract is not satisfied."""
+
+
+def _desktop_launch_arguments(
+    executable: Path,
+    *,
+    platform: str,
+    environment: Mapping[str, str],
+) -> list[str]:
+    """Prefer XWayland only when Electron would otherwise hide its window."""
+
+    arguments = [str(executable)]
+    is_wayland = environment.get("XDG_SESSION_TYPE", "").strip().lower() == "wayland" or bool(
+        environment.get("WAYLAND_DISPLAY", "").strip()
+    )
+    has_xwayland = bool(environment.get("DISPLAY", "").strip())
+    if platform == "linux" and is_wayland and has_xwayland:
+        arguments.append("--ozone-platform=x11")
+    return arguments
 
 
 @dataclass(frozen=True)
@@ -286,10 +303,8 @@ class AresLocalRuntime:
         environment = os.environ.copy()
         for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"):
             environment.pop(name, None)
-        # Builds run before the candidate has become the active release.  Set
-        # this explicitly instead of inheriting a terminal's Hermes profile so
-        # managed tools and configuration remain private to Ares throughout
-        # candidate construction.
+        # Candidate builds must be profile-isolated and must resolve the Node
+        # version that the Ares runtime owns, never an ambient system Node.
         environment["HERMES_HOME"] = str(self.paths.agent_home)
         environment["UV_PROJECT_ENVIRONMENT"] = str(source / ".venv")
         node_dirs = [self.paths.agent_home / "node" / "bin", self.paths.agent_home / "node"]
@@ -309,7 +324,7 @@ class AresLocalRuntime:
         return environment
 
     def _managed_npm(self) -> str | None:
-        """Resolve (or provision) npm in Ares's private managed Node tree."""
+        """Resolve npm from Ares's private managed Node installation."""
 
         from hermes_constants import (
             bootstrap_hermes_managed_node,
@@ -384,12 +399,14 @@ class AresLocalRuntime:
         if not python.is_file():
             raise AresLocalRuntimeError("stable Ares Python is missing during Context Governor setup")
         program = """
+from pathlib import Path
 import shutil
-from hermes_cli.config import load_config_readonly
+import yaml
 from hermes_constants import get_hermes_home
 from plugins.context_engine._context_governor.key_state import ContextGovernorKeyError, ContextGovernorKeyState
 
-config = load_config_readonly()
+config_path = Path(get_hermes_home()) / 'config.yaml'
+config = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.is_file() else {}
 if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
     binary = shutil.which('context-governor')
     if not binary:
@@ -417,9 +434,9 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             raise AresLocalRuntimeError("`uv` is required to build the stable Ares runtime")
         environment = self._build_environment(source)
         self._run(
-            # Hermes intentionally rejects non-editable wheel builds.  Ares
-            # releases retain their immutable source beside the venv, so its
-            # supported editable development install remains release-safe.
+            # Current Hermes intentionally rejects wheel/non-editable installs.
+            # Ares retains immutable source beside the venv, so its supported
+            # editable install remains release-safe and reproducible.
             [str(uv), "sync", "--locked", "--extra", "all", "--no-dev"],
             cwd=source,
             env=environment,
@@ -439,7 +456,9 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                     "Ares could not provision its managed npm for the Desktop build"
                 )
             desktop_environment = self._build_environment(source)
-            self._run([npm, "ci"], cwd=source, env=desktop_environment)
+            # The Desktop build requires workspace dev dependencies even when
+            # the Python runtime deliberately excludes development extras.
+            self._run([npm, "ci", "--include=dev"], cwd=source, env=desktop_environment)
             self._run([npm, "run", "pack"], cwd=source / "apps" / "desktop", env=desktop_environment)
             if self._desktop_binary(source) is None:
                 raise AresLocalRuntimeError("Ares Desktop build completed without an executable")
@@ -478,11 +497,7 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             os.replace(staging, final_dir)
         except Exception:
             if staging.exists():
-                # Preserve the primary candidate error (for example an
-                # upstream revision that advanced during the fetch).  A
-                # transient file created while Git releases its checkout must
-                # not replace that actionable error with cleanup noise.
-                shutil.rmtree(staging, ignore_errors=True)
+                shutil.rmtree(staging)
             raise
 
     @staticmethod
@@ -508,47 +523,6 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
         return payload if isinstance(payload, dict) else {}
-
-    def _matching_release_candidate(
-        self,
-        *,
-        downstream_revision: str,
-        upstream_remote: str,
-        upstream_branch: str,
-        upstream_revision: str,
-    ) -> str | None:
-        """Return the newest fully materialized candidate for this update tuple.
-
-        A candidate is moved into ``releases`` only after all its build gates
-        pass.  Reusing one after a gateway-handoff failure lets a retry remain
-        an atomic promotion rather than repeating an expensive, already
-        verified build.
-        """
-
-        if not self.paths.releases_dir.is_dir():
-            return None
-        matches: list[tuple[int, str]] = []
-        for directory in self.paths.releases_dir.iterdir():
-            if not directory.is_dir():
-                continue
-            try:
-                revision = self._require_revision(directory.name)
-            except AresLocalRuntimeError:
-                continue
-            metadata = self._release_metadata(revision)
-            if (
-                metadata.get("downstream_revision") == downstream_revision
-                and metadata.get("upstream_revision") == upstream_revision
-                and metadata.get("upstream_remote") == upstream_remote
-                and metadata.get("upstream_branch") == upstream_branch
-            ):
-                try:
-                    self._release_source(revision)
-                except AresLocalRuntimeError:
-                    continue
-                installed_at = metadata.get("installed_at", 0)
-                matches.append((installed_at if isinstance(installed_at, int) else 0, revision))
-        return max(matches, default=(0, ""))[1] or None
 
     def _materialize_upstream_candidate(
         self,
@@ -682,11 +656,7 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             return candidate_revision
         except Exception:
             if staging.exists():
-                # Candidate cleanup must never hide the original failure (for
-                # example, a remote revision moving during the fetch).  A
-                # later invocation uses a distinct staging directory and can
-                # safely retry from immutable revisions.
-                shutil.rmtree(staging, ignore_errors=True)
+                shutil.rmtree(staging)
             raise
 
     def _install_launcher(self) -> None:
@@ -695,8 +665,6 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             f"export ARES_HOME={str(self.paths.agent_home)!r}\n"
-            f"export HERMES_HOME={str(self.paths.agent_home)!r}\n"
-            "export ARES_MANAGED_RUNTIME=1\n"
             f"export ARES_BIN_DIR={str(self.paths.launcher_path.parent)!r}\n"
             f"runtime_root={str(self.paths.current_link)!r}\n"
             "python=\"$runtime_root/.venv/bin/python\"\n"
@@ -722,7 +690,6 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             "[Service]\n"
             "Type=simple\n"
             f"Environment=HERMES_HOME={self.paths.agent_home}\n"
-            "Environment=ARES_MANAGED_RUNTIME=1\n"
             f"ExecStart={self.paths.launcher_path} gateway foreground\n"
             "Restart=on-failure\n"
             "RestartSec=3\n\n"
@@ -833,6 +800,12 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                 except Exception:
                     if old_active is not None:
                         self._atomic_link(self.paths.current_link, old_active[1])
+                        # The launcher resolves through `current`; regenerate it
+                        # before reviving the prior gateway, otherwise a failed
+                        # candidate can strand rollback on its new wrapper.
+                        self._install_launcher()
+                        self._systemctl("enable", "ares-gateway.service", required=False)
+                        self._systemctl("restart", "ares-gateway.service", required=False)
                     else:
                         self.paths.current_link.unlink(missing_ok=True)
                     raise
@@ -858,39 +831,22 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                 ):
                     return current[0], False
             old_active = current
-            revision = self._matching_release_candidate(
+            revision = self._materialize_upstream_candidate(
+                downstream_remote=remote,
                 downstream_revision=downstream_revision,
                 upstream_remote=upstream_remote,
                 upstream_branch=upstream_branch,
                 upstream_revision=upstream_revision,
+                desktop=desktop,
             )
-            if revision is None:
-                revision = self._materialize_upstream_candidate(
-                    downstream_remote=remote,
-                    downstream_revision=downstream_revision,
-                    upstream_remote=upstream_remote,
-                    upstream_branch=upstream_branch,
-                    upstream_revision=upstream_revision,
-                    desktop=desktop,
-                )
             self._activate(revision)
-            # The launcher is part of the selected runtime contract.  Refresh
-            # it before systemd starts the newly selected source so an update
-            # never hands off through stale wrapper code.
-            self._install_launcher()
             if self.paths.unit_path.exists():
                 try:
                     self._install_gateway_unit()
                     self._systemctl("daemon-reload")
                     self._systemctl("restart", "ares-gateway.service")
-                    deadline = time.monotonic() + 15
-                    while time.monotonic() < deadline:
-                        if self._systemctl(
-                            "is-active", "--quiet", "ares-gateway.service", required=False
-                        ):
-                            break
-                        time.sleep(0.5)
-                    else:
+                    time.sleep(1)
+                    if not self._systemctl("is-active", "--quiet", "ares-gateway.service", required=False):
                         raise AresLocalRuntimeError("Ares gateway did not remain active after update")
                 except Exception:
                     if old_active is not None:
@@ -940,10 +896,13 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                 ("Ares runtime imports", probe.returncode == 0, (probe.stderr or "ok").strip())
             )
         context_probe = """
+from pathlib import Path
 import json
-from hermes_cli.config import load_config_readonly
+import yaml
+from hermes_constants import get_hermes_home
 
-config = load_config_readonly()
+config_path = Path(get_hermes_home()) / 'config.yaml'
+config = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.is_file() else {}
 engine = (config or {}).get('context', {}).get('engine', 'compressor')
 if engine == 'ri-context-governor':
     from plugins.context_engine._context_governor import ContextGovernorEngine
@@ -1016,6 +975,74 @@ else:
         else:
             raise AresLocalRuntimeError(f"unsupported gateway action: {action}")
 
+    def auth(self, args, passthrough: Sequence[str]) -> None:
+        """Delegate to hermes auth with Ares home environment."""
+        # Build the hermes auth command line from args
+        hermes_args = ["auth"]
+        
+        # Handle the case where user runs: ares auth spotify status
+        # This gets parsed as auth_action='spotify', provider='status'
+        # But hermes expects: hermes auth spotify status
+        if args.auth_action == "spotify":
+            if args.provider in ("login", "status", "logout"):
+                # User ran: ares auth spotify <action>
+                hermes_args.append("spotify")
+                hermes_args.append(args.provider)
+            elif args.provider is None and args.spotify_action:
+                # User ran: ares auth spotify --spotify-action <action>
+                hermes_args.append("spotify")
+                hermes_args.append(args.spotify_action)
+            else:
+                # User ran: ares auth <action> spotify (e.g., ares auth add spotify)
+                # This is not the normal pattern for spotify but handle it
+                hermes_args.append(args.auth_action)
+                if args.provider:
+                    hermes_args.append(args.provider)
+        elif args.provider == "spotify" and args.auth_action:
+            # User ran: ares auth <action> spotify (e.g., ares auth add spotify)
+            hermes_args.append(args.auth_action)
+            hermes_args.append(args.provider)
+        elif args.provider == "spotify" and not args.auth_action:
+            # User ran: ares auth spotify (with --spotify-action flag)
+            hermes_args.append("spotify")
+            hermes_args.append(args.spotify_action or "login")
+        else:
+            # Normal provider + action pattern
+            if args.auth_action:
+                hermes_args.append(args.auth_action)
+            if args.provider:
+                hermes_args.append(args.provider)
+        
+        if args.auth_type:
+            hermes_args.extend(["--type", args.auth_type])
+        if args.label:
+            hermes_args.extend(["--label", args.label])
+        if args.api_key:
+            hermes_args.extend(["--api-key", args.api_key])
+        if args.portal_url:
+            hermes_args.extend(["--portal-url", args.portal_url])
+        if args.inference_url:
+            hermes_args.extend(["--inference-url", args.inference_url])
+        if args.client_id:
+            hermes_args.extend(["--client-id", args.client_id])
+        if args.scope:
+            hermes_args.extend(["--scope", args.scope])
+        if args.no_browser:
+            hermes_args.append("--no-browser")
+        if args.timeout:
+            hermes_args.extend(["--timeout", str(args.timeout)])
+        if args.insecure:
+            hermes_args.append("--insecure")
+        if args.ca_bundle:
+            hermes_args.extend(["--ca-bundle", args.ca_bundle])
+        if args.target:
+            hermes_args.append(args.target)
+        if args.redirect_uri:
+            hermes_args.extend(["--redirect-uri", args.redirect_uri])
+        # Add any passthrough args
+        hermes_args.extend(passthrough)
+        self._exec_hermes(hermes_args)
+
     def desktop(self, *, rebuild: bool) -> None:
         revision, source = self.active_release()
         if rebuild:
@@ -1030,36 +1057,13 @@ else:
         environment["HERMES_DESKTOP_HERMES_ROOT"] = str(source)
         environment["HERMES_DESKTOP_PYTHON"] = str(self._python_for(source))
         environment["HERMES_DESKTOP_APP_NAME"] = "Ares"
-        subprocess.Popen([str(executable)], cwd=source, env=environment, start_new_session=True)
-        print(f"Ares Desktop started from stable release {revision}")
-
-
-def _role_gate(request: Path) -> int:
-    """Invoke the canonical semantic role-authority gate as one consumer."""
-    gate_path = Path(__file__).resolve().parents[1] / "scripts" / "role_authority_gate.py"
-    if not gate_path.is_file():
-        raise AresLocalRuntimeError(f"canonical role gate unavailable: {gate_path}")
-
-    module_name = "_ares_canonical_role_authority_gate"
-    spec = importlib.util.spec_from_file_location(module_name, gate_path)
-    if spec is None or spec.loader is None:
-        raise AresLocalRuntimeError(f"canonical role gate cannot be loaded: {gate_path}")
-    gate = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = gate
-    try:
-        spec.loader.exec_module(gate)
-        exit_code = gate.main([str(request)])
-    except (OSError, ImportError, AttributeError) as exc:
-        raise AresLocalRuntimeError(f"canonical role gate failed to load: {exc}") from exc
-    finally:
-        sys.modules.pop(module_name, None)
-
-    if exit_code == 2:
-        print(
-            "ares role-gate consumer limitation: " + gate.UNCONNECTED_CONSUMER_NOTE,
-            file=sys.stderr,
+        subprocess.Popen(
+            _desktop_launch_arguments(executable, platform=sys.platform, environment=environment),
+            cwd=source,
+            env=environment,
+            start_new_session=True,
         )
-    return exit_code
+        print(f"Ares Desktop started from stable release {revision}")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1073,8 +1077,8 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--seed-from",
         type=Path,
-        default=Path.home() / ".ares",
-        help="copy settings and credentials from this Ares home only when ~/.ares does not yet exist",
+        default=Path.home() / ".hermes",
+        help="copy settings and credentials from this Hermes home only when ~/.ares does not yet exist",
     )
     setup.add_argument("--no-desktop", action="store_true", help="Do not build or install Desktop")
     setup.add_argument("--no-gateway", action="store_true", help="Do not install or start the Ares gateway service")
@@ -1097,13 +1101,26 @@ def _parser() -> argparse.ArgumentParser:
     desktop.add_argument("--rebuild", action="store_true", help="Build Desktop in the selected stable runtime first")
     subparsers.add_parser("tui", help="Launch the selected TUI")
     subparsers.add_parser("chat", help="Launch the selected Ares CLI")
-    role_gate = subparsers.add_parser(
-        "role-gate",
-        help="Evaluate one request with the canonical semantic role-authority gate",
-    )
-    role_gate.add_argument("--request", type=Path, required=True, help="JSON request file for the role-authority gate")
     gateway = subparsers.add_parser("gateway", help="Manage the selected Ares gateway service")
     gateway.add_argument("action", choices=("start", "stop", "restart", "status", "foreground"))
+    # Auth subcommand - delegates to hermes auth with Ares home
+    auth = subparsers.add_parser("auth", help="Manage pooled provider credentials in Ares home")
+    auth.add_argument("auth_action", nargs="?", default="", help="Auth action (add, list, remove, reset, status, logout, spotify)")
+    auth.add_argument("provider", nargs="?", help="Provider id (e.g., openai-codex, openrouter)")
+    auth.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="Credential type to add")
+    auth.add_argument("--label", help="Optional display label")
+    auth.add_argument("--api-key", help="API key value (otherwise prompted securely)")
+    auth.add_argument("--portal-url", help="Nous portal base URL")
+    auth.add_argument("--inference-url", help="Nous inference base URL")
+    auth.add_argument("--client-id", help="OAuth client id")
+    auth.add_argument("--scope", help="OAuth scope override")
+    auth.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
+    auth.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
+    auth.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
+    auth.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth.add_argument("--target", help="Credential index, entry id, or exact label (for remove)")
+    auth.add_argument("--spotify-action", choices=["login", "status", "logout"], default="login", help="Spotify auth action")
+    auth.add_argument("--redirect-uri", help="Allow-listed localhost redirect URI for your Spotify app")
     parser.add_argument("--version", action="store_true", help="Print the selected stable runtime revision")
     return parser
 
@@ -1151,10 +1168,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             runtime.tui(args.arguments)
         elif args.command == "chat":
             runtime.chat(args.arguments)
-        elif args.command == "role-gate":
-            raise SystemExit(_role_gate(args.request))
         elif args.command == "gateway":
             runtime.gateway(args.action)
+        elif args.command == "auth":
+            runtime.auth(args, passthrough)
         else:
             runtime.tui(())
     except AresLocalRuntimeError as exc:

@@ -20,6 +20,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _patch_sdk_async_client(dummy):
+    """Patch ``AsyncClient`` on whichever httpx module the MCP SDK uses.
+
+    mcp 2.0 moved the SDK's HTTP stack to ``httpx2``, so patching
+    ``httpx.AsyncClient`` no longer intercepts the client Hermes builds for
+    the SDK. Resolve the module the same way production does, via
+    ``tools.mcp_tool.sdk_httpx``, so these tests follow the SDK rather than
+    hardcoding a distribution name.
+    """
+    from tools.mcp_tool import sdk_httpx
+
+    return patch.object(sdk_httpx(), "AsyncClient", dummy)
+
+
 # ---------------------------------------------------------------------------
 # _resolve_client_cert helper
 # ---------------------------------------------------------------------------
@@ -123,7 +137,7 @@ class TestHTTPClientCert:
         async def _drive():
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
                  patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-                 patch("httpx.AsyncClient", DummyAsyncClient), \
+                 _patch_sdk_async_client(DummyAsyncClient), \
                  patch("tools.mcp_tool.streamable_http_client",
                        return_value=DummyTransportCtx()), \
                  patch("tools.mcp_tool.ClientSession", DummySession), \
@@ -271,9 +285,9 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        import httpx
-        with patch.object(httpx, "AsyncClient", DummyAsyncClient):
-            factory(headers={"x": "y"}, timeout=httpx.Timeout(30.0), auth=None)
+        from tools.mcp_tool import sdk_httpx
+        with _patch_sdk_async_client(DummyAsyncClient):
+            factory(headers={"x": "y"}, timeout=sdk_httpx().Timeout(30.0), auth=None)
 
         assert captured_client_kwargs["cert"] == str(cert)
         assert captured_client_kwargs["verify"] is True
@@ -318,8 +332,7 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        import httpx
-        with patch.object(httpx, "AsyncClient", DummyAsyncClient):
+        with _patch_sdk_async_client(DummyAsyncClient):
             factory(headers=None, timeout=None, auth=None)
 
         assert captured_client_kwargs["verify"] == str(ca_bundle)

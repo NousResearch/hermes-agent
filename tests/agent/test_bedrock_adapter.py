@@ -16,6 +16,57 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# botocore import hygiene (anti-flake, Aug 2026)
+#
+# Several tests in this file plant fake ``botocore`` modules in sys.modules
+# (to run without the real package / without touching the AWS credential
+# chain). The real package's ``botocore.exceptions`` lazily executes
+# ``from botocore.vendored import requests`` on FIRST import — if that first
+# import happens while a fake parent is (or was) installed, the chain
+# resolves against a module with no real __path__ and the whole file's
+# exception tests die with ``No module named 'botocore.vendored'`` — but
+# only in interpreter states where nothing imported it earlier (the exact
+# CI-vs-local flake on PR #92617).
+#
+# Two defenses, both required:
+#   1. Import the real exception types HERE, at module scope, before any
+#      test can stub sys.modules. Once cached, later ``from
+#      botocore.exceptions import X`` is a dict hit and can never
+#      re-execute the vendored import under a poisoned parent.
+#   2. An autouse fixture snapshots every boto* sys.modules entry before
+#      each test and restores it after, so no stub window can leak state
+#      into a later test regardless of ordering.
+# ---------------------------------------------------------------------------
+
+try:  # pragma: no cover - exercised implicitly by every exception test
+    from botocore.exceptions import (  # noqa: F401
+        ClientError as _RealClientError,
+        ConnectionClosedError as _RealConnectionClosedError,
+    )
+except Exception:  # botocore genuinely not installed / torn — tests skip
+    _RealClientError = _RealConnectionClosedError = None
+
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Restore every boto* sys.modules entry after each test (see above)."""
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [
+        n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES
+    ]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
 
 @contextmanager
 def _mock_botocore_session(*, return_value=None, side_effect=None):
@@ -923,7 +974,7 @@ class TestIsStaleConnectionError:
 
 
     def test_detects_botocore_read_timeout(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
@@ -962,7 +1013,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
 
     def test_converse_stream_evicts_client_on_stale_error(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,
@@ -988,7 +1039,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
@@ -1040,7 +1091,7 @@ class TestStreamingAccessDeniedDetection:
         )
 
     def test_matches_access_denied_client_error(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import is_streaming_access_denied_error
         assert is_streaming_access_denied_error(self._denied_client_error()) is True
 
@@ -1060,7 +1111,7 @@ class TestCallConverseStreamIamFallback:
     streaming action — InvokeModel-only policies keep working."""
 
     def test_falls_back_to_converse_on_streaming_denial(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,

@@ -459,6 +459,59 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+# Request parameters that Hermes sends on SOME routes only, paired with the
+# providers/hosts where sending them is deliberate.
+#
+# When a host that is NOT in the allowed set rejects one of these fields, the
+# client never put it in the body — the provider's own gateway injected it —
+# so the 400 is a server-side flake rather than a deterministic request-shape
+# error.  See ``_is_server_injected_param_rejection`` and the branch in
+# ``_classify_400``.
+#
+# ``prompt_cache_retention`` is only sent for api.meta.ai and bedrock-mantle
+# hosts (agent/transports/codex.py::_default_prompt_cache_retention_for_request).
+# The Codex OAuth backend rejects it spontaneously on requests that provably
+# never carried it.
+_SERVER_INJECTED_PARAM_SENDERS: Dict[str, tuple] = {
+    "prompt_cache_retention": ("meta", "muse", "msl", "model-api", "bedrock", "mantle"),
+}
+
+
+def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
+    """True when a 400 blames a parameter this route never sends.
+
+    ``error_msg`` is the lowercased, concatenated message text; ``provider`` is
+    the lowercased provider slug.  A match means the rejection cannot be
+    attributed to our own request shape, so the error is transient and retrying
+    the identical request is the correct recovery.
+
+    Deliberately conservative: it fires only for known one-route-only
+    parameters AND only when the current provider is not one of the routes that
+    actually sends them, so a genuine client-side bad parameter (``max_tokens``
+    on a GPT-5 model) still fails fast as a ``format_error``.
+    """
+    if not error_msg:
+        return False
+    provider_slug = (provider or "").strip().lower()
+    for param, senders in _SERVER_INJECTED_PARAM_SENDERS.items():
+        if param not in error_msg:
+            continue
+        # Require the message to actually be a rejection of that parameter,
+        # not an incidental mention.
+        if not (
+            "not supported" in error_msg
+            or "unsupported" in error_msg
+            or "unknown" in error_msg
+            or "unrecognized" in error_msg
+        ):
+            continue
+        if any(sender in provider_slug for sender in senders):
+            # This route sends the field on purpose — a real request error.
+            return False
+        return True
+    return False
+
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -573,6 +626,43 @@ _TIMEOUT_MESSAGE_PATTERNS = [
     "deadline exceeded",
     "operation timed out",
     "upstream timed out",
+]
+
+# Connection-establishment / DNS failure message patterns.  These surface
+# when the exception TYPE is generic (RuntimeError/Exception from a local
+# shim, MCP bridge, subprocess wrapper, or an SDK that re-raises without
+# chaining) so the _TRANSPORT_ERROR_TYPES check never fires, and the error
+# carries no HTTP status.  Without message-level matching they fall through
+# to FailoverReason.unknown, which misses the transport eager-fallback path
+# in the retry loop (unknown retries the same dead endpoint for the full
+# budget before fallback).  Ported from anomalyco/opencode#40707, which hit
+# the same bug shape: serialized midstream errors matched by type only.
+#
+# Deliberately EXCLUDES mid-stream disconnect strings ("connection reset by
+# peer", "peer closed connection", "unexpected eof", "socket hang up") —
+# those belong to _SERVER_DISCONNECT_PATTERNS, whose classification step
+# runs later and routes large sessions to context-overflow compression.
+# A connection that was never established cannot be a server-side overflow
+# rejection, so these are safe to classify as plain retryable transport.
+_CONNECTION_MESSAGE_PATTERNS = [
+    # TCP connect failures
+    "connection refused",
+    "econnrefused",
+    "no route to host",
+    "network is unreachable",
+    "network unreachable",
+    # DNS resolution failures (Python, glibc, macOS, Node bridge phrasings)
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname provided",
+    "getaddrinfo failed",
+    "getaddrinfo enotfound",
+    "eai_again",
+    # Node/undici bridge generic network failure (MCP servers, local shims)
+    "fetch failed",
+    "failed to fetch",
+    # Envoy/proxy upstream connect failure (cloud gateways)
+    "upstream connect error",
 ]
 
 # Transport error type names
@@ -1273,11 +1363,16 @@ def _classify_by_status(
         # server_error" rule turns one bad request into a retry flood.
         # Detect the unambiguous request-validation signals (in either the
         # message text or the structured error code) and fail fast.
+        #
+        # Exception: a parameter WE never sent on this route was injected by
+        # the provider/proxy itself, so the rejection is not deterministic and
+        # the generic retryable-5xx handling is correct. Mirrors the guard in
+        # _classify_400 — see _is_server_injected_param_rejection.
         if (
             any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
             or error_code.lower() in {"invalid_request_error", "unknown_parameter",
                                       "unsupported_parameter"}
-        ):
+        ) and not _is_server_injected_param_rejection(error_msg, provider):
             return result_fn(
                 FailoverReason.format_error,
                 retryable=False,
@@ -1434,6 +1529,25 @@ def _classify_400(
             FailoverReason.invalid_encrypted_content,
             retryable=True,
             should_fallback=False,
+        )
+
+    # Server-injected parameter rejection: a 400 blaming a request field the
+    # client never sent.  MUST be checked BEFORE the request-validation branch
+    # below, which would otherwise class it as a deterministic format_error and
+    # abort the turn.
+    #
+    # Observed live on the Codex OAuth backend (chatgpt.com/backend-api/codex):
+    # it intermittently adds ``prompt_cache_retention`` to its own upstream
+    # call and then rejects it, so a byte-identical request succeeds on retry
+    # (measured ~20% failure over n=20 on a minimal 1-message request that
+    # provably carried no cache parameters).  Retrying is the correct and only
+    # recovery; failing fast burnt an entire large-context request per attempt.
+    if _is_server_injected_param_rejection(error_msg, provider):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            # The request shape was fine — never route this into compression.
+            should_compress=False,
         )
 
     # Request-validation errors (unsupported / unknown parameter) MUST be
@@ -1792,6 +1906,16 @@ def _classify_by_message(
     # loop rebuilds the client instead of treating the turn as an empty
     # model response.
     if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    # Connection-establishment / DNS failure message patterns — same shim
+    # problem as the timeout patterns above: the wrapping exception type is
+    # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
+    # fall through to FailoverReason.unknown. Classified as timeout (the
+    # transport bucket) so the retry loop's eager transport fallback and
+    # client rebuild apply. Never routes to compression: a connection that
+    # was never established is not a context-overflow signal.
+    if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)
 
     return None

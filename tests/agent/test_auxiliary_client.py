@@ -1071,7 +1071,10 @@ class TestOpenRouterPaidLaneGuard:
     def test_is_free_model(self):
         from agent.auxiliary_client import _is_free_model
         assert _is_free_model("nvidia/nemotron-3-ultra-550b-a55b:free")
+        # Stealth-preview SKUs are free-tier without a :free suffix (issue #91843).
+        assert _is_free_model("stealth/ox-alpha")
         assert not _is_free_model("google/gemini-3.6-flash")
+        assert not _is_free_model("my-stealth/model")
         assert not _is_free_model("")
         assert not _is_free_model(None)
 
@@ -2933,6 +2936,14 @@ class TestCodexAdapterPromptCacheKey:
             base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
             model=model,
         )
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
+    def test_meta_endpoint_includes_prompt_cache_retention(self):
+        adapter, captured = self._build_adapter(base_url="https://api.meta.ai/v1", model="muse-spark-1.2")
         adapter.create(messages=[
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "hi"},

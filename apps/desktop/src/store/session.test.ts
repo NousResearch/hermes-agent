@@ -15,6 +15,8 @@ vi.mock('@/hermes', () => ({
   setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => setUnreadRemote(id, unread, profile)
 }))
 
+import { makeSessionInfo } from '../test/session-info'
+
 import {
   $activeSessionId,
   $connection,
@@ -27,6 +29,7 @@ import {
   commitWorkspaceCwdForSelectedSession,
   getRememberedRoute,
   getRememberedSessionId,
+  getSessionOwnerHint,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -37,6 +40,7 @@ import {
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setSessions,
   shouldMigrateComposerScope,
   touchSessionActivity,
@@ -49,23 +53,35 @@ import {
   publishSessionState
 } from './session-states'
 
-const session = (over: Partial<SessionInfo>): SessionInfo => ({
-  archived: false,
-  cwd: null,
-  ended_at: null,
-  id: 'live',
-  input_tokens: 0,
-  is_active: false,
-  last_active: 0,
-  message_count: 0,
-  model: null,
-  output_tokens: 0,
-  preview: null,
-  source: null,
-  started_at: 0,
-  title: null,
-  tool_call_count: 0,
-  ...over
+const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
+
+describe('session owner hints', () => {
+  it('keeps identical session ids separate across connection and profile owners', () => {
+    const sourceA = { connectionId: 'source-a', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-a' }
+    const sourceB = { connectionId: 'source-b', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-b' }
+
+    setSessionOwnerHint('same-session', sourceA)
+    setSessionOwnerHint('same-session', sourceB)
+
+    expect(getSessionOwnerHint('same-session', sourceA)).toEqual(sourceA)
+    expect(getSessionOwnerHint('same-session', sourceB)).toEqual(sourceB)
+    expect(getSessionOwnerHint('same-session')).toBeUndefined()
+  })
+
+  it('bounds owner hints and evicts the oldest scoped identity', () => {
+    for (let index = 0; index < 257; index += 1) {
+      setSessionOwnerHint(`bounded-${index}`, {
+        connectionId: 'bounded-source',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      })
+    }
+
+    const scope = { connectionId: 'bounded-source', profile: 'worker' }
+    expect(getSessionOwnerHint('bounded-0', scope)).toBeUndefined()
+    expect(getSessionOwnerHint('bounded-256', scope)).toMatchObject({ connectionId: 'bounded-source' })
+  })
 })
 
 describe('computed $attentionSessionIds', () => {
@@ -900,6 +916,32 @@ describe('rememberedSessionProfile', () => {
 
   it('falls back to the active profile for a session not yet in the list', () => {
     expect(rememberedSessionProfile([], 'uncached', 'research')).toBe('research')
+  })
+
+  it('consults the owner hint for a hidden session absent from the list (Bot Chat 4001 class)', () => {
+    // Bot Mode's canonical chats are born hidden: no sidebar row ever exists,
+    // so without the hint the router would fall back to the ACTIVE profile and
+    // land prompt.submit on a backend that never owned the session.
+    setSessionOwnerHint('hidden-bot-chat', { connectionId: 'local', mode: 'local', profile: 'developer' })
+
+    expect(rememberedSessionProfile([], 'hidden-bot-chat', 'default')).toBe('developer')
+  })
+
+  it('prefers the routed targetProfile over the route profile in the hint fallback', () => {
+    setSessionOwnerHint('hidden-remote-chat', {
+      connectionId: 'ssh-1',
+      profile: 'default',
+      targetProfile: 'clippy'
+    })
+
+    expect(rememberedSessionProfile([], 'hidden-remote-chat', 'default')).toBe('clippy')
+  })
+
+  it('still prefers a real session row over the hint', () => {
+    setSessionOwnerHint('rowed-session', { connectionId: 'local', profile: 'wrong-hint' })
+    const sessions = [session({ id: 'rowed-session', profile: 'right-owner' })]
+
+    expect(rememberedSessionProfile(sessions, 'rowed-session', 'default')).toBe('right-owner')
   })
 
   it('normalizes a blank active profile to default', () => {

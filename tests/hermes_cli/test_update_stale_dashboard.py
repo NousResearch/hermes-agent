@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -254,18 +255,21 @@ class TestWindowsWmicEncoding:
     `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
-    @pytest.mark.windows_only
-    def test_wmic_invoked_with_utf8_ignore_errors(self):
-        """The wmic subprocess.run call must pass encoding='utf-8' and
-        errors='ignore' so the subprocess reader thread cannot raise
-        UnicodeDecodeError on non-UTF-8 wmic output.
+    def test_wmic_routed_through_bounded_probe_run_with_ignore_errors(self):
+        """The wmic scan must go through ``bounded_probe_run`` — which owns
+        the deterministic UTF-8 decode (#17049) and the deadlock-safe
+        post-timeout cleanup (#87134) — with errors='ignore' so undecodable
+        bytes from a non-UTF-8 system code page (e.g. cp936 on zh-CN) don't
+        take down the reader thread, and with a finite timeout.
 
-        ``windows_only``: the branch also imports ``windows_hide_flags()`` and
-        the crash it guards is a real cp936/wmic decode — neither reproducible
-        with a patched ``sys.platform`` on Linux.
+        Cross-platform: nothing Windows-native executes once the probe is
+        mocked, so ``sys.platform`` is patched rather than gating the test
+        to the Windows-only CI job.
         """
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = subprocess.CompletedProcess(
+                args=["wmic"],
                 returncode=0,
                 stdout=(
                     "CommandLine=python -m hermes_cli.main dashboard\n"
@@ -273,21 +277,29 @@ class TestWindowsWmicEncoding:
                 ),
                 stderr="",
             )
-            _find_stale_dashboard_pids()
+            pids = _find_stale_dashboard_pids()
 
-        # The wmic call is the first subprocess.run invocation.
-        assert mock_run.called, "subprocess.run was not invoked"
-        wmic_call = mock_run.call_args_list[0]
+        assert mock_probe.called, "bounded_probe_run was not invoked"
+        wmic_call = mock_probe.call_args_list[0]
+        assert wmic_call.args[0][0] == "wmic"
         kwargs = wmic_call.kwargs
-        assert kwargs.get("encoding") == "utf-8", (
-            "encoding kwarg must be 'utf-8' so wmic output is decoded "
-            "deterministically rather than via the implicit reader-thread "
-            "default that crashes on non-UTF-8 locales (#17049)."
-        )
         assert kwargs.get("errors") == "ignore", (
             "errors kwarg must be 'ignore' so undecodable bytes don't take "
             "down the reader thread (#17049)."
         )
+        assert kwargs.get("timeout"), (
+            "the scan must carry a finite timeout — bounded_probe_run "
+            "guarantees the post-timeout cleanup is bounded too (#87134)."
+        )
+        assert pids == [12345]
+
+    def test_probe_failure_fails_open_to_empty_list(self):
+        """A spawn failure or timeout (bounded_probe_run → None) must yield
+        an empty scan, not an AttributeError on result.stdout (#87134)."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run",
+                   return_value=None):
+            assert _find_stale_dashboard_pids() == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")
@@ -325,6 +337,30 @@ class TestSupervisedBackendRestart:
         assert "✓ restarted systemd service hermes-serve.service" in out
         # Supervised restart succeeded — no manual hint.
         assert "when you're ready" not in out
+
+    def test_already_restarted_unit_is_left_untouched(self):
+        """Review on #83595: hermes update's systemd fleet-restart loop may
+        already have restarted this PID's owning unit directly (e.g. a
+        Serve-only install). Passing it via already_restarted_units must
+        skip killing/restarting it again here."""
+        live = self._live()
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path",
+                          return_value="/system.slice/hermes-serve.service"), \
+             patch.object(live, "_get_systemd_service_for_pid",
+                          return_value="hermes-serve.service"), \
+             patch.object(live, "_try_restart_systemd_service") as restart, \
+             patch("os.kill") as kill, \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, already_restarted_units={"hermes-serve"}
+            )
+
+        kill.assert_not_called()
+        restart.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
 
 
 class TestManualBackendRespawn:
@@ -649,3 +685,87 @@ class TestCmdlineCapture:
         """
         live = self._live()
         assert live._dashboard_cmdline_for_pid(123) is None
+
+
+class TestPostUpdateStaleModuleReload:
+    """Regression tests for the post-update stale-module ImportError.
+
+    ``hermes update`` runs in the PRE-pull Python process. When the update
+    adds a new symbol to ``hermes_cli._subprocess_compat`` (as #87134 added
+    ``bounded_probe_run``), the post-update dashboard cleanup's lazy
+    ``from hermes_cli._subprocess_compat import bounded_probe_run`` hits the
+    stale cached module and crashes with ImportError — after the code update
+    itself already succeeded. The cleanup entry point must force-reload the
+    process-scan modules first (PR #87757 + ZIP-path widening).
+    """
+
+    def test_cleanup_reloads_before_scanning(self):
+        """_finish_dashboard_update_cleanup must reload the process-scan
+        modules BEFORE calling _kill_stale_dashboard_processes, on every
+        call path (git update and ZIP fallback both route here)."""
+        from hermes_cli import update_cmd
+
+        order: list[str] = []
+        with patch.object(
+            update_cmd, "_reload_process_scan_modules",
+            side_effect=lambda: order.append("reload"),
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            side_effect=lambda **kw: order.append("kill") or {"unrecovered": []},
+        ):
+            update_cmd._finish_dashboard_update_cleanup([])
+
+        assert order == ["reload", "kill"]
+
+    def test_node_failures_skip_reload_and_kill(self):
+        """A failed Node refresh leaves the running dashboard untouched —
+        no reload, no kill (existing safety rule preserved)."""
+        from hermes_cli import update_cmd
+
+        with patch.object(update_cmd, "_reload_process_scan_modules") as mock_reload, \
+             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill:
+            update_cmd._finish_dashboard_update_cleanup(["dashboard"])
+
+        mock_reload.assert_not_called()
+        mock_kill.assert_not_called()
+
+    def test_reload_restores_missing_symbol(self):
+        """Simulate the stale-module state: strip ``bounded_probe_run`` off
+        the cached module object (what an old pre-#87134 module looks like)
+        and verify the reload restores it from disk — the exact state the
+        Windows update crash came from."""
+        import hermes_cli._subprocess_compat as compat
+        from hermes_cli import update_cmd
+
+        assert hasattr(compat, "bounded_probe_run")
+        try:
+            delattr(compat, "bounded_probe_run")
+            assert not hasattr(compat, "bounded_probe_run")
+
+            update_cmd._reload_process_scan_modules()
+
+            stale = sys.modules["hermes_cli._subprocess_compat"]
+            assert hasattr(stale, "bounded_probe_run")
+        finally:
+            importlib.reload(sys.modules["hermes_cli._subprocess_compat"])
+            importlib.reload(sys.modules["hermes_cli.dashboard_procs"])
+
+    def test_reload_failure_is_nonfatal(self):
+        """A reload failure must log and continue, never raise — the cleanup
+        step runs after the update already succeeded."""
+        from hermes_cli import update_cmd
+
+        with patch("importlib.reload", side_effect=RuntimeError("boom")):
+            update_cmd._reload_process_scan_modules()  # must not raise
+
+    def test_config_reload_list_includes_process_scan_modules(self):
+        """PR #87757's half: the git-path pre-cleanup reload also refreshes
+        the process-scan modules (belt to the entry-point suspenders)."""
+        from hermes_cli import update_cmd
+
+        reloaded: list[str] = []
+        with patch("importlib.reload", side_effect=lambda m: reloaded.append(m.__name__)):
+            update_cmd._reload_config_modules()
+
+        assert "hermes_cli._subprocess_compat" in reloaded
+        assert "hermes_cli.dashboard_procs" in reloaded

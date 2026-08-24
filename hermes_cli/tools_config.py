@@ -31,7 +31,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
-from tools.tool_backend_helpers import fal_key_is_configured
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -715,6 +715,7 @@ TOOL_CATEGORIES = {
                     # specific binary (e.g. a local build); there is no
                     # version-pin env var.
                 ],
+                "computer_use_backend": "cua",
                 "post_setup": "cua_driver",
             },
         ],
@@ -769,6 +770,23 @@ def _cua_driver_cmd() -> str:
     return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
 
 
+def _cua_version_summary(raw: str, *, limit: int = 120) -> str:
+    """Reduce a driver's ``--version`` output to one short status line.
+
+    A binary selected by ``HERMES_CUA_DRIVER_CMD`` is not obliged to answer
+    ``--version`` the way cua-driver does. Pointing the override at, say,
+    ``cmd.exe`` yields a multi-line banner plus a prompt, which used to be
+    interpolated verbatim into ``cua-driver: installed at ... (<version>)``
+    and shattered the one-line summary. Keep the first non-empty line and
+    bound its length.
+    """
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if text:
+            return text[:limit]
+    return ""
+
+
 def _resolved_cua_driver_cmd() -> Optional[str]:
     """Resolve cua-driver exactly as the runtime and Desktop status do."""
     from tools.computer_use.cua_backend import resolve_cua_driver_cmd
@@ -790,6 +808,49 @@ def _cua_driver_env() -> dict:
         return cua_driver_child_env()
     except Exception:
         return dict(os.environ)
+
+
+_CUA_DRIVER_CONTRACT_CACHE: dict = {}
+
+
+def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
+    """Inspect whether an installed driver supports Hermes' runtime contract."""
+    import time
+
+    from tools.computer_use.cua_backend import cua_driver_runtime_contract_status
+
+    resolved = binary or _resolved_cua_driver_cmd()
+    if not resolved:
+        return cua_driver_runtime_contract_status(None)
+    try:
+        stat = os.stat(resolved)
+        fingerprint = (resolved, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return cua_driver_runtime_contract_status(resolved)
+
+    now = time.monotonic()
+    if (
+        _CUA_DRIVER_CONTRACT_CACHE.get("fingerprint") == fingerprint
+        and now - _CUA_DRIVER_CONTRACT_CACHE.get("checked_at", 0.0) < 30.0
+    ):
+        return dict(_CUA_DRIVER_CONTRACT_CACHE["state"])
+
+    state = cua_driver_runtime_contract_status(resolved)
+    _CUA_DRIVER_CONTRACT_CACHE.update(
+        fingerprint=fingerprint,
+        checked_at=now,
+        state=dict(state),
+    )
+    return state
+
+
+def _cua_driver_install_ready() -> bool:
+    """Return whether an existing driver needs no install-time repair."""
+    if not _cua_driver_contract_status().get("ready"):
+        return False
+    if sys.platform == "win32":
+        return _cua_driver_autostart_registered_windows()
+    return True
 
 
 def _pip_install(
@@ -927,9 +988,9 @@ def install_cua_driver(
     The upstream installer always pulls the latest release tag, so re-running
     it is the canonical way to upgrade. We expose two modes:
 
-    * ``upgrade=False`` — original post-setup behaviour: skip if already
-      installed, install otherwise. Used by the toolset enable flow where
-      we don't want to surprise the user with a network fetch.
+    * ``upgrade=False`` — keep a compatible Cua Driver 0.20 installation,
+      repair an old or incomplete installation, and install when missing.
+      Used by the toolset enable flow.
     * ``upgrade=True`` — always re-run the installer (or call ``cua-driver
       update`` if the binary supports it). Used by ``hermes update`` and
       by ``hermes computer-use install --upgrade``.
@@ -978,6 +1039,20 @@ def install_cua_driver(
     driver_cmd = _cua_driver_cmd()
     binary = _resolved_cua_driver_cmd()
 
+    # An explicit override is authoritative even when it is currently broken.
+    # Do not install or replace the standard system driver: that cannot repair
+    # the configured path and would mutate an unrelated installation.
+    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    if override and not binary:
+        _print_warning(
+            "    HERMES_CUA_DRIVER_CMD does not resolve to an executable: "
+            f"{override}"
+        )
+        _print_info(
+            "    Fix or unset the override before running computer-use install."
+        )
+        return False
+
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
         if not _cua_install_target_writable():
@@ -997,8 +1072,20 @@ def install_cua_driver(
         # baked in by CD and errors cleanly on missing-arch assets.
         return _run_cua_driver_installer(label="Installing")
 
-    # Already installed and caller didn't ask to upgrade → just confirm.
-    if binary and not upgrade:
+    # An installed driver that fails Hermes' runtime contract (version floor,
+    # missing manifest verbs) is repaired regardless of the caller's mode.
+    # Hermes' own minimum requirement IS the confirmation that an upgrade is
+    # needed, so the ``upgrade=True`` path must not defer to the driver's
+    # ``check-update`` verb here — a cached/indeterminate "no update" answer
+    # would otherwise pin users on an unusable driver forever (observed:
+    # 0.19.3 installs hard-failing every computer_use call after the 0.20
+    # contract landed, with `hermes update` declining to refresh).
+    contract = _cua_driver_contract_status(binary) if binary else None
+    repair_existing = bool(binary and contract and not contract.get("ready"))
+
+    # A compatible existing installation needs no download. Finish the small
+    # host-specific setup that the upstream installer normally owns.
+    if binary and not upgrade and not repair_existing:
         try:
             version = subprocess.run(
                 [binary, "--version"],
@@ -1009,6 +1096,11 @@ def install_cua_driver(
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
         if is_windows:
+            if not _repair_cua_driver_autostart_windows(binary, verbose=False):
+                _print_warning(
+                    "    cua-driver is compatible, but Windows autostart repair failed."
+                )
+                return False
             _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
             _print_info("    Windows/SmartScreen may prompt the first time it runs.")
         elif is_linux:
@@ -1018,6 +1110,21 @@ def install_cua_driver(
             _print_info("      System Settings > Privacy & Security > Accessibility")
             _print_info("      System Settings > Privacy & Security > Screen Recording")
         return True
+
+    if repair_existing:
+        version = contract.get("version") or "unknown version"
+        reason = contract.get("reason") or "required runtime features are missing"
+        _print_warning(
+            f"    Found cua-driver {version}, but Hermes cannot use its current "
+            f"runtime contract: {reason}."
+        )
+        if os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip():
+            _print_info(
+                "    Update the binary selected by HERMES_CUA_DRIVER_CMD, or unset "
+                "the override and run: hermes computer-use install --upgrade"
+            )
+            return False
+        _print_info("    Repairing it with the current upstream installer.")
 
     # upgrade=True path — refresh to the latest upstream release.
     if not _cua_install_target_writable():
@@ -1047,7 +1154,7 @@ def install_cua_driver(
     # `hermes computer-use install --upgrade` falls through and re-runs the
     # installer as before.
     confirmed_version = None
-    if binary:
+    if binary and not repair_existing:
         _state = None
         try:
             from tools.computer_use.cua_backend import cua_driver_update_check
@@ -1098,11 +1205,20 @@ def install_cua_driver(
         before = ""
 
     ok = _run_cua_driver_installer(
-        label="Refreshing",
+        label="Repairing" if repair_existing else "Refreshing",
         verbose=False,
         pin_version=confirmed_version,
         show_progress=show_installer_progress,
     )
+    if ok and repair_existing:
+        repaired = _cua_driver_contract_status()
+        if not repaired.get("ready"):
+            _print_warning(
+                "    cua-driver was reinstalled, but its runtime contract is still "
+                f"unusable: {repaired.get('reason') or 'unknown error'}."
+            )
+            _print_info("    Run: hermes computer-use doctor")
+            return False
     if ok and before:
         try:
             after = subprocess.run(
@@ -1596,9 +1712,10 @@ def _run_cua_driver_installer(
                         pass
                 if result.returncode != 0:
                     logger.debug("cua-driver installer output:\n%s", result.stdout)
-        if result.returncode == 0 and shutil.which(driver_cmd):
+        installed_binary = _resolved_cua_driver_cmd()
+        if result.returncode == 0 and installed_binary:
             if is_windows and not _repair_cua_driver_autostart_windows(
-                driver_cmd, verbose=verbose
+                installed_binary, verbose=verbose
             ):
                 _print_warning(
                     "    cua-driver installed, but auto-start was not registered."
@@ -2550,11 +2667,17 @@ def _get_platform_tools(
     # Honor agent.disabled_toolsets from config.yaml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all
     # platforms without per-platform toolset configuration.  This runs
-    # last so it overrides everything above.
+    # last so it overrides everything above.  The value may arrive as a
+    # JSON-array string (e.g. "['memory']") from `hermes config set` or a
+    # JSON-mode editor save; parse it so the list is not silently dead (#86661).
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
     if disabled_toolsets:
-        disabled_set = {str(ts) for ts in disabled_toolsets}
+        from agent.skill_utils import parse_config_string_list
+
+        disabled_set = {
+            name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()
+        }
         enabled_toolsets -= disabled_set
 
     # #38798: if this platform was explicitly configured but every toolset name
@@ -2668,14 +2791,16 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     agent_cfg = config.get("agent")
     if isinstance(agent_cfg, dict):
         disabled_toolsets = agent_cfg.get("disabled_toolsets")
-        if isinstance(disabled_toolsets, list) and disabled_toolsets:
+        if disabled_toolsets:
+            from agent.skill_utils import parse_config_string_list
+
+            parsed_disabled = parse_config_string_list(disabled_toolsets)
             newly_enabled = enabled_toolset_keys - preserved_entries
             if newly_enabled:
                 remaining = [
-                    ts for ts in disabled_toolsets
-                    if str(ts) not in newly_enabled
+                    ts for ts in parsed_disabled if ts not in newly_enabled
                 ]
-                if remaining != disabled_toolsets:
+                if remaining != parsed_disabled:
                     agent_cfg["disabled_toolsets"] = remaining
 
     save_config(config)
@@ -3004,18 +3129,29 @@ def _plugin_web_search_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "web_backend": name,
-            "web_search_plugin_name": name,
-        }
-        # Optional pass-through fields the schema can opt into.
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
-        rows.append(row)
+        # A schema may expose tier ``variants`` (e.g. Exa/Parallel free
+        # keyless endpoint vs paid SDK) — flatten the base row plus each
+        # variant into separate picker rows sharing the same backend name,
+        # distinguished by ``web_tier`` (persisted to
+        # ``web.provider_tier.<name>`` on selection).
+        schemas = [schema] + [
+            v for v in (schema.get("variants") or []) if isinstance(v, dict)
+        ]
+        for entry in schemas:
+            row = {
+                "name": entry.get("name", provider.display_name),
+                "badge": entry.get("badge", ""),
+                "tag": entry.get("tag", ""),
+                "env_vars": entry.get("env_vars", []),
+                "web_backend": name,
+                "web_search_plugin_name": name,
+            }
+            if entry.get("web_tier"):
+                row["web_tier"] = entry["web_tier"]
+            # Optional pass-through fields the schema can opt into.
+            if entry.get("post_setup"):
+                row["post_setup"] = entry["post_setup"]
+            rows.append(row)
     return rows
 
 
@@ -3274,9 +3410,9 @@ _POST_SETUP_INSTALLED: dict = {
     # Only entries here are gated; other post_setup hooks (kittentts,
     # piper, agent_browser, etc.) keep their existing behaviour. Add an
     # entry when (a) the post_setup is the ONLY install side-effect for
-    # a no-key provider, and (b) an installed-state check is cheap and
-    # doesn't trigger a heavy import.
-    "cua_driver": lambda: _resolved_cua_driver_cmd() is not None,
+    # a no-key provider, and (b) an installed-state check is local, bounded,
+    # and doesn't trigger a heavy import.
+    "cua_driver": lambda: _cua_driver_install_ready(),
 }
 
 
@@ -3386,7 +3522,7 @@ _POST_SETUP_READY: dict = {
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),
-    "cua_driver": lambda: _resolved_cua_driver_cmd() is not None,
+    "cua_driver": lambda: _cua_driver_install_ready(),
 }
 
 
@@ -3663,6 +3799,44 @@ def _configure_tool_category(
         _configure_provider(providers[provider_idx], config, force_fresh=force_fresh)
 
 
+def _web_tier_matches(provider: dict, config: dict) -> bool:
+    """Return True when a web picker row's tier matches the configured tier.
+
+    Tiered rows (Exa/Parallel Free vs Paid) share one ``web_backend`` name
+    and differ only in ``web_tier``. The configured tier lives at
+    ``web.provider_tier.<backend>`` (set on selection). Matching rules:
+
+    - row has no ``web_tier`` → tier-agnostic row, matches (legacy rows)
+    - configured tier set     → must equal the row's tier
+    - configured tier unset   → "auto": the effective tier is paid when the
+      row's env vars are all present, free otherwise — highlight the row
+      the runtime would actually use
+    """
+    row_tier = provider.get("web_tier")
+    if not row_tier:
+        return True
+    web_cfg = config.get("web")
+    if not isinstance(web_cfg, dict):
+        web_cfg = {}
+    tiers = web_cfg.get("provider_tier")
+    if not isinstance(tiers, dict):
+        tiers = {}
+    configured = str(tiers.get(provider["web_backend"], "") or "").lower().strip()
+    if configured in ("free", "paid"):
+        return configured == row_tier
+    # Auto: mirror plugins.web.keyless_mcp.use_keyless — key present → paid.
+    try:
+        from agent.web_search_provider import get_provider_env
+
+        key_var = {"exa": "EXA_API_KEY", "parallel": "PARALLEL_API_KEY"}.get(
+            provider["web_backend"]
+        )
+        has_key = bool(get_provider_env(key_var)) if key_var else False
+    except Exception:
+        has_key = False
+    return row_tier == ("paid" if has_key else "free")
+
+
 def _is_provider_active(
     provider: dict,
     config: dict,
@@ -3698,39 +3872,56 @@ def _is_provider_active(
             image_cfg = config.get("image_gen", {})
             if isinstance(image_cfg, dict):
                 configured_provider = image_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider not in {None, "", "fal", NOUS_MANAGED_PROVIDER}:
                     return False
-                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                if (
+                    configured_provider != NOUS_MANAGED_PROVIDER
+                    and image_cfg.get("use_gateway") is not None
+                    and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+                ):
                     return False
             return feature.managed_by_nous
         if managed_feature == "video_gen":
             video_cfg = config.get("video_gen", {})
             if isinstance(video_cfg, dict):
                 configured_provider = video_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
+                if configured_provider not in {None, "", "fal", NOUS_MANAGED_PROVIDER}:
                     return False
-                if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
+                if (
+                    configured_provider != NOUS_MANAGED_PROVIDER
+                    and video_cfg.get("use_gateway") is not None
+                    and not is_truthy_value(video_cfg.get("use_gateway"), default=False)
+                ):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
-                and cfg_get(config, "tts", "provider") == provider["tts_provider"]
+                and cfg_get(config, "tts", "provider")
+                in {provider["tts_provider"], NOUS_MANAGED_PROVIDER}
             )
         if provider.get("stt_provider"):
             return (
                 feature.managed_by_nous
-                and cfg_get(config, "stt", "provider") == provider["stt_provider"]
+                and cfg_get(config, "stt", "provider")
+                in {provider["stt_provider"], NOUS_MANAGED_PROVIDER}
             )
         if "browser_provider" in provider:
             # Browser Use mode is a driver on top of the provider (it attaches
             # to the provider's CDP endpoint), so the provider row stays
             # active alongside the Browser Use row.
             current = cfg_get(config, "browser", "cloud_provider")
-            return feature.managed_by_nous and provider["browser_provider"] == current
+            return feature.managed_by_nous and current in {
+                provider["browser_provider"],
+                NOUS_MANAGED_PROVIDER,
+            }
         if provider.get("web_backend"):
             current = cfg_get(config, "web", "backend")
-            return feature.managed_by_nous and current == provider["web_backend"]
+            return (
+                feature.managed_by_nous
+                and current in {provider["web_backend"], NOUS_MANAGED_PROVIDER}
+                and _web_tier_matches(provider, config)
+            )
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
@@ -3778,7 +3969,12 @@ def _is_provider_active(
             return False
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
-        return current == provider["web_backend"]
+        if current != provider["web_backend"]:
+            return False
+        return _web_tier_matches(provider, config)
+    if provider.get("computer_use_backend"):
+        current = cfg_get(config, "computer_use", "backend")
+        return current == provider["computer_use_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})
         if not isinstance(image_cfg, dict):
@@ -3869,7 +4065,10 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
         config[cfg_key] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        # The saved model may belong to another provider (shared config key)
+        # and the catalog default itself may have drifted — never index the
+        # catalog with a key it doesn't contain.
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     # Put current model at the top so the cursor lands on it by default.
@@ -3953,7 +4152,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
         config["image_gen"] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]
@@ -4037,20 +4236,19 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
 def _select_plugin_image_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
     """Persist a plugin-backed image generation provider selection.
 
-    ``use_gateway`` mirrors :func:`_select_plugin_video_gen_provider`: a
-    provider picked through the Nous-managed flow must keep routing through
-    the gateway. Hardcoding ``False`` here silently flipped Nous-managed FAL
-    picks onto the user's personal FAL_KEY — _write_provider_config sets
-    ``image_gen.use_gateway = True`` for a managed pick, and this function
-    runs AFTER it, so the hardcoded value clobbered the managed flag.
+    ``use_gateway=True`` marks a provider picked through the Nous-managed
+    flow: the stored selection becomes ``image_gen.provider: nous`` (the
+    single provider string the runtime switches on). BYOK picks store the
+    plugin name. Any legacy ``use_gateway`` key is removed so old-config
+    read-time shims cannot override the fresh selection.
     """
     img_cfg = config.setdefault("image_gen", {})
     if not isinstance(img_cfg, dict):
         img_cfg = {}
         config["image_gen"] = img_cfg
-    img_cfg["provider"] = plugin_name
-    img_cfg["use_gateway"] = use_gateway
-    _print_success(f"  image_gen.provider set to: {plugin_name}")
+    img_cfg["provider"] = NOUS_MANAGED_PROVIDER if use_gateway else plugin_name
+    img_cfg.pop("use_gateway", None)
+    _print_success(f"  image_gen.provider set to: {img_cfg['provider']}")
     _configure_imagegen_model_for_plugin(plugin_name, config)
     if plugin_name == "xai":
         _configure_xai_imagine_storage("image_gen", config)
@@ -4100,7 +4298,9 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
         config["video_gen"] = cur_cfg
     current_model = cur_cfg.get("model") or default_model
     if current_model not in catalog:
-        current_model = default_model
+        # Same guard as the image pickers: a stale cross-provider model or a
+        # drifted default must not become an unindexable catalog key.
+        current_model = default_model if default_model in catalog else next(iter(catalog))
 
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]
@@ -4188,14 +4388,19 @@ def _configure_stt_model(stt_provider: str, config: dict) -> None:
 
 
 def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
-    """Persist a plugin-backed video generation provider selection."""
+    """Persist a plugin-backed video generation provider selection.
+
+    Mirrors :func:`_select_plugin_image_gen_provider`: managed picks store
+    ``video_gen.provider: nous``; BYOK picks store the plugin name; any
+    legacy ``use_gateway`` key is removed.
+    """
     vid_cfg = config.setdefault("video_gen", {})
     if not isinstance(vid_cfg, dict):
         vid_cfg = {}
         config["video_gen"] = vid_cfg
-    vid_cfg["provider"] = plugin_name
-    vid_cfg["use_gateway"] = use_gateway
-    _print_success(f"  video_gen.provider set to: {plugin_name}")
+    vid_cfg["provider"] = NOUS_MANAGED_PROVIDER if use_gateway else plugin_name
+    vid_cfg.pop("use_gateway", None)
+    _print_success(f"  video_gen.provider set to: {vid_cfg['provider']}")
     _configure_videogen_model_for_plugin(plugin_name, config)
     if plugin_name == "xai":
         _configure_xai_imagine_storage("video_gen", config)
@@ -4206,32 +4411,45 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     This is the pure, non-interactive core of :func:`_configure_provider` —
     it writes ``tts.provider`` / ``browser.cloud_provider`` / ``web.backend``
-    and the ``use_gateway`` flags based on the provider's markers, but does
-    NOT prompt for env vars, run post-setup hooks, gate on Nous auth, or run
-    interactive model pickers. Both the CLI configurator and the desktop GUI
-    ``PUT .../provider`` endpoint call through here so there is one code path.
+    based on the provider's markers, but does NOT prompt for env vars, run
+    post-setup hooks, gate on Nous auth, or run interactive model pickers.
+    Both the CLI configurator and the desktop GUI ``PUT .../provider``
+    endpoint call through here so there is one code path.
+
+    Selection model: every row writes exactly ONE provider string per
+    category. Managed "Nous Subscription" rows write ``nous``; BYOK rows
+    write the vendor name. ``use_gateway`` is no longer written — a fresh
+    pick removes any legacy key from the touched section so the read-time
+    legacy shim (use_gateway: true ⇒ nous) cannot override the new choice.
     """
+    def _set_selection(section_key: str, name_key: str, vendor_value) -> None:
+        section = config.setdefault(section_key, {})
+        if not isinstance(section, dict):
+            section = {}
+            config[section_key] = section
+        section[name_key] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else vendor_value
+        )
+        section.pop("use_gateway", None)
+
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
-        tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("tts", "provider", provider["tts_provider"])
 
     # Set STT provider in config if applicable
     if provider.get("stt_provider"):
-        stt_cfg = config.setdefault("stt", {})
-        stt_cfg["provider"] = provider["stt_provider"]
-        stt_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("stt", "provider", provider["stt_provider"])
 
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         browser_cfg = config.setdefault("browser", {})
-        if bp:
-            browser_cfg["cloud_provider"] = bp
-        # Browser Use mode (browser.backend) composes with the provider —
-        # switching providers keeps the driver choice intact.
-        browser_cfg["use_gateway"] = bool(managed_feature)
+        if bp or managed_feature:
+            # Browser Use mode (browser.backend) composes with the provider —
+            # switching providers keeps the driver choice intact.
+            _set_selection("browser", "cloud_provider", bp)
+        else:
+            browser_cfg.pop("use_gateway", None)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
@@ -4239,23 +4457,61 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
-        web_cfg["use_gateway"] = bool(managed_feature)
+        _set_selection("web", "backend", provider["web_backend"])
+        web_cfg = config.get("web")
+        if isinstance(web_cfg, dict):
+            if provider.get("web_tier"):
+                tiers = web_cfg.setdefault("provider_tier", {})
+                if isinstance(tiers, dict):
+                    tiers[provider["web_backend"]] = provider["web_tier"]
+            else:
+                stale_tiers = web_cfg.get("provider_tier")
+                if isinstance(stale_tiers, dict):
+                    stale_tiers.pop(provider["web_backend"], None)
 
-    # For tools without a specific config key (e.g. image_gen), still
-    # track use_gateway so the runtime knows the user's intent.
+    # Set computer_use backend in config if applicable
+    if provider.get("computer_use_backend"):
+        cu_cfg = config.setdefault("computer_use", {})
+        cu_cfg["backend"] = provider["computer_use_backend"]
+
+    # Managed rows for categories without a marker handled above (e.g. the
+    # image_gen/video_gen "Nous Subscription" rows carry only
+    # managed_nous_feature) still persist the "nous" selection.
     if managed_feature and managed_feature not in {"web", "tts", "stt", "browser"}:
-        config.setdefault(managed_feature, {})["use_gateway"] = True
+        section = config.setdefault(managed_feature, {})
+        if isinstance(section, dict):
+            section["provider"] = NOUS_MANAGED_PROVIDER
+            section.pop("use_gateway", None)
     elif not managed_feature:
-        # User picked a non-gateway provider — find which category this
-        # belongs to and clear use_gateway if it was previously set.
-        for cat_key, cat in TOOL_CATEGORIES.items():
-            if provider in cat.get("providers", []):
-                section = config.get(cat_key)
-                if isinstance(section, dict) and section.get("use_gateway"):
-                    section["use_gateway"] = False
-                break
+        # User picked a non-gateway provider — clear any stale legacy
+        # use_gateway key on the category so the read-time shim cannot
+        # override the fresh selection. Resolve the category from the
+        # provider's own markers first (plugin-injected rows are NOT in
+        # TOOL_CATEGORIES' hardcoded provider lists and previously skipped
+        # this clear), then fall back to the category-membership walk.
+        marker_sections = {
+            "tts_provider": "tts",
+            "stt_provider": "stt",
+            "browser_provider": "browser",
+            "web_backend": "web",
+            "image_gen_plugin_name": "image_gen",
+            "imagegen_backend": "image_gen",
+            "video_gen_plugin_name": "video_gen",
+        }
+        cleared = False
+        for marker, section_key in marker_sections.items():
+            if provider.get(marker) or marker in provider:
+                section = config.get(section_key)
+                if isinstance(section, dict):
+                    section.pop("use_gateway", None)
+                cleared = True
+        if not cleared:
+            for cat_key, cat in TOOL_CATEGORIES.items():
+                if provider in cat.get("providers", []):
+                    section = config.get(cat_key)
+                    if isinstance(section, dict):
+                        section.pop("use_gateway", None)
+                    break
 
 
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
@@ -4287,15 +4543,17 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     # Plugin-registered image/video gen backends record the provider name in
     # their own config section. Write that here (without the interactive
     # model picker the CLI runs afterwards — model choice is a separate GUI
-    # flow).
+    # flow). Managed picks store the "nous" selection.
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
         img_cfg = config.setdefault("image_gen", {})
         if not isinstance(img_cfg, dict):
             img_cfg = {}
             config["image_gen"] = img_cfg
-        img_cfg["provider"] = plugin_name
-        img_cfg["use_gateway"] = bool(managed_feature)
+        img_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else plugin_name
+        )
+        img_cfg.pop("use_gateway", None)
 
     video_plugin = provider.get("video_gen_plugin_name")
     if video_plugin:
@@ -4303,15 +4561,22 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
         if not isinstance(vid_cfg, dict):
             vid_cfg = {}
             config["video_gen"] = vid_cfg
-        vid_cfg["provider"] = video_plugin
-        vid_cfg["use_gateway"] = bool(managed_feature)
+        vid_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else video_plugin
+        )
+        vid_cfg.pop("use_gateway", None)
 
-    # In-tree FAL imagegen backend: keep image_gen.provider on the legacy
-    # path (mirrors _configure_provider).
-    if provider.get("imagegen_backend"):
+    # In-tree FAL imagegen backend (BYOK): always persist the explicit
+    # ``image_gen.provider: fal`` selection — historically this row could
+    # leave the provider key unset, making a deliberate BYOK pick
+    # indistinguishable from a never-configured install.
+    if provider.get("imagegen_backend") and not managed_feature:
         img_cfg = config.setdefault("image_gen", {})
-        if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-            img_cfg["provider"] = "fal"
+        if not isinstance(img_cfg, dict):
+            img_cfg = {}
+            config["image_gen"] = img_cfg
+        img_cfg["provider"] = "fal"
+        img_cfg.pop("use_gateway", None)
 
 
 def _configure_provider(
@@ -4365,8 +4630,10 @@ def _configure_provider(
     # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        tts_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["tts_provider"]
+        )
+        tts_cfg.pop("use_gateway", None)
 
     # Set STT provider in config if applicable
     if provider.get("stt_provider"):
@@ -4414,13 +4681,15 @@ def _configure_provider(
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
-            # In-tree FAL is the only non-plugin backend today. Keep
-            # image_gen.provider clear so the dispatch shim falls through
-            # to the legacy FAL path.
+            # In-tree FAL is the only non-plugin backend today. Persist the
+            # explicit selection: "nous" for a managed row, "fal" for BYOK.
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
-        # STT providers prompt for model selection after provider pick
+            if isinstance(img_cfg, dict):
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
+        # STT providers prompt for model selection after backend pick
         # (skipped for managed rows — the gateway pins the model).
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -4498,8 +4767,11 @@ def _configure_provider(
         if backend:
             _configure_imagegen_model(backend, config)
             img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
+            if isinstance(img_cfg, dict):
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
         # STT providers prompt for model selection after env vars are in.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -4874,22 +5146,33 @@ def _reconfigure_provider(
             )
             return
 
+    # Selection model (mirrors _write_provider_config): every row writes ONE
+    # provider string per category — "nous" for managed rows, the vendor name
+    # for BYOK rows — and drops any legacy use_gateway key so the read-time
+    # shim (use_gateway: true ⇒ nous) cannot override the fresh pick.
     if provider.get("tts_provider"):
         tts_cfg = config.setdefault("tts", {})
-        tts_cfg["provider"] = provider["tts_provider"]
-        tts_cfg["use_gateway"] = bool(managed_feature)
+        tts_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["tts_provider"]
+        )
+        tts_cfg.pop("use_gateway", None)
         _print_success(f"  TTS provider set to: {provider['tts_provider']}")
 
     if provider.get("stt_provider"):
         stt_cfg = config.setdefault("stt", {})
-        stt_cfg["provider"] = provider["stt_provider"]
-        stt_cfg["use_gateway"] = bool(managed_feature)
+        stt_cfg["provider"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["stt_provider"]
+        )
+        stt_cfg.pop("use_gateway", None)
         _print_success(f"  STT provider set to: {provider['stt_provider']}")
 
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         browser_cfg = config.setdefault("browser", {})
-        if bp == "local":
+        if managed_feature:
+            browser_cfg["cloud_provider"] = NOUS_MANAGED_PROVIDER
+            _print_success(f"  Browser cloud provider set to: {bp or 'nous'}")
+        elif bp == "local":
             browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
@@ -4897,7 +5180,7 @@ def _reconfigure_provider(
             _print_success(f"  Browser cloud provider set to: {bp}")
         # Browser Use mode (browser.backend) composes with the provider —
         # switching providers keeps the driver choice intact.
-        browser_cfg["use_gateway"] = bool(managed_feature)
+        browser_cfg.pop("use_gateway", None)
 
     if provider.get("browser_backend"):
         browser_cfg = config.setdefault("browser", {})
@@ -4907,22 +5190,43 @@ def _reconfigure_provider(
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
-        web_cfg["use_gateway"] = bool(managed_feature)
-        _print_success(f"  Web backend set to: {provider['web_backend']}")
+        web_cfg["backend"] = (
+            NOUS_MANAGED_PROVIDER if managed_feature else provider["web_backend"]
+        )
+        web_cfg.pop("use_gateway", None)
+        if provider.get("web_tier"):
+            tiers = web_cfg.setdefault("provider_tier", {})
+            if isinstance(tiers, dict):
+                tiers[provider["web_backend"]] = provider["web_tier"]
+            _print_success(
+                f"  Web backend set to: {provider['web_backend']} "
+                f"({provider['web_tier']} tier)"
+            )
+        else:
+            stale_tiers = web_cfg.get("provider_tier")
+            if isinstance(stale_tiers, dict):
+                stale_tiers.pop(provider["web_backend"], None)
+            _print_success(f"  Web backend set to: {provider['web_backend']}")
+
+    # Set computer_use backend in config if applicable
+    if provider.get("computer_use_backend"):
+        cu_cfg = config.setdefault("computer_use", {})
+        cu_cfg["backend"] = provider["computer_use_backend"]
+        _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
 
     if managed_feature and managed_feature not in {"web", "tts", "stt", "browser"}:
         section = config.setdefault(managed_feature, {})
         if not isinstance(section, dict):
             section = {}
             config[managed_feature] = section
-        section["use_gateway"] = True
+        section["provider"] = NOUS_MANAGED_PROVIDER
+        section.pop("use_gateway", None)
     elif not managed_feature:
         for cat_key, cat in TOOL_CATEGORIES.items():
             if provider in cat.get("providers", []):
                 section = config.get(cat_key)
-                if isinstance(section, dict) and section.get("use_gateway"):
-                    section["use_gateway"] = False
+                if isinstance(section, dict):
+                    section.pop("use_gateway", None)
                 break
 
     if not env_vars:
@@ -4947,8 +5251,14 @@ def _reconfigure_provider(
             if backend == "fal":
                 img_cfg = config.setdefault("image_gen", {})
                 if isinstance(img_cfg, dict):
-                    img_cfg["provider"] = "fal"
-                    img_cfg["use_gateway"] = False
+                    # A managed (Nous Subscription) row also carries
+                    # imagegen_backend="fal" — store the "nous" selection
+                    # for it, "fal" for BYOK, and drop any legacy
+                    # use_gateway key.
+                    img_cfg["provider"] = (
+                        NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                    )
+                    img_cfg.pop("use_gateway", None)
         # STT providers prompt for model selection on reconfig too.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -4990,8 +5300,12 @@ def _reconfigure_provider(
         if backend == "fal":
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict):
-                img_cfg["provider"] = "fal"
-                img_cfg["use_gateway"] = False
+                # Same managed-row guard as the no-env-vars branch above:
+                # never clobber a Nous-managed pick back onto direct keys.
+                img_cfg["provider"] = (
+                    NOUS_MANAGED_PROVIDER if managed_feature else "fal"
+                )
+                img_cfg.pop("use_gateway", None)
 
     # STT providers prompt for model selection on reconfig too.
     if provider.get("stt_provider") and not managed_feature:

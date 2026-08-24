@@ -22,7 +22,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
+        "are supported for models trained on them. Image captures include a "
+        "shareable `screenshot_path`; when the user asks to receive the image "
+        "and the current surface supports attachments, deliver that file using "
+        "the platform's native MEDIA attachment syntax. Do not automatically "
+        "send screenshots used only for computer control. Works on any window — "
         "hidden, minimized, or behind another app. Requires cua-driver to "
         "be installed."
     ),
@@ -283,6 +287,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "enum": ["semantic_v2", "dom_refs_v1"],
                 "description": "Typed-browser snapshot format; semantic_v2 is the default.",
             },
+            "include_screenshot": {
+                "type": "boolean",
+                "description": (
+                    "For cua_browser_state, include the current browser screenshot "
+                    "as image content in the tool result. Defaults to false. "
+                    "Applies to snapshot calls only: passing pid/window_id makes "
+                    "the call a binding, which carries no page content and "
+                    "reports screenshot_deferred instead."
+                ),
+            },
             "query": {"type": "string", "description": "Optional browser-state query."},
             "scope_ref": {"type": "string", "description": "Optional current ref to scope a snapshot."},
             "continuation": {"type": "string", "description": "Continuation minted by the current snapshot."},
@@ -291,8 +305,12 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "enum": ["isolated_new", "isolated_named", "existing_profile"],
                 "description": (
                     "Browser preparation mode. existing_profile is decided by "
-                    "cua-driver's immutable permission mode: standard requires a "
-                    "certified protected host; explicit Hermes YOLO uses a private "
+                    "cua-driver's immutable permission mode: in standard mode "
+                    "it requires the user's config opt-in "
+                    "computer_use.grant_existing_profile: true (if refused, "
+                    "report that key to the user — you cannot grant it); "
+                    "bounded mode authorizes via the reviewed capability "
+                    "manifest; explicit Hermes YOLO uses a private "
                     "unrestricted daemon."
                 ),
             },
@@ -315,6 +333,14 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["insert_text", "keystrokes"],
                 "description": "Delivery form for cua_browser_type; defaults to insert_text.",
+            },
+            "replace": {
+                "type": "boolean",
+                "description": (
+                    "For cua_browser_type, select the target's complete value "
+                    "before typing so the supplied text replaces it. Defaults "
+                    "to false; true with empty text clears the field."
+                ),
             },
             "dialog_id": {"type": "string", "description": "Opaque page-dialog capability."},
             "prompt_text": {"type": "string", "description": "Optional text for a page prompt dialog."},

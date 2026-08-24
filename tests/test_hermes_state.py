@@ -1133,6 +1133,26 @@ class TestPruneSessions:
         pruned = db.prune_sessions(older_than_days=90)
         assert pruned == 0
         assert db.get_session("active") is not None
+        assert db.count_open_prune_matches(older_than_days=90) == 1
+
+    def test_open_prune_match_count_applies_other_filters(self, db):
+        db.create_session(session_id="matching-open", source="cron")
+        db.create_session(session_id="other-source", source="cli")
+        db.create_session(session_id="ended", source="cron")
+        db.end_session("ended", "completed")
+        old = time.time() - 200 * 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id IN (?, ?, ?)",
+            (old, "matching-open", "other-source", "ended"),
+        )
+        db._conn.commit()
+
+        assert db.count_open_prune_matches(
+            older_than_days=90, source="cron", archived=False
+        ) == 1
+        assert {row["id"] for row in db.list_prune_candidates(
+            older_than_days=90, source="cron", archived=False
+        )} == {"ended"}
 
 
 

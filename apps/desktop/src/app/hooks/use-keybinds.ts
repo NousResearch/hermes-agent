@@ -11,15 +11,17 @@ import {
   cycleTreeTabInFocusedZone,
   isPaneVisible,
   layoutHasRootSide,
-  togglePaneVisible
+  togglePaneVisible,
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
-import { toggleCommandPalette } from '@/store/command-palette'
+import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
   $findInPage,
   findNext as findNextMatch,
@@ -35,6 +37,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -190,7 +193,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
 
-    'nav.commandPalette': toggleCommandPalette,
+    // On the Settings overlay, ⌘K scopes to settings search; the second press
+    // (or Esc) still closes as usual via toggle.
+    'nav.commandPalette': () => {
+      if (!$commandPaletteOpen.get() && appViewForPath(location.pathname) === 'settings') {
+        openCommandPalettePage('settings')
+
+        return
+      }
+
+      toggleCommandPalette()
+    },
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
@@ -204,6 +217,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.
+      setWorkspaceScope('sessions')
       $newChatProfile.set(null)
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
@@ -234,7 +248,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
+    'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and

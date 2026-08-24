@@ -13,6 +13,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
@@ -195,7 +196,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   async function handleDelete(endpoint: CustomEndpoint) {
-    if (!window.confirm(`Delete ${endpoint.name}?`)) {
+    // This panel is not internationalized at all — keep the literal it had.
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
       return
     }
 

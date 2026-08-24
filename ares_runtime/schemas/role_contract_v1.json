@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/role_contract_v1.json",
+  "title": "RoleContractV1",
+  "description": "Stable responsibility, context, capability and output contract for a profile-backed or on-demand specialist role. A persona description alone is not this contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares profile identity + Libraries/profile-runtime; contract artifact validated by recursive-agent-contracts",
+  "x-storage-rule": "Immutable projection bound to an existing profile identity. No role table or profile secret duplication.",
+  "required": [
+    "schema_version",
+    "role_id",
+    "role_kind",
+    "durable_ownership",
+    "objective",
+    "unique_questions",
+    "mandatory_triggers",
+    "exclusions",
+    "context_policy",
+    "capability_profile",
+    "mutation_authority",
+    "output_schema_ref",
+    "stop_conditions",
+    "typed_failures",
+    "handoff_rules",
+    "model_eligibility",
+    "evaluation",
+    "recorded_at",
+    "contract_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "role_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "role_kind": {
+      "type": "string",
+      "enum": [
+        "permanent",
+        "on_demand"
+      ]
+    },
+    "profile_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "durable_ownership": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unique_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "mandatory_triggers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "context_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "withheld_until_commit": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_context_class": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "standard",
+            "large",
+            "source_complete"
+          ]
+        }
+      },
+      "required": [
+        "allowed",
+        "withheld_until_commit",
+        "forbidden",
+        "max_context_class"
+      ]
+    },
+    "capability_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discoverable_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "required_permit_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "forbidden_capability_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "secret_policy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "task_scoped_lease",
+            "profile_local_explicit"
+          ]
+        }
+      },
+      "required": [
+        "discoverable_capabilities",
+        "required_permit_classes",
+        "forbidden_capability_classes",
+        "secret_policy"
+      ]
+    },
+    "mutation_authority": {
+      "type": "string",
+      "enum": [
+        "none",
+        "sandbox_only",
+        "proposal_only",
+        "scoped_canonical_mutation",
+        "effect_execution_only"
+      ]
+    },
+    "output_schema_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "typed_failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "handoff_rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "model_eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "disqualifying_negative_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "preferred_capability_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback_capability_class": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "required_capabilities",
+        "disqualifying_negative_capabilities",
+        "preferred_capability_class",
+        "fallback_capability_class"
+      ]
+    },
+    "merge_prohibition": {
+      "type": "string",
+      "description": "Evidence-based reason this role cannot be merged with another role without losing ownership or independence.",
+      "minLength": 1
+    },
+    "supersedes_contract_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "corpus_ref": {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        "promotion_gates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "minimum_cases": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "corpus_ref",
+        "promotion_gates",
+        "minimum_cases"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

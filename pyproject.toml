@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.20.1"
+version = "0.20.5"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -181,7 +181,7 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
@@ -245,7 +245,15 @@ pty = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+#
+# mcp 2.0.0 implements MCP revision 2026-07-28 and moved its own HTTP stack
+# from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp_tool.py
+# and tools/mcp_oauth_manager.py import it by name to build the client objects
+# they hand to the SDK, so it is pinned here explicitly rather than left to
+# resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
+# unaffected — the two distributions install side by side under different
+# module names.
+mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
@@ -256,7 +264,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3:
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious

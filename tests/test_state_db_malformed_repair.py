@@ -70,6 +70,27 @@ def test_duplicate_fts_makes_every_statement_fail(tmp_path):
     assert is_malformed_db_error(exc_info.value)
 
 
+def test_generic_malformed_open_does_not_attempt_schema_surgery(
+    tmp_path, monkeypatch
+):
+    """A generic SQLITE_CORRUPT error has no schema/FTS provenance."""
+    db_path = tmp_path / "state.db"
+    repair_calls = []
+
+    def _generic_corruption(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _generic_corruption)
+    monkeypatch.setattr(
+        hermes_state,
+        "repair_state_db_schema",
+        lambda *args, **kwargs: repair_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+        SessionDB(db_path=db_path)
+
+    assert repair_calls == []
 
 
 def test_repaired_db_search_works(tmp_path):

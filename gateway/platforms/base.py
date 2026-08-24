@@ -1939,11 +1939,17 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # guard keeps multi-part extensions intact — for ``archive.tar.gz`` the
 # ``.`` after ``tar`` is followed by ``g``, so the match must extend to
 # ``.gz`` instead of stopping early at ``.tar``.
+# CJK full-width punctuation accepted as MEDIA path terminators, mirroring the
+# ASCII set in the looka below. Chinese-language agent output naturally writes
+# ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without
+# these, the lookahead fails and the attachment is silently dropped (#88038).
+_MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
+
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"'*_,;:)\]}\[]|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
+    r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE,
 )
 
@@ -1979,7 +1985,7 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
-    r'''(?=[`"'\s,;:)\]}]|MEDIA:|$)'''
+    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE,
 )
@@ -3076,6 +3082,14 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Owning profile for a multiplexed secondary adapter, installed by
+        # ``GatewayRunner._configure_profile_adapter``. Adapter-level session
+        # keys must carry the profile namespace, but ``source.profile`` is only
+        # stamped later by the runner's profile message handler — so at adapter
+        # ingress every bot in a multiplexed gateway would otherwise derive the
+        # same ``agent:main:`` key (see ``_session_key_profile``). ``None`` on a
+        # primary/single-profile adapter, which keeps the legacy namespace.
+        self._owner_profile: Optional[str] = None
         # Optional authorization check, registered by GatewayRunner. Used by
         # adapters that fetch external context (e.g. Slack thread history) to
         # mark senders not on the allowlist as unverified in LLM context,
@@ -3210,6 +3224,7 @@ class BasePlatformAdapter(ABC):
         self,
         chat_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
     ) -> bool:
         """Whether this adapter supports native streaming-draft updates.
 
@@ -3218,6 +3233,10 @@ class BasePlatformAdapter(ABC):
         same ``draft_id`` and growing text.  Adapters that implement
         ``send_draft`` should return True here for the chat types where the
         platform supports it (Telegram restricts drafts to private DMs).
+
+        ``chat_id`` lets multi-platform adapters (relay) resolve the answer
+        through the chat's own negotiated capability profile instead of the
+        primary identity's; single-platform adapters may ignore it.
 
         Default implementation returns False.  Stream consumers fall back to
         the edit-based path (``send`` + ``edit_message``) when this returns
@@ -3451,7 +3470,15 @@ class BasePlatformAdapter(ABC):
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(platform=self.platform.value, **kwargs)
+            # Multiplexed secondary adapters share the process-level runtime
+            # status file with the primary adapter.  Their runner stamps a
+            # namespaced key (``<profile>:<platform>``) so one profile's fatal
+            # state cannot overwrite another profile's healthy entry.
+            platform_key = (
+                getattr(self, "_runtime_status_platform_key", None)
+                or self.platform.value
+            )
+            write_runtime_status(platform=platform_key, **kwargs)
         except Exception as exc:
             # Use getattr so object.__new__(...) test harnesses that skip __init__
             # don't blow up on attribute access.
@@ -3520,6 +3547,7 @@ class BasePlatformAdapter(ABC):
         """
         from gateway.status import (
             acquire_scoped_lock,
+            scoped_lock_owner_label,
             take_over_scoped_lock_holder,
         )
 
@@ -3567,11 +3595,21 @@ class BasePlatformAdapter(ABC):
                     return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-        message = (
-            f'{resource_desc} already in use'
-            + (f' (PID {owner_pid})' if owner_pid else '')
-            + '. Stop the other gateway first.'
-        )
+        # OOF-3: scoped locks are machine-global, so the holder can be a
+        # different profile's gateway. A bare PID gives an operator no way to
+        # tell WHICH profile owns the credential — name it when we can.
+        owner_profile = scoped_lock_owner_label(existing)
+        if owner_profile:
+            holder = f" by the '{owner_profile}' profile gateway"
+            holder += f" (PID {owner_pid})" if owner_pid else ""
+            remedy = (
+                f" Stop that gateway first "
+                f"(hermes --profile {owner_profile} gateway stop)."
+            )
+        else:
+            holder = f" (PID {owner_pid})" if owner_pid else ""
+            remedy = " Stop the other gateway first."
+        message = f"{resource_desc} already in use{holder}.{remedy}"
         logger.error('[%s] %s', self.name, message)
         self._set_fatal_error(f'{scope}_lock', message, retryable=True)
         return False
@@ -3721,6 +3759,57 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def set_owner_profile(self, profile_name: Optional[str]) -> None:
+        """Declare which multiplex profile owns this adapter.
+
+        Installed by ``GatewayRunner._configure_profile_adapter`` for secondary
+        profiles. Read by :meth:`_session_key_profile` so adapter-level keys
+        land in this profile's namespace instead of the shared ``agent:main:``.
+        """
+        name = (profile_name or "").strip() or None
+        self._owner_profile = None if name == "default" else name
+
+    def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
+        """Resolve the profile namespace for an adapter-derived session key.
+
+        Adapter ingress runs BEFORE the runner stamps ``source.profile``
+        (``_make_profile_message_handler``), so the session store's resolver
+        falls back to the *active* profile and every bot in a multiplexed
+        gateway derives the same ``agent:main:`` key. Batching dicts,
+        ``_active_sessions`` and the busy-session guard are keyed on that
+        string, so two profiles sharing a chat id — which is EVERY Telegram DM,
+        where ``chat.id`` is the user's own id — collide on one lane.
+
+        Resolution order:
+          1. ``source.profile`` when already stamped (relay/connector ingress).
+          2. ``self._owner_profile`` — this adapter's own credential owner.
+          3. The session store's resolver (active profile / no-multiplex None).
+
+        ``getattr`` throughout: adapters are routinely constructed without
+        ``BasePlatformAdapter.__init__`` (``object.__new__`` in tests, subclasses
+        that build their own state), so no attribute here may be assumed to
+        exist — see the ``object.__new__`` pitfall in AGENTS.md. Every candidate
+        is also type-checked: a duck-typed/mock session store returns a truthy
+        non-string from ``_resolve_profile_for_key``, which would otherwise be
+        interpolated straight into the key as ``agent:<MagicMock ...>:``.
+        """
+        for candidate in (
+            getattr(source, "profile", None) if source is not None else None,
+            getattr(self, "_owner_profile", None),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        store = getattr(self, "_session_store", None)
+        resolver = getattr(store, "_resolve_profile_for_key", None) if store else None
+        if callable(resolver):
+            try:
+                resolved = resolver(source)
+            except Exception:
+                return None
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved
+        return None
     
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
@@ -5978,12 +6067,11 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        _sk_store = getattr(self, "_session_store", None)
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=_sk_store._resolve_profile_for_key(event.source) if _sk_store else None,
+            profile=self._session_key_profile(event.source),
         )
         expected_session_key = str(
             (event.metadata or {}).get("gateway_session_key") or ""
@@ -6782,7 +6870,7 @@ class BasePlatformAdapter(ABC):
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
-        except Exception as e:
+        except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
@@ -6804,6 +6892,14 @@ class BasePlatformAdapter(ABC):
                     "[%s] Failed to send error notification to user: %s",
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
+            # Preserve shutdown semantics: SystemExit/KeyboardInterrupt must
+            # still propagate after the user-facing failure notification, so
+            # the loop's own signal handling can shut down cleanly. Other
+            # BaseExceptions (e.g. GeneratorExit) are contained like ordinary
+            # failures — this handler is fire-and-forget, so swallowing them
+            # here prevents "Task exception was never retrieved" radio silence.
+            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                raise
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not

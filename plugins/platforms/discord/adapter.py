@@ -84,6 +84,13 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
+# Discord caps a single select menu at 25 options; a View holds at most 5 rows.
+_DISCORD_SELECT_MAX_OPTIONS = 25
+_DISCORD_SELECT_MAX_ROWS = 5
+# Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
+_DISCORD_MODEL_SELECT_CAPACITY = (
+    _DISCORD_SELECT_MAX_ROWS - 2
+) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
@@ -1043,6 +1050,12 @@ class DiscordAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    # Safety ceiling on split deliveries (#86581): a degenerate turn can
+    # produce tens of thousands of characters — without a cap the adapter
+    # posts every 2000-char chunk back-to-back and floods the channel (the
+    # incident delivered 60,698 chars as 31 messages).  Chunks beyond the
+    # cap are replaced by a short notice.
+    MAX_SPLIT_MESSAGES = 8
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
@@ -3397,6 +3410,29 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
+    def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
+        """Cap the number of chunks sent for one logical response (#86581).
+
+        A degenerate turn can produce tens of thousands of characters; the
+        #86581 incident delivered 60,698 chars as 31 back-to-back Discord
+        messages.  When ``chunks`` exceeds ``MAX_SPLIT_MESSAGES``, keep the
+        first ``N-1`` chunks and replace the rest with a short notice so the
+        user sees a clear signal instead of a flood.  The full response
+        remains available in the gateway session history / logs.
+        """
+        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+            return chunks
+        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
+        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        notice = (
+            f"\n\n⚠️ **Response truncated** — this reply exceeded the "
+            f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
+            f"{dropped_chars} characters were not delivered; the full "
+            f"response is in the session logs."
+        )
+        kept.append(notice)
+        return kept
+
     async def send(
         self,
         chat_id: str,
@@ -3475,7 +3511,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._cap_split_chunks(
+                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
@@ -3565,7 +3603,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
         thread_name = _derive_forum_thread_name(content)
 
@@ -3832,7 +3872,9 @@ class DiscordAdapter(BasePlatformAdapter):
         returns ``success=False`` (a real adapter problem, not overflow).
         """
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
@@ -8529,7 +8571,7 @@ class DiscordAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -9176,7 +9218,7 @@ def _define_discord_view_classes() -> None:
 
             select = discord.ui.Select(
                 placeholder="Choose a provider...",
-                options=options[:25],
+                options=options[:_DISCORD_SELECT_MAX_OPTIONS],
                 custom_id="model_provider_select",
             )
             select.callback = self._on_provider_selected
@@ -9189,7 +9231,16 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
+            """Build the model dropdown(s) for a specific provider.
+
+            Discord caps each ``discord.ui.Select`` at 25 options and a View at
+            5 action rows. We keep 2 rows for Back/Cancel, so partition the
+            model list across up to 3 select menus (75 slots) instead of
+            truncating at 25. This matters for providers like Nous whose
+            curated + Portal free-recommendation list exceeds 25 entries — the
+            tail (typically the ``:free`` Portal picks) was previously dropped
+            on Discord, so free-tier models never surfaced there.
+            """
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -9198,31 +9249,48 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
-            options = []
-            for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
-                options.append(
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(
-                            short,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                        value=_truncate_discord_component_text(
-                            model_id,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                    )
-                )
-            if not options:
+            if not models:
                 return
 
-            select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
-                options=options,
-                custom_id="model_model_select",
-            )
-            select.callback = self._on_model_selected
-            self.add_item(select)
+            # Slice the model list into <= 25-option chunks across (up to) 3
+            # select rows: 3 selects + Back/Cancel = 5 rows, Discord's View cap.
+            # Providers past that would still clip, but none currently do.
+            chunks = [
+                models[
+                    i : i + _DISCORD_SELECT_MAX_OPTIONS
+                ]
+                for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
+            ][
+                : _DISCORD_SELECT_MAX_ROWS - 2
+            ]  # keep 2 rows for Back/Cancel
+
+            placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
+            for idx, chunk in enumerate(chunks):
+                options = []
+                for model_id in chunk:
+                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    options.append(
+                        discord.SelectOption(
+                            label=_truncate_discord_component_text(
+                                short,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                            value=_truncate_discord_component_text(
+                                model_id,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                        )
+                    )
+                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                select = discord.ui.Select(
+                    placeholder=f"{placeholder_base}{suffix}...",
+                    options=options,
+                    custom_id=f"model_model_select_{idx}",
+                )
+                # All model selects resolve through the same handler — the
+                # selected value is the model id, identical across rows.
+                select.callback = self._on_model_selected
+                self.add_item(select)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -9287,8 +9355,15 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
+            # `shown` counts models actually rendered across the partitioned
+            # select menus (up to 3×25 = 75); the old code hard-capped at 25
+            # and silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
+            shown = (
+                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
+                if provider
+                else 0
+            )
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
@@ -9462,7 +9537,7 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=120)
-            self.choices = list(choices)[:25]  # Discord select cap
+            self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()

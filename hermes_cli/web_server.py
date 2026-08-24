@@ -78,6 +78,7 @@ from hermes_cli.config import (
     check_config_version,
     detect_install_method,
     format_docker_update_message,
+    is_nix_install_method,
     recommended_update_command_for_method,
     redact_key,
     write_platform_config_field,
@@ -220,9 +221,33 @@ def _valid_parent_start_marker(marker: str) -> bool:
     prefix, separator, value = marker.partition(":")
     if not separator or not value or value != value.strip():
         return False
-    if prefix in ("linux", "win"):
+    if prefix in ("linux", "win", "winms"):
         return value.isdigit()
     return prefix == "ps"
+
+
+def _parent_start_markers_match(actual: str, expected: str) -> bool:
+    """Compare parent markers across Desktop protocol generations.
+
+    Older Windows Desktop builds send .NET ticks (``win:``). New builds use
+    Electron's native process creation time in Unix milliseconds (``winms:``)
+    so startup does not need to launch PowerShell. The backend still reads the
+    exact FILETIME and normalizes it only when the expected marker is ``winms``.
+    """
+    if actual == expected:
+        return True
+    if not actual.startswith("win:") or not expected.startswith("winms:"):
+        return False
+
+    try:
+        dotnet_ticks = int(actual.removeprefix("win:"))
+        expected_unix_ms = int(expected.removeprefix("winms:"))
+    except ValueError:
+        return False
+
+    dotnet_ticks_at_unix_epoch = 621_355_968_000_000_000
+    actual_unix_ms = (dotnet_ticks - dotnet_ticks_at_unix_epoch) // 10_000
+    return actual_unix_ms == expected_unix_ms
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1235,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "runtime": "agent",
+    # `session.terminal_continue` is the only schema-surfaced session field —
+    # fold it into general rather than spawning a one-field orphan category.
+    "session": "general",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -3122,6 +3150,74 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     return ports
 
 
+def _profile_gateway_writer_identity(
+    profile_home: Path, runtime: Optional[dict]
+) -> Optional[tuple]:
+    """``(pid, start_time)`` identity of the profile's LIVE gateway, or None.
+
+    Reuses the validated-liveness helper — recorded PID checked against the
+    live process table, the start-time PID-reuse fingerprint, and the
+    profile's home — then reads the live process's fingerprint via the same
+    ``_get_process_start_time`` that stamped it, so equality is exact (no
+    unit or clock-source mismatch).  None when the record doesn't belong to
+    a live gateway; nothing in it is current by definition then.
+    """
+    try:
+        from gateway.status import (
+            _get_process_start_time,
+            get_runtime_status_running_pid,
+        )
+
+        pid = get_runtime_status_running_pid(runtime, expected_home=profile_home)
+        if pid is None:
+            return None
+        start_time = _get_process_start_time(pid)
+        if start_time is None:
+            return None
+        return (pid, start_time)
+    except Exception:
+        return None
+
+
+def _owned_profile_platforms(
+    writer_identity: Optional[tuple], platforms: dict
+) -> dict:
+    """Keep only platform entries the profile's CURRENT process wrote.
+
+    Gateway startup deliberately preserves plain platform entries in
+    ``gateway_state.json`` across restarts (the dashboard keeps showing
+    last-known state while adapters reconnect), and the active-profile
+    endpoint compensates by filtering them against the current
+    configuration.  The cross-profile aggregation has no equivalent config
+    context (a profile's platform set depends on tokens in that profile's
+    ``.env`` behind its secret scope), so it demands strict process
+    ownership instead: ``write_runtime_status`` stamps every platform write
+    with the writer's ``(pid, start_time)`` identity, and an entry is
+    aggregatable only when that identity equals the profile's live gateway
+    process — exact match, no clock heuristics, so an entry written moments
+    before a fast restart can never masquerade as current.  A fatal entry
+    left behind by a platform the operator has since disabled/removed thus
+    stops degrading fleet health as soon as that profile's gateway restarts
+    (a config change requires that restart to take effect anyway).  Fail
+    closed: entries without a writer identity (legacy records) or records
+    with no live process are excluded — aggregation is a supplement, and a
+    false "degraded forever" is the worse failure mode.
+    """
+    if writer_identity is None:
+        return {}
+    live_pid, live_start = writer_identity
+    owned: Dict[str, dict] = {}
+    for key, value in platforms.items():
+        if not isinstance(value, dict):
+            continue
+        if (
+            value.get("writer_pid") == live_pid
+            and value.get("writer_start_time") == live_start
+        ):
+            owned[key] = value
+    return owned
+
+
 def _collect_profile_gateway_topology() -> Dict[str, Any]:
     """Enumerate profiles and the gateways serving them for ``/api/status``.
 
@@ -3137,6 +3233,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
       multiple profiles (gateway.multiplex_profiles), ``"single"`` for one
       live gateway, ``"multiple"`` for independent per-profile gateways,
       ``"none"`` when nothing is running.
+    * ``profile_platforms`` — ``{profile: platforms}`` runtime platform maps
+      for each LIVE gateway, ownership-filtered to entries stamped by that
+      profile's current process (stale preserved entries for since-removed
+      platforms are excluded — see ``_owned_profile_platforms``).  Internal
+      aggregation input for ``/api/status`` (independent per-profile gateways
+      write failures to their own ``gateway_state.json``, which the
+      unparameterized endpoint would otherwise never see).  Never exposed
+      directly.
     """
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
@@ -3144,10 +3248,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         homes = profiles_to_serve(True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
-        return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+        return {
+            "profiles": [],
+            "gateway_mode": "unknown",
+            "gateways": [],
+            "profile_platforms": {},
+        }
 
     profile_names = [name for name, _home in homes]
     gateways: List[Dict[str, Any]] = []
+    profile_platforms: Dict[str, dict] = {}
     multiplex = False
     for name, home in homes:
         try:
@@ -3162,6 +3272,19 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
+        plats = (runtime or {}).get("platforms")
+        if isinstance(plats, dict) and plats:
+            # Ownership filter: gateway startup preserves plain platform
+            # entries across restarts, so the raw map can carry fatal state
+            # for platforms the operator has since disabled/removed.  Only
+            # entries stamped with the profile's current live process's
+            # writer identity are aggregation candidates (see
+            # _owned_profile_platforms).
+            owned = _owned_profile_platforms(
+                _profile_gateway_writer_identity(home, runtime), plats
+            )
+            if owned:
+                profile_platforms[name] = owned
         entry: Dict[str, Any] = {
             "profile": name,
             "ports": _profile_platform_ports(home, runtime),
@@ -3179,7 +3302,12 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     else:
         mode = "none"
 
-    return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+    return {
+        "profiles": profile_names,
+        "gateway_mode": mode,
+        "gateways": gateways,
+        "profile_platforms": profile_platforms,
+    }
 
 
 # /api/status is polled ~1/s by the desktop app while it waits for the backend
@@ -3196,6 +3324,78 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
 _TOPOLOGY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None, "fn": None}
 _TOPOLOGY_CACHE_LOCK = threading.Lock()
 _TOPOLOGY_CACHE_TTL = 10.0
+
+# Stable install identity for /api/status. One random opaque id per physical
+# install, minted on first read and persisted under the ROOT Hermes home
+# (get_default_hermes_root()) — NOT the profile-scoped HERMES_HOME — so every
+# profile served by the same install reports the same id. Clients (the desktop
+# connection registry) use it to recognize that two registered addresses
+# (hostname + Tailscale IP, LAN + WAN) are one backend and collapse duplicate
+# roster rows. Privacy: uuid4 hex, no hardware/user-derived material; the only
+# fact it reveals is "these addresses are the same box", which is the feature.
+# It must never change across restarts/updates, so reads are cached for the
+# process lifetime and the file is written once, atomically.
+_INSTALL_ID_FILENAME = "install_id"
+_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_INSTALL_ID_CACHE: Dict[str, Optional[str]] = {"value": None}
+_INSTALL_ID_LOCK = threading.Lock()
+
+
+def _read_or_create_install_id() -> Optional[str]:
+    """Read (or mint + persist) the install id under the root Hermes home.
+
+    Returns ``None`` only when the id can neither be read nor persisted (e.g.
+    a read-only filesystem) — an unpersisted id would violate the stability
+    contract, so callers omit the field rather than emit a churning value.
+    """
+    import uuid
+
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root()
+    path = root / _INSTALL_ID_FILENAME
+    try:
+        existing = path.read_text(encoding="utf-8").strip().lower()
+        if _INSTALL_ID_RE.match(existing):
+            return existing
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    minted = uuid.uuid4().hex
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        # Atomic replace so a crash mid-write can't leave a truncated id that
+        # would be regenerated (i.e. changed) on the next boot.
+        fd, tmp_name = tempfile.mkstemp(dir=str(root), prefix=".install_id-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(minted + "\n")
+            os.replace(tmp_name, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    except OSError:
+        return None
+    return minted
+
+
+def get_install_id() -> Optional[str]:
+    """Process-lifetime-cached stable install id (see _read_or_create_install_id)."""
+    cached = _INSTALL_ID_CACHE["value"]
+    if cached:
+        return cached
+    with _INSTALL_ID_LOCK:
+        cached = _INSTALL_ID_CACHE["value"]
+        if cached:
+            return cached
+        value = _read_or_create_install_id()
+        if value:
+            _INSTALL_ID_CACHE["value"] = value
+        return value
+
 
 # Serializes read-modify-write cycles over config.yaml for handlers that run
 # in worker threads (asyncio.to_thread). config.py's _CONFIG_LOCK covers each
@@ -3264,6 +3464,87 @@ async def get_health():
         "version": __version__,
         "auth_required": bool(getattr(app.state, "auth_required", False)),
     }
+
+
+_PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
+    # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE.  Platform
+    # segment mirrors the Platform enum's normalized values: built-in members
+    # plus plugin directory names (lowercased), which allow hyphens as well
+    # as underscores (e.g. ``reviewer:foo-bar``).
+    r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$"
+)
+
+
+def _is_profile_platform_status_key(key: object) -> bool:
+    """Accept only the runner's public ``<profile>:<platform>`` key grammar."""
+    return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
+
+
+def _status_platform_key_allowed(
+    key: object, configured: "set[str] | None"
+) -> bool:
+    """Decide whether a runtime-status platform key may appear publicly.
+
+    Namespaced ``<profile>:<platform>`` keys are validated against the key
+    grammar *unconditionally* — the config-set load failing must not fail
+    open into projecting arbitrary colon-containing keys from a process-local
+    JSON file onto the public endpoint.  Plain platform keys keep the
+    long-standing behavior: checked against the configured set when it
+    loaded, passed through when it did not.
+    """
+    if not isinstance(key, str):
+        return False
+    if ":" in key:
+        return _is_profile_platform_status_key(key)
+    return configured is None or key in configured
+
+
+# Per-entry writer-identity stamps (added by gateway.status.write_runtime_status
+# for the aggregation ownership check) are process recon — the same class of
+# detail as the auth-gated top-level ``gateway_pid`` — and must not project
+# onto the public endpoint.
+_PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({"writer_pid", "writer_start_time"})
+
+
+def _public_platform_entry(value: Any) -> Any:
+    """Strip writer-identity stamps from a platform entry before projection."""
+    if not isinstance(value, dict):
+        return value
+    return {k: v for k, v in value.items() if k not in _PRIVATE_PLATFORM_ENTRY_KEYS}
+
+
+def _merge_profile_gateway_platforms(
+    gateway_platforms: dict, profile_platforms: dict
+) -> dict:
+    """Merge independent per-profile gateway platform states (OOF-3).
+
+    Hosts that run separate gateway services per profile (``gateway_mode ==
+    "multiple"``) persist each profile's platform failures in that profile's
+    own ``gateway_state.json``.  The unparameterized ``/api/status`` — the
+    machine-level probe NAS health monitoring reads — only read the active
+    profile's file, so those failures were invisible to fleet health.  Fold
+    them in under the same validated ``<profile>:<platform>`` grammar the
+    multiplex path uses.  The active profile's own map is skipped (its
+    entries are already present, including any multiplex-namespaced ones),
+    and existing keys are never overwritten.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        active = get_active_profile_name()
+    except Exception:
+        active = "default"
+    merged = dict(gateway_platforms)
+    for prof, plats in (profile_platforms or {}).items():
+        if prof == active or not isinstance(plats, dict):
+            continue
+        for key, value in plats.items():
+            if not isinstance(key, str) or ":" in key or not isinstance(value, dict):
+                continue
+            namespaced = f"{prof}:{key}"
+            if not _is_profile_platform_status_key(namespaced):
+                continue
+            merged.setdefault(namespaced, _public_platform_entry(value))
+    return merged
 
 
 @app.get("/api/status")
@@ -3364,12 +3645,18 @@ async def get_status(profile: Optional[str] = None):
         if runtime:
             gateway_state = runtime.get("gateway_state")
             gateway_platforms = runtime.get("platforms") or {}
-            if configured_gateway_platforms is not None:
-                gateway_platforms = {
-                    key: value
-                    for key, value in gateway_platforms.items()
-                    if key in configured_gateway_platforms
-                }
+            # Namespaced entries are emitted by configured secondary-profile
+            # adapters. The config set here belongs to the active/default
+            # profile, so suffix-checking against it would incorrectly hide
+            # secondary-only platforms. Colon-containing keys are validated
+            # against the narrow key grammar UNCONDITIONALLY — a failed config
+            # load must not fail open into projecting arbitrary keys from a
+            # process-local JSON file onto this public endpoint.
+            gateway_platforms = {
+                key: _public_platform_entry(value)
+                for key, value in gateway_platforms.items()
+                if _status_platform_key_allowed(key, configured_gateway_platforms)
+            }
             gateway_exit_reason = runtime.get("exit_reason")
             # Contract: gateway_updated_at is RFC3339 string | null, never a
             # number. ``runtime`` here may be the local gateway_state.json
@@ -3378,7 +3665,23 @@ async def get_status(profile: Optional[str] = None):
             gateway_updated_at = normalize_updated_at(runtime.get("updated_at"))
             if not gateway_running:
                 gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
-                gateway_platforms = {}
+                # A cleanly stopped gateway's platform states are stale noise —
+                # clear them so a dead process can't report "connected". But a
+                # startup_failed gateway's FATAL entries are the diagnosis:
+                # they carry per-profile credential collisions and auth
+                # failures (multiplex entries under ``<profile>:<platform>``)
+                # that the single exit_reason string can't express. Writer
+                # -identity and freshness filtering upstream already dropped
+                # entries from other/older processes, so keeping fatals here
+                # cannot leak another gateway's live state (#80451 follow-up).
+                if gateway_state == "startup_failed":
+                    gateway_platforms = {
+                        key: value
+                        for key, value in gateway_platforms.items()
+                        if isinstance(value, dict) and value.get("state") == "fatal"
+                    }
+                else:
+                    gateway_platforms = {}
             elif gateway_running and remote_health_body is not None:
                 # The health probe confirmed the gateway is alive, but the local
                 # runtime status file may be stale (cross-container).  Override
@@ -3390,6 +3693,23 @@ async def get_status(profile: Optional[str] = None):
         # ensure we still report the gateway as running (no shared volume scenario).
         if gateway_running and gateway_state is None and remote_health_body is not None:
             gateway_state = "running"
+
+        # Profile + gateway topology (cached, TTL 10s): fetched here — before
+        # the platform rollup — because plain ``/api/status`` is the
+        # machine-level probe NAS reads, and hosts running independent
+        # per-profile gateway services (gateway_mode == "multiple") persist
+        # each profile's platform failures in that profile's own
+        # gateway_state.json.  Fold those in under the validated
+        # ``<profile>:<platform>`` grammar so fleet health sees them (OOF-3).
+        # A ``?profile=`` request targets one profile's view and is left
+        # unmerged.
+        topology = await asyncio.get_running_loop().run_in_executor(
+            None, _collect_profile_gateway_topology_cached
+        )
+        if not requested_profile:
+            gateway_platforms = _merge_profile_gateway_platforms(
+                gateway_platforms, topology.get("profile_platforms") or {}
+            )
 
         active_sessions = await _status_active_sessions()
 
@@ -3492,6 +3812,16 @@ async def get_status(profile: Optional[str] = None):
             "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
+
+        # Stable per-install identity (see get_install_id above). First call
+        # may touch disk, so keep it off the event loop; afterwards it is a
+        # process-global cache hit. Omitted (not null) when unpersistable so
+        # older-client behavior and the no-identity fallback stay identical.
+        install_id = await asyncio.get_running_loop().run_in_executor(
+            None, get_install_id
+        )
+        if install_id:
+            status["install_id"] = install_id
 
         # Component-level health rollup. Counts and status enums only — this
         # payload is public (PUBLIC_API_PATHS), so no messages, paths, or
@@ -3609,9 +3939,9 @@ async def get_status(profile: Optional[str] = None):
         # the network (a gated bind), so they must survive the auth gate. The
         # per-gateway ``gateways[]`` detail carries host ports (deployment
         # recon), so it stays gated with the host paths / PID below.
-        topology = await asyncio.get_running_loop().run_in_executor(
-            None, _collect_profile_gateway_topology_cached
-        )
+        # (``topology`` was already fetched above, before the platform rollup,
+        # so the per-profile platform merge could use it — the TTL cache makes
+        # the earlier fetch the only real scan either way.)
         status["profiles"] = topology["profiles"]
         status["gateway_mode"] = topology["gateway_mode"]
 
@@ -4058,6 +4388,34 @@ _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 _ACTION_COMMANDS: Dict[str, Tuple[str, ...]] = {}
 _ACTION_IDS: Dict[str, str] = {}
 
+# A finished ``gateway-restart`` child does not mean the gateway is back: the
+# child exits as soon as it has handed the restart to the supervisor (or to the
+# running gateway), while the gateway itself is still stopping and coming up.
+# The in-flight reuse in :func:`_spawn_gateway_restart` therefore stops
+# coalescing exactly when repeat requests do the most damage, so a stale cached
+# frontend that re-fires its restart every few seconds gets a brand new restart
+# every time (#89034: 77 restarts, 17 of them inside one minute, killing the
+# gateway often enough mid-FTS5-write to corrupt state.db).  Suppress repeats
+# for a short window after the last spawn as well.
+#
+# MAINTAINER DECISION: a fixed window, not "until the gateway reports healthy".
+# Health-gating is what #89034 asks for, but it cannot be made to fail safe
+# here — a gateway that never comes back would leave the restart action
+# permanently inert, which is a worse failure than the flood it prevents.  A
+# fixed window always releases.  10s is above the ~3.5s spacing of the reported
+# storm and below the time an operator waits before deliberately retrying.
+GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
+
+# ``(monotonic spawn time, Popen, command)`` for the last gateway restart this
+# process started.  Deliberately NOT read out of ``_ACTION_PROCS``: entries
+# there are reaped once the child exits, and a guard that disappears when the
+# child exits is the bug this exists to fix.
+_LAST_GATEWAY_RESTART: Optional[Tuple[float, subprocess.Popen, Tuple[str, ...]]] = None
+
+_UPDATE_ACTION_COMPLETED_RE = re.compile(
+    r"^=== hermes-update completed ([0-9a-f]{32}) ===$"
+)
+
 # ``name`` → completed synthetic action result for actions the server handled
 # without spawning a subprocess (for example, unsupported Docker updates).
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
@@ -4211,6 +4569,34 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:]
 
 
+def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
+    """Recover the latest successful update identity from ``update.log``.
+
+    The dashboard action process can restart the dashboard that spawned it.
+    That loses the in-memory ``Popen``/result registries while the durable
+    update log survives.  Only accept a completion marker that occurs after
+    the latest update-start marker, so a stale success cannot mask a newer
+    failed attempt.
+    """
+    last_start = -1
+    last_completed = -1
+    completed_action_id: Optional[str] = None
+
+    for index, line in enumerate(lines):
+        if line.startswith("=== hermes update started "):
+            last_start = index
+
+        match = _UPDATE_ACTION_COMPLETED_RE.fullmatch(line.strip())
+        if match:
+            last_completed = index
+            completed_action_id = match.group(1)
+
+    if completed_action_id and last_completed > last_start:
+        return completed_action_id
+
+    return None
+
+
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     return _profile_cli_args(profile) + ["gateway", verb]
 
@@ -4284,6 +4670,13 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     concurrent ``hermes gateway restart`` children race each other on the
     manual kill-and-start path, so reuse the live one instead.
 
+    Reusing only the *live* child is not enough. The child exits as soon as
+    the restart has been handed off, long before the gateway is back, so a
+    frontend re-firing every few seconds cleared that guard every time and
+    kept restarting a gateway that was still coming up (#89034). Requests
+    within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` of the last spawn for the
+    same profile are coalesced onto that spawn as well.
+
     Before spawning, sweep for orphaned gateway processes whose parent has
     exited (e.g. desktop-app restarts leaving a reparented gateway child
     under launchd/PPID=1).  Without this the orphan keeps its platform
@@ -4299,6 +4692,8 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     except Exception:
         pass  # best-effort — don't block the restart on a reap failure
 
+    global _LAST_GATEWAY_RESTART
+
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
@@ -4306,7 +4701,24 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
         if existing_command is None or existing_command == tuple(subcommand):
             return existing, True
         raise RuntimeError("gateway restart already in progress for another profile")
-    return _spawn_hermes_action(subcommand, "gateway-restart"), False
+
+    recent = _LAST_GATEWAY_RESTART
+    if recent is not None:
+        spawned_at, recent_proc, recent_command = recent
+        age = time.monotonic() - spawned_at if recent_command == tuple(subcommand) else None
+        if age is not None and age < GATEWAY_RESTART_COOLDOWN_SECONDS:
+            _log.info(
+                "Coalescing gateway restart: one was started %.1fs ago "
+                "(pid %s) and the gateway may still be coming back; not "
+                "spawning another (#89034).",
+                age,
+                getattr(recent_proc, "pid", "?"),
+            )
+            return recent_proc, True
+
+    proc = _spawn_hermes_action(subcommand, "gateway-restart")
+    _LAST_GATEWAY_RESTART = (time.monotonic(), proc, tuple(subcommand))
+    return proc, False
 
 
 def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
@@ -4453,14 +4865,16 @@ async def update_hermes():
             "update_command": recommended_update_command_for_method(install_method),
         }
 
-    if install_method in {"nix", "nixos"}:
+    if is_nix_install_method(install_method) or install_method == "apt":
         message = recommended_update_command_for_method(install_method)
         _record_completed_action("hermes-update", message, exit_code=1)
         return {
             "ok": False,
             "pid": None,
             "name": "hermes-update",
-            "error": "nix_update_unsupported",
+            "error": (
+                "apt_update_required" if install_method == "apt" else "nix_update_unsupported"
+            ),
             "message": message,
             "update_command": message,
         }
@@ -4559,7 +4973,7 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
+        install_method: 'apt' | 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
                 -1 if behind by an unknown count, or null if the
@@ -4605,6 +5019,11 @@ async def check_hermes_update(force: bool = False):
 
     if install_method == "docker":
         payload["message"] = format_docker_update_message()
+        return payload
+    if install_method == "apt":
+        payload["message"] = (
+            "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`."
+        )
         return payload
 
     # banner.check_for_updates() handles git / nix-revision paths and
@@ -4732,6 +5151,42 @@ async def transcribe_audio_upload(
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
     }
+
+
+@app.get("/api/audio/voice-config")
+async def get_client_voice_config(profile: Optional[str] = None):
+    """The active profile's STT/TTS config for CLIENT-DIRECT voice.
+
+    Lets the desktop cut the audio relay hop: mic audio goes straight to the
+    profile's STT provider and reply text is synthesized on the client with
+    the profile's TTS provider — the desktop↔gateway link carries only text.
+    Providers that can only run on this host (local whisper, edge-tts,
+    command/plugin providers) resolve to ``{"mode": "relay"}`` and the
+    desktop keeps using the /api/audio/* relay endpoints.
+
+    Same trust boundary as every profile-scoped route: the caller is an
+    authenticated client that can already drive the agent. Keys in the
+    response are held in client memory only, never persisted client-side.
+    Gate: ``voice.client_direct`` in config.yaml (default true).
+    """
+    from tools.voice_client_config import resolve_client_voice_config
+
+    def _resolve_scoped():
+        # Home-only contextvar scope, same rationale as transcribe above:
+        # resolution reads config/.env only and must not hold the process-
+        # global skills lock across the (cheap, but still I/O) resolution.
+        with _config_profile_scope(profile):
+            return resolve_client_voice_config()
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _resolve_scoped)
+    except Exception:
+        _log.exception("Client voice-config resolution failed")
+        fallback = {"mode": "relay", "reason": "resolution error"}
+        return {"ok": True, "stt": fallback, "tts": dict(fallback)}
+
+    return {"ok": True, **result}
 
 
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
@@ -5113,7 +5568,26 @@ async def get_action_status(name: str, lines: int = 200):
         raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
 
     log_path = _ACTION_LOG_DIR / log_file_name
-    tail = _tail_lines(log_path, min(max(lines, 1), 2000))
+    requested_lines = min(max(lines, 1), 2000)
+    tail = _tail_lines(log_path, requested_lines)
+
+    durable_update_action_id = None
+    update_receipt_summary = None
+    if name == "hermes-update":
+        durable_lines = _tail_lines(_ACTION_LOG_DIR / "update.log", 2000)
+        durable_update_action_id = _durable_completed_update_action_id(durable_lines)
+        if durable_update_action_id:
+            marker = f"=== hermes-update completed {durable_update_action_id} ==="
+            if marker not in tail:
+                tail = [*tail, marker][-requested_lines:]
+        # Phase-1 bullet 3 (#91277): the update receipt is the durable,
+        # structured truth about the last update — written by every run
+        # including refused/failed ones, and it survives the dashboard
+        # restarting itself mid-action. Surface its summary alongside the
+        # log-marker recovery so clients (Desktop, dashboard) READ the
+        # outcome instead of inferring it from liveness probes
+        # (#81193/#87359 class).
+        update_receipt_summary = _latest_update_receipt_summary()
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
@@ -5121,6 +5595,19 @@ async def get_action_status(name: str, lines: int = 200):
         running = False
         exit_code = result.get("exit_code") if result else None
         pid = result.get("pid") if result else None
+        if result is None and durable_update_action_id:
+            exit_code = 0
+        if (
+            result is None
+            and exit_code is None
+            and update_receipt_summary is not None
+            and update_receipt_summary.get("outcome") in ("success", "partial")
+        ):
+            # No in-memory result and no log marker (e.g. log rotated), but
+            # the receipt proves a completed run: report its outcome rather
+            # than a null that clients time out on. ``partial`` maps to
+            # exit 1 exactly like the CLI run itself did.
+            exit_code = 0 if update_receipt_summary["outcome"] == "success" else 1
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -5135,13 +5622,76 @@ async def get_action_status(name: str, lines: int = 200):
             _ACTION_COMMANDS.pop(name, None)
             _ACTION_IDS.pop(name, None)
 
-    return {
+    response = {
         "name": name,
         "running": running,
         "exit_code": exit_code,
         "pid": pid,
         "lines": tail,
     }
+    if durable_update_action_id:
+        response["action_id"] = durable_update_action_id
+    if update_receipt_summary is not None:
+        response["receipt"] = update_receipt_summary
+    return response
+
+
+def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
+    """Compact summary of the most recent update receipt, or None.
+
+    Phase-1 bullet 3 (#91277): the receipt (written by EVERY ``hermes
+    update`` run since #91283, including refused and failed ones, with a
+    ``latest.json`` pointer) is the durable success signal the Desktop and
+    dashboard should read instead of inferring outcomes from liveness
+    probes across the update's stop/start gap (#81193, #87359). Summary
+    only — steps and skips stay in the full receipt endpoint.
+    Never raises.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+        if not receipt:
+            return None
+        fleet = receipt.get("fleet") or []
+        return {
+            "outcome": receipt.get("outcome"),
+            "started_at": receipt.get("started_at"),
+            "finished_at": receipt.get("finished_at"),
+            "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
+            "post_sha": (receipt.get("post_update") or {}).get("sha"),
+            "post_version": (receipt.get("post_update") or {}).get("version"),
+            "fleet_states": sorted(
+                {str(e.get("state")) for e in fleet if isinstance(e, dict)}
+            ),
+        }
+    except Exception:
+        return None
+
+
+@app.get("/api/hermes/update/receipt")
+async def get_update_receipt():
+    """The most recent update receipt — the durable update-outcome record.
+
+    Phase-1 bullet 3 (#91277): dashboards and the Desktop read this instead
+    of inferring update success from backend liveness (the inference misread
+    the update's own restart gap as 'Backend update failed' / 'boot failed'
+    — #81193, #87359). Returns the FULL receipt (steps, skips, gateway
+    restart outcome, fleet matrix) plus a compact ``summary``; 404 when no
+    update has run since receipts landed.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+    except Exception:
+        receipt = None
+    if not receipt:
+        raise HTTPException(
+            status_code=404,
+            detail="No update receipt found (no `hermes update` run recorded).",
+        )
+    return {"receipt": receipt, "summary": _latest_update_receipt_summary()}
 
 
 # Per-row fields that no session LIST consumer reads but that dominate the
@@ -7264,6 +7814,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     def _run():
+        approvals_mode_changed = False
         with _profile_scope(body.profile or profile):
             # The dashboard form is schema-driven (see CONFIG_SCHEMA). Any root
             # key absent from the schema — most visibly ``custom_providers``, but
@@ -7274,7 +7825,23 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             with _CONFIG_MUTATION_LOCK:
                 existing = read_raw_config()
                 incoming = _denormalize_config_from_web(body.config)
-                save_config(_deep_merge(existing, incoming))
+                merged = _deep_merge(existing, incoming)
+                # Compare normalized approvals.mode across the in-memory
+                # documents, not config blocks and not cache re-reads: the
+                # settings page PUTs the defaulted GET record while disk
+                # holds sparse YAML, so a block compare is always-unequal
+                # (every autosave would broadcast), and reloading after the
+                # save can serve the pre-save cache on an (mtime_ns, size)
+                # key collision. Only approvals.mode feeds session.info, so
+                # it is the honest trigger.
+                approvals_mode_changed = _approval_mode_of(merged) != _approval_mode_of(existing)
+                save_config(merged)
+        # REST saves bypass the config.set RPC (which re-emits itself), so
+        # refresh live sessions' cached approval/YOLO indicators after a mode
+        # change. Own-profile saves only: a profile-scoped save targets a
+        # different HERMES_HOME than this process's gateway sessions.
+        if approvals_mode_changed and not _is_other_profile(body.profile or profile):
+            _broadcast_gateway_session_info()
         return {"ok": True}
 
     try:
@@ -7284,6 +7851,51 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _is_other_profile(profile: Optional[str]) -> bool:
+    """True when ``profile`` names a profile other than this process's own."""
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return False
+    try:
+        target = _resolve_profile_dir(requested)
+    except HTTPException:
+        return True
+    return target.resolve() != get_process_hermes_home().resolve()
+
+
+def _approval_mode_of(config: Dict[str, Any]) -> str:
+    """Normalize approvals.mode from an in-memory config document.
+
+    Both sides of the broadcast comparison use in-memory documents (the raw
+    on-disk dict and the about-to-be-saved dict): re-reading through the
+    config cache after a save can serve the pre-save document when the
+    replacement file collides on the (mtime_ns, size) cache key, which would
+    suppress the broadcast exactly when the mode changed. Absent block or
+    key normalizes to the same default the approval gate uses.
+    """
+    from tools.approval import _normalize_approval_mode
+
+    approvals = config.get("approvals")
+    default_mode = (DEFAULT_CONFIG.get("approvals") or {}).get("mode", "manual")
+    mode = approvals.get("mode", default_mode) if isinstance(approvals, dict) else default_mode
+    return _normalize_approval_mode(mode)
+
+
+def _broadcast_gateway_session_info() -> None:
+    """Broadcast session.info on the in-process gateway when it's loaded.
+
+    ``sys.modules`` guard, not an import: gateway never imported means no
+    live sessions in this process to notify.
+    """
+    server = sys.modules.get("tui_gateway.server")
+    if server is None:
+        return
+    try:
+        server.broadcast_session_info()
+    except Exception:
+        _log.exception("session.info broadcast after config save failed")
 
 
 def _catalog_provider_env_metadata() -> dict:
@@ -11646,7 +12258,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_db_error
+    from hermes_state import SessionDB, is_malformed_schema_error
 
     if not read_only:
         return SessionDB(db_path=db_path, read_only=False)
@@ -11683,7 +12295,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     except sqlite3.DatabaseError as exc:
         message = str(exc).lower()
         stale_schema = "no such table" in message or "no such column" in message
-        if not stale_schema and not is_malformed_db_error(exc):
+        if not stale_schema and not is_malformed_schema_error(exc):
             raise
         SessionDB(db_path=db_path, read_only=False).close()
         try:
@@ -11855,12 +12467,14 @@ def _prune_sessions(body: SessionPrune):
             max_tool_calls=body.max_tool_calls,
             archived=None if body.include_archived else False,
         )
+        skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
             rows = db.list_prune_candidates(**filters)
             return {
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
+                "skipped_open": skipped_open,
                 # Rows are ordered by last activity, not creation time.
                 "oldest_last_active": rows[0]["last_active"] if rows else None,
                 "newest_last_active": rows[-1]["last_active"] if rows else None,
@@ -11888,7 +12502,7 @@ def _prune_sessions(body: SessionPrune):
             sessions_dir=sessions_dir if sessions_dir.exists() else None,
             **filters,
         )
-        return {"ok": True, "removed": removed}
+        return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
         db.close()
 
@@ -12064,6 +12678,11 @@ def _validate_dashboard_cron_context_from(
     if not refs:
         return
     for ref in refs:
+        # "self" (the continuity toggle) resolves to the job's own id at run
+        # time — it can't be validated against the store (create precedes the
+        # job's existence).
+        if isinstance(ref, str) and ref.strip().lower() == "self":
+            continue
         if not _call_cron_for_profile(profile_name, "get_job", ref):
             raise HTTPException(
                 status_code=400,
@@ -12686,7 +13305,11 @@ async def _forward_cron_fire_to_gateway(
     gateway is unreachable (not started yet after a scale-to-zero wake,
     restarting, or api_server disabled) — the caller maps that to 503 so NAS
     retries per the Chronos contract (non-2xx = retryable; the store CAS
-    de-dupes the eventual double fire).
+    de-dupes the eventual double fire), UNLESS the profile's gateway was
+    deliberately stopped (see :func:`_gateway_intentionally_stopped`), in
+    which case the caller drops the fire with 200 — retrying into an
+    operator-stopped gateway can never succeed and only burns scheduler
+    retries (OOF-266).
     """
     _profile_name, home = _cron_profile_home(profile)
     url = _gateway_fire_endpoint(_profile_name, home)
@@ -12712,6 +13335,43 @@ async def _forward_cron_fire_to_gateway(
     if not isinstance(body, dict):
         body = {"raw": body}
     return resp.status_code, body
+
+
+def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
+    """True when the profile's gateway is stopped BY OPERATOR INTENT.
+
+    Reads the durable ``desired_state`` field of the profile's
+    ``gateway_state.json`` — written exclusively by the s6 lifecycle
+    commands (``hermes gateway stop`` persists ``"stopped"``; start and
+    restart persist ``"running"``, see service_manager's
+    ``_write_gateway_desired_state``). This is the same operator-intent
+    signal container-boot reconciliation trusts, and it is precisely NOT
+    set to "stopped" during transient windows (crash loops, drains,
+    scale-to-zero wakes, restarts) — so it cleanly splits "retry will
+    eventually succeed" from "retry can never succeed".
+
+    Deliberately does NOT fall back to the volatile ``gateway_state``
+    runtime field: a legacy file without ``desired_state`` (or a gateway
+    that crashed before persisting) must stay on the retryable-503 path.
+    Failing open to "not intentionally stopped" is the safe direction —
+    the worst case is retries against a dead gateway, which is exactly
+    today's behavior.
+
+    Exception-safe: any resolution or parse failure returns False.
+    """
+    import json as _json
+
+    try:
+        _name, home = _cron_profile_home(profile)
+        state_file = home / "gateway_state.json"
+        if not state_file.exists():
+            return False
+        data = _json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        return data.get("desired_state") == "stopped"
+    except Exception:
+        return False
 
 
 
@@ -14098,6 +14758,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
         "description": _profile_attr(info, "description", "") or "",
         "description_auto": bool(_profile_attr(info, "description_auto", False)),
+        "display_name": _profile_attr(info, "display_name", "") or "",
         "distribution_name": _profile_attr(info, "distribution_name"),
         "distribution_version": _profile_attr(info, "distribution_version"),
         "distribution_source": _profile_attr(info, "distribution_source"),
@@ -14360,6 +15021,11 @@ def _profile_scope(profile: Optional[str]):
        Like ``_call_cron_for_profile`` does for cron's module globals,
        temporarily retarget both under a lock and restore them
        immediately after.
+
+    ``tools.skills_sync`` (reset/diff/list-modified/opt-in/opt-out/
+    repair-official) needs NO retargeting: since #65828 its directory
+    lookups resolve at call time through the same contextvar override
+    set in step 1.
 
     ``profile`` of None/""/"current" means "the dashboard's own profile" —
     config resolution is untouched, but the skill-module globals are still
@@ -14775,10 +15441,15 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
+        approvals_mode_changed = False
         with _profile_scope(body.profile or profile):
             # Full-document replacement: the editor owns the whole file; do not
             # merge omitted sections back from disk (#62723).
+            approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(read_raw_config())
             save_config(parsed, merge_existing=False)
+        # Same indicator refresh as the schema-driven save above.
+        if approvals_mode_changed and not _is_other_profile(body.profile or profile):
+            _broadcast_gateway_session_info()
         return {"ok": True}
 
     try:
@@ -15459,6 +16130,26 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
+_GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
+_GATEWAY_WS_TICKET_PROTOCOL_PREFIX = "hermes-gateway-ticket."
+
+
+def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
+    """Return ``(ticket, reason)`` from an unambiguous gateway protocol set."""
+    raw = str(ws.headers.get("sec-websocket-protocol", "") or "")
+    protocols = [value.strip() for value in raw.split(",") if value.strip()]
+    ticket_protocols = [
+        value for value in protocols
+        if value.startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)
+    ]
+    if not ticket_protocols:
+        return "", "none"
+    if _GATEWAY_WS_PROTOCOL not in protocols or len(ticket_protocols) != 1:
+        return "", "invalid"
+    ticket = ticket_protocols[0][len(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX):]
+    return (ticket, "ok") if ticket else ("", "invalid")
+
+
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
@@ -15508,7 +16199,16 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                # Stamp the server-minted identity onto the WS object so the
+                # connection (and any transport built from it) can never be
+                # impersonated by RPC params. Internal peers are marked
+                # ``server-internal`` and are excluded from privileged
+                # controller registration downstream.
+                ws._hermes_auth_identity = {
+                    "user_id": info.get("user_id"),
+                    "provider": info.get("provider"),
+                }
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -15519,12 +16219,32 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 )
                 return "internal_invalid", "internal"
 
-        ticket = ws.query_params.get("ticket", "")
+        protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
+        if protocol_reason == "invalid":
+            return "ticket_invalid", "ticket-subprotocol"
+        ticket = protocol_ticket or ws.query_params.get("ticket", "")
         if not ticket:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            # The ticket binds a server-minted {user_id, provider}; stamp it
+            # onto the WS object so ``gateway_ws`` can hand it to the gateway
+            # transport, where it is the sole identity authority for
+            # browser-controller registration. A client can never supply or
+            # spoof this value through RPC params. Only the two identity
+            # fields are carried — bookkeeping (e.g. ``minted_at``) is not
+            # part of the identity contract.
+            ws._hermes_auth_identity = {
+                "user_id": info.get("user_id"),
+                "provider": info.get("provider"),
+            }
+            if protocol_ticket:
+                # Select only the stable public protocol during accept. The
+                # ticket-bearing protocol is a credential and must never be
+                # reflected back to the browser or retained after admission.
+                ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+                return None, "ticket-subprotocol"
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -16645,7 +17365,15 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # The authenticated identity (ticket / internal credential) was stamped
+    # onto the WS object by _ws_auth_reason; carry it into the gateway
+    # transport where it becomes the identity authority for privileged RPCs
+    # (browser.controller.register). None on the legacy token path.
+    await handle_ws(
+        ws,
+        auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -17413,8 +18141,25 @@ def _discover_dashboard_plugins() -> list:
     # theme YAML): resolve them from the process launch home so they don't
     # vanish when a request is scoped to another profile via a context-local
     # HERMES_HOME override (e.g. embedded /chat under --open-profile).
-    search_dirs = [
-        (get_process_hermes_home() / "plugins", "user"),
+    #
+    # #87197: when the process itself is profile-scoped (``--profile <name>``
+    # sets ``HERMES_HOME=<root>/profiles/<name>``), the launch home is the
+    # profile directory, which has no ``plugins/`` — user plugins are
+    # installed in the hermes root (``~/.hermes/plugins``). Scan the default
+    # root as well (``get_default_hermes_root()`` unwraps
+    # ``<root>/profiles/<name>`` → ``<root>`` and returns a custom
+    # ``HERMES_HOME`` unchanged when it *is* the root), mirroring how
+    # ``hermes_cli.plugins`` resolves plugin install locations. The
+    # ``seen_names`` dedupe below keeps profile-local plugins (if any)
+    # authoritative over same-named root plugins.
+    from hermes_constants import get_default_hermes_root
+
+    user_plugin_roots = [get_process_hermes_home() / "plugins"]
+    root_plugins = get_default_hermes_root() / "plugins"
+    if root_plugins.resolve(strict=False) != user_plugin_roots[0].resolve(strict=False):
+        user_plugin_roots.append(root_plugins)
+    search_dirs = [(d, "user") for d in user_plugin_roots]
+    search_dirs += [
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
     ]
@@ -18261,7 +19006,9 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            return probe(int(desktop_pid)) != expected_start_marker
+            return not _parent_start_markers_match(
+                probe(int(desktop_pid)), expected_start_marker
+            )
 
         if pid_exists is None:
             from gateway.status import _pid_exists
@@ -18533,10 +19280,7 @@ def start_server(
     # provide was actually selected.
     if not config.loaded:
         config.load()
-    # Lightweight test/integration Config stand-ins used by callers before
-    # uvicorn finalizes its protocol attributes should retain the historical
-    # startup path. A real uvicorn Config always exposes this attribute.
-    if hasattr(config, "ws_protocol_class") and config.ws_protocol_class is None:
+    if config.ws_protocol_class is None:
         raise RuntimeError(
             "Hermes backend requires WebSocket transport, but uvicorn loaded "
             "no WebSocket protocol. Reinstall Hermes with its declared runtime "
@@ -18577,6 +19321,21 @@ def start_server(
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
 
+            # Positive process identity: record (pid, create_time, purpose,
+            # spawner) in the machine spawn ledger and — on Windows — attach
+            # to a kill-on-close job so this backend's whole child tree dies
+            # with it. Both best-effort; failures degrade to legacy behavior.
+            try:
+                from hermes_cli.process_identity import (
+                    attach_self_to_kill_on_close_job,
+                    register_self,
+                )
+
+                register_self("serve" if headless else "dashboard")
+                attach_self_to_kill_on_close_job()
+            except Exception as exc:
+                _log.debug("process-identity registration skipped: %s", exc)
+
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
@@ -18589,7 +19348,11 @@ def start_server(
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.
-                print(f"  Hermes backend listening on {host}:{actual_port}")
+                # flush: on a piped stdout (Desktop spawn) this line is
+                # block-buffered and can surface MINUTES after the flushed
+                # READY sentinel above, which reads as a slow boot in
+                # support bundles when the backend was actually up.
+                print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
             else:
                 print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)

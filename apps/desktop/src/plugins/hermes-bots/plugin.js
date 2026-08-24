@@ -4983,11 +4983,13 @@ function botSourceStatus(bot) {
 // active-gateway door. Feature-detected: older desktops without
 // requestProfile simply have no remote routes (callers fall back / disable).
 
-/** Immutable owner descriptor for every source-scoped row. The active
- *  gateway is presentation state and is never consulted here. */
-function botConnectionRoute(bot) {
+/** Non-throwing resolver behind botConnectionRoute(). Returns a typed status
+ *  instead of throwing, so passive callers (display/meta lookups) can branch
+ *  on `resolved | owner_removed | not_scoped` rather than catching whatever
+ *  exception the strict wrapper below happens to throw. */
+function resolveBotConnectionRoute(bot) {
   if (!bot?.sourceScoped && !bot?.remoteSource) {
-    return null
+    return { status: 'not_scoped', route: null }
   }
 
   const candidate = bot.route || {
@@ -5001,15 +5003,34 @@ function botConnectionRoute(bot) {
   const targetProfile = String(candidate?.targetProfile || profile).trim() || profile
 
   if (!connectionId) {
-    throw new Error(`Bot ${profile} has no connection owner`)
+    return { status: 'owner_removed', route: null, profile }
   }
 
-  return Object.freeze({
-    connectionId,
-    mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
-    profile,
-    targetProfile
-  })
+  return {
+    status: 'resolved',
+    route: Object.freeze({
+      connectionId,
+      mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
+      profile,
+      targetProfile
+    })
+  }
+}
+
+/** Immutable owner descriptor for every source-scoped row. The active
+ *  gateway is presentation state and is never consulted here. Strict: throws
+ *  when the owning connection is gone -- correct for real dispatch
+ *  (requestForBot, session creation, etc.), covered by
+ *  remote-routing-races.test.mjs. Passive lookups (rendering, meta) must call
+ *  resolveBotConnectionRoute() directly instead of catching this throw. */
+function botConnectionRoute(bot) {
+  const resolved = resolveBotConnectionRoute(bot)
+
+  if (resolved.status === 'owner_removed') {
+    throw new Error(`Bot ${resolved.profile} has no connection owner`)
+  }
+
+  return resolved.route
 }
 
 const BOTS_HOME_OWNER_KEY = 'bots:home'
@@ -5215,18 +5236,12 @@ function aliasIdentityFor(bot) {
 // aliasRouteIndex above — which is connection-exact, never name-based.
 function botRosterMeta(bot, metaByName) {
   if (bot?.sourceScoped || bot?.remoteSource) {
-    // A row orphaned by a deleted connection (connectionId gone, e.g. from a
-    // stale persisted group roster) has no route to resolve. botConnectionRoute
-    // fails closed there for routing dispatch — correct for a network call,
-    // but this is a passive meta lookup, and the whole component tree above
-    // display-only code must not crash rendering an unroutable member.
-    let route = null
-
-    try {
-      route = botConnectionRoute(bot)
-    } catch {
-      route = null
-    }
+    // Passive meta lookup: branch on the typed status instead of catching
+    // botConnectionRoute's throw, so an owner_removed row (e.g. a stale
+    // persisted group roster after its connection was deleted) reads as "no
+    // route" without masking an unrelated failure under the same catch.
+    const resolved = resolveBotConnectionRoute(bot)
+    const route = resolved.status === 'resolved' ? resolved.route : null
 
     const direct = route ? metaByName?.[botRouteKey(route)] : null
 

@@ -127,6 +127,17 @@ class TestSendDraft:
         assert "D1" not in adapter._active_streams
 
     @pytest.mark.asyncio
+    async def test_prefix_mismatch_keeps_stream_when_sealing_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello", metadata=META)
+        client.chat_stopStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send_draft("D1", 7, "Rewritten text", metadata=META)
+
+        assert not result.success
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_no_thread_ts_fails_cleanly(self):
         adapter, client = _make_adapter()
         result = await adapter.send_draft("D1", 7, "Hello", metadata={})
@@ -208,11 +219,12 @@ class TestSendFinalization:
         """
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+        adapter.edit_message = AsyncMock(wraps=adapter.edit_message)
 
         result = await adapter.send(
             "D1",
             "Final answer with the completed details.",
-            metadata={**META, "notify": True},
+            metadata={**META, "final": True},
         )
 
         assert result.success
@@ -226,6 +238,7 @@ class TestSendFinalization:
         assert update["channel"] == "D1"
         assert update["ts"] == "123.456"
         assert update["text"] == "Final answer with the completed details."
+        assert adapter.edit_message.await_args.kwargs["finalize"] is True
         client.chat_postMessage.assert_not_awaited()
         assert "D1" not in adapter._active_streams
 
@@ -237,7 +250,7 @@ class TestSendFinalization:
         result = await adapter.send(
             "D1",
             "Unrelated notice",
-            metadata={**META, "_interim_send": True, "notify": True},
+            metadata={**META, "_interim_send": True, "final": True},
         )
 
         assert result.success
@@ -254,6 +267,41 @@ class TestSendFinalization:
         result = await adapter.send("D1", "Hello world", metadata=META)
         assert result.success
         client.chat_postMessage.assert_awaited()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_notify_only_send_does_not_finalize_rewritten_stream(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Unrelated notification",
+            metadata={**META, "notify": True},
+        )
+
+        assert result.success
+        client.chat_stopStream.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_rewritten_final_keeps_stream_when_sealing_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+        client.chat_stopStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "final": True},
+        )
+
+        assert result.success
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
 
     @pytest.mark.asyncio
     async def test_rich_blocks_applied_after_seal(self):

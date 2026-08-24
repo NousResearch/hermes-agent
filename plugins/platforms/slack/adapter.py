@@ -2299,13 +2299,17 @@ class SlackAdapter(BasePlatformAdapter):
             if text == sent:
                 return SendResult(success=True, message_id=stream["ts"])
             if not text.startswith(sent):
-                # Text was rewritten mid-segment: seal the stream, then fail
-                # the frame so the consumer falls back to the edit path.
-                await self._seal_stream(chat_id, stream)
-                self._active_streams.pop(chat_id, None)
-                return SendResult(success=False, error="stream prefix mismatch")
-            delta = text[len(sent) :]
-            await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
+                if await self._seal_stream(chat_id, stream):
+                    self._active_streams.pop(chat_id, None)
+                return SendResult(
+                    success=False, error="stream prefix mismatch"
+                )
+            delta = text[len(sent):]
+            await client.chat_appendStream(
+                channel=chat_id,
+                ts=stream["ts"],
+                markdown_text=delta,
+            )
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors
@@ -2398,14 +2402,14 @@ class SlackAdapter(BasePlatformAdapter):
             # Slack message: stop the append-only stream, then replace its
             # contents with the authoritative final text. Plain/interim sends
             # still pass through without touching the live stream.
-            if not metadata or not metadata.get("notify"):
+            if not metadata or not metadata.get("final"):
                 return None
-            self._active_streams.pop(chat_id, None)
             ts = stream["ts"]
             if not await self._seal_stream(chat_id, stream):
                 # The stream may still be live; let the normal send path make
                 # a best-effort delivery rather than swallowing the answer.
                 return None
+            self._active_streams.pop(chat_id, None)
             replaced = await self.edit_message(
                 chat_id,
                 ts,
@@ -2417,12 +2421,12 @@ class SlackAdapter(BasePlatformAdapter):
                 await self.stop_typing(chat_id)
                 return replaced
             return None
-        self._active_streams.pop(chat_id, None)
         ts = stream["ts"]
         ok = await self._seal_stream(chat_id, stream, final_text=text)
         if not ok:
             # Stop failed — post normally; the dangling stream times out on Slack's side.
             return None
+        self._active_streams.pop(chat_id, None)
         # Streams render markdown natively; rich blocks are applied via
         # chat_update on the sealed message (mirrors edit_message finalize).
         blocks = self._maybe_blocks(text)

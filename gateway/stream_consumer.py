@@ -258,6 +258,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+            meta["final"] = True
         return meta or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).

@@ -192,12 +192,55 @@ find_browser() {
   fi
 }
 
+# The shim is decoration; launching a browser the user does NOT use is not.
+# A Safari/Firefox/Helium user who merely has Chrome installed watched Chrome
+# open on every update — a "why is Chrome opening?" surprise (community
+# report, Aug 2026). Only render the shim when the system DEFAULT browser is
+# itself Chromium-family; otherwise skip the window and let notify_fallback +
+# the durable result file carry the outcome. Best-effort on purpose: any
+# detection failure keeps today's behavior (0 = allowed).
+default_browser_is_chromium() {
+  local py="$1" handler=""
+  if [ "$(uname)" = "Darwin" ]; then
+    local plist="$HOME/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist"
+    # No explicit https handler registered = the OS default (Safari).
+    [ -f "$plist" ] || return 1
+    handler="$("$py" -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    data = plistlib.load(f)
+for entry in data.get("LSHandlers", []):
+    if entry.get("LSHandlerURLScheme") == "https":
+        print(entry.get("LSHandlerRoleAll", ""))
+        break
+' "$plist" 2>/dev/null)" || return 0
+    # Parsed but empty = no https override = Safari default.
+    [ -n "$handler" ] || return 1
+    case "$handler" in
+      com.google.[Cc]hrome*|org.chromium.[Cc]hromium*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  # Linux: xdg-settings is the authority; missing tool = permissive.
+  command -v xdg-settings >/dev/null 2>&1 || return 0
+  handler="$(xdg-settings get default-web-browser 2>/dev/null)" || return 0
+  [ -n "$handler" ] || return 0
+  case "$handler" in
+    *chrome*|*chromium*|*Chrome*|*Chromium*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 start_ui() {
   [ "$NO_UI" -eq 1 ] && return
   local html="$SCRIPT_DIR/ui.html" py browser port="" i
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
   browser="$(find_browser)"
+  if [ -n "$browser" ] && [ -n "$py" ] && ! default_browser_is_chromium "$py"; then
+    log "shim: default browser is not Chromium-family; skipping UI window"
+    browser=""
+  fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
   publish_stage ""

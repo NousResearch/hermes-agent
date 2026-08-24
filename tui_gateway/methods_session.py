@@ -456,6 +456,18 @@ def _(rid, params: dict) -> dict:
                         with contextlib.suppress(Exception):
                             db.close()
                     live["last_active"] = time.time()
+                    # This resume reattaches the live record. A lazy session
+                    # (no state.db row yet — every fresh Bot Chat) that was
+                    # sentinel-parked by a WS drop MUST be rebound here, or it
+                    # keeps the drop sentinel and the armed orphan-reap Timer
+                    # fires against a client that is attached right now — the
+                    # unpersisted sibling of the storm-killer paths (#91276).
+                    transport = current_transport()
+                    if transport is not None:
+                        with live.setdefault("history_lock", threading.Lock()):
+                            live["transport"] = transport
+                            live.setdefault("viewers", {})[transport] = time.time()
+                    _cancel_ws_orphan_reap(live_sid)
                     history = live.get("history") or []
                     return _ok(
                         rid,

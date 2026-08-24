@@ -5376,6 +5376,76 @@ def test_superseded_by_resume_is_recoverable_end_reason():
     assert "superseded_by_resume" not in server._RECLAIM_END_REASONS
 
 
+def test_lazy_unpersisted_resume_rebinds_transport_and_cancels_reap(monkeypatch):
+    """The lazy/unpersisted resume branch (no state.db row yet — every fresh
+    Bot Chat) must ALSO rebind the transport and cancel the pending reap when
+    it hands back a sentinel-parked live record. Found by live WS E2E after
+    the #93361 merge: the unit-covered paths (_live_session_payload,
+    _reuse_live_response, _claim_or_reuse_live) all cancelled, but this branch
+    returned the record while leaving it on the drop sentinel with the reap
+    Timer armed — the storm survived for unpersisted sessions (storm killer,
+    part 3)."""
+    cancelled = []
+
+    class _Timer:
+        def __init__(self, _delay, fn):
+            self.fn = fn
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            cancelled.append(self)
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    live_transport = _LiveTransport()
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "current_transport", lambda: live_transport)
+    # get_session/get_session_by_title miss -> forces the unpersisted branch
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(
+            get_session=lambda _t: None,
+            get_session_by_title=lambda _t: None,
+        ),
+    )
+
+    session = _session(
+        session_key="stored-lazy",
+        transport=server._detached_ws_transport,
+        running=False,
+        history=[],
+        profile_home=None,
+    )
+    server._sessions["lazy-sid"] = session
+
+    try:
+        server._schedule_ws_orphan_reap("lazy-sid")
+        assert "lazy-sid" in server._pending_ws_reaps
+
+        resp = _dispatch_sync(
+            {
+                "id": "lz1",
+                "method": "session.resume",
+                "params": {"session_id": "stored-lazy", "omit_messages": True},
+            },
+            transport=live_transport,
+        )
+
+        assert resp is not None and resp["result"]["session_id"] == "lazy-sid"
+        assert session["transport"] is live_transport
+        assert "lazy-sid" not in server._pending_ws_reaps
+        assert len(cancelled) == 1
+    finally:
+        server._sessions.pop("lazy-sid", None)
+        server._pending_ws_reaps.pop("lazy-sid", None)
+
+
 def test_ws_orphan_reap_still_fires_when_never_resumed(monkeypatch):
     """Nobody re-resumes: the reap fires normally and unregisters its Timer."""
     callbacks = []

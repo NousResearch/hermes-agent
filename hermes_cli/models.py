@@ -2582,9 +2582,17 @@ def probe_api_models(
         for item in data.get("data", []):
             if isinstance(item, dict) and note_catalog_item(item):
                 continue
-            probed.append(item.get("id", ""))
+            probed.append(str(item.get("id") or "").strip())
+        # Filter empty IDs and sort + dedupe case-insensitively so
+        # the /model picker renders a stable, alphabetical order.
+        # Built-in providers (anthropic/xai/github) already sort
+        # their catalogs; this custom OpenAI-compatible path did
+        # not, so the ordering changed with every /v1/models
+        # response and cache refresh.
+        models = [m for m in probed if m]
+        models = sorted(set(models), key=str.lower)
         return _probe_result(
-            probed, url, candidate_base.rstrip("/"),
+            models, url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and all_timed_out:

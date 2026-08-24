@@ -372,10 +372,19 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: psutil (Windows), ``/proc/<pid>/cmdline`` (Linux),
+    ``ps -o command=`` + shlex (macOS). None when the process is gone or unreadable.
+
+    Windows needs it too: a fixed-port backend started outside the Desktop (a Startup-folder or
+    Scheduled Task launcher behind ``tailscale serve``, a remote ``hermes serve``) is stopped by
+    ``hermes update`` and only comes back if its argv was captured before the kill."""
     if sys.platform == "win32":
-        return None
+        import psutil
+
+        try:
+            return [str(part) for part in psutil.Process(pid).cmdline()] or None
+        except (psutil.Error, OSError):
+            return None
     try:
         cmdline_path = f"/proc/{pid}/cmdline"
         if os.path.exists(cmdline_path):

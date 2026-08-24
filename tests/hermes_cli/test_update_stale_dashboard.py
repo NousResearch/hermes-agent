@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -289,6 +290,43 @@ class TestKillStaleDashboardWindows:
         assert len(taskkill_calls) == 2
         assert ["taskkill", "/PID", "12345", "/F"] in [c.args[0] for c in taskkill_calls]
         assert ["taskkill", "/PID", "12346", "/F"] in [c.args[0] for c in taskkill_calls]
+
+    @pytest.mark.platforms("windows")
+    def test_update_respawns_fixed_port_backend_from_argv_read_before_the_kill(self, capsys):
+        """A fixed-port dashboard started outside the Desktop (Startup-folder launcher behind
+        ``tailscale serve``) used to be stopped by ``hermes update`` and booked ``unrecovered``:
+        the Windows path never captured argv. A real child and a real ``taskkill`` pin the
+        ordering: the argv is only readable while the process is alive."""
+        argv = [sys.executable, "-c", "import time; time.sleep(60)", "dashboard",
+                "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        try:
+            with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+                 patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=[child.pid]), \
+                 patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
+                 patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+                 patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+                result = _kill_stale_dashboard_processes(restart_managed=True)
+            child.wait(timeout=10)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
+
+        assert result["killed"] == [child.pid]
+        respawn.assert_called_once_with([argv])
+        assert result["unrecovered"] == []
+        assert "when you're ready" not in capsys.readouterr().out
+
+    @pytest.mark.platforms("windows")
+    def test_scan_reads_the_shared_windows_listing(self):
+        """The dashboard scan goes through the gateway's wmic→Get-CimInstance listing, so a host
+        without the optional WMIC feature still finds its stale backends."""
+        listing = ("CommandLine=C:\\hermes\\bin\\hermes.exe dashboard --port 9119\nProcessId=4242\n\n"
+                   "CommandLine=C:\\Windows\\notepad.exe\nProcessId=4343\n\n")
+        with patch("hermes_cli.gateway._windows_process_listing", return_value=listing):
+            assert _find_stale_dashboard_pids() == [4242]
 
 
 
@@ -830,12 +868,23 @@ class TestCmdlineCapture:
         assert argv == ["hermes", "serve", "--port", "8300"]
 
     @pytest.mark.platforms("windows")
-    def test_returns_none_on_windows(self):
-        """``platforms("windows")``: the contract is "no graceful-argv capture on a
-        real Windows host" — asserting it against a faked platform only
-        restated the branch condition.
-        """
-        assert main_dashboard._dashboard_cmdline_for_pid(123) is None
+    def test_reads_exact_argv_of_a_live_windows_process(self):
+        """A fixed-port Windows backend can only be respawned after update if its exact argv is
+        readable; an argument with spaces must survive as one element."""
+        argv = [sys.executable, "-c", "import time; time.sleep(60)", "dashboard", "--port", "9119"]
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        try:
+            assert main_dashboard._dashboard_cmdline_for_pid(child.pid) == argv
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+
+    @pytest.mark.platforms("windows")
+    def test_gone_windows_process_reads_as_none(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=30)
+        assert main_dashboard._dashboard_cmdline_for_pid(child.pid) is None
 
 
 class TestPostUpdateDashboardCleanupIsolation:

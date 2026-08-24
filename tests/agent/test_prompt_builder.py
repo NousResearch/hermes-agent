@@ -45,7 +45,12 @@ def _drain_truncation_warnings():
     Truncation warnings ride a ContextVar; under plain ``pytest`` (no
     per-file subprocess isolation) anything this file records leaks into
     later files' contexts and breaks their assertions/ordering.
+
+    Drain on both sides: before, so warnings leaked by earlier files can't
+    pollute this file's assertions, and after, so this file leaves the
+    ContextVar clean for later files.
     """
+    drain_truncation_warnings()
     yield
     drain_truncation_warnings()
 

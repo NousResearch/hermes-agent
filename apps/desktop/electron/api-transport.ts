@@ -91,6 +91,7 @@ function isTransientTransportError(error) {
   if (TRANSIENT_CODES.has(error.code)) {
     return true
   }
+
   const msg = String(error.message || '')
 
   return msg.includes('socket hang up') || msg.includes('read ECONNRESET')
@@ -139,6 +140,7 @@ function shouldRetryRequest(error, method, requestState: any = {}) {
 async function withRetry(makeAttempt, options: any = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2
+
   const delayFn =
     options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
 

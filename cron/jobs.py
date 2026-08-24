@@ -3345,6 +3345,51 @@ def save_job_output(job_id: str, output: str):
     return output_file
 
 
+# Matches the filename stem written by ``save_job_output`` above.
+_OUTPUT_TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}")
+
+
+def list_job_outputs(job_id: str) -> List[str]:
+    """Return a job's saved run-output timestamps, newest first."""
+    try:
+        job_output_dir = _job_output_dir(job_id)
+    except ValueError:
+        return []
+    try:
+        files = sorted(
+            (f for f in job_output_dir.glob("*.md") if f.is_file()),
+            key=lambda f: f.name,
+            reverse=True,
+        )
+    except OSError:
+        return []
+    return [f.stem for f in files]
+
+
+def read_job_output(job_id: str, timestamp: Optional[str] = None) -> Optional[str]:
+    """Read one saved run's output text; the latest run if *timestamp* is None.
+
+    *timestamp* must match a filename stem produced by ``save_job_output``
+    (rejecting anything else keeps this off the same path-escape surface
+    ``_job_output_dir`` guards against).
+    """
+    if timestamp is None:
+        outputs = list_job_outputs(job_id)
+        if not outputs:
+            return None
+        timestamp = outputs[0]
+    elif not _OUTPUT_TIMESTAMP_RE.fullmatch(timestamp):
+        return None
+    try:
+        job_output_dir = _job_output_dir(job_id)
+    except ValueError:
+        return None
+    try:
+        return (job_output_dir / f"{timestamp}.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 # --- Skill reference rewriting (curator integration) ---
 
 def _canonical_skill_ref(raw: Any) -> str:

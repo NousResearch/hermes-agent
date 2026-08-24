@@ -576,6 +576,14 @@ Resume a previously paused job.
 
 Trigger the job to run immediately, out of schedule.
 
+### GET /api/jobs/\{job_id\}/executions
+
+Return the job's durable run history (newest first), cursor-paginated with `limit` and `before` query params.
+
+### GET /api/jobs/\{job_id\}/output and GET /api/jobs/\{job_id\}/output/\{timestamp\}
+
+Read the saved output text of the job's latest run, or of a specific run by its timestamp (as returned in the executions history).
+
 ## Sessions API (session control over REST)
 
 External UIs can manage Hermes sessions over REST without standing up the dashboard. All endpoints are gated by `API_SERVER_KEY` and live under `/api/sessions/*`.

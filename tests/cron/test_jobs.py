@@ -24,6 +24,8 @@ from cron.jobs import (
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    list_job_outputs,
+    read_job_output,
     _hermes_now,
 )
 
@@ -1289,6 +1291,41 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+
+class TestReadJobOutput:
+    @staticmethod
+    def _save_two_runs(monkeypatch):
+        """save_job_output twice with distinct clock ticks (its timestamp is
+        second-resolution, so two same-second saves would collide on one file)."""
+        import cron.jobs as jobs_mod
+        times = iter([
+            datetime(2026, 6, 25, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 6, 25, 10, 0, 1, tzinfo=timezone.utc),
+        ])
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: next(times))
+        save_job_output("test123", "first")
+        save_job_output("test123", "second")
+
+    def test_list_outputs_newest_first(self, tmp_cron_dir, monkeypatch):
+        self._save_two_runs(monkeypatch)
+        timestamps = list_job_outputs("test123")
+        assert len(timestamps) == 2
+        assert read_job_output("test123", timestamps[0]) == "second"
+        assert read_job_output("test123", timestamps[1]) == "first"
+
+    def test_read_without_timestamp_returns_latest(self, tmp_cron_dir, monkeypatch):
+        self._save_two_runs(monkeypatch)
+        assert read_job_output("test123") == "second"
+
+    def test_no_output_returns_none(self, tmp_cron_dir):
+        assert list_job_outputs("test123") == []
+        assert read_job_output("test123") is None
+
+    def test_rejects_path_escape_in_timestamp(self, tmp_cron_dir):
+        save_job_output("test123", "secret")
+        assert read_job_output("test123", "../../etc/passwd") is None
+        assert read_job_output("test123", "not-a-timestamp") is None
 
 
 class TestCronOutputRetention:

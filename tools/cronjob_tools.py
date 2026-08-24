@@ -1223,14 +1223,16 @@ def _apply_continuity(
     return refs or None
 
 
-def _gateway_liveness_notice() -> dict:
+def _gateway_liveness_notice(plural: bool = False) -> dict:
     """Build the ``gateway_running``/``warning`` payload for tool results.
 
     Thin adapter over the shared CLI helper ``hermes_cli.cron._builtin_gateway_liveness``
     (#87033) so the CLI and this tool can never disagree about what "scheduler
-    active" means. Returns ``{}`` when the scheduler is active (nothing to say),
-    or carries ``gateway_running: false`` plus a model-facing ``warning`` when
-    the builtin ticker has no gateway process to run it.
+    active" means. Returns ``{"gateway_running": False, "warning": ...}`` when
+    the builtin ticker has no gateway process to run it, ``{"gateway_running":
+    None}`` when the probe failed, and ``{"gateway_running": True}`` when the
+    scheduler is active. ``plural`` rewords the warning for multi-job results
+    (the ``list`` action).
     """
     try:
         from hermes_cli.cron import _builtin_gateway_liveness
@@ -1238,11 +1240,12 @@ def _gateway_liveness_notice() -> dict:
         _gw = _builtin_gateway_liveness()
     except Exception:
         return {"gateway_running": None}
+    subject = "these jobs are saved" if plural else "this job is saved"
     if _gw is False:
         return {
             "gateway_running": False,
             "warning": (
-                "The Hermes gateway is not running — this job is saved "
+                f"The Hermes gateway is not running — {subject} "
                 "but will NOT fire until the gateway is started "
                 "(hermes gateway install / hermes gateway start). "
                 "Tell the user the task is scheduled but not active yet."
@@ -1424,19 +1427,10 @@ def cronjob(
             _result = {"success": True, "count": len(jobs), "jobs": jobs}
             # Same silent-inert-job class as create (#87033): an agent
             # inspecting existing jobs in a gateway-less environment must
-            # learn they are not firing, not just see a clean list.
-            _liveness = _gateway_liveness_notice()
-            if len(jobs) or "gateway_running" in _liveness and _liveness["gateway_running"] is None:
-                if len(jobs):
-                    _liveness_warning = _liveness.get("warning", "")
-                    if _liveness_warning:
-                        _liveness["warning"] = (
-                            "Note: " + _liveness_warning.replace(
-                                "this job is saved but will NOT fire",
-                                "these jobs are saved but will NOT fire",
-                            )
-                        )
-                _result.update(_liveness)
+            # learn they are not firing, not just see a clean list. An empty
+            # list has nothing inert — stay quiet (and skip the probe).
+            if jobs:
+                _result.update(_gateway_liveness_notice(plural=True))
             return json.dumps(_result, indent=2)
 
         if not job_id:

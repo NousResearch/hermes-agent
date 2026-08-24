@@ -99,12 +99,9 @@ def _warn_if_gateway_not_running() -> None:
     any non-builtin provider; the gateway-process heuristic only speaks to the
     built-in ticker's trigger.
     """
-    try:
-        if _builtin_gateway_liveness() is not False:
-            # Active scheduler (gateway up, or an exempt non-builtin provider),
-            # or the probe failed — stay quiet rather than nag either way.
-            return
-    except Exception:
+    # _builtin_gateway_liveness never raises (it maps probe failures to None),
+    # so no guard is needed here — False is the only warn-worthy state.
+    if _builtin_gateway_liveness() is not False:
         return
 
     print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))

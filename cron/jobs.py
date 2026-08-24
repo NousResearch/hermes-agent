@@ -3724,13 +3724,39 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     times,
                                 )
                                 continue
-                            logger.info(
-                                "Job '%s': one-shot dispatch limit reached (%d/%d) "
-                                "— removing stale due entry",
-                                job.get("name", job.get("id", "?")),
-                                completed,
-                                times,
-                            )
+                            if job.get("last_run_at") is not None:
+                                # A record with last_run_at completed a real
+                                # run and was later re-armed without a budget
+                                # reset (e.g. a schedule edit before the
+                                # #93524 fix, or a hand-edited store). This is
+                                # NOT the dead-tick recovery case this guard
+                                # was built for, and the wedged-oneshot
+                                # diagnostic below will (correctly) not fire
+                                # — so removing it silently at INFO would
+                                # vanish the user's rescheduled run without a
+                                # trace. Make it operator-visible.
+                                logger.warning(
+                                    "Job '%s': one-shot dispatch limit reached "
+                                    "(%d/%d) on a record that already completed "
+                                    "a run (last_run_at=%s) — removing it "
+                                    "WITHOUT firing. This record was re-armed "
+                                    "without a budget reset (pre-#93615 store "
+                                    "or hand edit); re-run it with "
+                                    "'hermes cron resume <job> --run-now' "
+                                    "(#93524).",
+                                    job.get("name", job.get("id", "?")),
+                                    completed,
+                                    times,
+                                    job.get("last_run_at"),
+                                )
+                            else:
+                                logger.info(
+                                    "Job '%s': one-shot dispatch limit reached (%d/%d) "
+                                    "— removing stale due entry",
+                                    job.get("name", job.get("id", "?")),
+                                    completed,
+                                    times,
+                                )
                             for rj in raw_jobs:
                                 if rj["id"] == job["id"]:
                                     raw_jobs.remove(rj)

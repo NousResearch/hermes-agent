@@ -13,7 +13,13 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  activeGatewayConnectionId,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
@@ -520,7 +526,21 @@ export function selectProfile(name: string): void {
   // A profile with a remote override can fail to activate because the remote
   // host rejected its saved token (rotated/revoked). That must surface as a
   // "re-enter token" affordance, never a silently dead profile (#91349).
-  void ensureGatewayProfile(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
+  void activateOnCurrentSource(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
+}
+
+// Route a profile pick at the source the user is LOOKING at. $profiles is the
+// active gateway's list, so a pick made while a registry source is live names
+// one of THAT source's profiles. Sending it through the profile-only path
+// resolves the descriptor with a bare name (getConnection(profile)), which the
+// main process answers against the primary — so picking "researcher" on a
+// remote source opened a local backend of the same name and dropped the user
+// back home, making the pick look like it never took. A null connection id
+// means the primary is live, which is exactly the legacy path.
+function activateOnCurrentSource(target: string): Promise<void> {
+  const connectionId = activeGatewayConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -534,7 +554,7 @@ export function newSessionInProfile(name: string): void {
   $newChatProfile.set(target)
   $newChatRoute.set(null)
   requestFreshSession()
-  void ensureGatewayProfile(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
+  void activateOnCurrentSource(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
 }
 
 /** Start a draft owned by a specific registry agent. Foreground activation is

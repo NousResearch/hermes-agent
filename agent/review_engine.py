@@ -144,41 +144,10 @@ def collect_parent_loaded_skills(
     return names[:limit]
 
 
-def load_workspace_context(parent_agent) -> str:
-    """Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) from
-    the parent's workspace.
-
-    Reuses the SAME discovery/priority/cap logic the main agent's system
-    prompt uses (``agent.prompt_builder.build_context_files_prompt``), pointed
-    at the parent's resolved workspace directory. Subagents are built with
-    ``skip_context_files=True``, so without this the reviewer would judge repo
-    work without the repo's own conventions unless it thought to go read them.
-
-    SOUL.md is skipped — identity belongs to the parent, not the reviewer.
-    Returns "" when no workspace can be resolved or no context files exist.
-    """
-    try:
-        from tools.delegate_tool import _resolve_workspace_hint
-
-        cwd = _resolve_workspace_hint(parent_agent)
-    except Exception:
-        cwd = None
-    if not cwd:
-        return ""
-    try:
-        from agent.prompt_builder import build_context_files_prompt
-
-        return build_context_files_prompt(cwd=str(cwd), skip_soul=True) or ""
-    except Exception:
-        logger.debug("review: workspace context load failed", exc_info=True)
-        return ""
-
-
 def build_review_task(
     snapshot: List[Dict[str, str]],
     user_prompt: str = "",
     loaded_skills: Optional[List[str]] = None,
-    workspace_context: str = "",
 ) -> tuple:
     """Compose the reviewer subagent's (goal, context) pair."""
     goal = (
@@ -218,15 +187,6 @@ def build_review_task(
             "and review standards as binding for your assessment — the work "
             "was produced under them and must be judged against them."
         )
-    if workspace_context.strip():
-        lines.append("")
-        lines.append(
-            "The workspace's project context files are reproduced below. "
-            "They are binding for your review — judge the work against "
-            "these conventions and invariants."
-        )
-        lines.append("")
-        lines.append(workspace_context.strip())
     if user_prompt.strip():
         lines.append("")
         lines.append("Additional review instructions from the user:")
@@ -296,10 +256,7 @@ def start_review(
         raise ValueError("Nothing to review yet — the conversation is empty.")
 
     loaded_skills = collect_parent_loaded_skills(parent_agent, messages)
-    workspace_context = load_workspace_context(parent_agent)
-    goal, context = build_review_task(
-        snapshot, user_prompt, loaded_skills, workspace_context
-    )
+    goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
     credentials_cfg = _load_review_credentials_cfg()
 
     from tools.delegate_tool import delegate_task

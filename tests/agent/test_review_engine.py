@@ -383,48 +383,47 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# load_workspace_context — reviewer sees the workspace's AGENTS.md et al.
+# Workspace context files — ALL subagents (reviewer included) get AGENTS.md
+# et al. in their child system prompt (tools/delegate_tool.py)
 # ---------------------------------------------------------------------------
 
-def test_load_workspace_context_reads_agents_md(tmp_path, monkeypatch):
+def test_child_system_prompt_embeds_workspace_context(tmp_path):
     """Real file I/O through the same loader the main system prompt uses."""
-    import agent.review_engine as engine
-    import tools.delegate_tool as dt
+    from tools.delegate_tool import _build_child_system_prompt
 
     workspace = tmp_path / "proj"
     workspace.mkdir()
     (workspace / "AGENTS.md").write_text(
         "# Project Rules\nAll fixes must cover sibling call sites.\n"
     )
-    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: str(workspace))
-
-    out = engine.load_workspace_context(MagicMock())
-    assert "sibling call sites" in out
-    assert "Project Context" in out
-
-
-def test_load_workspace_context_empty_without_workspace(monkeypatch):
-    import agent.review_engine as engine
-    import tools.delegate_tool as dt
-
-    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: None)
-    assert engine.load_workspace_context(MagicMock()) == ""
+    prompt = _build_child_system_prompt(
+        "do the thing", None, workspace_path=str(workspace)
+    )
+    assert "sibling call sites" in prompt
+    assert "binding for your work" in prompt
 
 
-def test_briefing_embeds_workspace_context():
-    snap = [{"role": "user", "text": "review my PR"}]
-    ctx_files = "# Project Context\n\nNo hooks without a concrete consumer."
-    _, context = build_review_task(snap, "", None, ctx_files)
-    assert "No hooks without a concrete consumer." in context
-    assert "binding for your review" in context
+def test_child_system_prompt_no_context_block_without_files(tmp_path):
+    from tools.delegate_tool import _build_child_system_prompt
+
+    workspace = tmp_path / "empty"
+    workspace.mkdir()
+    prompt = _build_child_system_prompt(
+        "do the thing", None, workspace_path=str(workspace)
+    )
+    assert "project context files" not in prompt
 
 
-def test_briefing_omits_workspace_block_when_empty():
-    _, context = build_review_task([{"role": "user", "text": "hi"}], "")
-    assert "project context files are reproduced" not in context
+def test_child_system_prompt_no_workspace_no_block():
+    from tools.delegate_tool import _build_child_system_prompt
+
+    prompt = _build_child_system_prompt("do the thing", None, workspace_path=None)
+    assert "project context files" not in prompt
 
 
-def test_start_review_threads_workspace_context(monkeypatch, tmp_path):
+def test_review_child_gets_workspace_context_via_dispatch(monkeypatch, tmp_path):
+    """E2E through start_review: the reviewer child's *system prompt* carries
+    the workspace AGENTS.md (inherited from the generalized subagent path)."""
     import tools.delegate_tool as dt
 
     workspace = tmp_path / "repo"
@@ -440,8 +439,15 @@ def test_start_review_threads_workspace_context(monkeypatch, tmp_path):
     }
     built = {}
 
+    real_build_prompt = dt._build_child_system_prompt
+
     def fake_build(**kw):
         built.update(kw)
+        # Reproduce what _build_child_agent does with the real prompt builder
+        built["child_prompt"] = real_build_prompt(
+            kw.get("goal") or "", kw.get("context"),
+            workspace_path=dt._resolve_workspace_hint(kw.get("parent_agent")),
+        )
         return fake_child
 
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
@@ -461,7 +467,7 @@ def test_start_review_threads_workspace_context(monkeypatch, tmp_path):
         {"role": "assistant", "content": "PR #4 opened"},
     ], "")
     assert result["status"] == "dispatched"
-    assert "Never break prompt caching." in built["context"]
+    assert "Never break prompt caching." in built["child_prompt"]
 
 
 # ---------------------------------------------------------------------------

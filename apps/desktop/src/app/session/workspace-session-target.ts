@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
   $newChatWorkspaceTargetGeneration,
+  type NewChatWorkspaceTarget,
   setCurrentBranch,
   setCurrentCwd,
   setNewChatWorkspaceTarget
@@ -14,7 +15,7 @@ interface WorkspaceSessionOptions {
   onExplicitWorkspace?: (cwd: string) => void
   path: null | string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
-  startFreshSessionDraft: (options?: { workspaceTarget: string }) => void
+  startFreshSessionDraft: (options?: { workspaceTarget: NewChatWorkspaceTarget }) => void
 }
 
 export function startWorkspaceSession({
@@ -25,13 +26,22 @@ export function startWorkspaceSession({
   requestGateway,
   startFreshSessionDraft
 }: WorkspaceSessionOptions): void {
-  // A worktree lane carries its own path; a project trunk can be path-less, so
-  // fall back to the active project's root for that existing controller path.
-  const explicitTarget = path?.trim()
+  // Home's "+" passes path=null on purpose ("no folder"). That must stay
+  // detached — do NOT fall through to resolveNewSessionCwd(), which can still
+  // return a default/remembered project folder and re-attach the last repo
+  // (digitwo: New session in Home still shows `main`).
+  if (path === null) {
+    startFreshSessionDraft({ workspaceTarget: null })
+
+    return
+  }
+
+  // A worktree lane carries its own path. Empty string (legacy/path-less trunk)
+  // can fall back to the active project's root, but null was handled above.
+  const explicitTarget = path.trim()
   const target = explicitTarget || resolveNewSessionCwd()
 
   startFreshSessionDraft(target ? { workspaceTarget: target } : undefined)
-
   if (!target) {
     return
   }

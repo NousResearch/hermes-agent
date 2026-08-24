@@ -96,16 +96,17 @@ const BOOT_RETRY_MAX_ATTEMPTS = 5
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
 const BOOT_RETRY_BASE_DELAY_MS = 2_000
 
-// desktop.getConnection() / resolveGatewayWsUrl() are IPC round-trips into the
-// main process with no timeout of their own (#93454). A remote backend that
-// looks alive to a fresh probe but leaves the main-process reconnect path
-// stuck (e.g. a wedged revalidation after a liveness-probe trip) hangs these
-// awaits forever. While either is pending, `reconnecting` never clears, so
-// scheduleReconnect()/attemptReconnect() early-return permanently and the
-// backoff loop is latched — the UI stays "reconnecting" until the app is
-// restarted even though the gateway is reachable again. Bound both so a stall
-// rejects instead, letting the existing catch/finally clear the guard and
-// resume backoff. gateway.connect() already has its own connect timeout.
+// desktop.revalidateConnection() / getConnection() / resolveGatewayWsUrl() are
+// IPC round-trips into the main process with no timeout of their own (#93454).
+// A remote backend that looks alive to a fresh probe but leaves the
+// main-process reconnect path stuck (e.g. a wedged revalidation after a
+// liveness-probe trip) hangs these awaits forever. While any is pending,
+// `reconnecting` never clears, so scheduleReconnect()/attemptReconnect()
+// early-return permanently and the backoff loop is latched — the UI stays
+// "reconnecting" until the app is restarted even though the gateway is
+// reachable again. Bound all three so a stall rejects instead, letting the
+// existing catch/finally clear the guard and resume backoff. gateway.connect()
+// already has its own connect timeout.
 const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -263,7 +264,13 @@ export function useGatewayBoot({
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
+        // Bounded like the two awaits below: a wedged revalidation (#93454) is
+        // the specific hang this loop must survive, not just a rejection.
+        await withTimeout(
+          desktop.revalidateConnection?.() ?? Promise.resolve(),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out revalidating the gateway connection'
+        ).catch(() => undefined)
 
         // Primary sleep/wake reconnect must dial the WINDOW-owned primary backend
         // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget

@@ -515,6 +515,48 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(callCount).toBeGreaterThanOrEqual(3)
   })
 
+  it('a revalidateConnection() that hangs on reconnect does not permanently latch the backoff loop (#93454)', async () => {
+    // Same failure mode as the getConnection() repro above, but for the OTHER
+    // unbounded IPC await in the same try block: a wedged revalidation after a
+    // liveness-probe trip (the PR's own named trigger) must also unlatch.
+    const desktop = fakeDesktop()
+    let revalidateCallCount = 0
+
+    desktop.revalidateConnection = vi.fn(() => {
+      revalidateCallCount += 1
+
+      // Every reconnect attempt after the drop hangs indefinitely; getConnection
+      // itself stays fast so this isolates the revalidate call specifically.
+      return new Promise(() => undefined)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const callsBeforeDrop = desktop.getConnection.mock.calls.length
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    expect(revalidateCallCount).toBe(1)
+    expect($gatewayState.get()).not.toBe('open')
+    // Still stuck behind the hung revalidate — execution never reached
+    // getConnection() at all.
+    expect(desktop.getConnection.mock.calls.length).toBe(callsBeforeDrop)
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // revalidate await must reject (swallowed, as it always was for a genuine
+    // rejection) so execution proceeds to getConnection() and the socket
+    // reopens, instead of latching on the still-pending revalidate forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(callsBeforeDrop)
+    expect($gatewayState.get()).toBe('open')
+  })
+
   it('rebinds Bot tabs owned by the restarted primary without touching another gateway', async () => {
     render(<Harness />)
     await flushAsync()

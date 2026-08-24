@@ -12,6 +12,12 @@
 // permission; we pass titles through only when that permission is ALREADY
 // granted and never trigger the prompt for it.
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+import { app } from 'electron'
+
 import { readHyprlandWindows } from './hyprland'
 
 export interface EnumeratedWindow {
@@ -130,7 +136,31 @@ const loadGetWindows = (): Promise<GetWindowsModule | null> => {
   // prebuilt. A missing module is therefore a normal state on those targets,
   // so the lazy import resolves to null instead of rejecting; enumeration then
   // degrades to the failure note instead of an uncaught error.
-  getWindowsModule ??= import('get-windows').catch(() => null)
+  //
+  // The STAGED copy is tried first, and it is not a dev-only nicety.
+  // `import('get-windows')` resolves out of node_modules, whose lib/windows.js
+  // locates its binding through `preGyp.find()` — by HOST platform. When the
+  // tree was installed on a different OS than Electron is running on (a
+  // WSL-hosted dev run driving a win32 Electron is the everyday case here),
+  // pre-gyp picks the host's slot, ignores the win32 binding sitting beside it,
+  // and upstream's fail-soft path hands back no-op stubs. Enumeration then
+  // reports "unavailable" on a machine that answers perfectly well, which is
+  // what silently disabled both read_window_below and the HUD's game overlay.
+  // scripts/stage-native-deps.mjs writes a staged lib/windows.js that requires
+  // the binding directly, so it is the more reliable of the two everywhere.
+  getWindowsModule ??= (async () => {
+    const staged = path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+
+    if (fs.existsSync(staged)) {
+      const mod = await import(pathToFileURL(staged).href).catch(() => null)
+
+      if (mod) {
+        return mod as GetWindowsModule
+      }
+    }
+
+    return import('get-windows').catch(() => null)
+  })()
 
   return getWindowsModule
 }
@@ -189,15 +219,28 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
   }))
 }
 
+/**
+ * Front-to-back window enumeration, or null when the platform cannot answer.
+ *
+ * Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
+ * windows, which the X11 enumerator cannot, and it answers null everywhere
+ * else so the established path stays the default. Shared by the
+ * read_window_below tool and the HUD's game-overlay watch, so the two can
+ * never disagree about what the screen looks like.
+ */
+export async function enumerateWindowsFrontToBack(
+  selfPid: number,
+  titlesAvailable: boolean
+): Promise<EnumeratedWindow[] | null> {
+  return (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+}
+
 export async function readWindowBelow(
   selfPid: number,
   selfBounds: EnumeratedWindow['bounds'],
   titlesAvailable: boolean
 ): Promise<WindowBelowResult | WindowBelowUnavailable> {
-  // Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
-  // windows, which the X11 enumerator below cannot, and it answers null
-  // everywhere else so the established path stays the default.
-  const windows = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  const windows = await enumerateWindowsFrontToBack(selfPid, titlesAvailable)
 
   if (!windows) {
     return {

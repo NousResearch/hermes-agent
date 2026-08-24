@@ -457,15 +457,19 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
                 completed_in_batch.append(prompt_index)
-                # Write a tombstone row so the content-based resume scan (which
-                # only reads batch_*.jsonl) can see this prompt was already
-                # processed and discarded, not just left unprocessed.
+                # Tombstone row (#93527): resume filters exclusively by
+                # scanning batch_*.jsonl rows for prompt content, so a
+                # discarded sample without a row is invisible to --resume
+                # and gets re-run at full cost on every restart. The
+                # tombstone carries just enough for the scan; the merge
+                # step excludes it from trajectories.jsonl.
+                tombstone = {
+                    "prompt_index": prompt_index,
+                    "discarded": "no_reasoning",
+                    "prompt": _entry_prompt_text(prompt_data),
+                }
                 with open(batch_output_file, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({
-                        "prompt_index": prompt_index,
-                        "conversations": result["trajectory"],
-                        "discarded": "no_reasoning",
-                    }, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(tombstone, ensure_ascii=False) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
                 continue
@@ -535,6 +539,31 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
         "discarded_no_reasoning": discarded_no_reasoning,
         "completed_prompts": completed_in_batch
     }
+
+
+def _entry_prompt_text(entry: Dict) -> str:
+    """Extract the human prompt text from a dataset or trajectory entry.
+
+    Handles the shapes that appear across batch_runner: a flat
+    ``entry["prompt"]``, ShareGPT-style ``conversations`` (``from``/``value``),
+    chat-style ``conversations``/``messages`` (``role``/``content``), and the
+    discard tombstones written by the no-reasoning discard path.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    text = str(entry.get("prompt") or "").strip()
+    if text:
+        return text
+    for key in ("conversations", "messages"):
+        for msg in entry.get(key, []) or []:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or msg.get("from")
+            if role in {"user", "human"}:
+                text = str(msg.get("content") or msg.get("value") or "").strip()
+                if text:
+                    return text
+    return ""
 
 
 class BatchRunner:
@@ -766,19 +795,17 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            
+
                             # Skip failed entries - we want to retry these
                             if entry.get("failed", False):
                                 continue
-                            
-                            # Extract the human/user prompt from conversations
-                            conversations = entry.get("conversations", [])
-                            for msg in conversations:
-                                if msg.get("from") == "human":
-                                    prompt_text = msg.get("value", "").strip()
-                                    if prompt_text:
-                                        completed_prompts.add(prompt_text)
-                                    break  # Only need the first human message
+
+                            # Discard tombstones count as completed — the
+                            # prompt was processed and deliberately dropped
+                            # (#93527); re-running it would just re-discard.
+                            prompt_text = _entry_prompt_text(entry)
+                            if prompt_text:
+                                completed_prompts.add(prompt_text)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
@@ -1006,11 +1033,8 @@ class BatchRunner:
         
         # Aggregate all batch statistics and update checkpoint
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
-        total_discarded_no_reasoning = 0
 
         for batch_result in results:
-            total_discarded_no_reasoning += batch_result.get("discarded_no_reasoning", 0)
-
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -1057,7 +1081,7 @@ class BatchRunner:
         
         total_entries = 0
         filtered_entries = 0
-        discarded_tombstones = 0
+        tombstone_entries = 0
         batch_files_found = 0
         
         # Find ALL batch files in the output directory (handles resume merging old + new)
@@ -1074,15 +1098,15 @@ class BatchRunner:
                         try:
                             data = json.loads(line)
 
-                            # Discard tombstones exist only so resume can see
-                            # these prompts as done; they carry no full
-                            # trajectory and must not enter the training file.
+                            # Discard tombstones are resume bookkeeping, not
+                            # training data (#93527) — never enter the merged
+                            # trajectories file.
                             if data.get("discarded"):
-                                discarded_tombstones += 1
+                                tombstone_entries += 1
                                 continue
 
                             tool_stats = data.get('tool_stats', {})
-
+                            
                             # Check for invalid tool names (model hallucinations)
                             invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
                             
@@ -1099,9 +1123,7 @@ class BatchRunner:
         
         if filtered_entries > 0:
             print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        if discarded_tombstones > 0:
-            print(f"ℹ️  Excluded {discarded_tombstones} discarded (no-reasoning) tombstone rows out of {total_entries} total")
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries - discarded_tombstones} entries)")
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries - tombstone_entries} entries)")
         
         # Save final statistics
         final_stats = {
@@ -1115,7 +1137,9 @@ class BatchRunner:
             "duration_seconds": round(time.time() - start_time, 2),
             "tool_statistics": total_tool_stats,
             "reasoning_statistics": total_reasoning_stats,
-            "discarded_no_reasoning": total_discarded_no_reasoning,
+            "discarded_no_reasoning": sum(
+                r.get("discarded_no_reasoning", 0) for r in results
+            ),
         }
         
         with open(self.stats_file, 'w', encoding='utf-8') as f:
@@ -1126,7 +1150,7 @@ class BatchRunner:
         print("📊 BATCH PROCESSING COMPLETE")
         print("=" * 70)
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
-        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
+        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries - tombstone_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
         print("\n📈 Tool Usage Statistics:")

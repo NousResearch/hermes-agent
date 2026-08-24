@@ -183,6 +183,9 @@ class TestBatchWorkerResumeBehavior:
         assert len(lines) == 1
         entry = json.loads(lines[0])
         assert entry["discarded"] == "no_reasoning"
+        # The lightweight tombstone carries the human prompt text so the
+        # content scan can match it without a full trajectory payload.
+        assert entry["prompt"] == "hi"
 
     def test_resume_after_all_discarded_batch_reruns_zero_prompts(self, tmp_path, monkeypatch):
         """Regression for the issue: a resumed run must not re-execute

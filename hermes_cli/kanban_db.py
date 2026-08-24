@@ -1962,23 +1962,84 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
-def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
+CIRCUIT_BREAKER_BLOCK_KIND = "circuit_breaker"
+"""Payload ``kind`` marker for the ``blocked`` event emitted by the
+dispatcher's circuit breaker (``_record_task_failure``).
 
-    See #28712.
-    Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
-    that path.
+Distinguishes an automatic retry-exhaustion block from a deliberate
+worker/operator ``block_task`` call *without* disturbing downstream
+consumers:
+
+* ``_has_sticky_block`` treats marker-carrying ``blocked`` events as
+  NON-sticky, preserving the documented auto-recovery semantics of
+  #35072 / #28712 (a breaker block must recover once its underlying
+  condition clears; only human-initiated blocks wait for an explicit
+  ``unblock_task``).
+* ``tasks.block_kind`` stays NULL on the breaker path on purpose:
+  userland escalation tooling (e.g. ``classify_rca_tier`` in
+  /opt/data/scripts/domain/escalation.py) routes retry-exhaustion
+  tickets through the ``block_kind in {None, transient}`` lane, and
+  the scheduler's ``structural_block_kinds`` list does not know this
+  value. The audit marker lives in the event payload only.
+
+Before this marker existed the breaker flipped ``status='blocked'``
+with no ``blocked`` event at all — the "orphan" class (blocked status,
+zero blocked events) that left event-keyed detection (critic lane,
+kanban-block-watcher) blind for days (post-mortem
+260822-critic-lane-orphan-blindspot, action #3)."""
+
+
+def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the newest ``blocked``/``unblocked`` event is a *sticky*
+    ``blocked`` — an explicit worker/operator ``kanban_block`` that must wait
+    for an operator. A circuit-breaker block (marker-carrying ``blocked``
+    event) auto-recovers, as does a task with no such event at all (direct DB
+    edit).
+
+    A ``blocked`` status can come from two very different sources:
+
+    * **Worker- or operator-initiated** — a worker called
+      ``kanban_block(reason="review-required: ...")`` (or somebody ran
+      ``hermes kanban block <id>``).  This is a deliberate handoff that
+      should stay blocked until an operator unblocks it.  The block tool
+      emits a ``"blocked"`` event row in ``task_events``.
+
+    * **Circuit-breaker** — ``_record_task_failure`` tripped after
+      repeated crashes / spawn failures / timeouts.  This also emits a
+      ``"blocked"`` event (since the orphan-source fix), but the event
+      payload carries ``kind: circuit_breaker``; such blocks are meant
+      to recover automatically once the underlying conditions change
+      (e.g. parents finish, transient infra error clears).
+
+    The cheapest signal that distinguishes the two is the most recent
+    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
+    recent one is a *sticky* ``"blocked"`` (i.e. a ``blocked`` event
+    without the circuit-breaker marker — or there is such a ``blocked``
+    event and no ``"unblocked"`` event has fired since), the task is
+    sticky and ``recompute_ready`` must *not* auto-promote it.
+
+    Returns ``False`` when the only ``blocked`` events carry the
+    circuit-breaker marker, or when there is no such event at all
+    (e.g. the task was set to ``status='blocked'`` by direct DB
+    manipulation) — preserves the pre-#28712 auto-recover semantics
+    for that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
+        "SELECT kind, payload FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if not row or row["kind"] != "blocked":
+        return False
+    payload = row["payload"]
+    if payload:
+        try:
+            decoded = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if isinstance(decoded, dict) and decoded.get("kind") == CIRCUIT_BREAKER_BLOCK_KIND:
+            return False
+    return True
 
 
 def _latest_event(

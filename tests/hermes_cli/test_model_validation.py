@@ -594,3 +594,84 @@ class TestProbeApiModelsUserAgent:
         assert req.get_header("Authorization") is None
 
 
+
+
+# -- validate — OpenRouter routing-variant suffixes (:nitro / :floor / ...) ----
+
+class TestValidateOpenRouterVariantSuffixes:
+    """OpenRouter's `:nitro`, `:floor`, `:exacto`, `:online` are request-time
+    routing modifiers, not catalog models — /models lists only the base id.
+    Validation must accept `base:variant` when `base` is listed, preserve the
+    suffixed id (no auto-correct stripping the routing opt-in), and still
+    reject variants on unknown bases and unknown suffixes."""
+
+    _LISTING = [
+        "~x-ai/grok-latest",
+        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
+        "thinkingmachines/inkling:free",
+    ]
+
+    def _validate(self, model):
+        return _validate(model, "openrouter", api_models=self._LISTING)
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    def test_variant_on_listed_base_accepted_unmodified(self, suffix):
+        result = self._validate(f"~x-ai/grok-latest:{suffix}")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_variant_not_fuzzy_corrected_to_base(self):
+        """The old failure mode: get_close_matches would 'fix' model:nitro
+        to the bare base id and silently drop the routing behavior."""
+        result = self._validate("x-ai/grok-4.6:nitro")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_on_unknown_base_rejected(self):
+        result = self._validate("x-ai/notreal-model:nitro")
+        assert result["accepted"] is False
+
+    def test_unknown_suffix_keeps_old_behavior(self):
+        result = self._validate("x-ai/grok-4.6:bogus")
+        assert result["accepted"] is False
+
+    def test_free_sku_still_direct_matched(self):
+        """`:free` SKUs ARE catalog entries; direct membership handles them."""
+        result = self._validate("thinkingmachines/inkling:free")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_uppercase_suffix_accepted(self):
+        result = self._validate("x-ai/grok-4.6:NITRO")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_non_openrouter_provider_unaffected(self):
+        """The variant carve-out is OpenRouter-only; other providers keep
+        their existing behavior for colon-suffixed names."""
+        result = _validate(
+            "x-ai/grok-4.6:nitro",
+            "groq",
+            api_models=["x-ai/grok-4.6"],
+        )
+        assert result.get("corrected_model") != "x-ai/grok-4.6:nitro"
+
+    def test_static_catalog_fallback_accepts_variant(self):
+        """Gateway path: /models unreachable → static catalog validates the
+        base id and preserves the suffix."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 return_value=["x-ai/grok-4.6", "anthropic/claude-opus-4.6"],
+             ):
+            result = validate_requested_model(
+                "x-ai/grok-4.6:floor",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None

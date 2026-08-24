@@ -133,6 +133,22 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
+    """A same-provider switch resolves capabilities from the retained URL."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent.provider = "openai"
+    agent.model = "gpt-5.6"
+    agent.base_url = "https://api.openai.com/v1"
+    agent.capabilities = {"native_compaction": True}
+    agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+        agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
+
+    assert agent.base_url == "https://api.openai.com/v1"
+    assert agent.capabilities == {"native_compaction": True}
+
+
 def test_direct_start_model_override_does_not_inherit_profile_context_length():
     """A CLI ``--model`` startup override must not inherit another model's window."""
     cfg = {

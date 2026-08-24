@@ -2922,6 +2922,9 @@ def switch_model(
     from hermes_cli.providers import determine_api_mode
     from agent.native_compaction import resolve_native_compaction_capabilities
 
+    old_model = agent.model
+    old_provider = agent.provider
+
     # ── Determine api_mode if not provided ──
     # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
     # resolve correctly; without it determine_api_mode falls back to the
@@ -2929,12 +2932,22 @@ def switch_model(
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
+    # Same-provider switches may omit base_url intentionally (for example, a
+    # direct caller refreshing credentials). Resolve capabilities from the
+    # endpoint that the normalization below will retain, not from the empty
+    # raw argument.
+    effective_base_url = base_url
+    if not effective_base_url and (old_provider or "").strip().lower() == (
+        new_provider or ""
+    ).strip().lower():
+        effective_base_url = getattr(agent, "base_url", "")
+
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)
         else resolve_native_compaction_capabilities(
             model=new_model,
-            base_url=base_url,
+            base_url=effective_base_url,
             is_codex_backend=(new_provider or '').strip().lower() == 'openai-codex',
         )
     )
@@ -2953,9 +2966,6 @@ def switch_model(
         and base_url
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
-
-    old_model = agent.model
-    old_provider = agent.provider
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client

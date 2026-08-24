@@ -394,6 +394,26 @@ class SessionPortabilityMixin:
                 if not seg_id:
                     continue
                 try:
+                    # TOCTOU close-out: the guard above compared EXPORT-TIME
+                    # counts, but another backend can append donor messages
+                    # between export and this loop. Re-read both stores right
+                    # before stamping; a donor-ahead signal here skips the
+                    # stamp so growth never lands behind a non-recoverable
+                    # archive. (Count comparison cannot see equal-count
+                    # CONTENT divergence — e.g. a donor rewind+rewrite; that
+                    # residual case is accepted: bytes stay in the donor
+                    # store either way, only reachability differs.)
+                    donor_now = len(donor_db.get_messages(seg_id))
+                    local_now = len(self.get_messages(seg_id))
+                    if donor_now > local_now:
+                        retire_ok = False
+                        logger.warning(
+                            "adoption divergence at retire time: donor "
+                            "segment %s grew to %d messages (local %d) — "
+                            "leaving donor unretired",
+                            seg_id, donor_now, local_now,
+                        )
+                        continue
                     # First end_reason wins in end_session(); reopen first so
                     # the adoption boundary is stamped even on ended segments
                     # (e.g. 'compression' parents).

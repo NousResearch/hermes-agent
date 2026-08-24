@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -121,23 +122,40 @@ def _parse_features(body: str) -> List[Dict[str, str]]:
         ## N. Title
         - **One-line:** ...
         - **Use when:** ...
-        - **How:** ...
+        - **How:**
+          ```
+          /whats-new
+          ```
         - **Related:** ...
+
+    ``How:`` (and any field) may span multiple lines: continuation lines
+    (indented, or a fenced code block) are collected until the next
+    ``- **label:**`` field or the next ``## `` entry. Empty/placeholder
+    entries (no fields besides a name) are skipped.
     """
     features: List[Dict[str, str]] = []
     current: Optional[Dict[str, str]] = None
-    for line in body.splitlines():
-        if line.startswith("## "):
+    pending_key: Optional[str] = None  # field we're collecting continuation lines for
+    lines = body.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
             if current is not None:
                 features.append(current)
-            current = {"name": line[3:].strip()}
+            current = {"name": stripped[3:].strip()}
+            pending_key = None
+            i += 1
             continue
+
         if current is None:
+            i += 1
             continue
+
         low = line.lower()
-        # Field lines look like "- **One-line:** ..." — match on the label
-        # prefix (case-insensitive), then take everything after the closing
-        # "**" of the label, stripped of a leading colon.
+        matched = False
         for key, label in (
             ("one_line", "one-line"),
             ("use_when", "use when"),
@@ -149,10 +167,48 @@ def _parse_features(body: str) -> List[Dict[str, str]]:
                 if rest.startswith(":"):
                     rest = rest[1:].strip()
                 current[key] = rest
+                pending_key = key
+                matched = True
                 break
+        if matched:
+            i += 1
+            continue
+
+        # Continuation line for the pending field: indented content or a
+        # fenced code block line. Collected until next field/entry.
+        if pending_key is not None and (stripped or line.startswith((" ", "\t"))):
+            prev = current.get(pending_key, "")
+            if stripped.startswith("```"):
+                # Fence marker: keep the code-block content but not the fences.
+                i += 1
+                continue
+            if stripped:
+                sep = "\n" if prev else ""
+                current[pending_key] = prev + sep + stripped
+            i += 1
+            continue
+
+        # Blank line inside a fenced block for `How:` (keep empty lines so
+        # code blocks stay readable) — only when pending_key == "how".
+        if pending_key == "how" and not stripped:
+            current[pending_key] = current.get(pending_key, "") + "\n"
+            i += 1
+            continue
+
+        # Any other non-field, non-continuation line ends the pending field.
+        pending_key = None
+        i += 1
+
     if current is not None:
         features.append(current)
-    return features
+
+    # Skip placeholder/empty entries: a feature is only real if at least one
+    # of its content fields has non-empty text (a template entry whose
+    # fields are all blank must not render).
+    return [
+        f for f in features
+        if any((f.get(k) or "").strip() for k in ("one_line", "use_when", "how", "related"))
+    ]
 
 
 def _brief_path(repo_root: Path, version: str) -> Path:
@@ -227,6 +283,10 @@ def mark_seen(hermes_home: Path, version: str, dismiss: str = DISMISS_UNDERSTOOD
 
     Corrupt/absent file is recreated from scratch. Invalid dismiss values
     are clamped to ``understood`` so a bad caller can't create junk state.
+
+    Concurrency: a unique temp name (pid + counter) avoids the race where
+    two writers (CLI process + gateway) collide on the same ``.tmp`` path;
+    ``os.replace`` keeps the final write atomic.
     """
     if dismiss not in _VALID_DISMISS:
         dismiss = DISMISS_UNDERSTOOD
@@ -236,12 +296,30 @@ def mark_seen(hermes_home: Path, version: str, dismiss: str = DISMISS_UNDERSTOOD
         "at": int(time.time()),
     }
     path = _seen_path(hermes_home)
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{_tmp_counter()}.tmp"
+    )
     try:
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
     except OSError:
         logger.warning("failed to persist whats-new seen state to %s", path)
+    finally:
+        # Best-effort cleanup of our own temp file if replace failed.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+_tmp_counter_lock = 0
+
+
+def _tmp_counter() -> int:
+    """Return a process-local monotonic counter for unique temp names."""
+    global _tmp_counter_lock
+    _tmp_counter_lock += 1
+    return _tmp_counter_lock
 
 
 def unseen_versions(hermes_home: Path, repo_root: Path, current: str) -> List[str]:
@@ -275,10 +353,12 @@ def validate_version_arg(raw: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _print_whats_new_notice() -> None:
-    """Print a short what's-new brief after ``hermes update``.
+    """Print a short what's-new brief after ``hermes update`` (and on first
+    interactive CLI launch via cmd_chat).
 
-    Only fires when a brief exists for the current version and the user has
-    not acknowledged it. Silent on steady state. Never raises.
+    Prefers the current version's brief; if none exists, falls back to the
+    most recent unseen version on disk (``unseen_versions``). Silent when
+    everything is acknowledged or no brief exists. Never raises.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -292,11 +372,22 @@ def _print_whats_new_notice() -> None:
         current = get_current_version(repo_root)
         if not current:
             return
+        home = get_hermes_home()
         brief = get_whats_new(repo_root, current)
         if brief is None:
-            return
-        home = get_hermes_home()
-        if current in load_seen(home).get("seen", {}):
+            # No brief for the current version — surface the most recent
+            # unseen version instead (keeps unseen_versions live and gives
+            # users on pre-brief versions a path to learn about them).
+            unseen = unseen_versions(home, repo_root, current)
+            if not unseen:
+                return
+            target = unseen[-1]
+            brief = get_whats_new(repo_root, target)
+            if brief is None:
+                return
+        else:
+            target = current
+        if target in load_seen(home).get("seen", {}):
             return
         print()
         print(brief.render())

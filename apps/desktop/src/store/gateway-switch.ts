@@ -51,6 +51,11 @@ export interface GatewaySwitchLifecycle {
 
 let switchLifecycle: GatewaySwitchLifecycle | null = null
 
+/** Ownership handle returned by beginGatewaySwitch; see endGatewaySwitch. */
+export type GatewaySwitchToken = number
+
+let latestSwitchToken = 0
+
 export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle): () => void {
   switchLifecycle = lifecycle
 
@@ -71,14 +76,26 @@ export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle
  * $activeSessionId still named the previous backend's runtime and sent that id
  * to a backend that had never minted it — "session not found" (#93937).
  */
-export function beginGatewaySwitch(): void {
+export function beginGatewaySwitch(): GatewaySwitchToken {
+  const token = ++latestSwitchToken
   $gatewaySwitching.set(true)
   switchLifecycle?.beforeConnectionSwitch()
   wipeSessionListsForGatewaySwitch()
+
+  return token
 }
 
-/** Lower the barrier once the switch has committed (or failed). */
-export function endGatewaySwitch(): void {
+/**
+ * Lower the barrier once the switch that owns it has committed (or failed).
+ * Switches overlap — a click can supersede one that is mid-commit — and the
+ * barrier belongs to the LATEST one: an older switch ending is a no-op while a
+ * newer one is still in flight. No token = force down (host teardown).
+ */
+export function endGatewaySwitch(token?: GatewaySwitchToken): void {
+  if (token !== undefined && token !== latestSwitchToken) {
+    return
+  }
+
   $gatewaySwitching.set(false)
 }
 

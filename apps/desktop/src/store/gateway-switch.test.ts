@@ -132,6 +132,22 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     off()
   })
 
+  it('the barrier belongs to the LATEST switch: an older switch ending mid-commit of a newer one is a no-op', () => {
+    const older = beginGatewaySwitch()
+    const newer = beginGatewaySwitch()
+
+    endGatewaySwitch(older)
+    expect($gatewaySwitching.get()).toBe(true)
+
+    endGatewaySwitch(newer)
+    expect($gatewaySwitching.get()).toBe(false)
+
+    // Host teardown forces it down regardless of ownership.
+    beginGatewaySwitch()
+    endGatewaySwitch()
+    expect($gatewaySwitching.get()).toBe(false)
+  })
+
   it('still severs the bindings when no lifecycle is registered (windows that never mount the boot hook)', () => {
     beginGatewaySwitch()
 

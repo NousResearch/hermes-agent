@@ -7,6 +7,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -113,23 +114,6 @@ const BOOT_RETRY_BASE_DELAY_MS = 2_000
 // existing catch/finally clear the guard and resume backoff. gateway.connect()
 // already has its own connect timeout.
 const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms)
-
-    promise.then(
-      value => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      err => {
-        clearTimeout(timer)
-        reject(err)
-      }
-    )
-  })
-}
 
 /** Registry identity whose runtimes died with the primary connection. */
 export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'connectionId' | 'mode'>): null | string {
@@ -493,7 +477,7 @@ export function useGatewayBoot({
 
       // Barrier up + machine-context reset + session wipe, in one synchronous
       // step — the shared commit point of every connection switch.
-      beginGatewaySwitch()
+      const switchToken = beginGatewaySwitch()
       clearReconnectTimer()
       clearBootRetryTimer()
       bootRetryAttempt = 0
@@ -555,7 +539,7 @@ export function useGatewayBoot({
           setSessionsLoading(false)
         }
       } finally {
-        endGatewaySwitch()
+        endGatewaySwitch(switchToken)
       }
     }
 

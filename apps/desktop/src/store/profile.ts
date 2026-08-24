@@ -12,6 +12,7 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
+import { withTimeout } from '@/lib/with-timeout'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import {
   $gateway,
@@ -288,6 +289,13 @@ export function prewarmProfileBackend(name: string): void {
 
 let gatewaySwitch: Promise<void> | null = null
 
+// Descriptor lookups are IPC round-trips into Electron main. A wedged main
+// (the #93454 class: a ticket mint that never answers) must not latch the
+// gatewaySwitch mutex — and, through it, every later profile/source switch
+// and the switch barrier — so they are bounded and fail open like any other
+// lookup failure.
+const DESCRIPTOR_LOOKUP_TIMEOUT_MS = 20_000
+
 // The target profile's connection descriptor (mode / baseUrl / …), resolved
 // CONCURRENTLY with the socket work so the switch can publish the profile
 // pointer and $connection in one frame. Without this, $connection seeds from
@@ -311,7 +319,11 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
   }
 
   try {
-    return await getConnection(profile)
+    return await withTimeout(
+      getConnection(profile),
+      DESCRIPTOR_LOOKUP_TIMEOUT_MS,
+      `Timed out resolving the connection descriptor for profile "${profile}"`
+    )
   } catch (err) {
     console.warn(`[profile] descriptor lookup for "${profile}" failed; keeping the previous connection`, err)
 
@@ -398,7 +410,11 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
   }
 
   try {
-    return await getConnectionFor({ connectionId, profile })
+    return await withTimeout(
+      getConnectionFor({ connectionId, profile }),
+      DESCRIPTOR_LOOKUP_TIMEOUT_MS,
+      `Timed out resolving the connection descriptor for agent "${connectionId}:${profile}"`
+    )
   } catch (err) {
     console.warn(
       `[profile] descriptor lookup for agent "${connectionId}:${profile}" failed; keeping the previous connection`,
@@ -442,7 +458,25 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
 //    order and leave the EARLIER setActive() as the last write.
 // Only a null connectionId falls through to the legacy profile path. Explicit
 // `local` is a registry identity and must use the genuinely-local route.
-export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
+//
+// `beforeActivate` is the commit hook of the two-phase source switch
+// (store/connections selectConnection). It runs INSIDE the serialized
+// section, synchronously right before the socket is activated — i.e. after
+// every earlier switch has published and before this one does — so the caller
+// can sever the previous backend's session bindings at exactly that point
+// (#93937). Returning false declines: nothing is activated or published, the
+// mutex is released. That is how a switch superseded while queued behind
+// another one steps aside without a destructive wipe. Not consulted on the
+// null-connectionId profile fallthrough.
+export interface EnsureGatewayAgentOptions {
+  beforeActivate?: () => boolean
+}
+
+export async function ensureGatewayAgent(
+  connectionId: null | string,
+  profile: string,
+  { beforeActivate }: EnsureGatewayAgentOptions = {}
+): Promise<void> {
   const target = normalizeProfileKey(profile)
   const connection = (connectionId ?? '').trim() || null
 
@@ -450,13 +484,20 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
     return ensureGatewayProfile(target)
   }
 
-  // Serialize against any in-flight profile/agent switch (shared mutex).
-  if (gatewaySwitch) {
+  // Serialize against any in-flight profile/agent switch (shared mutex). A
+  // loop, not a single await: several waiters wake from the same settled
+  // switch, and the first to re-acquire starts a new one the rest must also
+  // wait out — otherwise two overlapping activations run interleaved.
+  while (gatewaySwitch) {
     await gatewaySwitch.catch(() => undefined)
   }
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
+    if (beforeActivate && !beforeActivate()) {
+      return
+    }
+
     // Descriptor resolves concurrently with the dial, same as the profile
     // path, so no await sits between the activation and the publication.
     const [descriptor, activated] = await Promise.all([

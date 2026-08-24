@@ -854,7 +854,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         # this window" page. No session cookies: the desktop is not a
         # browser session (mirrors the /auth/callback native branch).
         resp = JSONResponse({"ok": True, "next": loopback})
-        clear_pkce_cookie(resp, prefix=_prefix(request))
+        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
         return resp
 
     expires_in = max(60, session.expires_at - int(time.time()))

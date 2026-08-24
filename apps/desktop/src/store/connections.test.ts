@@ -276,4 +276,19 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
     expect($showAllProfiles.get()).toBe(false)
   })
+
+  it('never re-homes a live connection the registry cannot name', async () => {
+    // A window connected through the legacy v1 route carries an unqualified
+    // descriptor, so resolvedConnectionId — and therefore $activeConnectionId
+    // — is null. Restoring the registry primary over it would re-home a
+    // working remote onto local a few seconds after boot.
+    list.mockResolvedValueOnce({ ...registry, launchMode: 'primary', primary: 'local' })
+    $connection.set({ mode: 'remote', profile: 'default', registryScoped: false })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
+    expect($connection.get()?.mode).toBe('remote')
+  })
 })

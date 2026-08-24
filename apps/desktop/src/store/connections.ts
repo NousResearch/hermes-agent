@@ -126,6 +126,17 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 
   restoreAttempted = true
 
+  // Residual drift: a window can be live on a source the registry cannot name
+  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
+  // read-only userData that rejected the healed write). $activeConnectionId is
+  // null there, so the preferred-id guard below would miss and "restore" the
+  // registry primary over a connection that is already up and painting —
+  // re-homing the user onto a different backend seconds after boot. The
+  // registry has no claim on a source it does not know; leave the live one be.
+  if ($connection.get() && $activeConnectionId.get() === null) {
+    return registry
+  }
+
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary

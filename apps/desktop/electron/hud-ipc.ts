@@ -5,8 +5,12 @@
 import { type BrowserWindow, ipcMain } from 'electron'
 
 import { normalizeHudResizeBounds } from './hud-geometry'
-import { hudInputPolicy, hudUsesNativeDrag, hudUsesWorkspaceTransfer } from './hud-input-policy'
+import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
 import { hudFrostFor, type TranslucencyState } from './translucency'
+
+function hudWindowing() {
+  return resolveHudWindowing(process.platform, process.env, process.argv)
+}
 
 export interface HudIpcDeps {
   isMac: boolean
@@ -32,7 +36,11 @@ export function registerHudIpc({
   // Chromium drag region that steals modifier-drag gestures from the WM.
   // Main answers because it owns the actual Ozone backend selection.
   ipcMain.on('hermes:hud:native-drag', event => {
-    event.returnValue = hudUsesNativeDrag(process.platform, process.env, process.argv)
+    event.returnValue = hudWindowing().move === 'native-drag'
+  })
+
+  ipcMain.on('hermes:hud:windowing', event => {
+    event.returnValue = hudWindowingView(hudWindowing())
   })
 
   // X11/KWin window transfer: a renderer-driven grab is temporarily sticky so
@@ -48,7 +56,7 @@ export function registerHudIpc({
       !hudWindow ||
       hudWindow.isDestroyed() ||
       event.sender !== hudWindow.webContents ||
-      !hudUsesWorkspaceTransfer(process.platform, process.env, process.argv)
+      !hudWindowing().workspaceTransfer
     ) {
       return
     }
@@ -155,7 +163,7 @@ export function registerHudIpc({
     // cannot restore the input region afterwards. Veto the request there so
     // the HUD stays a normal solid window. Native Wayland and macOS/Windows
     // keep the per-element path.
-    if (Boolean(ignore) && hudInputPolicy(process.platform, process.env, process.argv) === 'solid') {
+    if (Boolean(ignore) && !hudWindowing().ignoreMouse) {
       return
     }
 
@@ -179,6 +187,10 @@ export function registerHudIpc({
     }
 
     const [x, y] = hudWindow.getPosition()
+
+    if (!hudWindowing().clientPlacement) {
+      return
+    }
 
     // setBounds — NOT setPosition: on Windows, a transparent frameless window
     // silently grows ~1px per setPosition call (worse at >100% DPI). The renderer

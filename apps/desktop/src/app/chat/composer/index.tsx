@@ -12,7 +12,6 @@ import { PR_COMMENT_URL_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
-import { isLinuxPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
@@ -108,12 +107,12 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
-  const hudNativeDrag = hudMode && window.hermesDesktop?.hud?.nativeDrag === true
-  const hudX11Drag = hudMode && isLinuxPlatform() && !hudNativeDrag
+  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
   const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
-    controlDrag: hudX11Drag,
-    workspaceTransfer: hudX11Drag
+    controlDrag: hudWindowing?.controlDrag === true,
+    workspaceTransfer: hudWindowing?.workspaceTransfer === true
   })
 
   // Typed stop phrase during an active voice conversation ends it — same

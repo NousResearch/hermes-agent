@@ -92,6 +92,12 @@ declare global {
       // owns the window; `onChanged` keeps every window's toggle truthful.
       hud?: {
         nativeDrag: boolean
+        windowing?: {
+          clientPlacement: boolean
+          controlDrag: boolean
+          nativeDrag: boolean
+          workspaceTransfer: boolean
+        }
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void

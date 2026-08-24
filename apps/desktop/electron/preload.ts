@@ -8,7 +8,8 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 // "Desktop IPC bridge is unavailable"). No reply means no glass, which degrades
 // to an ordinary opaque window rather than a page thinned over nothing.
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
-const hudNativeDrag = ipcRenderer.sendSync('hermes:hud:native-drag') === true
+const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
+const hudNativeDrag = hudWindowing?.nativeDrag === true
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
@@ -72,6 +73,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // window; `onChanged` keeps every window's toggle truthful.
   hud: {
     nativeDrag: hudNativeDrag,
+    windowing: {
+      clientPlacement: hudWindowing?.clientPlacement !== false,
+      controlDrag: hudWindowing?.controlDrag === true,
+      nativeDrag: hudNativeDrag,
+      workspaceTransfer: hudWindowing?.workspaceTransfer === true
+    },
     open: request => ipcRenderer.invoke('hermes:hud:open', request),
     close: () => ipcRenderer.invoke('hermes:hud:close'),
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),

@@ -377,7 +377,7 @@ export function HudShell() {
   // growth bug); the handle is the one sanctioned way to change size, driving
   // the same flip-resizable-for-the-call pattern the pet overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
-  const resizeDirections = hudResizeDirections(window.hermesDesktop?.hud?.nativeDrag === true)
+  const resizeDirections = hudResizeDirections(window.hermesDesktop?.hud?.windowing?.clientPlacement !== false)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-

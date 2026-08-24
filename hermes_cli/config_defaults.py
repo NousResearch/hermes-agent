@@ -2889,6 +2889,15 @@ DEFAULT_CONFIG = {
                 "deployment.environment.name": "production",
             },
         },
+        # Local metadata-only bridge to the RecursiveIntell stack-monitor
+        # collector. The producer is inert when its private Unix socket is
+        # absent, and all socket I/O is off the agent hot path. This is local
+        # observability, not OTLP or outbound telemetry.
+        "stack_observation": {
+            "enabled": True,
+            "socket_path": "",
+            "capacity": 2048,
+        },
         # OTLP destination. headers_env maps header names to ENVIRONMENT
         # VARIABLE NAMES (never secret values); values are read from the
         # environment at export time.

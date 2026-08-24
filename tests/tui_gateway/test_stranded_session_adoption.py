@@ -262,3 +262,130 @@ def test_launch_profile_resume_path_is_untouched(gateway):
 
     assert resp.get("error")
     assert resp["error"]["code"] == 4007
+
+
+# -------------------------------------------------------------------------
+# Review-hardening regressions (deleg_e8230ed7): title-collision safety,
+# divergence guard, donor_retired truthfulness, no re-adoption of retired
+# donors, and a non-vacuous launch-profile gating test.
+# -------------------------------------------------------------------------
+
+
+def test_title_lookup_is_never_used_for_adoption(gateway):
+    """H1: a profile resume by a TITLE (not id) that collides with an
+    unrelated default-store session must NOT adopt/retire it. Only exact-id
+    donors qualify."""
+    mod, default_db, profile_home = gateway
+    # Unrelated default-profile conversation titled like every bot chat.
+    _seed_stranded(default_db, session_id="innocent-default", title="Bot Chat")
+
+    resp = mod.handle_request(
+        {
+            "id": "10",
+            "method": "session.resume",
+            "params": {
+                # resolves nothing by id; would have matched by title pre-fix
+                "session_id": "Bot Chat",
+                "profile": "developer",
+                "lazy": True,
+            },
+        }
+    )
+
+    assert resp.get("error") and resp["error"]["code"] == 4007
+    innocent = default_db.get_session("innocent-default")
+    assert not innocent["archived"], "unrelated session must never be retired"
+    pdb = SessionDB(db_path=profile_home / "state.db")
+    try:
+        assert pdb.get_session("innocent-default") is None
+    finally:
+        pdb.close()
+
+
+def test_archived_donor_is_not_readopted(gateway):
+    """M4: after profile A adopts (donor archived), a second profile resuming
+    the same id must NOT clone the conversation from the archived donor."""
+    mod, default_db, profile_home = gateway
+    _seed_stranded(default_db)
+    # Simulate a prior completed adoption's retirement stamp.
+    default_db.reopen_session(STRANDED_ID)
+    default_db.end_session(STRANDED_ID, "adopted_by_profile")
+    default_db.set_session_archived(STRANDED_ID, True)
+
+    resp = mod.handle_request(
+        {
+            "id": "11",
+            "method": "session.resume",
+            "params": {
+                "session_id": STRANDED_ID,
+                "profile": "developer",
+                "lazy": True,
+            },
+        }
+    )
+
+    assert resp.get("error") and resp["error"]["code"] == 4007
+    pdb = SessionDB(db_path=profile_home / "state.db")
+    try:
+        assert pdb.get_session(STRANDED_ID) is None
+    finally:
+        pdb.close()
+
+
+def test_launch_profile_resume_never_adopts_even_when_donor_exists(gateway):
+    """Non-vacuous owns_db gating (reviewer 3): seed a REAL donor in the
+    default store, resume WITHOUT profile scope under an unknown id — the
+    fallback must not run, and the donor must stay untouched."""
+    mod, default_db, _profile_home = gateway
+    _seed_stranded(default_db)
+
+    resp = mod.handle_request(
+        {
+            "id": "12",
+            "method": "session.resume",
+            "params": {"session_id": "unknown-launch-id", "lazy": True},
+        }
+    )
+
+    assert resp.get("error") and resp["error"]["code"] == 4007
+    donor = default_db.get_session(STRANDED_ID)
+    assert not donor["archived"]
+    assert donor["end_reason"] is None
+
+
+def test_divergent_donor_is_not_retired(stores):
+    """H2: donor gained messages after a partial adoption — re-adoption must
+    NOT retire it (the newer messages would become unreachable)."""
+    default_db, profile_db = stores
+    _seed_stranded(default_db)
+    first = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    assert first["adopted"] and first["donor_retired"]
+
+    # Donor keeps living (e.g. user kept chatting there) — un-retire + append.
+    default_db.set_session_archived(STRANDED_ID, False)
+    default_db.append_message(STRANDED_ID, "user", "late question")
+    default_db.append_message(STRANDED_ID, "assistant", "late answer")
+
+    second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+
+    assert second["adopted"] is True  # profile copy still serves
+    assert second["donor_retired"] is False
+    donor = default_db.get_session(STRANDED_ID)
+    assert not donor["archived"], "diverged donor must stay reachable"
+    assert len(default_db.get_messages(STRANDED_ID)) == 8
+
+
+def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
+    """M1: donor_retired must not lie when retirement fails."""
+    default_db, profile_db = stores
+    _seed_stranded(default_db)
+
+    def _boom(_sid, _reason):
+        raise RuntimeError("locked")
+
+    monkeypatch.setattr(default_db, "end_session", _boom)
+    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+
+    assert result["adopted"] is True
+    assert result["donor_retired"] is False
+    assert not default_db.get_session(STRANDED_ID)["archived"]

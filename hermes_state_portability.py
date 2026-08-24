@@ -9,10 +9,8 @@ module-level constants live in hermes_state_common.
 """
 
 import logging
-import contextlib
 import json
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -342,7 +340,8 @@ class SessionPortabilityMixin:
         canonical-lookup resurrection must not undo an adoption.
 
         Returns the ``import_sessions`` result dict, plus ``adopted`` (bool)
-        and ``donor_retired`` (bool).
+        and ``donor_retired`` (bool — True only when EVERY segment's
+        retirement actually applied).
         """
         payload = donor_db.export_session_lineage(session_id)
         if not payload:
@@ -354,25 +353,64 @@ class SessionPortabilityMixin:
             }
 
         segments = payload.get("segments") or [payload]
+
+        # Divergence guard: a segment we are about to SKIP (already present
+        # here) may have kept accumulating messages in the donor store after
+        # a partial earlier adoption. Retiring it would strand those newer
+        # messages behind a non-recoverable archive. Compare counts up front
+        # and refuse to retire (still adopt/import) when the donor is ahead.
+        donor_ahead = False
+        for seg in segments:
+            seg_id = seg.get("id")
+            if not seg_id or self.get_session(seg_id) is None:
+                continue
+            donor_count = len(seg.get("messages") or [])
+            local_count = len(self.get_messages(seg_id))
+            if donor_count > local_count:
+                donor_ahead = True
+                logger.warning(
+                    "adoption divergence: donor segment %s has %d messages, "
+                    "local copy has %d — donor will NOT be retired",
+                    seg_id, donor_count, local_count,
+                )
+
         result = self.import_sessions([dict(seg) for seg in segments])
         imported = int(result.get("imported") or 0)
         skipped = int(result.get("skipped") or 0)
         adopted = result.get("ok", False) and (imported + skipped) == len(segments)
+        if not adopted:
+            logger.warning(
+                "adoption of %s did not complete: imported=%s skipped=%s "
+                "of %s segment(s); errors=%s",
+                session_id, imported, skipped, len(segments),
+                result.get("errors"),
+            )
 
         donor_retired = False
-        if adopted and retire_donor:
+        if adopted and retire_donor and not donor_ahead:
+            retire_ok = True
             for seg in segments:
                 seg_id = seg.get("id")
                 if not seg_id:
                     continue
-                with contextlib.suppress(Exception):
+                try:
                     # First end_reason wins in end_session(); reopen first so
                     # the adoption boundary is stamped even on ended segments
                     # (e.g. 'compression' parents).
                     donor_db.reopen_session(seg_id)
                     donor_db.end_session(seg_id, "adopted_by_profile")
                     donor_db.set_session_archived(seg_id, True)
-            donor_retired = True
+                except Exception:
+                    # Best-effort by design: a retirement failure must not
+                    # fail the adoption (the profile copy is already whole;
+                    # a later resume retries retirement idempotently). But
+                    # never claim success we didn't have.
+                    retire_ok = False
+                    logger.warning(
+                        "failed to retire donor segment %s after adoption",
+                        seg_id, exc_info=True,
+                    )
+            donor_retired = retire_ok
 
         return {**result, "adopted": adopted, "donor_retired": donor_retired}
 

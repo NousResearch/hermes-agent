@@ -500,10 +500,23 @@ def _(rid, params: dict) -> dict:
                 if owns_db:
                     try:
                         default_db = _get_db()
+                        # Exact-id match ONLY. Title lookup (get_session_by_title)
+                        # has no archived filter, no ordering, and bot titles
+                        # collide by design ("Bot Chat") — a title-matched donor
+                        # could adopt and non-recoverably retire an UNRELATED
+                        # default-profile conversation. The stranded-session
+                        # repro always has the exact id (the desktop routes by
+                        # id), so nothing real is lost.
                         donor_row = (
                             default_db.get_session(target)
-                            or default_db.get_session_by_title(target)
-                        ) if default_db is not None else None
+                            if default_db is not None
+                            else None
+                        )
+                        # Never re-adopt an already-retired donor: a second
+                        # profile resuming the same id would otherwise clone
+                        # the conversation into two "canonical" stores.
+                        if donor_row and donor_row.get("archived"):
+                            donor_row = None
                         if donor_row:
                             adoption = db.adopt_session_lineage_from(
                                 default_db, donor_row["id"]

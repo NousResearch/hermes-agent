@@ -464,13 +464,37 @@ def _kill_stale_dashboard_processes(
     failed: list[tuple[int, str]] = []
 
     if sys.platform == "win32":
+        from gateway.status import get_process_start_time
+        from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
+
+        # Capture the identity immediately after discovery. A PID that is
+        # reused before the destructive action will fail the start-time check.
+        pid_start_times = {
+            pid: get_process_start_time(pid)
+            for pid in pids
+        }
         for pid in pids:
             try:
+                expected_start_time = pid_start_times.get(pid)
+                if expected_start_time is None:
+                    failed.append((pid, "could not verify process identity"))
+                    continue
+                if not pid_is_hermes(
+                    pid,
+                    expected_start_time=expected_start_time,
+                ):
+                    failed.append((pid, "not hermes-owned or process identity changed"))
+                    continue
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                 )
                 if result.returncode == 0:
                     killed.append(pid)

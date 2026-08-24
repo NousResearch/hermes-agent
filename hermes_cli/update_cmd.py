@@ -5582,7 +5582,7 @@ def _relaunch_stopped_serves(token: dict) -> None:
 
 def _orphaned_desktop_backend_pids(
     matches: list[tuple[int, str, str]],
-) -> list[int] | None:
+) -> list[tuple[int, int]] | None:
     """PIDs from *matches* when every remaining holder is an ORPHANED backend.
 
     The venv-holder guard refuses on the Desktop app's ``serve`` backend by
@@ -5630,7 +5630,7 @@ def _orphaned_desktop_backend_pids(
         )
 
     # Pass 1: find orphaned backend ROOTS among the holders.
-    roots: list[int] = []
+    roots: list[tuple[int, int]] = []
     remaining: list[tuple[int, str]] = []  # (pid, argv_low) still to justify
     for pid, _name, cmdline in matches:
         argv = cmdline
@@ -5648,6 +5648,19 @@ def _orphaned_desktop_backend_pids(
             continue
         try:
             proc = psutil.Process(int(pid))
+            from gateway.status import get_process_start_time
+
+            process_start_time = get_process_start_time(int(pid))
+            if process_start_time is None:
+                return None
+        except psutil.NoSuchProcess:
+            # The candidate itself exited during classification; there is
+            # nothing left to reap and no identity to pass to taskkill.
+            continue
+        except Exception:
+            return None
+
+        try:
             ppid = proc.ppid()
             parent = psutil.Process(ppid) if ppid else None
             if parent is not None and parent.is_running():
@@ -5666,12 +5679,12 @@ def _orphaned_desktop_backend_pids(
             pass  # parent gone → orphan
         except Exception:
             return None
-        roots.append(int(pid))
+        roots.append((int(pid), process_start_time))
 
     # Pass 2: every non-backend holder must be a descendant of an accepted
     # orphan root — then it dies with the root's tree reap. Anything else
     # (operator REPL, stray script) keeps the refusal.
-    root_set = set(roots)
+    root_set = {pid for pid, _start_time in roots}
     for pid, _low in remaining:
         if not root_set:
             return None
@@ -5801,7 +5814,9 @@ def _handoff_reapable_backend_pids(
     return roots or None
 
 
-def _stop_process_trees(pids: list[int]) -> None:
+def _stop_process_trees(
+    pids: list[int] | list[tuple[int, int]],
+) -> None:
     """Force-stop each PID with its full child tree (Windows).
 
     ``taskkill /T /F`` mirrors the Desktop's ``forceKillProcessTree`` and
@@ -5809,12 +5824,38 @@ def _stop_process_trees(pids: list[int]) -> None:
     ``.hermes-runtime`` interpreter child alive and holding the install open
     (#70026). Best effort; never raises.
     """
-    for pid in pids:
+    from gateway.status import get_process_start_time
+    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
+
+    for entry in pids:
+        if isinstance(entry, tuple):
+            pid, expected_start_time = entry
+        else:
+            pid = int(entry)
+            expected_start_time = get_process_start_time(pid)
         try:
+            if expected_start_time is None:
+                logger.debug(
+                    "Skipping taskkill of PID %s: process identity unavailable",
+                    pid,
+                )
+                continue
+            if not pid_is_hermes(
+                pid,
+                expected_start_time=expected_start_time,
+            ):
+                logger.debug(
+                    "Skipping taskkill of non-Hermes or changed PID %s",
+                    pid,
+                )
+                continue
             subprocess.run(
-                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
                 check=False,
-                capture_output=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         except Exception as exc:
             logger.debug("Could not stop process tree %s: %s", pid, exc)

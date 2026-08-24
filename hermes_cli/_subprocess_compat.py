@@ -46,6 +46,7 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
+    "pid_is_hermes",
 ]
 
 
@@ -387,7 +388,70 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
-def kill_process_tree(proc: "subprocess.Popen") -> None:
+
+def _process_start_time(pid: int) -> int | None:
+    """Return the repository's stable process-start fingerprint, if available."""
+    try:
+        from gateway.status import get_process_start_time
+
+        return get_process_start_time(pid)
+    except Exception:
+        return None
+
+
+def _process_command_is_hermes(pid: int) -> bool:
+    """Best-effort check that *pid* currently runs Hermes code."""
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        command = " ".join(process.cmdline() or [])
+        executable = process.exe() or ""
+        return "hermes" in f"{command} {executable}".lower()
+    except Exception:
+        return False
+
+
+def pid_is_hermes(
+    pid: int,
+    *,
+    expected_start_time: int | None = None,
+) -> bool:
+    """Return whether it is safe to use ``taskkill`` for *pid*.
+
+    The PID must be valid, currently exist, and identify a Hermes process. When
+    the caller captured a start-time fingerprint before the destructive action,
+    the live process must still have the same ``(pid, start_time)`` identity.
+    Any ambiguity fails closed. Non-Windows callers have no ``taskkill`` path,
+    so a valid PID is accepted there.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if not IS_WINDOWS:
+        return True
+
+    try:
+        current_start_time = _process_start_time(pid)
+    except Exception:
+        return False
+    if current_start_time is None:
+        return False
+    if (
+        expected_start_time is not None
+        and current_start_time != expected_start_time
+    ):
+        return False
+    try:
+        return _process_command_is_hermes(pid)
+    except Exception:
+        return False
+
+
+def kill_process_tree(
+    proc: "subprocess.Popen",
+    *,
+    expected_start_time: int | None = None,
+) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
     ``proc.kill()`` alone only terminates the direct child. On Windows a
@@ -460,8 +524,19 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
         pass
     if IS_WINDOWS:
         try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            live_start_time = expected_start_time
+            if live_start_time is None:
+                live_start_time = _process_start_time(proc.pid)
+            if live_start_time is None:
+                allowed = False
+            else:
+                allowed = pid_is_hermes(
+                    proc.pid,
+                    expected_start_time=live_start_time,
+                )
+            if allowed:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -525,7 +600,10 @@ def bounded_probe_run(
         # Timeout OR any other communicate() failure (torn-down pipe, decode
         # error): terminate the child + descendants and drain bounded. Leaving
         # it running would leak the same suspended-descendant class this guards.
-        kill_process_tree(proc)
+        kill_process_tree(
+            proc,
+            expected_start_time=_process_start_time(proc.pid),
+        )
         try:
             proc.communicate(timeout=1)
         except Exception:

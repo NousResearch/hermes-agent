@@ -170,10 +170,18 @@ class TestFindStaleDashboardPids:
         assert 12345 in pids
 
 
-    def test_ps_timeout_returns_empty(self):
+    def _assert_ps_timeout_returns_empty(self):
         import subprocess as sp
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
+
+    @pytest.mark.linux_only
+    def test_ps_timeout_returns_empty_linux(self):
+        self._assert_ps_timeout_returns_empty()
+
+    @pytest.mark.macos_only
+    def test_ps_timeout_returns_empty_macos(self):
+        self._assert_ps_timeout_returns_empty()
 
 
 
@@ -273,6 +281,8 @@ class TestKillStaleDashboardWindows:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
+             patch("gateway.status.get_process_start_time", return_value=123), \
+             patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
              patch("subprocess.run", side_effect=fake_run) as mock_run:
             _kill_stale_dashboard_processes()
 

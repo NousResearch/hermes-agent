@@ -202,6 +202,31 @@ describe('desktop filesystem facade', () => {
     expect(desktopFsCacheKey()).not.toBe(mrSmallKey)
   })
 
+  it('prefers registry connection identity over SSH host identity', () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:41001',
+      connectionId: 'connection-a',
+      mode: 'remote',
+      remoteHost: 'operator@remote-box',
+      remoteKind: 'ssh',
+      remoteIdentity: 'operator@remote-box',
+      profile: 'default'
+    } as never)
+    const first = desktopFsCacheKey()
+
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:52002',
+      connectionId: 'connection-b',
+      mode: 'remote',
+      remoteHost: 'operator@remote-box',
+      remoteKind: 'ssh',
+      remoteIdentity: 'operator@remote-box',
+      profile: 'default'
+    } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(first)
+  })
+
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {
     $connection.set({
       mode: 'remote',

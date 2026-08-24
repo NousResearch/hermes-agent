@@ -22,9 +22,9 @@ function connectionCacheKey(connection: HermesConnection | null) {
     return 'local:'
   }
 
-  // A profile belongs to a registry connection, not the whole Desktop. Prefer
-  // the stable registry id so two backends exposing the same profile/path never
-  // share filesystem/gitignore cache entries during a connection switch.
+  // A profile belongs to a registry connection, not the whole Desktop. The
+  // registry id is the isolation boundary, including for SSH connections; the
+  // stable host identity below is only the fallback for legacy connections.
   if (connection.connectionId) {
     return `connection:${connection.connectionId}:${connection.profile || ''}`
   }

@@ -879,18 +879,18 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
-# Session storage maintenance (state.db).
-sessions:
-  # Close tui/desktop/subagent session rows orphaned by a dead gateway
-  # process. The normal disconnect cleanup runs on an in-process grace
-  # timer, so a gateway restart (update, crash, systemd) leaves those rows
-  # permanently "active". On every gateway boot — stdio TUI *and* the
-  # desktop/dashboard WS sidecar — rows whose start time AND newest message
-  # are both older than the session TTL (HERMES_TUI_SESSION_TTL_S, default
-  # 6h) are closed with end_reason "startup_orphan_reap". Messaging-platform
-  # sessions (Telegram, Discord, ...) are never touched; live in-memory
-  # sessions are excluded; swept sessions stay resumable.
-  orphan_reaper: true
+# Startup sweep of session rows orphaned by a dead gateway process.
+# The normal disconnect cleanup runs on an in-process grace timer, so a
+# gateway restart (update, crash, systemd) leaves those rows permanently
+# "active". On every gateway boot — stdio TUI *and* the desktop/dashboard
+# WS sidecar — tui/desktop/subagent rows whose start time AND newest
+# message are both older than the session TTL (HERMES_TUI_SESSION_TTL_S,
+# default 6h) are closed with end_reason "startup_orphan_reap".
+# Messaging-platform sessions (Telegram, Discord, ...) are never touched;
+# live in-memory sessions are excluded; swept sessions stay resumable.
+#
+# dashboard:
+#   startup_orphan_sweep: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing

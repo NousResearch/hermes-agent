@@ -1612,18 +1612,20 @@ def _start_idle_reaper() -> None:
 # (stdio `entry.main` and the WS sidecar's `handle_ws`) — desktop/dashboard
 # never run `entry.main()`. state.db is shared by sibling processes on the
 # same profile, so eligibility is conservative. Disable via
-# `sessions.orphan_reaper: false` (default on).
+# `dashboard.startup_orphan_sweep: false` (default on).
 _ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
 _startup_orphan_sweep_ran = False
 _startup_orphan_sweep_lock = threading.Lock()
 
 
 def _session_orphan_reaper_enabled() -> bool:
-    """``sessions.orphan_reaper`` (default on). Fail-open on config errors."""
+    """``dashboard.startup_orphan_sweep`` (default on). Fail-open on errors."""
     try:
-        sessions_cfg = (_load_cfg() or {}).get("sessions") or {}
-        if isinstance(sessions_cfg, dict) and "orphan_reaper" in sessions_cfg:
-            return is_truthy_value(sessions_cfg.get("orphan_reaper"), default=True)
+        dashboard_cfg = (_load_cfg() or {}).get("dashboard") or {}
+        if isinstance(dashboard_cfg, dict) and "startup_orphan_sweep" in dashboard_cfg:
+            return is_truthy_value(
+                dashboard_cfg.get("startup_orphan_sweep"), default=True
+            )
         # Fail-open: a missing key (raw yaml, no DEFAULT_CONFIG merge on
         # this loader) must keep the sweep on.
         return True
@@ -1688,7 +1690,7 @@ def _schedule_startup_orphan_sweep() -> None:
     right after a restart can ``session.resume`` its row before the sweep
     reads the DB. ``HERMES_TUI_WS_ORPHAN_REAP_GRACE_S=0`` (park forever)
     and ``HERMES_TUI_SESSION_TTL_S=0`` both suppress the sweep; so does
-    ``sessions.orphan_reaper: false``.
+    ``dashboard.startup_orphan_sweep: false``.
     """
     global _startup_orphan_sweep_ran
     if _WS_ORPHAN_REAP_GRACE_S <= 0 or _SESSION_TTL_S <= 0:

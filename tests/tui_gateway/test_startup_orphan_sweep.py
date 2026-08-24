@@ -5,8 +5,8 @@ A gateway restart destroys the in-process ws-orphan grace timers
 previous process stay ``ended_at IS NULL`` forever.  Both gateway entry
 points — stdio ``entry.main()`` and the desktop/dashboard WS sidecar
 ``handle_ws`` — must schedule a DB-level sweep, gated by
-``sessions.orphan_reaper`` (default on) and the gateway's session TTL,
-without ever blocking or crashing startup.
+``dashboard.startup_orphan_sweep`` (default on) and the gateway's session
+TTL, without ever blocking or crashing startup.
 """
 
 from __future__ import annotations
@@ -55,6 +55,51 @@ class TestSweepOrphanedSessionRows:
             row = db.get_session(sid)
             assert row["ended_at"] is not None
             assert row["end_reason"] == "startup_orphan_reap"
+
+    def test_swept_row_stays_resumable(self, monkeypatch, tmp_path):
+        """A stranded 'active' row (ended_at NULL, no live runtime) is swept
+        AND still resumable afterward (#65194 salvage requirement).
+
+        ``startup_orphan_reap`` must be in the recoverable accidental-end set:
+        recovery (find_latest_gateway_session_for_peer), canonical-chat
+        resurrection (unarchive_recoverable_session), and reset promotion all
+        fence on ``_RECOVERABLE_END_REASONS`` — a sweep that used a
+        non-recoverable reason would make the restart LOSE the session
+        instead of merely closing its phantom row.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        stale = time.time() - 8 * 3600
+        _seed_session(db, "stranded-tui", source="tui", last_active=stale)
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET session_key = ? WHERE id = ?",
+                ("tui:peer-1", "stranded-tui"),
+            )
+            db._conn.commit()
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
+        monkeypatch.setattr(server, "_sessions", {})  # no live runtime
+
+        assert server._sweep_orphaned_session_rows() == ["stranded-tui"]
+        row = db.get_session("stranded-tui")
+        assert row["ended_at"] is not None
+        assert row["end_reason"] == "startup_orphan_reap"
+
+        # The distinct reason is a recoverable accident, not a boundary.
+        assert "startup_orphan_reap" in SessionDB.RECOVERABLE_END_REASONS
+
+        # Peer-keyed recovery still surfaces the swept row...
+        recovered = db.find_latest_gateway_session_for_peer(
+            source="tui", session_key="tui:peer-1"
+        )
+        assert recovered is not None
+        assert recovered["id"] == "stranded-tui"
+
+        # ...and the session.resume path (reopen_session) fully revives it.
+        db.reopen_session("stranded-tui")
+        revived = db.get_session("stranded-tui")
+        assert revived["ended_at"] is None
+        assert revived["end_reason"] is None
 
     def test_spares_fresh_row_with_old_copied_history(self, monkeypatch, tmp_path):
         db = SessionDB(tmp_path / "state.db")
@@ -161,9 +206,9 @@ class TestScheduleStartupOrphanSweep:
         server._schedule_startup_orphan_sweep()
         assert started["count"] == 1
 
-    def test_config_flag_reads_sessions_orphan_reaper(self, monkeypatch):
+    def test_config_flag_reads_dashboard_startup_orphan_sweep(self, monkeypatch):
         monkeypatch.setattr(
-            server, "_load_cfg", lambda: {"sessions": {"orphan_reaper": False}}
+            server, "_load_cfg", lambda: {"dashboard": {"startup_orphan_sweep": False}}
         )
         assert server._session_orphan_reaper_enabled() is False
 

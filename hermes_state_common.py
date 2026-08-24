@@ -211,6 +211,11 @@ _RECOVERABLE_END_REASONS = (
     # session.resume of the same stored session (no reclaimed broadcast);
     # the stored session stays resumable like any accidental end.
     "superseded_by_resume",
+    # Startup sweep of rows orphaned by a dead gateway process (#65194):
+    # the in-process ws-orphan grace timer died with the process, so the
+    # row was closed at the next boot instead. Same accident class as
+    # ws_orphan_reap — kept distinct for forensics — and equally resumable.
+    "startup_orphan_reap",
 )
 _RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
 

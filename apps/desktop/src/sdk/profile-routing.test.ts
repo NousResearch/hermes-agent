@@ -104,7 +104,9 @@ vi.mock('@/store/gateway', async () => {
   }
 })
 
-const { host } = await import('./index')
+const { BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS, DEFAULT_SESSION_HYDRATION_TIMEOUT_MS, host } =
+  await import('./index')
+
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')
 
@@ -832,6 +834,65 @@ describe('profile-aware plugin session opens', () => {
 
     expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('stranded-bot-chat')
     expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('keeps the ordinary session hydration default at 20 seconds', async () => {
+    vi.useFakeTimers()
+
+    try {
+      expect(DEFAULT_SESSION_HYDRATION_TIMEOUT_MS).toBe(20_000)
+      $activeGatewayProfile.set('hyoseob')
+
+      const outcome = host
+        .openSession('slow-bot-chat', {
+          profile: 'hyoseob',
+          awaitHydration: true,
+          expectHistory: true
+        })
+        .then(
+          () => 'resolved',
+          error => String(error)
+        )
+
+      await vi.advanceTimersByTimeAsync(19_999)
+      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await outcome).toMatch(/timed out loading/i)
+      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('honors the exported 60-second Bot Chat hydration override', async () => {
+    vi.useFakeTimers()
+
+    try {
+      expect(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS).toBe(60_000)
+      $activeGatewayProfile.set('hyoseob')
+
+      const outcome = host
+        .openSession('slow-bot-chat', {
+          profile: 'hyoseob',
+          awaitHydration: true,
+          expectHistory: true,
+          hydrationTimeoutMs: BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS
+        })
+        .then(
+          () => 'resolved',
+          error => String(error)
+        )
+
+      await vi.advanceTimersByTimeAsync(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS - 1)
+      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await outcome).toMatch(/timed out loading/i)
+      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {

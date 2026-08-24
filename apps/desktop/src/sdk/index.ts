@@ -311,7 +311,12 @@ const $activeConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
-const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Ordinary session opens fail fast when their gateway or socket is dead. */
+export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Cold Bot profiles get a larger per-attempt budget to start their backend
+ *  and paint durable history. Bot Mode opts into one retry, so its effective
+ *  ceiling is two bounded attempts rather than an unbounded wait. */
+export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {

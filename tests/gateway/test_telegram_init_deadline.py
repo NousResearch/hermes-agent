@@ -79,13 +79,15 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     import asyncio as _asyncio
     import time as _time
 
+    from agent import deadline as _deadline
+
     dumps = []
     monkeypatch.setattr(
-        tg_adapter,
-        "_dump_loop_blocked_diagnostics",
-        lambda timeout, grace: dumps.append((timeout, grace)),
+        _deadline,
+        "_dump_blocked_loop_diagnostics",
+        lambda label, timeout_s: dumps.append((label, timeout_s)),
     )
-    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
+    monkeypatch.setattr(_deadline, "_LOOP_BLOCKED_DUMP_GRACE_S", 0.15)
 
     hung = _asyncio.get_running_loop().create_future()  # never completes
     task = _asyncio.ensure_future(
@@ -103,7 +105,7 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
     with pytest.raises(_asyncio.TimeoutError):
         await task
 
-    assert dumps == [(0.05, 0.15)]
+    assert dumps == [("telegram-init", 0.05)]
     hung.cancel()
 
 

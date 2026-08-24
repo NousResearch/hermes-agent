@@ -11558,8 +11558,6 @@ def cmd_dashboard(args):
         # Resolve SSH session token (serve-only, same as the dashboard path).
         if _token_file:
             try:
-                from pathlib import Path
-
                 _ssh_session_token = Path(_token_file).read_text(encoding="utf-8").strip()
             except Exception:
                 pass

@@ -22,6 +22,7 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
+    sanitize_task_id_for_path,
 )
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -130,52 +131,11 @@ def _sanitize_label_value(value: str) -> str:
     return cleaned
 
 
-# A persistent sandbox's host directory is named after task_id, and that name
-# then becomes the source half of a `-v <source>:<target>` spec. Docker splits
-# the spec on ':', so a colon-bearing name arrives as extra mount fields and
-# the run is refused outright ("invalid spec ... too many colons", exit 125).
-# Path separators would additionally escape the sandbox root.
-_SANDBOX_DIR_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
-_SANDBOX_DIR_MAX_LEN = 128
-_SANDBOX_DIR_HASH_LEN = 12
-
-
-def _sandbox_dir_name(task_id: str) -> str:
-    """Return a bind-mountable directory name for *task_id*'s sandbox.
-
-    Names that are already safe are returned verbatim, so the shared
-    ``default`` sandbox and RL/benchmark task ids keep resolving to the
-    directory they have always used — no installed package or ``/root`` state
-    moves. Only ids that could never have produced a working bind mount are
-    rewritten.
-
-    A rewrite also appends a digest of the original id, because the character
-    substitution alone is not injective: ``a:b`` and ``a_b`` would otherwise
-    share one persistent sandbox and leak one session's ``/root`` into
-    another's container. The digest is a pure function of the id, so the same
-    session resolves to the same directory in every process — cross-process
-    container reuse depends on that.
-    """
-    value = task_id if isinstance(task_id, str) else ""
-    if not value:
-        # An empty component collapses the path onto the docker sandbox root,
-        # which would bind-mount every task's state at once.
-        return "default"
-
-    cleaned = _SANDBOX_DIR_UNSAFE_RE.sub("_", value)
-    if (
-        cleaned == value
-        and len(value) <= _SANDBOX_DIR_MAX_LEN
-        and value not in {".", ".."}
-        # Windows silently strips trailing dots/spaces, aliasing two ids onto
-        # one directory.
-        and not value.endswith((".", " "))
-    ):
-        return value
-
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_SANDBOX_DIR_HASH_LEN]
-    stem = cleaned[: _SANDBOX_DIR_MAX_LEN - _SANDBOX_DIR_HASH_LEN - 1].strip("._")
-    return f"{stem or 'task'}-{digest}"
+# The task_id -> host-directory-name mapping is shared with every backend
+# that persists per-task state on the host filesystem (Singularity overlays
+# use the same helper), so the whole bug class is fixed in one place:
+# tools.environments.base.sanitize_task_id_for_path.
+_sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:

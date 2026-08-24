@@ -139,7 +139,9 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 - `per-repo` — one session per git repository.
 - `global` — single session across all directories.
 
-Automatically generated Hermes titles are display metadata and do not override `sessionStrategy`. An explicit user `/title` remains an intentional session-name override for non-`per-session` CLI sessions.
+Automatically generated Hermes titles are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions.
+
+Sessions created before title provenance was recorded retain legacy behavior: because an old automatic title cannot be distinguished from an old user title, a title with no source is treated as an explicit override.
 
 **Recall mode** controls how memory flows into conversations:
 - `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).

@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,47 @@ from tui_gateway.host_supervisor import (
     HostSupervisor,
     append_log_record,
 )
+
+
+def test_agent_build_receives_seeded_workspace_cwd(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "_sessions", {})
+
+    observed: dict[str, str] = {}
+
+    def fake_make_agent(*_args, **_kwargs):
+        observed["cwd"] = _kwargs["cwd_override"]
+        return SimpleNamespace(session_id="conversation-id")
+
+    def fake_init_session(sid, key, agent, history, *, cwd=None, **_kwargs):
+        server._sessions[sid] = {
+            "agent": agent,
+            "session_key": key,
+            "history": history,
+            "cwd": cwd,
+        }
+
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *_args: False)
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    try:
+        host._ensure_server_session(
+            server,
+            {
+                "sid": "ui-session",
+                "session_key": "conversation-id",
+                "cwd": str(workspace),
+                "source": "desktop",
+                "history": [],
+            },
+        )
+    finally:
+        host.close()
+
+    assert observed["cwd"] == str(workspace)
 
 
 def _json_lines(out: io.StringIO) -> list[dict]:

@@ -109,7 +109,9 @@ describe('preview store', () => {
     expect($previewTabs.get()).toHaveLength(2)
   })
 
-  it('reuses a closed slot instead of counting Browser ids up forever', () => {
+  // A Browser id is minted rather than derived, so it must never be handed out
+  // twice: per-tab state keyed by it would resurface under an unrelated tab.
+  it('never reuses a Browser id, even after one is closed', () => {
     newBrowserTab()
     const first = $previewTabs.get()[0].id
 
@@ -117,7 +119,10 @@ describe('preview store', () => {
     closeRightRailTab(first)
     newBrowserTab()
 
-    expect($previewTabs.get().map(tab => tab.id)).toContain(first)
+    const ids = $previewTabs.get().map(tab => tab.id)
+
+    expect(ids).not.toContain(first)
+    expect(new Set(ids).size).toBe(ids.length)
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {

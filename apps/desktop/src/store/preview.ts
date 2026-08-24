@@ -220,18 +220,15 @@ export function previewTabId(target: PreviewTarget): RightRailTabId {
 
 const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
 
-/** The lowest free Browser slot, so ids stay short and readable across a
- *  restore instead of accreting one per page ever opened. */
-function mintBrowserTabId(tabs: PreviewTab[]): RightRailTabId {
-  const used = new Set(tabs.map(tab => tab.id))
+/** A Browser tab's id, minted the way a terminal's is — there is no identity to
+ *  derive one from. Random rather than the lowest free slot: an id is never
+ *  handed out twice, so per-tab state keyed by it (`$browserPages`, the console
+ *  buffer) cannot resurface under a later tab if a close ever fails to wipe it. */
+function mintBrowserTabId(): RightRailTabId {
+  const unique =
+    globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
-  for (let n = 1; ; n += 1) {
-    const id: RightRailTabId = `url:browser-${n}`
-
-    if (!used.has(id)) {
-      return id
-    }
-  }
+  return `url:browser-${unique}`
 }
 
 /** The Browser a URL should open in: the one you're looking at, else the one
@@ -245,7 +242,7 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
     return active.id
   }
 
-  return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId(tabs)
+  return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
 // Browsing files is "peek at the source"; a tool or an explicit link handing
@@ -291,10 +288,9 @@ export function openBrowserTab() {
 
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
-  const tabs = $previewTabs.get()
-  const id = mintBrowserTabId(tabs)
+  const id = mintBrowserTabId()
 
-  $previewTabs.set([...tabs, { id, target: blankPage() }])
+  $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
   selectRightRailTab(id)
 }
 

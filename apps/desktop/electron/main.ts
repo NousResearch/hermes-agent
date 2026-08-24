@@ -168,6 +168,7 @@ import {
   pumpStreamToFile
 } from './gateway-file-download'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
 import { readAndConsumeHandoffResult } from './handoff-result'
@@ -4856,40 +4857,11 @@ function multipartBody(upload) {
   return { body, contentType: `multipart/form-data; boundary=${boundary}` }
 }
 
-// Connection-pooled HTTP agents to avoid ECONNRESET from per-call TCP sockets.
-// Each fetchJson / fetchPublicJson / downloadViaTokenToFile call shares these
-// instead of opening a fresh connection every time.
-const HTTP_KEEPALIVE_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
-const HTTPS_KEEPALIVE_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
-
-const RETRYABLE_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ERR_NETWORK'])
-
-function isRetryableError(error) {
-  if (!error) return false
-  if (RETRYABLE_CODES.has(error.code)) return true
-  const msg = String(error.message || '')
-  return msg.includes('socket hang up') || msg.includes('read ECONNRESET')
-}
-
-async function withRetry(fn, maxRetries = 2) {
-  let lastError
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn()
-    } catch (error) {
-      lastError = error
-      if (attempt < maxRetries && isRetryableError(error)) {
-        await new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000)))
-        continue
-      }
-      throw error
-    }
-  }
-  throw lastError
-}
-
 function fetchJson(url, token, options: any = {}) {
-  return withRetry(() => new Promise((resolve, reject) => {
+  // Retry policy lives in api-transport.ts: idempotent verbs retry on any
+  // transient transport error; POST/PUT/DELETE only when the request provably
+  // never reached the server (see shouldRetryRequest) — never double-submit.
+  return withRetry((requestState: any) => new Promise((resolve, reject) => {
     const { body, contentType } = options.upload
       ? multipartBody(options.upload)
       : {
@@ -4899,7 +4871,7 @@ function fetchJson(url, token, options: any = {}) {
 
     const parsed = new URL(url)
     const client = parsed.protocol === 'https:' ? https : http
-    const agent = parsed.protocol === 'https:' ? HTTPS_KEEPALIVE_AGENT : HTTP_KEEPALIVE_AGENT
+    const agent = jsonAgentFor(parsed.protocol)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -4978,12 +4950,17 @@ function fetchJson(url, token, options: any = {}) {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     })
 
+    // From here the request goes on the wire: a later transport error can no
+    // longer prove the server didn't process it, so non-idempotent verbs must
+    // not be retried past this point.
+    requestState.bodySent = true
+
     if (body) {
       req.write(body)
     }
 
     req.end()
-  }))
+  }), { method: options.method || 'GET' })
 }
 
 // Token-auth download that streams the response body straight to a
@@ -5010,7 +4987,7 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
     }
 
     const client = parsed.protocol === 'https:' ? https : http
-    const agent = parsed.protocol === 'https:' ? HTTPS_KEEPALIVE_AGENT : HTTP_KEEPALIVE_AGENT
+    const agent = downloadAgentFor(parsed.protocol)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const req = client.request(
@@ -5051,7 +5028,7 @@ function fetchPublicJson(url, options: any = {}) {
   // NO ``X-Hermes-Session-Token`` header — used by the auth-mode probe before
   // any credentials exist, and any time we must not leak a token to an
   // endpoint that doesn't need one.
-  return withRetry(() => new Promise((resolve, reject) => {
+  return withRetry((requestState: any) => new Promise((resolve, reject) => {
     const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
     let parsed
 
@@ -5064,7 +5041,7 @@ function fetchPublicJson(url, options: any = {}) {
     }
 
     const client = parsed.protocol === 'https:' ? https : http
-    const agent = parsed.protocol === 'https:' ? HTTPS_KEEPALIVE_AGENT : HTTP_KEEPALIVE_AGENT
+    const agent = jsonAgentFor(parsed.protocol)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -5131,12 +5108,15 @@ function fetchPublicJson(url, options: any = {}) {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
     })
 
+    // Past this point the request is on the wire — see fetchJson.
+    requestState.bodySent = true
+
     if (body) {
       req.write(body)
     }
 
     req.end()
-  }))
+  }), { method: options.method || 'GET' })
 }
 
 function mimeTypeForPath(filePath) {
@@ -14518,6 +14498,12 @@ app.on('before-quit', () => {
     translucencyWriteTimer = null
     writePersistedTranslucency(translucencyState)
   }
+})
+
+// Close the pooled keep-alive sockets on quit so lingering connections can't
+// hold the event loop open or leak FDs past app teardown.
+app.on('will-quit', () => {
+  destroyKeepaliveAgents()
 })
 
 // Answered synchronously so preload can publish the verdict before the

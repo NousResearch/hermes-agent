@@ -290,6 +290,7 @@ def test_apple_container_setup_on_supported_host_is_non_mutating(
     assert terminal["container_memory"] == 5120
     assert terminal["container_persistent"] is True
     assert terminal["apple_container_volumes"] == []
+    assert terminal["apple_container_extra_args"] == []
     assert status_calls == ["/container"]
     assert "container system start" in capsys.readouterr().out
 

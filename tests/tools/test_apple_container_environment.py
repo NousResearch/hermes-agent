@@ -252,6 +252,33 @@ def test_resource_flags_image_and_keepalive_contract(recorder):
     env.cleanup()
 
 
+def test_extra_args_are_inserted_immediately_before_image(recorder):
+    env = apple.AppleContainerEnvironment(
+        image="python:3.11-slim-bookworm",
+        extra_args=["--network", "none", "--tmpfs", "/custom"],
+    )
+    argv = _run_args(recorder)
+
+    image_index = argv.index("python:3.11-slim-bookworm")
+    assert argv[image_index - 4:image_index] == [
+        "--network", "none", "--tmpfs", "/custom"
+    ]
+    env.cleanup()
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    ["--network=none", [123], ["--network\nnone"], ["bad\rflag"], ["bad\x00flag"]],
+)
+def test_extra_args_reject_non_lists_non_strings_and_control_characters_before_run(
+    recorder, extra_args
+):
+    with pytest.raises(ValueError, match="extra arg"):
+        apple.AppleContainerEnvironment(extra_args=extra_args)
+
+    assert not any(call[1] == "run" for call in recorder.calls)
+
+
 def test_exec_uses_interactive_only_when_stdin_exists(recorder, monkeypatch):
     popen_calls = []
     monkeypatch.setattr(apple, "_popen_bash", lambda cmd, data: popen_calls.append((cmd, data)))

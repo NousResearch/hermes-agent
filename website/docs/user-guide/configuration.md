@@ -408,6 +408,9 @@ terminal:
   apple_container_volumes:
     - "/absolute/host/data:/workspace/data"
     - "/absolute/host/config:/workspace/config:ro"
+  apple_container_extra_args:       # Extra flags inserted before the image
+    - "--network"
+    - "none"
   container_cpu: 4
   container_memory: 5120
   container_persistent: true
@@ -416,9 +419,11 @@ terminal:
 
 User-declared volumes use `HOST:TARGET` or `HOST:TARGET:ro`. They are writable unless explicitly suffixed with `:ro`. Both paths must be absolute. Hermes automatically exposes configured credential files, skill directories, and cache directories with structured read-only bind mounts; persistent `/workspace` and `/root` storage remains writable.
 
-Commands execute in Linux, not on the macOS host. Host paths such as `/Users/name/project` and host-only tools are not directly available unless you explicitly mount them. The initial backend is one container per Hermes task; multi-container Compose-style services and custom container networking are not supported.
+Commands execute in Linux, not on the macOS host. Host paths such as `/Users/name/project` and host-only tools are not directly available unless you explicitly mount them. The initial backend is one container per Hermes task; multi-container Compose-style services are not supported.
 
-Environment overrides are `TERMINAL_APPLE_CONTAINER_IMAGE` and `TERMINAL_APPLE_CONTAINER_VOLUMES` (the latter is a JSON array). Shared `TERMINAL_CONTAINER_CPU`, `TERMINAL_CONTAINER_MEMORY`, `TERMINAL_CONTAINER_PERSISTENT`, and `TERMINAL_TIMEOUT` overrides also apply.
+`terminal.apple_container_extra_args` passes additional `container run` flags verbatim immediately before the image. Use `["--network", "none"]` to disable network access or add extra `--tmpfs` mounts. Every entry must be a string without control characters. Use this escape hatch carefully: flags that conflict with Hermes' generated read-only, resource, or mount options can weaken the sandbox.
+
+Environment overrides are `TERMINAL_APPLE_CONTAINER_IMAGE`, `TERMINAL_APPLE_CONTAINER_VOLUMES`, and `TERMINAL_APPLE_CONTAINER_EXTRA_ARGS` (the two list-valued settings use JSON arrays). Shared `TERMINAL_CONTAINER_CPU`, `TERMINAL_CONTAINER_MEMORY`, `TERMINAL_CONTAINER_PERSISTENT`, and `TERMINAL_TIMEOUT` overrides also apply.
 
 ### SSH Backend
 

@@ -11,6 +11,7 @@ def _config() -> dict:
         "env_type": "apple_container",
         "apple_container_image": "python:3.12-slim",
         "apple_container_volumes": ["/host/data:/workspace/data:ro"],
+        "apple_container_extra_args": ["--network", "none"],
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 42,
@@ -39,6 +40,7 @@ def test_factory_passes_all_apple_container_settings(monkeypatch):
             "container_persistent": True,
             "apple_container_image": "python:3.12-slim",
             "apple_container_volumes": ["/host/data:/workspace/data:ro"],
+            "apple_container_extra_args": ["--network", "none"],
         },
         task_id="task-1",
     )
@@ -53,6 +55,7 @@ def test_factory_passes_all_apple_container_settings(monkeypatch):
         persistent_filesystem=True,
         task_id="task-1",
         volumes=["/host/data:/workspace/data:ro"],
+        extra_args=["--network", "none"],
     )
 
 
@@ -82,4 +85,7 @@ def test_terminal_creation_passes_apple_specific_config(monkeypatch):
     assert captured["container_config"]["apple_container_image"] == "python:3.12-slim"
     assert captured["container_config"]["apple_container_volumes"] == [
         "/host/data:/workspace/data:ro"
+    ]
+    assert captured["container_config"]["apple_container_extra_args"] == [
+        "--network", "none"
     ]

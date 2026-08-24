@@ -258,6 +258,7 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_APPLE_CONTAINER_IMAGE` | Apple Container image (default: `python:3.11-slim-bookworm`) |
 | `TERMINAL_APPLE_CONTAINER_VOLUMES` | JSON array of Apple Container bind mounts in `HOST:TARGET[:ro]` form |
+| `TERMINAL_APPLE_CONTAINER_EXTRA_ARGS` | JSON array of extra `container run` flags inserted before the image |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |

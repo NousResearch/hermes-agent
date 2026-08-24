@@ -664,6 +664,9 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
+        "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
+        "apple_container_extra_args": "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",

@@ -1855,8 +1855,17 @@ def _get_env_config() -> Dict[str, Any]:
             raise ValueError(
                 "Invalid value for TERMINAL_APPLE_CONTAINER_VOLUMES: expected a JSON list."
             )
+        apple_container_extra_args = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        )
+        if not isinstance(apple_container_extra_args, list):
+            raise ValueError(
+                "Invalid value for TERMINAL_APPLE_CONTAINER_EXTRA_ARGS: "
+                "expected a JSON list."
+            )
     else:
         apple_container_volumes = []
+        apple_container_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1908,6 +1917,7 @@ def _get_env_config() -> Dict[str, Any]:
             "TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm"
         ),
         "apple_container_volumes": apple_container_volumes,
+        "apple_container_extra_args": apple_container_extra_args,
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -2206,6 +2216,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent,
             task_id=task_id,
             volumes=cc.get("apple_container_volumes", []),
+            extra_args=cc.get("apple_container_extra_args", []),
         )
 
     elif env_type == "ssh":

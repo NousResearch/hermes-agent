@@ -505,6 +505,7 @@ DEFAULT_CONFIG = {
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "apple_container_image": "python:3.11-slim-bookworm",
         "apple_container_volumes": [],
+        "apple_container_extra_args": [],
         # Vercel Sandbox runtime (vercel_sandbox backend only).
         # Supported: node24, node22, python3.13.
         "vercel_runtime": "node24",

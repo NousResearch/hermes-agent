@@ -20,6 +20,7 @@ import platform
 import posixpath
 import shutil
 import subprocess
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -247,6 +248,22 @@ def _parse_user_mount(value: str) -> tuple[str, str, bool]:
     return source, target, len(parts) == 3
 
 
+def _validate_extra_args(extra_args: list | None) -> list[str]:
+    """Validate flags passed verbatim to ``container run``."""
+    if extra_args is not None and not isinstance(extra_args, list):
+        raise ValueError("Apple Container extra args must be a list of strings")
+    validated: list[str] = []
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            raise ValueError(f"Apple Container extra arg must be a string: {arg!r}")
+        if any(unicodedata.category(character) == "Cc" for character in arg):
+            raise ValueError(
+                f"Apple Container extra arg contains a control character: {arg!r}"
+            )
+        validated.append(arg)
+    return validated
+
+
 class AppleContainerEnvironment(BaseEnvironment):
     """Apple Container execution with VM-level isolation.
 
@@ -270,8 +287,10 @@ class AppleContainerEnvironment(BaseEnvironment):
         persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
+        extra_args: list | None = None,
     ):
         parsed_volumes = [_parse_user_mount(volume) for volume in (volumes or [])]
+        validated_extra_args = _validate_extra_args(extra_args)
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -292,14 +311,17 @@ class AppleContainerEnvironment(BaseEnvironment):
 
         try:
             # Build and start the container, then initialize its session snapshot.
-            self._start_container(image, parsed_volumes)
+            self._start_container(image, parsed_volumes, validated_extra_args)
             self.init_session()
         except Exception:
             self.cleanup()
             raise
 
     def _start_container(
-        self, image: str, volumes: list[tuple[str, str, bool]]
+        self,
+        image: str,
+        volumes: list[tuple[str, str, bool]],
+        extra_args: list[str],
     ) -> None:
         """Pull image if needed and start the container."""
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -389,6 +411,7 @@ class AppleContainerEnvironment(BaseEnvironment):
         for source, target, readonly in volumes:
             run_cmd.extend(_bind_mount_args(source, target, readonly=readonly))
 
+        run_cmd.extend(extra_args)
         run_cmd.append(image)
         # Keep the container alive with a long sleep
         run_cmd.extend(["sleep", "infinity"])

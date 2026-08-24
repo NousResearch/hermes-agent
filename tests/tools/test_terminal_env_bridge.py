@@ -24,6 +24,7 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_DOCKER_IMAGE",
         "TERMINAL_APPLE_CONTAINER_IMAGE",
         "TERMINAL_APPLE_CONTAINER_VOLUMES",
+        "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
         "TERMINAL_SSH_HOST",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -156,13 +157,16 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
     assert config["ssh_host"] == "example.test"
 
 
-def test_apple_container_config_bridges_image_and_volumes():
+def test_apple_container_config_bridges_image_volumes_and_extra_args():
     _write_config(
         "terminal:\n"
         "  backend: apple_container\n"
         "  apple_container_image: python:3.12-slim\n"
         "  apple_container_volumes:\n"
         "    - /host/data:/workspace/data:ro\n"
+        "  apple_container_extra_args:\n"
+        "    - --network\n"
+        "    - none\n"
     )
 
     config = terminal_tool._get_env_config()
@@ -170,6 +174,7 @@ def test_apple_container_config_bridges_image_and_volumes():
     assert config["env_type"] == "apple_container"
     assert config["apple_container_image"] == "python:3.12-slim"
     assert config["apple_container_volumes"] == ["/host/data:/workspace/data:ro"]
+    assert config["apple_container_extra_args"] == ["--network", "none"]
 
 
 def test_invalid_apple_volume_json_is_ignored_for_local(monkeypatch):

@@ -1723,6 +1723,7 @@ def setup_terminal_backend(config: dict):
         terminal = config["terminal"]
         terminal.setdefault("apple_container_image", "python:3.11-slim-bookworm")
         terminal.setdefault("apple_container_volumes", [])
+        terminal.setdefault("apple_container_extra_args", [])
         terminal["container_cpu"] = 4
         terminal["container_memory"] = 5120
         terminal["container_persistent"] = True

@@ -155,11 +155,15 @@ class TestConfigYamlRouting:
         set_config_value(
             "terminal.apple_container_volumes", '["/host/data:/workspace/data:ro"]'
         )
+        set_config_value(
+            "terminal.apple_container_extra_args", '["--network","none"]'
+        )
         config = _read_config(_isolated_hermes_home)
         env_content = _read_env(_isolated_hermes_home)
         assert "apple_container_image: python:3.12-slim" in config
         assert "TERMINAL_APPLE_CONTAINER_IMAGE=python:3.12-slim" in env_content
         assert "TERMINAL_APPLE_CONTAINER_VOLUMES=" in env_content
+        assert "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS=" in env_content
 
 
 # ---------------------------------------------------------------------------

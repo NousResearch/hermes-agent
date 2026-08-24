@@ -11,6 +11,7 @@ def _config() -> dict:
         "env_type": "apple_container",
         "apple_container_image": "python:3.12-slim",
         "apple_container_volumes": ["/host/data:/workspace/data:ro"],
+        "apple_container_extra_args": ["--network", "none"],
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 42,
@@ -45,6 +46,9 @@ def test_file_factory_passes_apple_container_configuration():
     assert captured["container_config"]["apple_container_image"] == "python:3.12-slim"
     assert captured["container_config"]["apple_container_volumes"] == [
         "/host/data:/workspace/data:ro"
+    ]
+    assert captured["container_config"]["apple_container_extra_args"] == [
+        "--network", "none"
     ]
 
 

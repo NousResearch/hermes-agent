@@ -969,6 +969,7 @@ class TestEnvironmentHints:
         config = {
             "apple_container_image": "python:3.12-slim",
             "apple_container_volumes": ["/host/data:/workspace/data:ro"],
+            "apple_container_extra_args": ["--network", "none"],
             "cwd": "/workspace",
             "timeout": 42,
             "container_cpu": 4,
@@ -997,6 +998,9 @@ class TestEnvironmentHints:
         assert captured["image"] == "python:3.12-slim"
         assert captured["container_config"]["apple_container_volumes"] == [
             "/host/data:/workspace/data:ro"
+        ]
+        assert captured["container_config"]["apple_container_extra_args"] == [
+            "--network", "none"
         ]
         assert line is not None and "Linux 6.8" in line
 

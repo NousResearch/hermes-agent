@@ -3944,6 +3944,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
     "apple_container_image": "TERMINAL_APPLE_CONTAINER_IMAGE",
     "apple_container_volumes": "TERMINAL_APPLE_CONTAINER_VOLUMES",
+    "apple_container_extra_args": "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS",
     "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",

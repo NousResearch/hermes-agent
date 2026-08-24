@@ -661,11 +661,12 @@ def _run_curses_menu(
     rendered output stays byte-identical to the old hand-rolled loops.
 
     Callbacks / params:
-        draw_header(stdscr, max_y, max_x) -> int
+        draw_header(stdscr, max_y, max_x, *, search=None, back_enabled=False) -> int
             Draw the title/hint/description rows. Returns the first screen row
             index where the scrollable item list should start. When search is
             active it receives the live ``_SearchState`` via the optional
             ``search`` keyword (drawn by the menu so the hint line can show it).
+            ``back_enabled`` controls whether the ``← previous`` hint is shown.
         draw_row(stdscr, y, idx, is_cursor, max_x) -> None
             Draw one item row. ``idx`` is always the ORIGINAL item index, so
             per-menu rendering is unchanged whether or not a filter is active.
@@ -697,14 +698,13 @@ def _run_curses_menu(
         navigation_start, MenuNavigationStart
     ):
         raise TypeError("menu navigation 'begin' must return MenuNavigationStart")
-    context_back = bool(navigation_start and navigation_start.allow_back)
+    allow_back = bool(navigation_start and navigation_start.allow_back)
     if navigation_start is not None and navigation_start.should_replay:
         if navigation_handler is not None:
             navigation_handler(
                 MenuNavigationEvent.RESOLVE, navigation_start.replay_value
             )
         return navigation_start.replay_value
-    effective_allow_back = context_back
 
     # Non-TTY (piped/redirected stdin): curses and input() both hang or spin,
     # so return the cancel value directly — matching the pre-refactor guard in
@@ -715,7 +715,7 @@ def _run_curses_menu(
     use_search = searchable and search_labels is not None and len(search_labels) == item_count
 
     def _run_fallback():
-        back_token = _NUMBERED_BACK_ENABLED.set(effective_allow_back)
+        back_token = _NUMBERED_BACK_ENABLED.set(allow_back)
         try:
             result = fallback()
         finally:
@@ -768,7 +768,7 @@ def _run_curses_menu(
                     max_y,
                     max_x,
                     search=search,
-                    back_enabled=effective_allow_back,
+                    back_enabled=allow_back,
                 )
 
                 visible_rows = max(1, max_y - items_start - reserve_bottom)
@@ -855,14 +855,14 @@ def _run_curses_menu(
                     NAV_CANCEL,
                     NAV_INTERRUPT,
                 ) or (
-                    action == NAV_BACK and effective_allow_back
+                    action == NAV_BACK and allow_back
                 ):
                     if action == NAV_SELECT and use_search and not filtered:
                         continue
                     if navigation_handler is not None:
                         if action in (NAV_CANCEL, NAV_INTERRUPT):
                             navigation_handler(MenuNavigationEvent.CANCEL)
-                        elif action == NAV_BACK and context_back:
+                        elif action == NAV_BACK and allow_back:
                             navigation_handler(MenuNavigationEvent.BACK)
                     outcome = on_action(action, cursor)
                     if outcome is not _KEEP:

@@ -648,6 +648,12 @@ class ProcessRegistry:
 
         # Global circuit breaker — across all sessions (secondary safety net).
         if not self._global_watch_admit(now):
+            if lifetime_exhausted:
+                # The final match was dropped by the global breaker, but the
+                # session is already disabled — still tell the user why things
+                # went quiet (the strike path emits its summary unconditionally
+                # too).
+                self._emit_lifetime_watch_disabled(session)
             return
 
         notification = {
@@ -672,25 +678,29 @@ class ProcessRegistry:
         if lifetime_exhausted:
             # Same "why things went quiet" summary as the strike-limit path,
             # queued right after the final delivered match.
-            self.completion_queue.put({
-                "session_id": session.id,
-                "session_key": session.session_key,
-                "command": session.command,
-                "type": "watch_disabled",
-                "suppressed": 0,
-                "platform": session.watcher_platform,
-                "chat_id": session.watcher_chat_id,
-                "user_id": session.watcher_user_id,
-                "user_name": session.watcher_user_name,
-                "thread_id": session.watcher_thread_id,
-                "message_id": session.watcher_message_id,
-                "message": (
-                    f"Watch patterns disabled for process {session.id} — "
-                    f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
-                    f"matches. Falling back to notify_on_complete semantics; you'll get "
-                    f"exactly one notification when the process exits."
-                ),
-            })
+            self._emit_lifetime_watch_disabled(session)
+
+    def _emit_lifetime_watch_disabled(self, session: ProcessSession) -> None:
+        """Queue the watch_disabled summary for the lifetime-cap path (#93513)."""
+        self.completion_queue.put({
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "command": session.command,
+            "type": "watch_disabled",
+            "suppressed": 0,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
+            "message_id": session.watcher_message_id,
+            "message": (
+                f"Watch patterns disabled for process {session.id} — "
+                f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
+                f"matches. Falling back to notify_on_complete semantics; you'll get "
+                f"exactly one notification when the process exits."
+            ),
+        })
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.

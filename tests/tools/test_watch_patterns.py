@@ -174,6 +174,55 @@ class TestLifetimeCap:
         assert registry.completion_queue.empty()
         assert session._watch_hits == WATCH_LIFETIME_MAX_HITS
 
+    def test_suppressed_matches_do_not_count_toward_lifetime_cap(self, registry):
+        """Only DELIVERED notifications consume the lifetime budget — matches
+        suppressed inside the cooldown window must not increment the counter
+        (they never forced an agent turn)."""
+        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+
+        session = _make_session(watch_patterns=["E"])
+        registry._check_watch_patterns(session, "E emit\n")
+        assert session._watch_hits == 1
+
+        # Flood inside the cooldown: all suppressed, none delivered.
+        for _ in range(WATCH_LIFETIME_MAX_HITS * 3):
+            registry._check_watch_patterns(session, "E drop\n")
+        assert session._watch_hits == 1  # unchanged
+        # Strike-limit disable may or may not have tripped depending on
+        # WATCH_STRIKE_LIMIT vs the single window here; assert it did NOT,
+        # since all drops land in ONE window (one strike max).
+        assert session._watch_consecutive_strikes == 1
+        assert session._watch_disabled is False
+
+    def test_cap_trips_exactly_at_nth_delivery_and_promotes(self, registry):
+        """The Nth delivered match is still delivered, then the session is
+        promoted to notify_on_complete in the same call, with the
+        watch_disabled summary queued right after the final match."""
+        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+
+        session = _make_session(watch_patterns=["ready"])
+        for i in range(WATCH_LIFETIME_MAX_HITS - 1):
+            session._watch_cooldown_until = 0.0
+            registry._check_watch_patterns(session, "ready\n")
+            assert session._watch_disabled is False
+            assert session.notify_on_complete is False
+
+        # Nth delivery trips the cap.
+        session._watch_cooldown_until = 0.0
+        registry._check_watch_patterns(session, "ready\n")
+        assert session._watch_disabled is True
+        assert session.notify_on_complete is True
+
+        events = []
+        while not registry.completion_queue.empty():
+            events.append(registry.completion_queue.get_nowait())
+        # Last two events: the Nth delivered match, then the summary.
+        assert events[-2]["type"] == "watch_match"
+        assert events[-1]["type"] == "watch_disabled"
+        assert "lifetime cap" in events[-1]["message"]
+        assert str(WATCH_LIFETIME_MAX_HITS) in events[-1]["message"]
+        assert "notify_on_complete" in events[-1]["message"]
+
 
 # =========================================================================
 # Checkpoint persistence

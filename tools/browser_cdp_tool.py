@@ -43,38 +43,52 @@ _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
 }
 
 
-_CDP_BINARY_RESULT_FIELDS: Dict[str, frozenset] = {
-    # Protocol carriers whose result.<field> is an opaque base64 payload with
-    # no discriminator flag of their own. redact_sensitive_text's Fernet
-    # pattern ("gAAAA" + base64 alphabet) can match arbitrary spans inside
-    # such payloads — collapsing them to "first6...last4" and corrupting the
-    # decoded bytes (#94138). The payload is binary, not free text the model
-    # reads, so redaction has no secret to protect there. The generic
-    # body/read methods (Network.getResponseBody, Fetch.getResponseBody,
-    # IO.read, Network.streamResourceContent) are NOT here: they carry a
-    # base64Encoded sibling and go through the discriminator below.
-    "Page.captureScreenshot": frozenset({"data"}),
-    "Page.printToPDF": frozenset({"data"}),
+_CDP_ALWAYS_BINARY_PATHS: Dict[str, tuple] = {
+    # method → result paths that are ALWAYS opaque base64 payloads (the
+    # protocol declares them binary with no flag of their own).
+    # redact_sensitive_text's Fernet pattern ("gAAAA" + base64 alphabet) can
+    # match arbitrary spans inside such payloads — collapsing them to
+    # "first6...last4" and corrupting the decoded bytes (#94138). The payload
+    # is binary, not free text the model reads, so redaction has no secret to
+    # protect there.
+    "Page.captureScreenshot": (("data",),),
+    "Page.printToPDF": (("data",),),
+    "Network.streamResourceContent": (("bufferedData",),),
+    "HeadlessExperimental.beginFrame": (("screenshotData",),),
+    "CacheStorage.requestCachedResponse": (("response", "body"),),
 }
 
-# Generic body/read methods signal "this string is opaque base64 bytes" via a
-# sibling boolean. Honor the protocol discriminator anywhere it appears: the
-# flag is type information, so it is safe to trust even for methods not
-# listed above (#94138 review on #94142).
-_BASE64_DISCRIMINATED_FIELDS = frozenset({"body", "data", "bufferedData"})
+_CDP_FLAGGED_BINARY_PATHS: Dict[str, tuple] = {
+    # method → result paths that are opaque base64 ONLY when the dict that
+    # carries the final field has a ``base64Encoded`` sibling that is exactly
+    # ``True``. The discriminator is type information only at these
+    # protocol-defined paths; ``base64Encoded: false`` or absent means text,
+    # which is redacted.
+    "Network.getResponseBody": (("body",),),
+    "Fetch.getResponseBody": (("body",),),
+    "IO.read": (("data",),),
+    "Network.getRequestPostData": (("postData",),),
+}
 
 
-def _redact_cdp_output(value: Any, *, exempt_fields: frozenset = frozenset()) -> Any:
+def _redact_cdp_output(
+    value: Any,
+    *,
+    always_paths: tuple = (),
+    flagged_paths: tuple = (),
+) -> Any:
     """Redact browser-originated CDP result data before returning it.
 
     Policy: semantic text is redacted; opaque bytes stay byte-identical
-    (#94138). *exempt_fields* names the calling method's top-level binary
-    payload fields (``_CDP_BINARY_RESULT_FIELDS``), so only those exact
-    ``method.result.<field>`` slots skip redaction — sibling fields keep
-    full redaction. Any dict whose ``base64Encoded`` sibling is exactly
-    ``True`` exempts its ``body``/``data``/``bufferedData`` string the same
-    way; ``base64Encoded: false`` or absent means the value is text and is
-    redacted.
+    (#94138). Exemptions come ONLY from the calling method's spec
+    (``_CDP_ALWAYS_BINARY_PATHS`` / ``_CDP_FLAGGED_BINARY_PATHS``) as exact
+    result paths — every other string in every result keeps full
+    ``redact_sensitive_text(force=True)``. Path suffixes are propagated only
+    into the matching subtree, so ``base64Encoded`` is honored solely as a
+    sibling on the trusted carrier object, never as ambient trust in
+    arbitrary nested JSON (a ``Runtime.evaluate`` by-value object could
+    otherwise spoof ``{"base64Encoded": true, "data": "<secret>"}`` past the
+    redactor — second review on #94142).
     """
     from agent.redact import redact_sensitive_text
 
@@ -88,16 +102,26 @@ def _redact_cdp_output(value: Any, *, exempt_fields: frozenset = frozenset()) ->
         base64_flagged = value.get("base64Encoded") is True
         redacted: Dict[str, Any] = {}
         for key, item in value.items():
-            if (
-                isinstance(item, str)
-                and (
-                    key in exempt_fields
-                    or (base64_flagged and key in _BASE64_DISCRIMINATED_FIELDS)
-                )
+            terminal_always = any(
+                len(p) == 1 and p[0] == key for p in always_paths
+            )
+            terminal_flagged = any(
+                len(p) == 1 and p[0] == key for p in flagged_paths
+            )
+            if isinstance(item, str) and (
+                terminal_always or (terminal_flagged and base64_flagged)
             ):
                 redacted[key] = item
             else:
-                redacted[key] = _redact_cdp_output(item)
+                redacted[key] = _redact_cdp_output(
+                    item,
+                    always_paths=tuple(
+                        p[1:] for p in always_paths if len(p) > 1 and p[0] == key
+                    ),
+                    flagged_paths=tuple(
+                        p[1:] for p in flagged_paths if len(p) > 1 and p[0] == key
+                    ),
+                )
         return redacted
     return value
 
@@ -571,7 +595,8 @@ def browser_cdp(
         "method": method,
         "result": _redact_cdp_output(
             result,
-            exempt_fields=_CDP_BINARY_RESULT_FIELDS.get(method, frozenset())
+            always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
+            flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()),
         ),
     }
     if target_id:

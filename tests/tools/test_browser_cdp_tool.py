@@ -338,6 +338,106 @@ def test_fetch_get_response_body_base64_discriminator_passes_through(cdp_server)
     assert result["result"]["body"] == body_b64
 
 
+def test_runtime_evaluate_spoofed_base64_flag_still_redacts(cdp_server):
+    """base64Encoded is trusted ONLY on the protocol-defined carrier paths.
+    A Runtime.evaluate by-value object carrying
+    {"base64Encoded": true, "data": "<secret>"} is untrusted nested JSON —
+    the secret must still be redacted (second review on #94142)."""
+    fake_key = "sk-" + "CDPSPOOFEDFLAG1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {
+            "result": {
+                "type": "object",
+                "value": {"base64Encoded": True, "data": fake_key},
+            }
+        },
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+
+    assert result["success"] is True
+    assert "CDPSPOOFEDFLAG" not in json.dumps(result)
+
+
+def test_stream_resource_content_unflagged_buffered_data_passes_through(cdp_server):
+    """Network.streamResourceContent returns bare binary bufferedData with no
+    base64Encoded sibling — declared-binary path, must stay byte-identical."""
+    chunk_b64 = "Q2FjaGU/" + "gAAAA" + "E" * 60 + "=="
+    cdp_server.on(
+        "Network.streamResourceContent",
+        lambda params, sid: {"bufferedData": chunk_b64},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.streamResourceContent")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["bufferedData"] == chunk_b64
+
+
+def test_get_request_post_data_flagged_passes_through(cdp_server):
+    """Network.getRequestPostData's postData honors its base64Encoded
+    discriminator on the trusted result path."""
+    post_b64 = "cG9zdA==" + "gAAAA" + "F" * 60 + "="
+    cdp_server.on(
+        "Network.getRequestPostData",
+        lambda params, sid: {"postData": post_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getRequestPostData")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["postData"] == post_b64
+
+
+def test_get_request_post_data_unflagged_still_redacts(cdp_server):
+    fake_key = "sk-" + "CDPPOSTDATASECRET1234567890"
+    cdp_server.on(
+        "Network.getRequestPostData",
+        lambda params, sid: {
+            "postData": f"leak {fake_key} here",
+            "base64Encoded": False,
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getRequestPostData")
+    )
+
+    assert result["success"] is True
+    assert "CDPPOSTDATASECRET" not in json.dumps(result)
+
+
+def test_nested_unflagged_binary_path_passes_through(cdp_server):
+    """CacheStorage.requestCachedResponse.response.body is a nested binary
+    carrier — the path must exempt the nested field while unrelated nested
+    text keeps redaction."""
+    fake_key = "sk-" + "CDPNESTEDSECRET1234567890"
+    body_b64 = "SUNBRQ/" + "gAAAA" + "G" * 60 + "=="
+    cdp_server.on(
+        "CacheStorage.requestCachedResponse",
+        lambda params, sid: {
+            "response": {
+                "url": "https://example.test/x",
+                "body": body_b64,
+                "note": fake_key,
+            }
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="CacheStorage.requestCachedResponse")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["response"]["body"] == body_b64
+    assert "CDPNESTEDSECRET" not in json.dumps(result)
+
+
 # ---------------------------------------------------------------------------
 # Happy-path: target-attached call
 # ---------------------------------------------------------------------------

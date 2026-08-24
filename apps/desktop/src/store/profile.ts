@@ -18,6 +18,7 @@ import {
   activeGatewayConnectionId,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   openGatewayForProfile
 } from '@/store/gateway'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
@@ -406,6 +407,25 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 
     return null
   }
+}
+
+// Phase one of the two-phase source switch (store/connections
+// selectConnection): dial the (connectionId, profile) socket WITHOUT activating
+// it. The active route, $activeGatewayProfile and $connection are untouched, so
+// the previous backend stays fully bound and painted while the target
+// spawns/connects — a dead target fails HERE and the current source loses
+// nothing. The follow-up ensureGatewayAgent then finds the socket open and
+// activates it synchronously, which lets the caller sever the previous
+// backend's session bindings and publish the new source in the same tick
+// (#93937). An already-open target is a no-op.
+export async function openGatewayAgent(connectionId: string, profile: string): Promise<void> {
+  const connection = connectionId.trim()
+
+  if (!connection) {
+    return
+  }
+
+  await openGatewayForAgent(connection, normalizeProfileKey(profile), { activationLease: true })
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)

@@ -31,7 +31,12 @@ import {
   touchSecondaryGateways
 } from '@/store/gateway'
 import { registerGatewayReconnect } from '@/store/gateway-reconnect'
-import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import {
+  $gatewaySwitching,
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  registerGatewaySwitchLifecycle
+} from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -189,6 +194,15 @@ export function useGatewayBoot({
 
       return () => void (cancelled = true)
     }
+
+    // Store-driven switches (Sessions switcher → selectConnection) commit
+    // through beginGatewaySwitch(), which runs this window's machine-context
+    // reset — the same one a Settings apply (softSwitch below) runs. One owner,
+    // one reset, so the two doors can't drift apart again (#93937).
+    const offSwitchLifecycle = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
+      refreshSessions: () => callbacksRef.current.refreshSessions()
+    })
 
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python
@@ -477,7 +491,9 @@ export function useGatewayBoot({
         return
       }
 
-      $gatewaySwitching.set(true)
+      // Barrier up + machine-context reset + session wipe, in one synchronous
+      // step — the shared commit point of every connection switch.
+      beginGatewaySwitch()
       clearReconnectTimer()
       clearBootRetryTimer()
       bootRetryAttempt = 0
@@ -485,8 +501,6 @@ export function useGatewayBoot({
       reconnectFailingSince = null
       escalated = false
       reauthNotified = false
-      callbacksRef.current.beforeConnectionSwitch()
-      wipeSessionListsForGatewaySwitch()
 
       try {
         gateway.close()
@@ -541,7 +555,7 @@ export function useGatewayBoot({
           setSessionsLoading(false)
         }
       } finally {
-        $gatewaySwitching.set(false)
+        endGatewaySwitch()
       }
     }
 
@@ -923,7 +937,8 @@ export function useGatewayBoot({
 
     return () => {
       cancelled = true
-      $gatewaySwitching.set(false)
+      offSwitchLifecycle()
+      endGatewaySwitch()
       clearReconnectTimer()
       clearBootRetryTimer()
       clearInterval(keepaliveTimer)

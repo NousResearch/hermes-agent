@@ -1,11 +1,27 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { DesktopConnectionsRegistry } from '@/global'
 import { $desktopBoot } from '@/store/boot'
+import {
+  $connectionsRegistry,
+  _resetConnectionsForTests,
+  selectConnection,
+  setConnectionsRegistry
+} from '@/store/connections'
 import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { $gatewaySwitching, beginGatewaySwitch, endGatewaySwitch } from '@/store/gateway-switch'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
-import { $connection, $currentCwd, $gatewayState } from '@/store/session'
+import {
+  $activeSessionId,
+  $connection,
+  $currentCwd,
+  $gatewayState,
+  $selectedStoredSessionId,
+  setActiveSessionId,
+  setSelectedStoredSessionId
+} from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -277,6 +293,11 @@ afterEach(() => {
   $connection.set(null)
   $profiles.set([])
   $sessionTiles.set([])
+  _resetConnectionsForTests()
+  $connectionsRegistry.set(null)
+  setActiveSessionId(null)
+  setSelectedStoredSessionId(null)
+  endGatewaySwitch()
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -348,6 +369,107 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('a store-driven switch (Sessions switcher) runs the same machine-context reset as a Settings apply (#93937)', async () => {
+    const beforeConnectionSwitch = vi.fn()
+    const { unmount } = render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+
+    act(() => beginGatewaySwitch())
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    expect($gatewaySwitching.get()).toBe(true)
+    act(() => endGatewaySwitch())
+    expect($gatewaySwitching.get()).toBe(false)
+
+    // Teardown unregisters: a switch after unmount must not call a dead host.
+    unmount()
+    beginGatewaySwitch()
+    endGatewaySwitch()
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+  })
+
+  it("#93937: the Sessions switcher never publishes the new source while the previous backend's runtime id is still bound", async () => {
+    // Real stores end to end: real useGatewayBoot, real gateway registry, real
+    // selectConnection, fake sockets. Boot on the primary VPS with a transcript
+    // open (its runtime id was minted by THAT backend), then switch sources
+    // through the sidebar door. Before the fix that door activated the new
+    // socket first and wiped the bindings after an IPC round-trip, so the
+    // renderer sat on "gateway B + runtime id from A" and B answered every
+    // session RPC with "session not found".
+    const registryConnections: DesktopConnectionsRegistry = {
+      connections: [
+        { id: 'primary-vps', kind: 'remote', label: 'VPS', tokenPreview: '...t', tokenSet: true },
+        { id: 'coder-remote', kind: 'remote', label: 'Coder', tokenPreview: '...c', tokenSet: true }
+      ],
+      primary: 'primary-vps',
+      secureTokenStorage: true,
+      version: 2
+    }
+
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & Record<string, unknown>
+    const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registryConnections, lastUsed: id } }))
+    let bindingAtDial: null | string = null
+
+    desktop.api = vi.fn(async ({ path }: { path: string }) =>
+      path === '/api/profiles/active' ? { active: 'default', current: 'default' } : { profiles: [] }
+    )
+    desktop.getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...coderConn,
+      connectionId,
+      profile,
+      registryScoped: true
+    }))
+    desktop.getGatewayWsUrlFor = vi.fn(async () => {
+      // Phase 1 (the dial) runs with the previous source still fully bound.
+      bindingAtDial = $activeSessionId.get()
+
+      return coderConn.wsUrl
+    })
+    desktop.connections = { list: vi.fn(async () => registryConnections), setLastUsed }
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const beforeConnectionSwitch = vi.fn()
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($connection.get()?.connectionId).toBe('primary-vps')
+
+    setConnectionsRegistry(registryConnections)
+    setSelectedStoredSessionId('stored-on-vps')
+    setActiveSessionId('a93bb39d')
+
+    // Every instant the new source is visible, with what a session-scoped
+    // effect would read right then.
+    const published: Array<{ activeSessionId: null | string; switching: boolean }> = []
+
+    const off = $connection.listen(next => {
+      if (next?.connectionId === 'coder-remote') {
+        published.push({ activeSessionId: $activeSessionId.get(), switching: $gatewaySwitching.get() })
+      }
+    })
+
+    const switching = selectConnection('coder-remote')
+    await flushAsync()
+    await flushAsync()
+    await flushAsync()
+    await switching
+    off()
+
+    // The previous backend's runtime id was already gone — and the barrier up —
+    // at every publication of the new source. (Pre-fix: the first publication
+    // carried activeSessionId 'a93bb39d' with the barrier down.)
+    expect(published.length).toBeGreaterThan(0)
+    expect(published).toEqual(published.map(() => ({ activeSessionId: null, switching: true })))
+    expect(bindingAtDial).toBe('a93bb39d')
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    expect($connection.get()?.connectionId).toBe('coder-remote')
+    expect(isActivePrimary()).toBe(false)
+    expect($activeSessionId.get()).toBeNull()
+    expect($selectedStoredSessionId.get()).toBeNull()
+    expect($gatewaySwitching.get()).toBe(false)
+    // The switch committed: the registry remembers the new source as last-used.
+    expect(setLastUsed).toHaveBeenCalledWith('coder-remote')
   })
 
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {

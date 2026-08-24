@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import {
+  $activeSessionId,
   $cronSessions,
   $freshDraftReady,
   $messagingSessions,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
+  setActiveSessionId,
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
@@ -17,7 +19,14 @@ import {
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
 
-import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
+import {
+  $gatewaySwitching,
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch,
+  registerGatewaySwitchLifecycle,
+  wipeSessionListsForGatewaySwitch
+} from './gateway-switch'
 
 vi.mock('@/lib/query-client', () => ({
   invalidateProfileScopedQueries: vi.fn()
@@ -77,5 +86,122 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect(invalidateProfileListFetches).toHaveBeenCalled()
+  })
+})
+
+describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit point (#93937)', () => {
+  beforeEach(() => {
+    $gatewaySwitching.set(false)
+    setSessions([{ id: 's1', title: 'old', profile: 'default' } as never])
+    setActiveSessionId('a93bb39d')
+    setSessionsLoading(false)
+  })
+
+  afterEach(() => {
+    setSessions([])
+    setActiveSessionId(null)
+    setSessionsLoading(true)
+    $gatewaySwitching.set(false)
+  })
+
+  it('raises the barrier, runs the registered machine-context reset, then wipes — synchronously, in that order', () => {
+    const seen: string[] = []
+
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => {
+        // The reset runs behind the barrier and BEFORE the wipe: it may still
+        // read the outgoing session (to fresh-draft it), never a half-wiped one.
+        seen.push(
+          `switching=${$gatewaySwitching.get()} active=${$activeSessionId.get()} rows=${$sessions.get().length}`
+        )
+      },
+      refreshSessions: async () => undefined
+    })
+
+    beginGatewaySwitch()
+
+    expect(seen).toEqual(['switching=true active=a93bb39d rows=1'])
+    expect($gatewaySwitching.get()).toBe(true)
+    // The previous backend's runtime binding is gone before anything can dial.
+    expect($activeSessionId.get()).toBeNull()
+    expect($sessions.get()).toEqual([])
+    expect($sessionsLoading.get()).toBe(true)
+
+    endGatewaySwitch()
+    expect($gatewaySwitching.get()).toBe(false)
+    off()
+  })
+
+  it('still severs the bindings when no lifecycle is registered (windows that never mount the boot hook)', () => {
+    beginGatewaySwitch()
+
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($activeSessionId.get()).toBeNull()
+    expect($sessions.get()).toEqual([])
+
+    endGatewaySwitch()
+    expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  it('an unregistered lifecycle no longer runs, and a stale unregister cannot evict a newer one', () => {
+    const first = vi.fn()
+    const second = vi.fn()
+
+    const offFirst = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: first,
+      refreshSessions: async () => undefined
+    })
+
+    const offSecond = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: second,
+      refreshSessions: async () => undefined
+    })
+
+    // Stale unregister from the older host: the newer registration stays.
+    offFirst()
+    beginGatewaySwitch()
+    endGatewaySwitch()
+
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(1)
+
+    offSecond()
+    beginGatewaySwitch()
+    endGatewaySwitch()
+
+    expect(second).toHaveBeenCalledTimes(1)
+  })
+
+  it('recoverActiveSourceAfterFailedGatewaySwitch re-pulls the still-active source and disarms the skeleton', async () => {
+    const refreshSessions = vi.fn(async () => undefined)
+    const off = registerGatewaySwitchLifecycle({ beforeConnectionSwitch: () => undefined, refreshSessions })
+
+    beginGatewaySwitch()
+    expect($sessionsLoading.get()).toBe(true)
+
+    recoverActiveSourceAfterFailedGatewaySwitch()
+    endGatewaySwitch()
+    await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    off()
+  })
+
+  it('a failing repaint (or none registered) still disarms the skeleton', async () => {
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => undefined,
+      refreshSessions: async () => {
+        throw new Error('backend busy')
+      }
+    })
+
+    setSessionsLoading(true)
+    recoverActiveSourceAfterFailedGatewaySwitch()
+    await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
+    off()
+
+    setSessionsLoading(true)
+    recoverActiveSourceAfterFailedGatewaySwitch()
+    await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
   })
 })

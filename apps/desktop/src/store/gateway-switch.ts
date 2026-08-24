@@ -27,10 +27,74 @@ import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
-// True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
-// boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
-// overlay from resurrecting when startHermes re-emits boot progress.
+// True while a connection switch is mid-flight — a Settings → Gateway apply
+// (wipe → re-dial, use-gateway-boot softSwitch) or a Sessions-switcher source
+// change (store/connections selectConnection). Lets the boot hook suppress the
+// backend-exit toast, keeps the cold-boot CONNECTING overlay from resurrecting
+// when startHermes re-emits boot progress, and tells the resume path that a
+// "session not found" mid-switch means "retry once things settle", not "gone".
 export const $gatewaySwitching = atom(false)
+
+/**
+ * Renderer-side cleanup a connection switch must run before the next gateway
+ * is activated or published: fresh-draft the open transcript, drop the overlay
+ * return route, reset the project tree, close terminals — everything bound to
+ * the OUTGOING backend that lives outside the session store. Registered by
+ * useGatewayBoot (whose host owns those React callbacks) so store-driven
+ * switches run the exact same reset as a Settings → Gateway apply.
+ */
+export interface GatewaySwitchLifecycle {
+  beforeConnectionSwitch: () => void
+  /** Re-pull the session lists from whichever backend is active NOW. */
+  refreshSessions: () => Promise<void>
+}
+
+let switchLifecycle: GatewaySwitchLifecycle | null = null
+
+export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle): () => void {
+  switchLifecycle = lifecycle
+
+  return () => {
+    if (switchLifecycle === lifecycle) {
+      switchLifecycle = null
+    }
+  }
+}
+
+/**
+ * Commit point of every connection switch: raise the barrier and sever every
+ * binding to the outgoing backend in ONE synchronous step. Both switch doors —
+ * Settings apply (softSwitch) and the Sessions switcher (selectConnection) —
+ * must call this BEFORE the next gateway is activated or its descriptor
+ * published. The sidebar door used to activate first and wipe afterwards
+ * (across an IPC round-trip), so route/session effects saw the new source while
+ * $activeSessionId still named the previous backend's runtime and sent that id
+ * to a backend that had never minted it — "session not found" (#93937).
+ */
+export function beginGatewaySwitch(): void {
+  $gatewaySwitching.set(true)
+  switchLifecycle?.beforeConnectionSwitch()
+  wipeSessionListsForGatewaySwitch()
+}
+
+/** Lower the barrier once the switch has committed (or failed). */
+export function endGatewaySwitch(): void {
+  $gatewaySwitching.set(false)
+}
+
+/**
+ * A commit that fails AFTER beginGatewaySwitch leaves the still-active source
+ * with its lists wiped and the sidebar skeleton armed, and nothing reactive
+ * re-pulls them (no source/profile scope moved). Repaint it explicitly so the
+ * sidebar doesn't sit on the skeleton; the fetch is best-effort, the skeleton
+ * always disarms.
+ */
+export function recoverActiveSourceAfterFailedGatewaySwitch(): void {
+  void Promise.resolve()
+    .then(() => switchLifecycle?.refreshSessions())
+    .catch(() => undefined)
+    .finally(() => setSessionsLoading(false))
+}
 
 /**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.

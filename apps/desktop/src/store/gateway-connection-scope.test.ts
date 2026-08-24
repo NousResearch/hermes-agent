@@ -105,6 +105,18 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=default'])
   })
 
+  it('a switch-phase dial (activationLease) survives a live-work recompute until its activation lands', async () => {
+    // Phase one of the Sessions-switcher source switch: the target is opened
+    // but not yet active and has no live work of its own. Another source's
+    // streaming turn recomputes the keep-set mid-dial — that must not dispose
+    // the socket the switch is about to activate (#89622 via #93937).
+    await openGatewayForAgent('homelab', 'default', { activationLease: true })
+
+    pruneSecondaryGateways(new Set(['default']))
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
   it('keeps a registry socket whose composite scope has live work', async () => {
     await openGatewayForAgent('homelab', 'default')
 

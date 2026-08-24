@@ -865,7 +865,18 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
 // routing. Feature-detected: without the Electron getConnectionFor door these
 // throw, and roster surfaces disable non-local rows instead.
 
-export async function openGatewayForAgent(connectionId: null | string, profile: string): Promise<void> {
+// `activationLease`: hold the same prune lease ensureGatewayForAgent holds for
+// the whole dial. Phase one of the two-phase source switch (store/connections
+// selectConnection) opens the target here and activates it right after; without
+// the lease a live-work recompute during the cold spawn would dispose the entry
+// mid-dial and the click would die (#89622). Plain pre-warms stay prunable —
+// a hovered-but-never-activated socket must not be pinned off another source's
+// live work.
+export async function openGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  { activationLease = false }: { activationLease?: boolean } = {}
+): Promise<void> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
@@ -880,8 +891,24 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   entry.retained = true
   entry.wantOpen = true
 
-  if (!isOpen(entry.gateway)) {
+  if (activationLease) {
+    // Stays held after a successful open: the activation that follows releases
+    // it (applyActive path), and one that never comes lets it expire.
+    entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+  }
+
+  if (isOpen(entry.gateway)) {
+    return
+  }
+
+  try {
     await openSecondary(entry)
+  } catch (error) {
+    if (activationLease) {
+      entry.activationLeaseUntil = 0
+    }
+
+    throw error
   }
 }
 

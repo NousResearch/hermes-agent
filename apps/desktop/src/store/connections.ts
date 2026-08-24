@@ -2,13 +2,18 @@ import { atom, computed } from 'nanostores'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import {
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch
+} from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
   $newChatProfile,
   $showAllProfiles,
   ensureGatewayAgent,
   normalizeProfileKey,
+  openGatewayAgent,
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
@@ -160,6 +165,17 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * Re-home Sessions to one registered source, restoring that source's last
  * profile. Only the selected source is dialed; merely rendering the switcher
  * never probes or opens remote gateways.
+ *
+ * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
+ *  1. Dial the target WITHOUT activating it. The previous source stays fully
+ *     bound and painted, so a dead target fails with nothing lost.
+ *  2. beginGatewaySwitch() — barrier up, machine-context reset, session
+ *     bindings wiped — then activate the already-open socket. Nothing awaits
+ *     between the wipe and the publication, so no route/session effect can
+ *     observe the new source while $activeSessionId still names the previous
+ *     backend's runtime. Activating first and wiping after (across an IPC
+ *     round-trip) is exactly how that id leaked to the new backend and came
+ *     back as "session not found" (#93937).
  */
 export async function selectConnection(connectionId: string): Promise<void> {
   const registry = $connectionsRegistry.get()
@@ -210,12 +226,39 @@ export async function selectConnection(connectionId: string): Promise<void> {
   $pendingConnectionId.set(connectionId)
 
   try {
+    // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
-    await ensureGatewayAgent(connectionId, targetProfile)
+    await openGatewayAgent(connectionId, targetProfile)
 
-    if ($connection.get()?.connectionId !== connectionId) {
-      throw new Error(`Connection "${targetConnection.label}" did not become active.`)
+    // A newer click owns the switch from here on. The superseded dial never
+    // activates, so the user doesn't flip through it on the way to the source
+    // they picked last; its socket stays warm for that click or idles out.
+    if (revision !== switchRevision) {
+      return
+    }
+
+    // Phase 2 — commit: sever the previous backend's bindings FIRST, then
+    // activate. Synchronous from the wipe to the publication (the socket is
+    // already open), and behind the barrier until the descriptor lands.
+    beginGatewaySwitch()
+
+    try {
+      await ensureGatewayAgent(connectionId, targetProfile)
+
+      if ($connection.get()?.connectionId !== connectionId) {
+        throw new Error(`Connection "${targetConnection.label}" did not become active.`)
+      }
+    } catch (error) {
+      // The wipe already happened but the previous source is still the active
+      // one, and nothing reactive re-pulls its lists (no scope moved). Repaint
+      // it and land on a fresh draft there, matching what a failed Settings
+      // apply leaves behind.
+      recoverActiveSourceAfterFailedGatewaySwitch()
+      requestFreshSession()
+      throw error
+    } finally {
+      endGatewaySwitch()
     }
 
     // A newer click owns the final refresh. Serialized gateway activation
@@ -223,7 +266,6 @@ export async function selectConnection(connectionId: string): Promise<void> {
     // request from repainting its profile list after that newer activation.
     if (revision === switchRevision) {
       await rememberConnection(connectionId)
-      wipeSessionListsForGatewaySwitch()
 
       if (!restoreOnBoot) {
         $showAllProfiles.set(false)

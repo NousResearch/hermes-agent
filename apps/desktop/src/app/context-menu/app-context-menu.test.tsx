@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -82,6 +83,13 @@ describe('resolveDomTarget', () => {
 
     expect(resolveDomTarget(host.querySelector('textarea')).editable).toBeTruthy()
     expect(resolveDomTarget(host.querySelector('input')).editable).toBeNull()
+  })
+
+  it('resolves the enclosing dialog as the menu portal container', () => {
+    const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
+    const dialog = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
   })
 })
 
@@ -197,6 +205,43 @@ describe('AppContextMenu', () => {
 
     await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('copy'))
     expect($contextMenu.get()).toBeNull()
+    expect(document.activeElement).toBe(textarea)
+  })
+
+  it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
+    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({
+      contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'],
+      readClipboard: vi.fn().mockResolvedValue('clipboard payload')
+    })
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Modal editor</DialogTitle>
+            <textarea aria-label="modal textarea" />
+          </DialogContent>
+        </Dialog>
+      </MemoryRouter>
+    )
+    const textarea = screen.getByLabelText('modal textarea')
+
+    fireEvent.contextMenu(textarea)
+
+    const paste = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]') as HTMLElement
+
+    await waitFor(() => expect(paste.getAttribute('data-disabled')).toBeNull())
+
+    const menu = paste.closest('[data-slot="dropdown-menu-content"]')
+    const dialog = screen.getByRole('dialog')
+
+    expect(dialog.contains(menu)).toBe(true)
+
+    fireEvent.click(paste)
+
+    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('paste'))
     expect(document.activeElement).toBe(textarea)
   })
 

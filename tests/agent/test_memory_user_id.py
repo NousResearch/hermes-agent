@@ -99,7 +99,7 @@ class TestMemoryManagerUserIdThreading:
         assert p2._init_kwargs.get("user_id") == "slack_U12345"
         assert p2._init_kwargs.get("platform") == "slack"
 
-    def test_session_title_provenance_reaches_provider(self):
+    def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
         from run_agent import AIAgent
 
         provider = RecordingProvider()
@@ -127,12 +127,20 @@ class TestMemoryManagerUserIdThreading:
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
+                platform="telegram",
                 session_id="session-with-title",
                 session_db=session_db,
+                gateway_session_key="agent:main:telegram:dm:42",
+                cwd=str(tmp_path),
             )
 
         assert provider._init_kwargs["session_title"] == "Generated title"
         assert provider._init_kwargs["session_title_source"] == "llm"
+        assert (
+            provider._init_kwargs["gateway_session_key"]
+            == "agent:main:telegram:dm:42"
+        )
+        assert provider._init_kwargs["cwd"] == str(tmp_path)
         agent.close()
 
 

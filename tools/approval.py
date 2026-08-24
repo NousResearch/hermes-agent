@@ -536,13 +536,27 @@ HARDLINE_PATTERNS = [
     # hardline entry so quoted prose ("echo \"does this workflow use mkfs
     # anywhere?\"") does not trip the unconditional floor (#93392).
     (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
-    # Raw block device overwrites (dd + redirection)
-    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Raw block device overwrites (dd + redirection). `dd` is a command-name
+    # token, so anchor it to command position like mkfs/rm/shutdown (#93392):
+    # quoted prose such as `git commit -m "never dd of=/dev/sda"` is an
+    # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
+    # so flag order doesn't matter.
+    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # The redirect rule has no command-name token to anchor (`>` appears
+    # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
+    # wrong tool. It is instead matched against a QUOTE-MASKED variant of the
+    # command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted
+    # prose (`echo "cat f > /dev/sda"`) cannot trip it, while shell-carrying
+    # wrappers (sh -c / bash -c / eval) still surface their payload as a raw
+    # detection variant — quoting is not a bypass (#93392).
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
-    # Fork bomb (classic shell form)
+    # Fork bomb (classic shell form). Also positionless (the trigger is the
+    # function definition itself, valid anywhere in a command line), so it is
+    # quote-masked like the redirect rule above rather than _CMDPOS-anchored.
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Kill every process on the system
-    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # Kill every process on the system — anchor the command-name token so
+    # `echo "kill -1 sends SIGHUP to everything"` doesn't trip (#93392).
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
@@ -560,10 +574,111 @@ HARDLINE_PATTERNS = [
 # regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
 # at the end of this module after DANGEROUS_PATTERNS is defined.
 _RE_FLAGS = re.IGNORECASE | re.DOTALL
+
+# Hardline rules whose trigger has no command-name token to anchor (the
+# redirect target / fork-bomb definition are valid anywhere in a command
+# line). These are matched against QUOTE-MASKED variants of the command so
+# quoted prose (`echo "cat f > /dev/sda"`, `git commit -m "fork bomb
+# :(){ :|:& };:"`) cannot trip the unconditional floor, while the raw
+# payloads of shell-carrying wrappers (sh -c, bash -c, eval) are still
+# scanned unmasked — quoting is not a bypass (#93392).
+_QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({
+    "redirect to raw block device",
+    "fork bomb",
+})
+
 HARDLINE_PATTERNS_COMPILED = [
-    (re.compile(pattern, _RE_FLAGS), description)
+    (
+        re.compile(pattern, _RE_FLAGS),
+        description,
+        description in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS,
+    )
     for pattern, description in HARDLINE_PATTERNS
 ]
+
+
+# Command names that hand a quoted argument to another shell/parser to
+# EXECUTE. For these, quoted text is code, not prose, so the quote-masked
+# hardline rules must scan the raw string (see detect_hardline_command).
+_SHELL_CARRIER_NAMES = frozenset({
+    "eval", "sh", "bash", "zsh", "ksh", "dash", "source", ".",
+})
+
+
+def _contains_shell_carrier(command: str) -> bool:
+    """Return whether any command-position word is a shell-carrying command."""
+    for _, _, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(
+            _deobfuscate_shell_word_for_detection(word)
+        ).lower()
+        if name in _SHELL_CARRIER_NAMES:
+            return True
+    return False
+
+
+def _mask_quoted_prose(command: str) -> str:
+    """Blank out quoted string CONTENT for positionless hardline matching.
+
+    Detection-only rewrite used by the quote-masked hardline rules
+    (redirect-to-block-device, fork bomb): text inside single or double
+    quotes is data the shell passes as an argument, so `echo "cat f >
+    /dev/sda"` must not trip the unconditional floor (#93392). Structure is
+    preserved: the quote characters themselves stay, and inside double
+    quotes `$(...)` command substitutions and backtick spans are kept RAW
+    because the shell really executes them (`echo "$(cat f > /dev/sda)"`
+    remains a true positive). Unquoted text is untouched. Quote tracking
+    mirrors _mask_quoted_newlines; an unclosed quote masks to end-of-string,
+    which cannot hide a runnable command (the shell would not run it
+    either).
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+                out.append(ch)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                out.append("  ")
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                end = _scan_dollar_paren_end(command, i)
+                if end is not None:
+                    out.append(command[i:end])
+                    i = end
+                    continue
+            if ch == "`":
+                close = command.find("`", i + 1)
+                if close != -1:
+                    out.append(command[i:close + 1])
+                    i = close + 1
+                    continue
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 # =========================================================================
@@ -616,8 +731,26 @@ def detect_hardline_command(command: str) -> tuple:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
-        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(variant_lower):
+        masked_lower: str | None = None
+        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if quote_masked:
+                # Positionless rules (redirect-to-block-device, fork bomb)
+                # match a quote-masked variant so quoted prose in echo /
+                # git commit -m / gh --body arguments is DATA (#93392).
+                # Shell-carrying commands (sh/bash -c, eval, source) hand
+                # their quoted argument to another parser, so those scan
+                # the raw variant — quoting is not a bypass. bash/sh -c
+                # payloads additionally surface as their own raw variants
+                # via _execution_flag_findings.
+                if masked_lower is None:
+                    if _contains_shell_carrier(command_variant):
+                        masked_lower = variant_lower
+                    else:
+                        masked_lower = _mask_quoted_prose(command_variant).lower()
+                haystack = masked_lower
+            else:
+                haystack = variant_lower
+            if pattern_re.search(haystack):
                 return (True, description)
     return (False, None)
 
@@ -860,8 +993,10 @@ DANGEROUS_PATTERNS = [
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
-    (r'\bmkfs\b', "format filesystem"),
-    (r'\bdd\s+.*if=', "disk copy"),
+    # Anchored to command position like the hardline twins (#93392):
+    # quoted prose mentioning mkfs/dd must not require approval to echo.
+    (_CMDPOS + r'mkfs\b', "format filesystem"),
+    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the

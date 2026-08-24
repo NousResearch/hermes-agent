@@ -114,6 +114,7 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
+import { RouteHeading } from '../shell/route-heading'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
@@ -828,6 +829,7 @@ export function ContribController() {
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
+        <RouteHeading />
         <AppContextMenu />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"

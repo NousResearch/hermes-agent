@@ -3380,6 +3380,20 @@ export const ja = defineLocale({
     windowControls: 'ウィンドウコントロール',
     paneControls: 'ペインコントロール',
     appControls: 'アプリコントロール',
+    routeTitles: {
+      chat: 'チャット',
+      settings: '設定',
+      'command-center': 'コマンドセンター',
+      skills: 'スキル',
+      messaging: 'メッセージング',
+      webhooks: 'ウェブフック',
+      artifacts: 'アーティファクト',
+      cron: 'スケジュールジョブ',
+      profiles: 'プロフィール',
+      agents: 'エージェント',
+      starmap: 'スターアトラス',
+      extension: '拡張機能'
+    },
     modelMenu: {
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',

@@ -1395,17 +1395,33 @@ def _close_sessions_for_transport(
             viewers = session.get("viewers")
             if viewers:
                 viewers.pop(transport, None)
-            remaining = [
-                (ts, v)
-                for v, ts in (viewers or {}).items()
-                if v is not transport and not _transport_is_dead(v)
-            ]
-            if remaining:
-                remaining.sort(key=lambda kv: kv[0])
-                session["transport"] = remaining[-1][1]
-                continue
-            session["transport"] = _detached_ws_transport
-            session.pop("_client_gone_interrupt_requested", None)
+            # Revalidate under the sessions lock before stomping (#77129):
+            # between the owned-sessions snapshot above and this write, a
+            # concurrent session.resume can rebind the session to a NEW live
+            # transport. Stomping it back onto the drop sentinel here would
+            # knock an attached client into detached state and arm an orphan
+            # reap against a session that has a live owner. If the transport
+            # already moved on to a different live transport, this disconnect
+            # has nothing left to tear down — skip the park AND the reap.
+            with _sessions_lock:
+                current = session.get("transport")
+                if (
+                    current is not transport
+                    and current is not None
+                    and not _transport_is_dead(current)
+                ):
+                    continue
+                remaining = [
+                    (ts, v)
+                    for v, ts in (viewers or {}).items()
+                    if v is not transport and not _transport_is_dead(v)
+                ]
+                if remaining:
+                    remaining.sort(key=lambda kv: kv[0])
+                    session["transport"] = remaining[-1][1]
+                    continue
+                session["transport"] = _detached_ws_transport
+                session.pop("_client_gone_interrupt_requested", None)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)

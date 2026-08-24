@@ -17520,6 +17520,50 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server._sessions.clear()
 
 
+def test_close_sessions_for_transport_skips_rebound_session(monkeypatch):
+    """Rebind-between-snapshot-and-stomp (#77129 concept salvage).
+
+    _close_sessions_for_transport snapshots owned sessions under
+    _sessions_lock, then parks each on the drop sentinel. A concurrent
+    session.resume that rebinds the session to a NEW live transport in
+    between must NOT be stomped back onto the sentinel — that knocks an
+    attached client into detached state and arms an orphan reap against a
+    session with a live owner. The stomp must revalidate ownership under
+    the lock and skip (park AND reap) when the transport already moved on.
+    """
+    reaps = []
+    monkeypatch.setattr(
+        server, "_schedule_ws_orphan_reap", lambda sid: reaps.append(sid)
+    )
+    old_transport = object()  # the disconnecting transport
+    new_transport = object()  # live rebind target (no _closed attr → alive)
+
+    class _RebindsOnStomp(dict):
+        """Simulates a session.resume landing between snapshot and stomp:
+        the first 'viewers' read inside the stomp loop (i.e. after the
+        snapshot already selected this session) rebinds the transport."""
+
+        def get(self, key, default=None):
+            if key == "viewers" and not self.get("_rebound_flag"):
+                dict.__setitem__(self, "_rebound_flag", True)
+                dict.__setitem__(self, "transport", new_transport)
+            return dict.get(self, key, default)
+
+    session = _RebindsOnStomp(
+        {"transport": old_transport, "close_on_disconnect": False}
+    )
+    server._sessions.clear()
+    server._sessions["rebound"] = session
+    try:
+        reaped, detached = server._close_sessions_for_transport(old_transport)
+        assert reaped == 0
+        assert detached == 0  # skipped, not parked
+        assert session["transport"] is new_transport  # rebind preserved
+        assert reaps == []  # no orphan reap armed against the live owner
+    finally:
+        server._sessions.clear()
+
+
 def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()

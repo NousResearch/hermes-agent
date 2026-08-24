@@ -107,19 +107,29 @@ describe('useSessionTileDelegate resumeTile', () => {
   it('resolves and carries a default-profile session explicitly', async () => {
     setSessions([row({ id: 'stored-y', profile: 'default' })])
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-2' } as never) : ({} as never)
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    // #92961: a known owner is ALWAYS routed through the profile router —
+    // even 'default' — never dispatched on the ambient socket.
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-2' } as never)
 
     renderTile(requestGateway)
-    await sessionTileDelegate()!.resumeTile('stored-y')
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-y')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored-y',
-      cols: 96,
-      profile: 'default',
-      omit_messages: true
-    })
+    expect(runtimeId).toBe('runtime-2')
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-y',
+        cols: 96,
+        profile: 'default',
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('routes a Bot tile prefetch and resume through its exact connection owner', async () => {
@@ -174,20 +184,26 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-b', 'runtime-dead']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', staleState]]) }
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-fresh' } as never) : ({} as never)
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-fresh' } as never)
 
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-b')
 
     expect(runtimeId).toBe('runtime-fresh')
-    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored-b',
-      cols: 96,
-      profile: 'default',
-      omit_messages: true
-    })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'default',
+      'session.resume',
+      {
+        session_id: 'stored-b',
+        cols: 96,
+        profile: 'default',
+        omit_messages: true
+      },
+      undefined,
+      undefined
+    )
   })
 
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {
@@ -197,9 +213,9 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 
-    const requestGateway = vi.fn(async (method: string) =>
-      method === 'session.resume' ? ({ session_id: 'runtime-fresh' } as never) : ({} as never)
-    )
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'runtime-fresh' } as never)
 
     renderTile(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
 

@@ -1402,10 +1402,21 @@ describe('branchStoredSession desktop source tagging', () => {
     vi.restoreAllMocks()
   })
 
-  it('opens the branch as a new tab and leaves the parent chat selected', async () => {
+  it('opens the branch as the primary session in the main workspace (#93444)', async () => {
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
       }
 
       return {} as never
@@ -1432,11 +1443,12 @@ describe('branchStoredSession desktop source tagging', () => {
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
-    // The branch opened as its own tab...
-    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
-    // ...without stealing the primary selection or navigating away from the parent.
-    expect($selectedStoredSessionId.get()).toBe('stored-parent')
-    expect(navigate).not.toHaveBeenCalledWith(sessionRoute('branch-stored'))
+    // The branch becomes the primary session — this is what routes the main
+    // workspace area to it, not just a new sidebar row.
+    expect($selectedStoredSessionId.get()).toBe('branch-stored')
+    // It must not ALSO exist as a tile: a session is either the main thread or
+    // a tile, never both (resumeSession closes any tile with the same id).
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {

@@ -1649,8 +1649,6 @@ export function useSessionActions({
           routedSessionId
         )
 
-        // The branch opens as its own tile in the parent's worktree, not as the
-        // primary session — keep its runtime out of the main composer atoms.
         const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
@@ -1658,13 +1656,11 @@ export function useSessionActions({
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
         }
 
-        // Open the branch as its own tab and switch to it, leaving the parent
-        // chat exactly where it is. Prime the tile with the create runtime so it
-        // skips a redundant resume. Do NOT select it as the primary session
-        // first — openSessionTile no-ops when the id is already primary.
-        openSessionTile(routedSessionId, 'center')
-        patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
-        revealTreePane(`session-tile:${routedSessionId}`)
+        // Load the branch as the primary session so it opens in the main
+        // workspace, not just a sidebar row. resumeSession reuses the runtime
+        // warm-cached above (ensureSessionState/updateSessionState) instead of
+        // an extra resume RPC.
+        await resumeSession(routedSessionId)
         broadcastSessionsChanged()
 
         return true
@@ -1678,7 +1674,7 @@ export function useSessionActions({
         }, 0)
       }
     },
-    [copy, creatingSessionRef, ensureSessionState, requestGateway, updateSessionState]
+    [copy, creatingSessionRef, ensureSessionState, requestGateway, resumeSession, updateSessionState]
   )
 
   // Branch the open chat — optionally from a specific message — off its live transcript.

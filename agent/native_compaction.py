@@ -68,6 +68,24 @@ def is_native_compaction_model(model: Optional[str]) -> bool:
     return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
 
 
+def resolve_native_compaction_capabilities(
+    *,
+    model: Optional[str],
+    base_url: Optional[str],
+    is_codex_backend: bool = False,
+) -> Dict[str, bool]:
+    """Resolve the native-compaction capability for a runtime destination.
+
+    The result is deliberately explicit: a resolved ``False`` is different
+    from an unresolved capability and must survive model switches unchanged.
+    """
+    eligible = is_native_compaction_model(model) and is_direct_openai_route(
+        base_url,
+        is_codex_backend=is_codex_backend,
+    )
+    return {"native_compaction": eligible}
+
+
 def is_direct_openai_route(
     base_url: Optional[str],
     *,
@@ -160,6 +178,10 @@ def native_compaction_context_management(
     (``agent.codex_responses_native_compaction = False``, set by the
     conversation loop's rejection recovery) takes effect on the next call.
     """
+    capabilities = getattr(agent, "capabilities", None)
+    if isinstance(capabilities, dict):
+        if not bool(capabilities.get("native_compaction", False)):
+            return None
     if not bool(getattr(agent, "codex_responses_native_compaction", False)):
         return None
     # compression.enabled: false disables ALL automatic compaction, native

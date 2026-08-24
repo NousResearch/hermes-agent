@@ -626,6 +626,7 @@ class ModelSwitchResult:
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
+    runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
 
@@ -2173,6 +2174,12 @@ def switch_model(
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)
+    from agent.native_compaction import resolve_native_compaction_capabilities
+    runtime_capabilities = resolve_native_compaction_capabilities(
+        model=new_model,
+        base_url=base_url,
+        is_codex_backend=target_provider.strip().lower() == "openai-codex",
+    )
 
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model, allow_network=True)
@@ -2215,6 +2222,7 @@ def switch_model(
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
+        runtime_capabilities=runtime_capabilities,
         model_info=model_info,
         is_global=is_global,
     )

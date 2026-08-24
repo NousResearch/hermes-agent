@@ -284,3 +284,30 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     assert call_kwargs.get("config_context_length") == 100_000
     assert agent._config_context_length == 120_000
     assert agent.context_compressor.context_length == 100_000
+
+
+def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
+    agent = _make_agent_with_compressor(config_context_length=32_768)
+    agent.capabilities = {"native_compaction": True}
+    original_client = agent.client
+
+    monkeypatch.setattr(
+        AIAgent,
+        "_ensure_lmstudio_runtime_loaded",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated LM Studio failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated LM Studio failure"):
+        agent.switch_model(
+            "new-model",
+            "openrouter",
+            api_key="sk-new",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert agent.model == "primary-model"
+    assert agent.provider == "openrouter"
+    assert agent.client is original_client
+    assert agent.capabilities == {"native_compaction": True}

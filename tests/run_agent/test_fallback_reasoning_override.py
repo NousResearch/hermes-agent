@@ -75,6 +75,7 @@ class TestFallbackReasoningOverride:
             "client_kwargs": {},
             "use_prompt_caching": False,
             "use_native_cache_layout": False,
+            "capabilities": {"native_compaction": True},
             "reasoning_config": {"enabled": True, "effort": "medium"},
             "compressor_model": "gemini-flash",
             "compressor_base_url": "",
@@ -95,6 +96,7 @@ class TestFallbackReasoningOverride:
         agent.model = "claude-opus-4.5"
         agent.provider = "anthropic"
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        agent.capabilities = {"native_compaction": False}
         agent.context_compressor = MagicMock()
         agent.base_url = ""
         agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
@@ -105,6 +107,7 @@ class TestFallbackReasoningOverride:
         assert result is True
         # reasoning_config should be restored to primary's value (medium)
         assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+        assert agent.capabilities == {"native_compaction": True}
 
     def test_fallback_global_fallback_with_yaml_false(self):
         """Fallback global fallback must not coerce YAML boolean False.

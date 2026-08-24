@@ -78,12 +78,14 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     )
     assert out["reply"] == "pong from ops"
     argv = calls["argv"]
-    assert argv[:3] == ["hermes", "-p", "ops"]
+    # argv[0] may be a resolved venv path (#93590) — match by basename.
+    assert argv[1:3] == ["-p", "ops"]
+    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
     assert "Bot Chat" in argv and "--query-file" in argv
 
     # 'hermes' alias resolves to default
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
-    assert calls["argv"][:3] == ["hermes", "-p", "default"]
+    assert calls["argv"][1:3] == ["-p", "default"]
 
     # unknown profile refuses without spawning
     calls.clear()

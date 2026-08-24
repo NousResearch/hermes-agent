@@ -461,7 +461,7 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     for idx, it in indexed:
         gl = it["group"]
         if gl in (X_GROUP, LINKEDIN_GROUP):
-            gl_label = {"X": "X/Twitter", "LINKEDIN": "LinkedIn"}[gl]
+            gl_label = {X_GROUP: "X/Twitter", LINKEDIN_GROUP: "LinkedIn"}[gl]
         elif gl == IDEAS_GROUP or gl.endswith("IDEAS"):
             gl_label = "Idea"
         else:

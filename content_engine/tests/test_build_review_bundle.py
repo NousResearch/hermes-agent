@@ -9,6 +9,7 @@ from pathlib import Path
 import scripts.build_review_bundle as brb
 from scripts.build_review_bundle import (
     BLOG_GROUP,
+    LANE_GROUPS,
     LINKEDIN_GROUP,
     X_GROUP,
     _chunk_by_size,
@@ -26,9 +27,13 @@ def _item(slug: str, title: str, group: str, pane_bytes: int = 100) -> dict:
 
 
 def test_render_lists_every_item_and_counts():
-    blog = [_item("a", "Alpha", BLOG_GROUP), _item("b", "Beta", BLOG_GROUP)]
+    ai = [_item("a", "Alpha", LANE_GROUPS["ai"])]
+    pm = [_item("b", "Beta", LANE_GROUPS["pm"])]
     x = [_item("c", "Gamma", X_GROUP)]
-    doc = render([(BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, [])], "T")
+    doc = render(
+        [(LANE_GROUPS["ai"], ai), (LANE_GROUPS["pm"], pm), (X_GROUP, x), (LINKEDIN_GROUP, [])],
+        "T",
+    )
 
     # every article title appears (sidebar + pane)
     for t in ("Alpha", "Beta", "Gamma"):
@@ -44,6 +49,9 @@ def test_render_lists_every_item_and_counts():
     assert doc.count('class="pane') == 4
     # LinkedIn placeholder group rendered but muted
     assert "LINKEDIN" in doc and "group muted" in doc
+    # X/Twitter item pill uses the display label, not the raw group constant
+    # (regression: a hard-coded {"X": ...} lookup KeyError'd on "X/TWITTER")
+    assert "X/Twitter" in doc and "<span class='pill'>X/Twitter</span>" in doc
 
 
 def test_article_items_excludes_social_platform_articles(tmp_path, monkeypatch):

@@ -109,7 +109,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_url,
-    cache_media_bytes,
+    cache_media_bytes_async,
 )
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -1096,7 +1096,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 filename = att_name or (f"document.{file_type}" if file_type else "document")
                 try:
                     data = await self._fetch_attachment_bytes(download_url)
-                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
                     if cached:
                         media_urls.append(cached.path)
                         media_types.append(cached.media_type)
@@ -1145,7 +1145,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 # Direct-URL non-image attachment (video/audio/document).
                 try:
                     data = await self._fetch_attachment_bytes(content_url)
-                    cached = cache_media_bytes(
+                    cached = await cache_media_bytes_async(
                         data, filename=att_name, mime_type=content_type
                     )
                     if cached:

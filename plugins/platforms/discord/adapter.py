@@ -203,10 +203,10 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     cache_image_from_url,
-    cache_image_from_bytes,
+    cache_image_from_bytes_async,
     cache_audio_from_url,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
     SUPPORTED_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit,
@@ -8108,7 +8108,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
-                return cache_image_from_bytes(raw_bytes, ext=ext)
+                return await cache_image_from_bytes_async(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_image_from_bytes rejected att.read() data; falling back to URL: %s",
@@ -8127,7 +8127,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
-                return cache_audio_from_bytes(raw_bytes, ext=ext)
+                return await cache_audio_from_bytes_async(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_audio_from_bytes failed; falling back to URL: %s",
@@ -8454,7 +8454,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:
                     try:
                         raw_bytes = await self._cache_discord_document(att, ext)
-                        cached_path = cache_document_from_bytes(
+                        cached_path = await cache_document_from_bytes_async(
                             raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
                         if in_allowlist:

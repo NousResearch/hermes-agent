@@ -1105,8 +1105,8 @@ class TestAdapterBehavior(unittest.TestCase):
                             side_effect=lambda **_kwargs: _FakeAsyncClient(),
                         ):
                             with patch(
-                                "plugins.platforms.feishu.adapter.cache_document_from_bytes",
-                                return_value="/tmp/cached-doc.bin",
+                                "plugins.platforms.feishu.adapter.cache_document_from_bytes_async",
+                                new=AsyncMock(return_value="/tmp/cached-doc.bin"),
                             ):
                                 return await adapter._download_remote_document(
                                     "https://example.com/doc.bin",

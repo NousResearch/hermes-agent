@@ -685,8 +685,8 @@ class TestWeixinVoiceAlwaysDownloaded:
         adapter._poll_session = Mock()
 
         fake_audio_bytes = b"\\x00\\x01\\x02FAKE_SILK"
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
 
         async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
                                  aes_key_b64, full_url, timeout_seconds):
@@ -739,8 +739,8 @@ class TestWeixinVoiceAlwaysDownloaded:
         adapter._cdn_base_url = "https://example.invalid"
         adapter._poll_session = Mock()
 
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
 
         async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
                                  aes_key_b64, full_url, timeout_seconds):
@@ -803,8 +803,8 @@ class TestWeixinVoiceGatewayHandoff:
         adapter._token = None
         adapter._cdn_base_url = "https://example.invalid"
 
-        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
-                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}")))
         async def _fake_download(*a, **k):
             return b"\x00\x01FAKE_SILK"
         monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)

@@ -958,6 +958,11 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+    """Cache image bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+
+
 async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
@@ -1002,7 +1007,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="image",
                     )
-                return cache_image_from_bytes(content, ext)
+                return await cache_image_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1100,6 +1105,11 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
+async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
+    """Cache audio bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_audio_from_bytes, data, ext)
+
+
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
@@ -1144,7 +1154,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     content = await _read_httpx_body_with_limit(
                         response, media_type="audio",
                     )
-                return cache_audio_from_bytes(content, ext)
+                return await cache_audio_from_bytes_async(content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -1205,6 +1215,11 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
+    """Cache video bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_video_from_bytes, data, ext)
 
 
 def cleanup_video_cache(max_age_hours: int = 24) -> int:
@@ -2332,6 +2347,11 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
+async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
+    """Cache document bytes without blocking the caller's event loop."""
+    return await asyncio.to_thread(cache_document_from_bytes, data, filename)
+
+
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached documents older than *max_age_hours*.
@@ -2450,6 +2470,23 @@ def cache_media_bytes(
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+async def cache_media_bytes_async(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache attachment bytes without blocking the event loop."""
+    return await asyncio.to_thread(
+        cache_media_bytes,
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
 
 
 class MessageType(Enum):

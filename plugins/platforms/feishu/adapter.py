@@ -126,10 +126,10 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
-    cache_document_from_bytes,
+    cache_document_from_bytes_async,
     cache_image_from_url,
-    cache_audio_from_bytes,
-    cache_image_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -3656,7 +3656,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_name=preferred_name,
             default_ext=default_ext,
         )
-        cached_path = cache_document_from_bytes(body, filename)
+        cached_path = await cache_document_from_bytes_async(body, filename)
         return cached_path, filename
 
     @staticmethod
@@ -4107,7 +4107,7 @@ class FeishuAdapter(BasePlatformAdapter):
             content_type = self._get_response_header(response, "Content-Type")
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-            cached_path = cache_image_from_bytes(raw_bytes, ext=ext)
+            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
             media_type = self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
             return cached_path, media_type
         except Exception:
@@ -4161,26 +4161,26 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 if media_type.startswith("image/"):
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-                    cached_path = cache_image_from_bytes(raw_bytes, ext=ext)
+                    cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
                     logger.info("[Feishu] Cached message image resource at %s", cached_path)
                     return cached_path, media_type or self._default_image_media_type(ext)
 
                 if request_type == "audio" or media_type.startswith("audio/"):
                     ext = self._guess_extension(filename, content_type, ".ogg", allowed=_AUDIO_EXTENSIONS)
-                    cached_path = cache_audio_from_bytes(raw_bytes, ext=ext)
+                    cached_path = await cache_audio_from_bytes_async(raw_bytes, ext=ext)
                     logger.info("[Feishu] Cached message audio resource at %s", cached_path)
                     return cached_path, (media_type or f"audio/{ext.lstrip('.') or 'ogg'}")
 
                 if media_type.startswith("video/"):
                     if not Path(filename).suffix:
                         filename = f"{filename}.mp4"
-                    cached_path = cache_document_from_bytes(raw_bytes, filename)
+                    cached_path = await cache_document_from_bytes_async(raw_bytes, filename)
                     logger.info("[Feishu] Cached message video resource at %s", cached_path)
                     return cached_path, media_type
 
                 if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
                     filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
-                cached_path = cache_document_from_bytes(raw_bytes, filename)
+                cached_path = await cache_document_from_bytes_async(raw_bytes, filename)
                 logger.info("[Feishu] Cached message document resource at %s", cached_path)
                 return cached_path, (media_type or self._guess_document_media_type(filename))
             except Exception:

@@ -3702,9 +3702,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
                     if file_bytes is not None:
                         from gateway.platforms.base import (
-                            cache_audio_from_bytes,
-                            cache_document_from_bytes,
-                            cache_image_from_bytes,
+                            cache_audio_from_bytes_async,
+                            cache_document_from_bytes_async,
+                            cache_image_from_bytes_async,
                         )
 
                         if msg_type == MessageType.PHOTO:
@@ -3715,7 +3715,7 @@ class MatrixAdapter(BasePlatformAdapter):
                                 "image/webp": ".webp",
                             }
                             ext = ext_map.get(media_type, ".jpg")
-                            cached_path = cache_image_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
                             logger.info("[Matrix] Cached user image at %s", cached_path)
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
@@ -3727,14 +3727,14 @@ class MatrixAdapter(BasePlatformAdapter):
                                 ).suffix
                                 or ".ogg"
                             )
-                            cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_audio_from_bytes_async(file_bytes, ext=ext)
                         else:
                             filename = body or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
                             )
-                            cached_path = cache_document_from_bytes(
+                            cached_path = await cache_document_from_bytes_async(
                                 file_bytes, filename
                             )
             except Exception as e:

@@ -11,7 +11,7 @@
     "fix": "npm run lint:fix",
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
-    "test": "vitest run",
+    "test": "cross-env NODE_ENV=test vitest run",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
@@ -45,6 +45,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
+    "cross-env": "^10.1.0",
     "eslint-plugin-react-refresh": "0.5.3",
     "three": "0.180.0",
     "typescript": "6.0.3",

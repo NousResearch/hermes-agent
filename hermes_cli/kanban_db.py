@@ -97,6 +97,12 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# Project skill discovery still reads TERMINAL_CWD from the process environment
+# and has no context-local cwd override. Serialize the complete profile-scoped
+# resolver operation so concurrent task creation cannot mix profile homes or
+# project workspaces while that resolver runs.
+_PROFILE_SKILL_RESOLUTION_LOCK = threading.RLock()
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """``VALID_REASONING_EFFORTS`` or ``"none"`` (thinking off), case-insensitive;
@@ -1113,86 +1119,90 @@ def _profile_skill_names(
         skill_matches_platform,
     )
     from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile_home = get_profile_dir(profile)
-    previous_home = os.environ.get("HERMES_HOME")
-    os.environ["HERMES_HOME"] = str(profile_home)
-    try:
-        disabled = get_disabled_skill_names(platform=sys.platform)
-        project_dirs = set()
-        if project_workspace is not None:
-            previous_cwd = os.environ.get("TERMINAL_CWD")
-            os.environ["TERMINAL_CWD"] = str(project_workspace)
-            try:
-                project_dirs = set(get_project_skills_dirs())
-            finally:
-                if previous_cwd is None:
-                    os.environ.pop("TERMINAL_CWD", None)
-                else:
-                    os.environ["TERMINAL_CWD"] = previous_cwd
-        skill_roots = list(project_dirs)
-        skill_roots.extend([get_skills_dir(), *get_external_skills_dirs()])
-        names: set[str] = set()
-        for root in skill_roots:
-            if not root.is_dir():
-                continue
-            files = (
-                iter_project_skill_files(root)
-                if root in project_dirs
-                else iter_skill_index_files(root, "SKILL.md")
-            )
-            for skill_md in files:
-                if is_excluded_skill_path(skill_md, root=root):
-                    continue
-                try:
-                    frontmatter, _ = parse_frontmatter(
-                        skill_md.read_text(encoding="utf-8-sig", errors="replace")
-                    )
-                except Exception:
-                    continue
-                if not skill_matches_platform(frontmatter):
-                    continue
-                if not skill_matches_environment(frontmatter):
-                    continue
-                name = str(frontmatter.get("name") or skill_md.parent.name).strip()
-                if name and name not in disabled:
-                    names.add(name)
-
-        # Plugin skills are registered only after the profile's enabled plugin
-        # set has been discovered.  Use the manager scoped to this profile's
-        # home; consulting the caller's active manager would leak skills across
-        # profiles in a multiplexed process.
+    with _PROFILE_SKILL_RESOLUTION_LOCK:
+        home_token = set_hermes_home_override(profile_home)
+        previous_cwd = os.environ.get("TERMINAL_CWD")
         try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            # Match worker preload resolution: platform comes from the active
+            # Hermes/session context unless explicitly pinned by its caller.
+            disabled = get_disabled_skill_names()
+            project_dirs = set()
+            if project_workspace is not None:
+                os.environ["TERMINAL_CWD"] = str(project_workspace)
+                try:
+                    project_dirs = set(get_project_skills_dirs())
+                finally:
+                    if previous_cwd is None:
+                        os.environ.pop("TERMINAL_CWD", None)
+                    else:
+                        os.environ["TERMINAL_CWD"] = previous_cwd
+            skill_roots = list(project_dirs)
+            skill_roots.extend([get_skills_dir(), *get_external_skills_dirs()])
+            names: set[str] = set()
+            for root in skill_roots:
+                if not root.is_dir():
+                    continue
+                files = (
+                    iter_project_skill_files(root)
+                    if root in project_dirs
+                    else iter_skill_index_files(root, "SKILL.md")
+                )
+                for skill_md in files:
+                    if is_excluded_skill_path(skill_md, root=root):
+                        continue
+                    try:
+                        frontmatter, _ = parse_frontmatter(
+                            skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                        )
+                    except Exception:
+                        continue
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    if not skill_matches_environment(frontmatter):
+                        continue
+                    name = str(frontmatter.get("name") or skill_md.parent.name).strip()
+                    if name and name not in disabled:
+                        names.add(name)
 
-            discover_plugins()
-            for entry in get_plugin_manager().list_plugin_skill_metadata():
-                qualified_name = str(entry.get("name") or "").strip()
-                if not qualified_name:
-                    continue
-                frontmatter = entry.get("frontmatter")
-                if not isinstance(frontmatter, dict):
-                    frontmatter = {}
-                if not skill_matches_platform(frontmatter):
-                    continue
-                if not skill_matches_environment(frontmatter):
-                    continue
-                if qualified_name in disabled:
-                    continue
-                namespace, _, bare_name = qualified_name.partition(":")
-                if bare_name in disabled or namespace in disabled:
-                    continue
-                names.add(qualified_name)
-        except Exception:
-            # A broken or unavailable plugin must not hide ordinary profile
-            # and project skills from validation.
-            pass
-        return names
-    finally:
-        if previous_home is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = previous_home
+            # Plugin skills are registered only after the profile's enabled plugin
+            # set has been discovered.  Use the manager scoped to this profile's
+            # home; consulting the caller's active manager would leak skills across
+            # profiles in a multiplexed process.
+            try:
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+                discover_plugins()
+                for entry in get_plugin_manager().list_plugin_skill_metadata():
+                    qualified_name = str(entry.get("name") or "").strip()
+                    if not qualified_name:
+                        continue
+                    frontmatter = entry.get("frontmatter")
+                    if not isinstance(frontmatter, dict):
+                        frontmatter = {}
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    if not skill_matches_environment(frontmatter):
+                        continue
+                    if qualified_name in disabled:
+                        continue
+                    namespace, _, bare_name = qualified_name.partition(":")
+                    if bare_name in disabled or namespace in disabled:
+                        continue
+                    names.add(qualified_name)
+            except Exception:
+                # A broken or unavailable plugin must not hide ordinary profile
+                # and project skills from validation.
+                pass
+            return names
+        finally:
+            if previous_cwd is None:
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = previous_cwd
+            reset_hermes_home_override(home_token)
 
 
 def _resolve_project_link(

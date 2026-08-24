@@ -339,6 +339,82 @@ def test_create_task_rejects_serialized_disabled_skill_list(kanban_home):
             )
 
 
+def test_platform_disabled_validation_matches_worker_platform_resolution(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "linux-only-disabled")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  platform_disabled:\n    linux: [linux-only-disabled]\n",
+        encoding="utf-8",
+    )
+
+    with unittest.mock.patch.dict(os.environ, {"HERMES_PLATFORM": ""}):
+        with kb.connect() as conn:
+            # Worker preload resolves the platform from HERMES_PLATFORM/session
+            # context, which is unset here; sys.platform must not be substituted.
+            task_id = kb.create_task(
+                conn,
+                title="platform parity",
+                assignee="coder",
+                skills=["linux-only-disabled"],
+            )
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).skills == ["linux-only-disabled"]
+
+    with unittest.mock.patch.dict(os.environ, {"HERMES_PLATFORM": "linux"}):
+        with kb.connect() as conn:
+            with pytest.raises(ValueError, match="linux-only-disabled"):
+                kb.create_task(
+                    conn,
+                    title="explicit platform disabled",
+                    assignee="coder",
+                    skills=["linux-only-disabled"],
+                )
+
+
+def test_profile_skill_resolution_serializes_home_and_workspace_context(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_a = kanban_home / "profiles" / "alpha"
+    profile_b = kanban_home / "profiles" / "beta"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    observed: list[tuple[str, str | None]] = []
+    import agent.skill_utils as skill_utils
+
+    def observe_project_context():
+        from hermes_constants import get_hermes_home
+
+        observed.append((get_hermes_home().name, os.environ.get("TERMINAL_CWD")))
+        time.sleep(0.02)
+        return []
+
+    monkeypatch.setattr(skill_utils, "get_project_skills_dirs", observe_project_context)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: kb._profile_skill_names(args[0], project_workspace=args[1]),
+                [("alpha", workspace_a), ("beta", workspace_b)],
+            )
+        )
+
+    assert results == [set(), set()]
+    assert observed == [
+        ("alpha", str(workspace_a)),
+        ("beta", str(workspace_b)),
+    ] or observed == [
+        ("beta", str(workspace_b)),
+        ("alpha", str(workspace_a)),
+    ]
+    assert os.environ.get("TERMINAL_CWD") is None
+
+
 def _write_project_skill(repo: Path, name: str) -> None:
     skill_dir = repo / ".agents" / "skills" / name
     skill_dir.mkdir(parents=True, exist_ok=True)

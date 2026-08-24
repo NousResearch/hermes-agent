@@ -367,6 +367,16 @@ RETAIN_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional per-call tags to merge with configured default retain tags.",
             },
+            "occurred_at": {
+                "type": "string",
+                "description": (
+                    "When the remembered event actually happened, as an ISO-8601 date "
+                    "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
+                    "Pass this whenever the memory references a specific event time "
+                    "('yesterday', 'last Tuesday', 'on March 3rd') so Hindsight can "
+                    "anchor it on the timeline. Omit for timeless facts/preferences."
+                ),
+            },
         },
         "required": ["content"],
     },
@@ -2039,12 +2049,17 @@ class HindsightMemoryProvider(MemoryProvider):
         metadata: Dict[str, str] | None = None,
         tags: List[str] | None = None,
         retain_async: bool | None = None,
+        occurred_at: str | None = None,
     ) -> Dict[str, Any]:
+        # The item-level timestamp is what the Hindsight server uses to resolve
+        # occurred_start/occurred_end (including relative phrases in content).
+        # An explicit occurred_at (from the retain tool) wins; otherwise default
+        # to the configured event clock so relative times still resolve (#93568).
         kwargs: Dict[str, Any] = {
             "bank_id": self._bank_id,
             "content": content,
             "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
-            "timestamp": _event_timestamp(),
+            "timestamp": occurred_at.strip() if occurred_at and occurred_at.strip() else _event_timestamp(),
         }
         if context is not None:
             kwargs["context"] = context
@@ -2197,6 +2212,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                    occurred_at=args.get("occurred_at"),
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)

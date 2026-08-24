@@ -456,6 +456,50 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        # Non-temporal retains still carry a defaulted event timestamp so the
+        # server can resolve any relative time phrases (#93568).
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_threads_explicit_occurred_at_into_item_timestamp(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "user visited Paris", "occurred_at": "2026-03-03"},
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == "2026-03-03"
+
+    def test_retain_ignores_blank_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "hello", "occurred_at": "   "}
+        ))
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_build_retain_kwargs_accepts_explicit_occurred_at(self, provider):
+        item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
+        assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
+
+    def test_retain_schema_exposes_occurred_at(self):
+        from plugins.memory.hindsight import RETAIN_SCHEMA
+
+        props = RETAIN_SCHEMA["parameters"]["properties"]
+        assert "occurred_at" in props
+        assert props["occurred_at"]["type"] == "string"
+        # The description must steer the model to pass event times.
+        assert "event" in props["occurred_at"]["description"].lower()
+        assert "occurred_at" not in RETAIN_SCHEMA["parameters"]["required"]
+
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -915,7 +959,10 @@ class TestSyncTurn:
 
     @pytest.mark.asyncio
     async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
-        from hindsight_client import Hindsight
+        hindsight_client = pytest.importorskip(
+            "hindsight_client", reason="pinned hindsight-client SDK not installed"
+        )
+        Hindsight = hindsight_client.Hindsight
 
         item = provider._build_retain_kwargs("hello")
         item.pop("bank_id", None)

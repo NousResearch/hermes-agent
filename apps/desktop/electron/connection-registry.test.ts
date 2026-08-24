@@ -26,6 +26,7 @@ import {
   normalizeRegistry,
   parseRemoteProfileListing,
   reconcileAppliedGlobalConnection,
+  reconcileRegistryDrift,
   REGISTRY_VERSION,
   rememberSshEnumeration,
   removeConnection,
@@ -1232,7 +1233,9 @@ test('Apply remote inserts into an existing local-only registry and becomes prim
   assert.equal(registry.lastUsed, remote.id)
   assert.equal(
     resolvedConnectionId(registry, {
+      authMode: 'oauth',
       baseUrl: 'https://gateway.example.com',
+      headers: {},
       mode: 'remote',
       remoteKind: 'url'
     }),
@@ -1301,6 +1304,112 @@ test('Apply between two remotes keeps each real registration once and activates 
   assert.equal(new Set(remotes.map(connection => connection.id)).size, 2)
   assert.equal(second.primary, remotes.find(connection => connection.url === 'https://two.example.com')?.id)
   assert.equal(second.lastUsed, second.primary)
+})
+
+// --- reconcileRegistryDrift (v1 ↔ v2 healing) ---
+
+test('drift heal registers a v1 remote the registry never learned about and makes it primary', () => {
+  // The exact shape users keep reporting: registry migrated while local-only,
+  // then Settings → Gateway pointed v1 at a remote. connections.json still
+  // says primary 'local', so every launch force-switches off the live remote.
+  const drifted = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com:4443', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, true)
+
+  const remote = drifted.registry.connections.find(connection => connection.kind === 'remote')
+
+  assert.ok(remote)
+  assert.equal(drifted.registry.primary, remote.id)
+  assert.equal(drifted.registry.lastUsed, remote.id)
+  // The whole point: the live v1 descriptor can now be named, so the boot pick
+  // resolves to the remote instead of re-homing to 'local'. Descriptor shape
+  // matches what buildRemoteConnection emits for an oauth remote.
+  assert.equal(
+    resolvedConnectionId(drifted.registry, {
+      authMode: 'oauth',
+      baseUrl: 'https://agent.example.com:4443',
+      headers: {},
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    remote.id
+  )
+})
+
+test('drift heal leaves a registry that already knows the v1 route untouched', () => {
+  const registered = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  const drifted = reconcileRegistryDrift(registered, {
+    mode: 'remote',
+    remote: { url: 'https://AGENT.example.com/', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry, registered)
+})
+
+test('drift heal respects a deliberate primary pick on a registered route', () => {
+  // Route IS registered, but the user chose This device in the Connections
+  // panel. That is a choice, not drift — never override it.
+  let registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  registry = setPrimaryConnection(registry, LOCAL_CONNECTION_ID)
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry.primary, LOCAL_CONNECTION_ID)
+})
+
+test('drift heal ignores local, ssh, and unparseable v1 routes', () => {
+  const registry = emptyRegistry()
+
+  for (const v1 of [
+    { mode: 'local', remote: {} },
+    { mode: 'ssh', remote: { host: 'box' } },
+    { mode: 'remote', remote: { url: 'not a url' } },
+    { mode: 'remote', remote: {} },
+    null
+  ]) {
+    const drifted = reconcileRegistryDrift(registry, v1)
+
+    assert.equal(drifted.changed, false, `expected no heal for ${JSON.stringify(v1)}`)
+    assert.equal(drifted.registry, registry)
+  }
+})
+
+test('drift heal adds the missing remote without disturbing other registered sources', () => {
+  let registry = emptyRegistry()
+
+  registry = upsertConnection(registry, {
+    id: 'homelab',
+    kind: 'remote',
+    label: 'Homelab',
+    url: 'https://homelab.example.com',
+    authMode: 'token',
+    token: { keep: true }
+  })
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com:4443', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, true)
+  assert.equal(drifted.registry.connections.filter(connection => connection.kind === 'remote').length, 2)
+  assert.ok(drifted.registry.connections.some(connection => connection.id === 'homelab'))
 })
 
 // --- connectionDialFieldsChanged (edit → recycle decision) ---

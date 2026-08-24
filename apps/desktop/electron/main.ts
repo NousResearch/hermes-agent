@@ -113,6 +113,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   reconcileAppliedGlobalConnection,
+  reconcileRegistryDrift,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
@@ -8533,6 +8534,11 @@ function writeDesktopConnectionConfig(config) {
  * connections.json does not exist yet). Same mtime-cache + tighten-mode
  * discipline as readDesktopConnectionConfig; a corrupt registry degrades to
  * local-only via normalizeRegistry rather than throwing at boot.
+ *
+ * An EXISTING registry is additionally reconciled against v1 when the two have
+ * drifted — see reconcileRegistryDrift. The one-shot migration cannot cover a
+ * user who registered nothing and then pointed Settings -> Gateway at a remote,
+ * and until that heals, every launch re-homes them onto a local backend.
  */
 function readDesktopConnectionsRegistry() {
   let mtime = null
@@ -8577,6 +8583,28 @@ function readDesktopConnectionsRegistry() {
     registry = normalizeRegistry(JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')))
   } catch {
     registry = normalizeRegistry(null)
+  }
+
+  // Heal v1 -> v2 drift: the v1 global route names a remote this registry has
+  // never heard of, so the live descriptor resolves to no connectionId and the
+  // launch pick sends the window somewhere else. Persist so the repair is a
+  // one-time event rather than a recomputation on every read; a failed write
+  // still returns the healed registry for this session.
+  const reconciled = reconcileRegistryDrift(registry, readDesktopConnectionConfig())
+
+  if (reconciled.changed) {
+    registry = reconciled.registry
+
+    try {
+      writeDesktopConnectionsRegistry(registry)
+
+      return connectionRegistryCache
+    } catch {
+      connectionRegistryCache = registry
+      connectionRegistryCacheMtime = null
+
+      return registry
+    }
   }
 
   connectionRegistryCache = registry

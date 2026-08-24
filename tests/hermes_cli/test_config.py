@@ -957,7 +957,9 @@ class TestInterimAssistantMessageConfig:
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
-    def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
+    def test_migrate_to_v15_supplies_interim_message_gate_at_read_time(
+        self, tmp_path, capsys
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump({"_config_version": 14, "display": {"tool_progress": "off"}}),
@@ -965,7 +967,7 @@ class TestInterimAssistantMessageConfig:
         )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
+            results = migrate_config(interactive=False, quiet=False)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             loaded = load_config()
 
@@ -978,6 +980,11 @@ class TestInterimAssistantMessageConfig:
         # was the config-bloat bug). It is still effective via load_config().
         assert "interim_assistant_messages" not in raw.get("display", {})
         assert loaded["display"]["interim_assistant_messages"] is True
+        assert not any(
+            "interim_assistant_messages" in item
+            for item in results["config_added"]
+        )
+        assert "Added display.interim_assistant_messages" not in capsys.readouterr().out
 
 
 class TestCliRefreshIntervalConfig:

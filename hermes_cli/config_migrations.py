@@ -218,25 +218,6 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Migrated legacy stt.model to provider-specific config")
 
 
-def _migrate_to_15(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 14 → 15: add explicit gateway interim-message gate ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    display = config.get("display", {})
-    if not isinstance(display, dict):
-        display = {}
-    if "interim_assistant_messages" not in display:
-        display["interim_assistant_messages"] = True
-        config["display"] = display
-        results["config_added"].append("display.interim_assistant_messages=true (default)")
-        _persist_migration(config)
-        if not quiet:
-            print("  ✓ Added display.interim_assistant_messages=true")
-
-
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
     _c = _cfg()
@@ -856,7 +837,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
-    (15, _migrate_to_15),
+    # v15 only added a schema default; runtime merging supplies it without a
+    # write. Registering a migration would falsely report or materialise it.
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (21, _migrate_to_21),

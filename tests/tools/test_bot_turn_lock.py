@@ -163,6 +163,8 @@ def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch
 
         class _P:
             returncode = 0
+            stdout = ""
+            stderr = ""
 
         return _P()
 

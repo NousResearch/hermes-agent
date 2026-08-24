@@ -151,6 +151,21 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
             "- MANDATORY: Include a candid reality-check section comparing the "
             "hype vs the real practice. Honest about what is harder than it looks."
         )
+    elif stream == "research":
+        stream_mandatory = (
+            "- MANDATORY roundup structure: open with a 2-3 sentence thesis that "
+            "states the week's through-line; then FIVE numbered, scannable entries "
+            "(`## 01`, `## 02`, ... — each titled with the specific finding, not a "
+            "generic category); every entry MUST follow the recurring container: "
+            "(a) the finding in plain English, (b) the evidence with named source "
+            "and link, (c) the mechanism or context (one paragraph, jargon defined "
+            "the first time it appears), (d) why a builder or PM should care, "
+            "(e) honest limitations — what this does not show. Close with "
+            "`## Takeaways` (three to five concrete moves, including one explicit "
+            "'no action needed' verdict) and a final `## What I'd try next` "
+            "(one short section naming the open question the roundup surfaced). "
+            "Numbered entries (`## 01` etc.) count toward the section_target."
+        )
 
     # Inject verification context into the system rules.
     if verification:
@@ -168,6 +183,19 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
                 f"- WARNING: The event '{claim}' is UNVERIFIED. Do NOT state it "
                 "as fact. Write the durable pattern or economics instead."
             )
+
+    # Research stream is roundup-shaped (numbered entries, recurring container,
+    # explicit takeaways + a try-next section) rather than the default essay
+    # shape (lede → H2 sections → takeaways). Build a distinct prompt skeleton so
+    # the writer emits the right structure instead of forcing the roundup into
+    # essay framing. Voice, depth contract, and verification context are reused.
+    if stream == "research":
+        return _build_research_roundup_prompt(
+            s, plan, context_blob, kb_snippets, wiki_entries=wiki_entries,
+            retry_feedback=retry_feedback, verification=verification,
+            title_hint=title_hint, signal_lines=signal_lines, takes=takes,
+            rules=rules, stream_mandatory=stream_mandatory,
+        )
 
     system = "\n".join([
         f"You are writing a long-form blog essay for SahilBlog, stream '{stream}'.",
@@ -216,6 +244,125 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
         user += "\n\n" + "\n".join(wiki_lines)
 
     user += "\n\nWrite the article now."
+    user = "\n".join(line for line in user.splitlines() if line is not None)
+
+    return {"system": system, "user": user}
+
+
+def _build_research_roundup_prompt(
+    s: dict,
+    plan: dict,
+    context_blob: str,
+    kb_snippets: list[str],
+    *,
+    wiki_entries: Optional[list[dict]],
+    retry_feedback: Optional[str],
+    verification: Optional[dict],
+    title_hint: str,
+    signal_lines: str,
+    takes: str,
+    rules: list,
+    stream_mandatory: str,
+) -> dict:
+    """Roundup-shaped prompt for the Approach A research stream.
+
+    Distinct from the default essay skeleton: numbered scannable entries with a
+    recurring tightly scoped container, an explicit Takeaways section, and an
+    article-plus-social packaging rule that demands the deck and the first
+    numbered entry be publishable as a self-contained X/LinkedIn post.
+
+    Voice, the shared depth contract, the verification context, retry feedback,
+    wiki context and the editor's brief are reused from the essay path — the
+    only structural divergence is the skeleton (roundup vs essay).
+    """
+    voice = s["voice"]
+    word_target = s["word_target"]
+    section_target = s["section_target"]
+    entries_target = s.get("entries_target", 5)
+
+    system = "\n".join([
+        f"You are writing a curated-research roundup for SahilBlog, stream "
+        f"'research' (Approach A lane).",
+        "",
+        "## Brand voice (use exactly)", voice,
+        "",
+        "## Per-stream structure rule", s.get("structure", ""),
+        "",
+        _DEPTH_CONTRACT,
+        "",
+        "## Structure (mandatory — roundup shape, NOT essay shape)",
+        f"- One `# Title` that names the week's through-line (specific, not "
+        "clickbait).",
+        "- A 2-3 sentence thesis paragraph immediately after the title that "
+        "states the through-line in plain English.",
+        f"- Exactly {entries_target} numbered, scannable entries: `## 01`, "
+        "`## 02`, ... Each entry heading must be the specific finding, NOT a "
+        "generic category like 'Models' or 'Tools'.",
+        "- Each entry MUST follow the recurring tightly scoped container:",
+        "  (a) the finding in plain English — one sentence, no jargon without "
+        "definition,",
+        "  (b) the evidence — named source, link, date,",
+        "  (c) the mechanism or context — one paragraph, jargon defined the "
+        "first time it appears,",
+        "  (d) why a builder or PM should care — concrete,",
+        "  (e) honest limitations — what this does not show, what could be "
+        "wrong, where the evidence is thin.",
+        "- One `## Takeaways` section: three to five concrete moves a builder "
+        "or PM can make this week, and one explicit 'no action needed' item.",
+        "- One final `## What I'd try next` section naming the open question "
+        "the roundup surfaced.",
+        "- Article-plus-social packaging: the thesis + the first numbered "
+        "entry MUST be publishable as a self-contained X/LinkedIn post "
+        "without the rest of the body. Keep the entry self-contained.",
+        f"- Total length ~{word_target} words; section_target={section_target} "
+        f"counts thesis + {entries_target} entries + Takeaways + 'try next'.",
+        stream_mandatory,
+        "",
+        "## Rules", *rules,
+    ])
+
+    user_parts = [
+        f"Title hint: {title_hint}" if title_hint else "",
+        "## Chosen signals (your raw inputs — pull only entries that survive a "
+        "cross-source check; drop anything that does not earn its slot)",
+        signal_lines,
+        "",
+        "## Approved editorial brief (honour this contract)", _editorial_brief(plan),
+        "",
+        "## Real context (ground the roundup in this; quote numbers and tool "
+        "names verbatim where they help; cite each source at least once)",
+        context_blob or "(none)",
+        "",
+        "## Author's prior takes (reflect this thinking, do not repeat)", takes,
+    ]
+    user = "\n".join(user_parts)
+
+    if wiki_entries:
+        wiki_lines = ["## LLM-WIKI knowledge base context"]
+        wiki_lines.append(
+            "Relevant entries from your internal knowledge base. Adapt and "
+            "tailor this material to the research voice — do not paste raw."
+        )
+        for w in wiki_entries:
+            wiki_lines.append(f"\n### {w['title']}")
+            wiki_lines.append(f"Source: wiki/{w['page']}")
+            wiki_lines.append(w["excerpt"])
+        user += "\n\n" + "\n".join(wiki_lines)
+
+    if verification:
+        claim = verification.get("query", "")
+        if not verification.get("verified"):
+            user += (
+                "\n\n## Verification warning\n"
+                f"The event '{claim}' is UNVERIFIED. Do NOT state it as fact "
+                "in any roundup entry; reframe to the durable pattern or "
+                "economics instead."
+            )
+
+    if retry_feedback:
+        user += f"\n\n## Retry feedback from previous attempt\n{retry_feedback}"
+
+    user += "\n\nWrite the curated-research roundup now."
     user = "\n".join(line for line in user.splitlines() if line is not None)
 
     return {"system": system, "user": user}

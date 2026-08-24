@@ -39,6 +39,32 @@ _SOURCE_ALIASES = {
     "git-radar": "gitradar",
     "git_radar": "gitradar",
     "pr": "gitradar",
+    # Research-roundup stream (Approach A) uses two NEW enum values that
+    # SahilBlog's Astro schema (src/content.config.ts) does not yet enumerate:
+    #   tier="research", source="curated-roundup". Until that downstream schema
+    #   is updated, normalise_frontmatter clamps them to the safe defaults
+    #   (tier=pm, source=manual) so the production build is never broken.
+    # See blog/blog_streams.py and docs/RESEARCH_ROUNDUP_LANE.md.
+    "curated-roundup": "manual",
+    "curated_roundup": "manual",
+    "curatedroundup": "manual",
+    "roundup": "manual",
+}
+# Tier aliases — only the research-stream tier needs an explicit alias because
+# the other stream tiers (ai/pm/builder) are already valid enum values. The
+# alias is keyed on the literal new value so we never accidentally swallow an
+# out-of-vocab tier emitted by a different stream in the future.
+_TIER_ALIASES = {
+    "research": "pm",
+}
+# Format aliases — "roundup" is a distinct shape (numbered entries, recurring
+# container, takeaways) introduced by the research-roundup stream. The Astro
+# schema (src/content.config.ts) only enumerates essay/note/review/brief/
+# blueprint, so until the schema is updated, normalise_frontmatter clamps
+# format="roundup" → "essay". See blog/blog_streams.py and
+# docs/RESEARCH_ROUNDUP_LANE.md.
+_FORMAT_ALIASES = {
+    "roundup": "essay",
 }
 # Tags (applied before the allowed-set check; slugified first):
 _TAG_ALIASES = {
@@ -165,10 +191,13 @@ def normalise_frontmatter(fm: dict, repo: Optional[str] = None) -> dict:
 
     out["source"] = _normalise_scalar(
         str(fm.get("source", "")), contract["sources"], _SOURCE_ALIASES, "manual")
+    # Tier aliasing is needed for the research stream (tier="research" →
+    # "pm" until SahilBlog's schema is updated). Source aliasing already
+    # covers "curated-roundup" → "manual". See docs/RESEARCH_ROUNDUP_LANE.md.
     out["tier"] = _normalise_scalar(
-        str(fm.get("tier", "")), contract["tiers"], {}, "pm")
+        str(fm.get("tier", "")), contract["tiers"], _TIER_ALIASES, "pm")
     out["format"] = _normalise_scalar(
-        str(fm.get("format", "")), contract["formats"], {}, "essay")
+        str(fm.get("format", "")), contract["formats"], _FORMAT_ALIASES, "essay")
 
     kept, dropped = normalise_tags(fm.get("tags", []), contract["tags"])
     out["tags"] = kept

@@ -323,3 +323,80 @@ def test_write_with_gate_strict_returns_draft_on_genuine_pass(monkeypatch):
 
     result = bg.write_with_gate(plan, stream="ai", strict_review=True)
     assert result is not None, "strict mode + genuine pass should return draft"
+
+
+# -- Approach A research-roundup prompt ---------------------------------------
+
+def test_research_build_blog_prompt_is_roundup_shaped():
+    """The research stream emits a roundup-shaped prompt, not the essay skeleton."""
+    plan = {"topic_id": "t1", "title_hint": "agent memory roundup",
+            "tags": ["research"], "source": "curated-roundup",
+            "signals": [{"signal_id": "t1", "summary": "memory systems"}]}
+    prompts = bg.build_blog_prompt("research", plan, context_blob="CTX", kb_snippets=["k1"])
+    assert "curated-research roundup" in prompts["system"]
+    assert "Approach A lane" in prompts["system"]
+    # Roundup shape, not essay shape.
+    assert "roundup shape, NOT essay shape" in prompts["system"]
+    # Numbered entries target threaded from STREAMS config.
+    assert "Exactly 5 numbered" in prompts["system"]
+    # The mandatory recurring container is present.
+    assert "(a) the finding in plain English" in prompts["system"]
+    assert "(e) honest limitations" in prompts["system"]
+    # Takeaways + try-next sections mandated.
+    assert "## Takeaways" in prompts["system"]
+    assert "## What I'd try next" in prompts["system"]
+    # Article-plus-social packaging rule present.
+    assert "self-contained X/LinkedIn post" in prompts["system"]
+    # Reuses voice, depth contract, and context.
+    assert STREAMS["research"]["voice"][:30] in prompts["system"]
+    assert "CTX" in prompts["user"]
+    assert "k1" in prompts["user"]
+
+
+def test_research_build_blog_prompt_uses_stream_word_target():
+    """The research prompt threads the stream's word_target and section_target."""
+    plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "s"}]}
+    prompts = bg.build_blog_prompt("research", plan, "", [])
+    assert str(STREAMS["research"]["word_target"]) in prompts["system"]
+    assert str(STREAMS["research"]["section_target"]) in prompts["system"]
+
+
+def test_research_build_blog_prompt_injects_verification_warning():
+    """An unverified claim is reframed in the research user prompt."""
+    plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "s"}]}
+    prompts = bg.build_blog_prompt(
+        "research", plan, "", [],
+        verification={"query": "ACME acquisition", "verified": False},
+    )
+    assert "UNVERIFIED" in prompts["user"]
+    assert "ACME acquisition" in prompts["user"]
+
+
+def test_research_build_blog_prompt_threads_retry_feedback():
+    """Retry feedback reaches the research user prompt."""
+    plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "s"}]}
+    prompts = bg.build_blog_prompt(
+        "research", plan, "", [], retry_feedback="too short, needs 1500 words")
+    assert "too short, needs 1500 words" in prompts["user"]
+
+
+def test_research_write_sets_roundup_frontmatter(monkeypatch):
+    """write() on the research stream emits tier/source/format from STREAMS."""
+    plan = {"topic_id": "t1", "title_hint": "Agent memory roundup",
+            "tags": ["research"], "source": "curated-roundup",
+            "signals": [{"signal_id": "t1", "summary": "memory systems"}]}
+    monkeypatch.setattr(bg, "_call_llm_first", lambda sys, usr: _FAKE_BODY)
+    monkeypatch.setattr(bg, "_load_voice_skill", lambda brand: "VOICE")
+    monkeypatch.setattr(bg, "enrich_signal", lambda s: "CTX")
+    monkeypatch.setattr(bg, "retrieve_kb", lambda t, limit=3: [])
+    monkeypatch.setattr(bg, "_wiki_context_for", lambda t, max_results=2: [])
+    draft = bg.write(plan, stream="research")
+    assert draft is not None
+    assert draft["tier"] == "research"          # engine-level value (clamped downstream)
+    assert draft["source"] == "curated-roundup"
+    assert draft["format"] == "roundup"
+    assert draft["stream"] == "research"
+    assert "research" in draft["tags"]

@@ -366,3 +366,58 @@ def test_adhoc_check_reviewer_degraded_is_neutral_pass(mock_gate, mock_review):
     draft = _make_draft(_GOOD_BODY_AI, stream="ai")
     status, issues = adhoc_check(draft, "ai")
     assert status == "ok", f"Expected ok, got fail with issues: {issues}"
+
+
+# -- Approach A research-roundup external-link gate ---------------------------
+
+@patch("blog.blog_gate._blog_review")
+@patch("blog.blog_gate._article_check")
+@patch("blog.blog_gate._verify_links")
+def test_adhoc_check_research_requires_external_link(mock_verify, mock_gate, mock_review):
+    """Research stream posts must cite at least one primary source."""
+    from article_gates import GateResult
+    mock_gate.return_value = GateResult(passed=True, issues=[],
+                                        redacted_body=_NO_LINK_BODY,
+                                        redacted_context="", slop_score=0)
+    mock_review.return_value = {"passed": True, "score": 8, "issues": [],
+                                "claims_to_verify": [], "degraded": False}
+    mock_verify.return_value = []  # no dead links (no links at all)
+    draft = _make_draft(_NO_LINK_BODY, stream="research")
+    status, issues = adhoc_check(draft, "research")
+    assert status == "fail"
+    assert any("external link" in i.lower() for i in issues)
+
+
+@patch("blog.blog_gate._blog_review")
+@patch("blog.blog_gate._article_check")
+@patch("blog.blog_gate._verify_links")
+def test_adhoc_check_research_passes_with_live_links(mock_verify, mock_gate, mock_review):
+    """A research post with a live external link passes the link gate."""
+    from article_gates import GateResult
+    mock_gate.return_value = GateResult(passed=True, issues=[],
+                                        redacted_body=_GOOD_BODY_AI,
+                                        redacted_context="", slop_score=0)
+    mock_review.return_value = {"passed": True, "score": 8, "issues": [],
+                                "claims_to_verify": [], "degraded": False}
+    mock_verify.return_value = []  # links all alive
+    draft = _make_draft(_GOOD_BODY_AI, stream="research")
+    status, issues = adhoc_check(draft, "research")
+    assert status == "ok", f"Expected ok, got fail with issues: {issues}"
+
+
+@patch("blog.blog_gate._blog_review")
+@patch("blog.blog_gate._article_check")
+@patch("blog.blog_gate._verify_links")
+def test_adhoc_check_research_flags_dead_links(mock_verify, mock_gate, mock_review):
+    """Dead links in a research post fail the gate (multi-source integrity)."""
+    from article_gates import GateResult
+    mock_gate.return_value = GateResult(passed=True, issues=[],
+                                        redacted_body=_GOOD_BODY_AI,
+                                        redacted_context="", slop_score=0)
+    mock_review.return_value = {"passed": True, "score": 8, "issues": [],
+                                "claims_to_verify": [], "degraded": False}
+    mock_verify.return_value = ["https://example.com/dead"]
+    draft = _make_draft(_GOOD_BODY_AI, stream="research")
+    status, issues = adhoc_check(draft, "research")
+    assert status == "fail"
+    assert any("dead link" in i.lower() for i in issues)

@@ -483,10 +483,10 @@ def run_all(streams: tuple = BLOG_STREAMS, repo: Optional[str] = None) -> dict:
 
 
 def _cli():
-    """CLI entry point: python -m blog.blog_pipeline --stream ai|pm|builder|all"""
+    """CLI entry point: python -m blog.blog_pipeline --stream ai|pm|builder|research|all"""
     parser = argparse.ArgumentParser(description="SahilBlog content pipeline")
     parser.add_argument("--stream", default="all",
-                        choices=["ai", "pm", "builder", "all"],
+                        choices=["ai", "pm", "builder", "research", "all"],
                         help="Stream to run (default: all)")
     parser.add_argument("--repo", default=None,
                         help="Path to SahilBlog repo (default: config.SAHILBLOG_REPO)")

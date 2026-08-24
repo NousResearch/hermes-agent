@@ -127,8 +127,10 @@ def adhoc_check(draft: dict, stream: str = "ai") -> tuple[str, list[str]]:
     if not _has_required_section(body):
         issues.append("Missing required section: '## What I'd try next' or '## Takeaway'")
 
-    # 6. External link presence + dead-link check (AI/PM only; builder exempt).
-    if stream in ("ai", "pm"):
+    # 6. External link presence + dead-link check (AI/PM/research only;
+    # builder exempt). The research-roundup stream explicitly requires
+    # multi-source synthesis, so dead-link detection is hard-required.
+    if stream in ("ai", "pm", "research"):
         if not _has_external_link(body):
             issues.append(f"No external link found — {stream} stream posts must cite at least one primary source")
         else:

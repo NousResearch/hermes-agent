@@ -1,14 +1,25 @@
 """Blog stream configuration - the single source of per-stream truth.
 
-Three streams map to the verified SahilBlog ingestion contract:
-  - ai:      tier=ai (surfaced on /ai). source=research-paper.
-  - pm:      tier=pm with non-AI tags. source=research-paper.
-  - builder: tier=builder. source=manual.
+Four streams map to the verified SahilBlog ingestion contract:
+  - ai:        tier=ai (surfaced on /ai). source=research-paper.
+  - pm:        tier=pm with non-AI tags. source=research-paper.
+  - builder:   tier=builder. source=manual.
+  - research:  tier=research. source=curated-roundup. Approach A lane —
+               DAIR.AI-inspired curated-analysis / research-roundup. Numbered
+               scannable entries, recurring tightly scoped containers,
+               plain-English technical translation, cross-source synthesis,
+               article-plus-social packaging. NOTE: tier="research" and
+               source="curated-roundup" are new enum values; until the
+               SahilBlog Astro schema (src/content.config.ts) is updated,
+               the assembler clamps them to "pm" and "manual" respectively
+               so production ingestion is unaffected.
 
 Voices match the public pillar pages and the approved editorial contract:
   - AI: long-view analysis of AI concepts, practices, strategies and news.
   - PM: enterprise SaaS AI adoption, product strategy and human-led transformation.
   - Builder's Log: evidence-backed, plain-English accounts of real work.
+  - Research: weekly curated roundup — what changed, what it means, what
+              to do, with explicit judgement and honest limitations.
 
 All streams use the SahilBlog house visual contract.
 """
@@ -110,6 +121,90 @@ STREAMS: dict[str, dict] = {
         "section_target": 5,
         "sources": ["paper_synthesis", "github_repos", "kensei_app", "tool_exploration", "sahil_repos"],
         "image_palette_brand": "sahil_twitter",
+    },
+    # Approach A: distinct research-roundup / curated-analysis lane.
+    # DAIR.AI-inspired clarity and information architecture. Numbered scannable
+    # entries, recurring tightly scoped containers, plain-English technical
+    # translation, cross-source synthesis, article-plus-social packaging.
+    # Retains Sahil's direct voice, evidence/source integrity, clear judgement,
+    # builder relevance, honest limitations, and practical translation.
+    #
+    # The tier ("research") and source label ("curated-roundup") are NEW values.
+    # The SahilBlog Astro site (src/content.config.ts) does not yet enumerate
+    # them. Until that downstream schema is updated, the assembler
+    # (blog_assembler._normalise_frontmatter via schema_contract) will silently
+    # clamp tier=research → tier=pm and source=curated-roundup → source=manual.
+    # The aggregator pipeline stays at this version so the new lane is
+    # available in the engine contract but does not break production until
+    # the consumer is updated. See docs/RESEARCH_ROUNDUP_LANE.md.
+    "research": {
+        "goal": (
+            "Curated, evidence-first roundup of recent research, tools and "
+            "ecosystem developments that matter to builders and PMs operating in "
+            "the AI agent / personal-agent space. Cross-source synthesis with "
+            "explicit judgement, not a news feed."
+        ),
+        "source_categories": [
+            "research_papers", "model_provider_releases", "tooling_releases",
+            "ecosystem_signals", "framework_repos",
+        ],
+        # NEW tier. Will be clamped to "pm" by the Astro schema until updated.
+        "tier": "research",
+        "base_tags": ["research", "roundup"],
+        # NEW source label. Will be clamped to "manual" by the Astro schema
+        # until updated. Tracks the lane's provenance in the engine.
+        "source": "curated-roundup",
+        # NEW format. "roundup" is a distinct shape from essay/blueprint —
+        # see structure below. Also clamped by the Astro schema until updated.
+        "format": "roundup",
+        "voice": (
+            "Sahil's direct voice, evidence-first. Lead with the takeaway, not the "
+            "hype. Plain-English technical translation: define jargon in one phrase "
+            "the first time it appears. Clear judgement — name what is overhyped, "
+            "what is genuinely new, and what to ignore. Cross-source synthesis: when "
+            "two or more independent sources point the same way, say so; when they "
+            "disagree, name the disagreement. Honest limitations: every claim carries "
+            "a source and, where appropriate, a 'what this does not show' note. "
+            "Builder relevance: every entry must answer 'what would I, a builder or "
+            "PM, actually do with this on Monday morning?'. Practical translation: "
+            "end each entry with one concrete next step, or a clear 'no action "
+            "needed' verdict."
+        ),
+        "structure": (
+            "Open with a 2-3 sentence thesis that states the week's through-line. "
+            "Then numbered, scannable entries (## 01, ## 02, ...) each titled with "
+            "the specific finding, not a generic category. Every entry follows a "
+            "recurring tightly scoped container: 1) the finding in plain English; "
+            "2) the evidence (named source, link, date); 3) the mechanism or "
+            "context (one paragraph, no jargon without definition); 4) why a "
+            "builder or PM should care; 5) honest limitations — what this does "
+            "not show, what could be wrong, where the evidence is thin. End with "
+            "## Takeaways — three to five concrete moves a builder or PM can make "
+            "this week, and one explicit 'no action needed' item. Then ## What "
+            "I'd try next — one short section naming the open question this "
+            "roundup surfaced. Article-plus-social packaging: the deck and the "
+            "first numbered entry must be publishable as a self-contained X/LinkedIn "
+            "post without the rest of the body."
+        ),
+        "word_target": 1500,
+        "section_target": 7,  # thesis + 5 entries + takeaways + 'try next'
+        # Sources are the cross-source synthesis markers. The generator must
+        # surface at least two distinct sources per post; a single-source
+        # roundup is invalid for this lane.
+        "sources": [
+            "paper_synthesis", "arxiv", "ai_news", "harness_cli",
+            "ai_labs", "github_repos", "tool_exploration",
+        ],
+        "image_palette_brand": "sahil_twitter",
+        # Lane-specific knobs the generator threads into the prompt.
+        # article_plus_social: produce a self-contained social hook for the
+        # first entry (so the same draft packages as blog + X/LinkedIn).
+        # require_two_distinct_sources: minimum cross-source count per post.
+        # entries_target: the number of numbered entries (independent of
+        # section_target, which counts the structural sections).
+        "require_two_distinct_sources": True,
+        "article_plus_social": True,
+        "entries_target": 5,
     },
 }
 

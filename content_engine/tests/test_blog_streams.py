@@ -118,3 +118,57 @@ def test_image_palette_brand_is_sahil_twitter():
     for name in ("ai", "pm", "builder"):
         assert bs.STREAMS[name]["image_palette_brand"] == "sahil_twitter", \
             f"{name}: must reuse sahil_twitter palette"
+
+
+# -- Approach A research-roundup stream ---------------------------------------
+
+def test_research_stream_present_in_strems():
+    """The research stream is a first-class stream in the config map."""
+    assert "research" in bs.STREAMS
+
+
+def test_research_stream_shape():
+    """The research stream carries the full shape required by the roundup lane."""
+    s = bs.STREAMS["research"]
+    assert s["tier"] == "research"          # NEW tier (clamped downstream)
+    assert s["source"] == "curated-roundup"  # NEW source label (clamped downstream)
+    assert s["format"] == "roundup"          # NEW format (clamped downstream)
+    assert isinstance(s["base_tags"], list) and "research" in s["base_tags"]
+    assert isinstance(s["word_target"], int) and s["word_target"] >= 800
+    assert isinstance(s["section_target"], int) and s["section_target"] >= 7
+    assert isinstance(s["sources"], list) and s["sources"]
+    assert s["image_palette_brand"] == "sahil_twitter"
+    assert s.get("structure") and len(s["structure"]) > 20
+    assert s.get("voice") and len(s["voice"]) > 20
+
+
+def test_research_stream_roundup_knobs():
+    """The lane-specific knobs the generator threads into the prompt exist."""
+    s = bs.STREAMS["research"]
+    # Cross-source synthesis is mandatory: at least two distinct sources.
+    assert s.get("require_two_distinct_sources") is True
+    # Article-plus-social packaging: deck + first entry self-contained.
+    assert s.get("article_plus_social") is True
+    # Numbered entries target (independent of section_target).
+    assert s.get("entries_target") == 5
+
+
+def test_research_structure_is_roundup_not_essay():
+    """The structure contract mandates numbered entries, a container, and
+    takeaways — not the default essay shape."""
+    structure = bs.STREAMS["research"]["structure"].lower()
+    assert "thesis" in structure
+    assert "numbered" in structure
+    assert "## 01" in structure
+    assert "limitations" in structure
+    assert "## takeaways" in structure
+    assert "try next" in structure
+
+
+def test_research_voice_is_evidence_first_with_judgement():
+    """The research voice leads with takeaways and honest limitations."""
+    v = bs.STREAMS["research"]["voice"].lower()
+    assert "evidence" in v
+    assert "takeaway" in v or "lead with the" in v
+    assert "limitation" in v
+    assert "cross-source" in v

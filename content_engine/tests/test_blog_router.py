@@ -181,3 +181,60 @@ def test_manual_queue_preserves_approved_idea_editorial_brief(tmp_path, monkeypa
         "gap_claim": "Different angle",
         "stream_format_rationale": "AI essay",
     }
+
+
+# -- Approach A research-roundup router provenance ----------------------------
+
+def test_research_queue_keeps_stream_source_provenance(tmp_path, monkeypatch):
+    """Research queue entries without an explicit source_override fall through
+    to the stream's configured source (curated-roundup), not manual_queue."""
+    qf = tmp_path / "research.jsonl"
+    qf.write_text(
+        '{"topic_id": "r1", "title_hint": "Agent memory roundup", "priority": 7}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(br, "_manual_queue_path", lambda stream: qf)
+    out = br._read_manual_queue("research")
+    assert len(out) == 1
+    # source_override is None → choose() will pick STREAMS["research"]["source"].
+    assert out[0]["source_override"] is None
+
+
+def test_research_choose_returns_curated_roundup_source(tmp_path, monkeypatch):
+    """choose('research') returns the stream's curated-roundup provenance."""
+    qf = tmp_path / "research.jsonl"
+    qf.write_text(
+        '{"topic_id": "r1", "title_hint": "Agent memory roundup", "priority": 7}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(br, "_manual_queue_path", lambda stream: qf)
+    monkeypatch.setattr(br, "_recent_used", lambda stream: [])
+    monkeypatch.setattr(br, "_gather_framework_candidates", lambda: [])
+    out = br.choose("research")
+    assert out is not None
+    assert out["source"] == STREAMS["research"]["source"]  # curated-roundup
+
+
+def test_research_queue_respects_explicit_source_override(tmp_path, monkeypatch):
+    """An explicit source_override on a research queue entry still wins."""
+    qf = tmp_path / "research.jsonl"
+    qf.write_text(
+        '{"topic_id": "r1", "title_hint": "Agent memory roundup", "priority": 7, '
+        '"source_override": "manual_queue"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(br, "_manual_queue_path", lambda stream: qf)
+    out = br._read_manual_queue("research")
+    assert out[0]["source_override"] == "manual_queue"
+
+
+def test_ai_pm_queue_still_default_to_manual_queue(tmp_path, monkeypatch):
+    """AI/PM queue entries still default to manual_queue (regression guard)."""
+    qf = tmp_path / "ai.jsonl"
+    qf.write_text(
+        '{"topic_id": "a1", "title_hint": "A real topic", "priority": 7}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(br, "_manual_queue_path", lambda stream: qf)
+    out = br._read_manual_queue("ai")
+    assert out[0]["source_override"] == "manual_queue"

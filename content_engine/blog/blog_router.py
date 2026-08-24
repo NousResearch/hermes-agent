@@ -144,7 +144,9 @@ def _gather_candidates(stream: str) -> list[dict]:
 
     All streams: framework seeds injected at highest priority.
     Builder: also uses activity_collector signals.
-    AI/PM: also uses manual topic queue file.
+    AI/PM/Research: read from the manual topic queue if it exists.
+    Research stream reuses the same JSONL queue pattern as AI/PM; populate
+    ``blog_topics/research.jsonl`` to feed the lane.
     """
     if stream not in STREAMS:
         return []
@@ -173,7 +175,7 @@ def _gather_candidates(stream: str) -> list[dict]:
         manual = _read_manual_queue("builder")
         return framework_cands + manual + cands
 
-    # AI / PM: read from the manual topic queue if it exists.
+    # AI / PM / Research: read from the manual topic queue if it exists.
     cands = _read_manual_queue(stream)
     return framework_cands + cands
 
@@ -194,6 +196,16 @@ def _read_manual_queue(stream: str) -> list[dict]:
     Defensively skips placeholder/empty stubs (e.g. "New Concept") so junk
     entries written by other tools can never be selected for generation.
     """
+    # Per-stream default source when the queue entry doesn't carry an explicit
+    # source_override. AI/PM/builder queue entries historically use
+    # ``manual_queue`` so blog_publisher can mark them as user-curated; the
+    # research-roundup queue should fall through to the stream's configured
+    # source (``curated-roundup``) so we don't lose the lane's provenance
+    # signal. Passing None here means choose() will pick up
+    # ``STREAMS[stream]["source"]`` instead of the historical override.
+    default_source_override = (
+        None if stream == "research" else "manual_queue"
+    )
     p = _manual_queue_path(stream)
     objs = _read_jsonl(p)
     out = []
@@ -211,7 +223,9 @@ def _read_manual_queue(stream: str) -> list[dict]:
             "topic_id": obj.get("topic_id", ""),
             "title_hint": obj.get("title_hint", ""),
             "tags": obj.get("tags", []),
-            "source_override": obj.get("source_override") or "manual_queue",
+            "source_override": (
+                obj.get("source_override") or default_source_override
+            ),
             "signals": [{
                 "signal_id": obj.get("topic_id", ""),
                 "summary": obj.get("title_hint", ""),

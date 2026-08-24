@@ -130,6 +130,50 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
 
+## Pre-Compress Checkpoints (fail-closed)
+
+`on_pre_compress()` is best-effort by default: if your provider raises, the
+host logs the failure and compression proceeds. That is the right default for
+insight extraction — and the wrong one for a provider whose job is to archive
+transcript evidence to a durable store *before* the lossy rewrite. For that
+case the host offers an opt-in checkpoint contract (API v1):
+
+```python
+from agent.memory_provider import MemoryProvider
+
+class MyArchivingProvider(MemoryProvider):
+    # Opt in: every successful on_pre_compress() return means the durable
+    # checkpoint is committed. Raise on any failure — do not return partial
+    # success. Version 0 (the inherited default) keeps best-effort semantics.
+    pre_compress_checkpoint_api_version = 1
+
+    def on_pre_compress(self, messages):
+        ids = self._archive(messages)   # must be durable before returning
+        return f"checkpoint: {ids}"     # forwarded into the summary prompt
+```
+
+Operators enable enforcement per deployment:
+
+```yaml
+compression:
+  checkpoint_required: true   # default: false
+```
+
+With the gate on, compression **fails closed** before any lossy rewrite unless
+an active provider advertising the API completed its checkpoint: the
+uncompressed transcript is preserved, the compaction attempt errors with
+`BLOCKED_MISSING_PREREQUISITE`, and it can be retried once your store
+recovers. With the gate off (default), nothing changes for existing providers.
+
+What your provider receives in both modes is normalized direct evidence:
+user/assistant text rows only — tool results, system messages, assistant
+tool-call wrappers, and prior compaction summaries are filtered host-side.
+Prior summaries are recognized via a persistent `_compressed_summary` message
+marker that survives process restarts, so a resumed session never feeds
+derivative summaries back into your archive.
+
+Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
+
 ## Config Schema
 
 `get_config_schema()` returns a list of field descriptors used by `hermes memory setup`:

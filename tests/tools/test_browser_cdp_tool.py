@@ -201,6 +201,59 @@ def test_browser_level_redacts_secret_result(cdp_server):
     assert result["result"]["result"]["value"].startswith("sk-")
 
 
+def test_screenshot_base64_passes_through_unredacted(cdp_server):
+    """The Fernet pattern matches arbitrary spans inside base64 payloads —
+    a screenshot whose base64 contains "gAAAA..." must stay byte-identical
+    instead of being collapsed to "first6...last4" (#94138)."""
+    # Real-world shape: the Fernet pattern fires when "gAAAA" follows a "+"
+    # or "/" inside the base64 stream (word-boundary requirement).
+    shot_b64 = "iVBORw0KGgoAAAANSUhEUg+" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": shot_b64},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.captureScreenshot"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == shot_b64
+
+
+def test_print_to_pdf_base64_passes_through_unredacted(cdp_server):
+    pdf_b64 = "JVBERi0xLjcK/" + "gAAAA" + "C" * 60 + "="
+    cdp_server.on(
+        "Page.printToPDF",
+        lambda params, sid: {"data": pdf_b64},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.printToPDF"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == pdf_b64
+
+
+def test_binary_payload_flag_keeps_secret_redaction_off_method_list(cdp_server):
+    """Fail-closed pin: only the two binary-payload methods skip redaction;
+    any other method's text output keeps full secret redaction."""
+    fake_key = "sk-" + "CDPSECRETSTILLREDACTED1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {"result": {"type": "string", "value": fake_key}},
+    )
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": "gAAAA" + "B" * 60},
+    )
+
+    text_result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+    assert "CDPSECRETSTILLREDACTED" not in json.dumps(text_result)
+
+    shot_result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Page.captureScreenshot")
+    )
+    assert shot_result["result"]["data"] == "gAAAA" + "B" * 60
+
+
 # ---------------------------------------------------------------------------
 # Happy-path: target-attached call
 # ---------------------------------------------------------------------------

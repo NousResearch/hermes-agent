@@ -43,18 +43,37 @@ _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
 }
 
 
-def _redact_cdp_output(value: Any) -> Any:
-    """Redact browser-originated CDP result data before returning it."""
+_BINARY_PAYLOAD_CDP_METHODS = {
+    # Methods whose result is dominated by a base64-encoded binary payload.
+    # redact_sensitive_text's Fernet pattern ("gAAAA" + base64 alphabet) can
+    # match arbitrary spans inside such payloads — collapsing them to
+    # "first6...last4" and corrupting the decoded screenshot/PDF (#94138).
+    # The payload is binary, not free text the model reads, so redaction has
+    # no secret to protect there; every other method keeps full redaction.
+    "Page.captureScreenshot",
+    "Page.printToPDF",
+}
+
+
+def _redact_cdp_output(value: Any, *, binary_payload: bool = False) -> Any:
+    """Redact browser-originated CDP result data before returning it.
+
+    When *binary_payload* is set (the calling method's result is a base64
+    binary payload, see ``_BINARY_PAYLOAD_CDP_METHODS``), strings pass
+    through unchanged so the payload stays byte-identical (#94138).
+    """
     from agent.redact import redact_sensitive_text
 
     if isinstance(value, str):
+        if binary_payload:
+            return value
         return redact_sensitive_text(value, force=True)
     if isinstance(value, list):
-        return [_redact_cdp_output(item) for item in value]
+        return [_redact_cdp_output(item, binary_payload=binary_payload) for item in value]
     if isinstance(value, tuple):
-        return tuple(_redact_cdp_output(item) for item in value)
+        return tuple(_redact_cdp_output(item, binary_payload=binary_payload) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_cdp_output(item) for key, item in value.items()}
+        return {key: _redact_cdp_output(item, binary_payload=binary_payload) for key, item in value.items()}
     return value
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
@@ -525,7 +544,9 @@ def browser_cdp(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "result": _redact_cdp_output(result),
+        "result": _redact_cdp_output(
+            result, binary_payload=method in _BINARY_PAYLOAD_CDP_METHODS
+        ),
     }
     if target_id:
         payload["target_id"] = target_id

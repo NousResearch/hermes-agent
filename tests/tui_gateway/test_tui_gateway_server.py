@@ -3760,7 +3760,7 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(
@@ -3821,7 +3821,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
@@ -3906,6 +3906,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured["agent_db"] = session_db
+        captured["agent_cwd"] = kwargs.get("cwd_override")
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
@@ -3913,7 +3914,11 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server,
+        "_set_session_context",
+        lambda target, cwd=None: captured.setdefault("context_cwd", cwd) or [],
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -3944,6 +3949,8 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         assert "error" not in resp
         sid = resp["result"]["session_id"]
         assert captured["agent_db"] is profile_db
+        assert captured["context_cwd"] == str(profile_cwd)
+        assert captured["agent_cwd"] == str(profile_cwd)
         assert server._sessions[sid]["cwd"] == str(profile_cwd)
         assert resp["result"]["info"]["cwd"] == str(profile_cwd)
         assert "launch_update" not in captured
@@ -15894,6 +15901,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
+        seen["agent_cwd"] = k.get("cwd_override")
         return FakeAgent()
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
@@ -15927,6 +15935,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # not just the row. Otherwise its own flushes (and a later compression
         # rotation) land on the launch db, splitting the lineage again.
         assert isinstance(seen.get("agent_session_db"), ProfileDB)
+        assert seen.get("agent_cwd") == str(tmp_path)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
@@ -16396,6 +16405,10 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def set_session_title(self, _key, _title):
             return True
 
+        def set_auto_title(self, _key, _title, *, source="llm"):
+            seen["title_source"] = source
+            return True
+
         def get_session(self, key):
             return {"id": key, "cwd": str(tmp_path)}
 
@@ -16450,6 +16463,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
+        assert seen.get("title_source") == "derived"
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -21201,6 +21215,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT

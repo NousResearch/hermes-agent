@@ -11,7 +11,7 @@
  */
 
 import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, revealTreePane } from '@/components/pane-shell/tree/store'
+import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
@@ -72,6 +72,25 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
 
 const PREVIEW_TILE_PREFIX = 'preview-tile'
 
+const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
+
+/** The pane a NEW preview tile should stack into: another preview tile already
+ *  in the tree, else another open tab adopted earlier in the same pass (a
+ *  reload restores every tab at once, before any of them is in the tree).
+ *  `undefined` means this is the first preview — it opens its own zone. */
+function existingPreviewAnchor(tabId: string): string | undefined {
+  const own = previewPaneId(tabId)
+  const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(id => id !== own)
+
+  if (inTree) {
+    return inTree
+  }
+
+  const other = $previewTabs.get().find(tab => tab.id !== tabId)
+
+  return other ? previewPaneId(other.id) : undefined
+}
+
 /** Keep pane contributions mirroring `$previewTabs`, keep the store's selection
  *  and the tree's active pane agreeing, and front a tile when its tab is
  *  selected. Call once from the root. */
@@ -128,11 +147,13 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // `openPreview` ran and the click looked like a no-op.
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
-  // Identical to route (page) tiles: its own zone docked beside main, sized by
-  // the split weights. NOT anchored to the file tree — the old rail was a
-  // files-adjacent strip, and carrying that over welded preview into the file
-  // browser's zone, so ⌘J (toggle file browser) took the preview with it.
-  dir: () => 'right',
+  // The FIRST preview still opens its own zone docked beside main (identical
+  // to route tiles — NOT anchored to the file tree, so ⌘J can't take it
+  // along). Every SUBSEQUENT preview stacks into that zone as a center tab:
+  // without the anchor each opened file split a new zone off the right edge
+  // (#93610), turning three file opens into three ever-narrower columns.
+  dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : 'right'),
+  anchor: tab => existingPreviewAnchor(tab.id),
   minWidth: '22rem',
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,

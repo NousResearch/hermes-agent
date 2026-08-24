@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.message_sanitization import tool_result_id_variants
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -5741,14 +5742,21 @@ This compaction should PRIORITISE preserving all information related to the focu
             if msg.get("role") == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
-                    result_call_ids.add(cid)
+                    # Expand alias spellings on the RESULT side too — a
+                    # composite ``call|item`` tool_call_id must match a
+                    # tool_call registered under either half (#63000).
+                    result_call_ids |= tool_result_id_variants(cid)
 
         # 1. Remove tool results whose call_id has no matching assistant tool_call
         orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
                 m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (
+                    m.get("role") == "tool"
+                    and (rv := tool_result_id_variants(m.get("tool_call_id")))
+                    and not (rv & surviving_call_ids)
+                )
             ]
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))

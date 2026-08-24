@@ -895,3 +895,64 @@ def test_sanitize_dedup_pass_rearms_constant_llamacpp_id():
 
     tool_msgs = [m for m in out if m.get("role") == "tool"]
     assert [m["content"] for m in tool_msgs] == ["round1", "round2"]
+
+
+def test_sanitize_keeps_result_keyed_on_composite_bridge_id():
+    """A tool result keyed on the composite ``call|item`` bridge spelling
+    (#63000) must pair with a tool_call carrying the split id/call_id
+    fields — and vice versa."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    # Result keyed on composite; call carries split fields.
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_1", "call_id": "call_1", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1|fc_1", "content": "REAL"},
+    ]
+    out = sanitize_api_messages(messages)
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["REAL"]
+
+    # Call carries only the composite id; result keyed on the bare half.
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_2|fc_2", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_2", "content": "REAL bare"},
+    ]
+    out = sanitize_api_messages(messages)
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["REAL bare"]
+
+
+def test_compressor_sanitize_keeps_composite_keyed_pair():
+    """The compression sanitizer must apply the same alias expansion on the
+    RESULT side: a composite-keyed result pairs with its split-field call
+    instead of being dropped and its call stripped (#63000)."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = ContextCompressor.__new__(ContextCompressor)
+    cc.quiet_mode = True
+    msgs = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_7", "call_id": "call_7", "type": "function",
+             "function": {"name": "s", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_7|fc_7", "content": "res"},
+        {"role": "user", "content": "next"},
+    ]
+    out = cc._sanitize_tool_pairs(msgs)
+    asst = next(m for m in out if m.get("role") == "assistant")
+    assert asst.get("tool_calls"), "valid tool_call must not be stripped"
+    assert [m["content"] for m in out if m.get("role") == "tool"] == ["res"]
+
+    # Negative control: composite orphan (matches nothing) still dropped.
+    msgs = [
+        {"role": "assistant", "content": "hi"},
+        {"role": "tool", "tool_call_id": "call_z|fc_z", "content": "orphan"},
+        {"role": "user", "content": "next"},
+    ]
+    out = cc._sanitize_tool_pairs(msgs)
+    assert not any(m.get("role") == "tool" for m in out)

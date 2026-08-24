@@ -73,6 +73,16 @@ MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_m
 WATCH_MIN_INTERVAL_SECONDS = 15   # Minimum spacing between consecutive watch matches
 WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote to notify_on_complete
 
+# Lifetime cap — independent of the strike counter above. A process whose
+# pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a
+# service restarted repeatedly over a day) never trips the consecutive-strike
+# limit, since each match lands in its own clean cooldown window, yet still
+# forces a full-context agent turn every single time (#93513). watch_patterns
+# is documented as "ONLY for rare one-shot mid-process signals", so once a
+# session has delivered this many matches over its whole life we disable it
+# and fall back to notify_on_complete, same as the strike-limit path.
+WATCH_LIFETIME_MAX_HITS = 8
+
 # Global circuit breaker — across all sessions. Secondary safety net so concurrent
 # siblings can't collectively flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
@@ -526,6 +536,12 @@ class ProcessRegistry:
         disabled for this session and the session is promoted to
         notify_on_complete semantics — one notification when the process
         actually exits, no more mid-process spam.
+
+        Independently, WATCH_LIFETIME_MAX_HITS caps the total number of
+        matches ever delivered for a session, so a pattern that keeps
+        recurring at a cadence just above the cooldown (e.g. a service
+        restarted repeatedly over a day) still gets disabled instead of
+        forcing a full-context agent turn indefinitely.
         """
         if not session.watch_patterns or session._watch_disabled:
             return
@@ -552,6 +568,7 @@ class ProcessRegistry:
 
         now = time.time()
         should_disable = False
+        lifetime_exhausted = False
         with session._lock:
             # Case 1: still inside the cooldown from the last emission.
             # Count this as a strike for the current window (only once per window)
@@ -590,6 +607,13 @@ class ProcessRegistry:
                 suppressed = session._watch_suppressed
                 session._watch_suppressed = 0
                 return_early = False
+                # Lifetime cap: this match is delivered (it already earned it),
+                # but disable further ones regardless of how cleanly spaced
+                # they are — see WATCH_LIFETIME_MAX_HITS above.
+                lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
+                if lifetime_exhausted:
+                    session._watch_disabled = True
+                    session.notify_on_complete = True
 
         if return_early:
             if should_disable:
@@ -644,6 +668,29 @@ class ProcessRegistry:
         }
         _redact_process_result(notification)
         self.completion_queue.put(notification)
+
+        if lifetime_exhausted:
+            # Same "why things went quiet" summary as the strike-limit path,
+            # queued right after the final delivered match.
+            self.completion_queue.put({
+                "session_id": session.id,
+                "session_key": session.session_key,
+                "command": session.command,
+                "type": "watch_disabled",
+                "suppressed": 0,
+                "platform": session.watcher_platform,
+                "chat_id": session.watcher_chat_id,
+                "user_id": session.watcher_user_id,
+                "user_name": session.watcher_user_name,
+                "thread_id": session.watcher_thread_id,
+                "message_id": session.watcher_message_id,
+                "message": (
+                    f"Watch patterns disabled for process {session.id} — "
+                    f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
+                    f"matches. Falling back to notify_on_complete semantics; you'll get "
+                    f"exactly one notification when the process exits."
+                ),
+            })
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.

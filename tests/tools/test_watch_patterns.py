@@ -136,6 +136,46 @@ class TestPerSessionRateLimit:
 
 
 # =========================================================================
+# Lifetime cap: sparsely-spaced matches never trip the consecutive-strike
+# counter, but must still stop eventually (#93513).
+# =========================================================================
+
+class TestLifetimeCap:
+    def test_sparse_matches_disable_after_lifetime_cap(self, registry):
+        """Matches spaced well past the cooldown never strike, but a service
+        restarted over and over must still get disabled instead of forcing a
+        full-context turn forever."""
+        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+
+        session = _make_session(watch_patterns=["Application started"])
+        for i in range(WATCH_LIFETIME_MAX_HITS):
+            # Force the cooldown to have already expired, simulating a
+            # cleanly-spaced restart (no strikes should ever accumulate).
+            session._watch_cooldown_until = 0.0
+            registry._check_watch_patterns(session, "Application started\n")
+
+        assert session._watch_hits == WATCH_LIFETIME_MAX_HITS
+        assert session._watch_consecutive_strikes == 0  # never struck
+        assert session._watch_disabled is True
+        assert session.notify_on_complete is True
+
+        events = []
+        while not registry.completion_queue.empty():
+            events.append(registry.completion_queue.get_nowait())
+        match_events = [e for e in events if e["type"] == "watch_match"]
+        disabled_events = [e for e in events if e["type"] == "watch_disabled"]
+        assert len(match_events) == WATCH_LIFETIME_MAX_HITS
+        assert len(disabled_events) == 1
+        assert "lifetime cap" in disabled_events[0]["message"]
+
+        # One more restart after the cap: no further turns are forced.
+        session._watch_cooldown_until = 0.0
+        registry._check_watch_patterns(session, "Application started\n")
+        assert registry.completion_queue.empty()
+        assert session._watch_hits == WATCH_LIFETIME_MAX_HITS
+
+
+# =========================================================================
 # Checkpoint persistence
 # =========================================================================
 

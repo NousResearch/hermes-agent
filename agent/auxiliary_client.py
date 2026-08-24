@@ -1806,10 +1806,16 @@ class _CodexCompletionsAdapter:
             # Consuming raw events and assembling the final response
             # ourselves from ``response.output_item.done`` makes us
             # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.codex_runtime import (
+                _bypass_sdk_request_transform,
+                _consume_codex_event_stream,
+            )
 
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
+            # #93650: keep bulk wire-format payload out of the SDK's
+            # GIL-holding request transform on auxiliary calls too.
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
 
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the

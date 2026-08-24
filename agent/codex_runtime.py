@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
@@ -1496,6 +1497,78 @@ def _sanitize_consumer_codex_request(
     return sanitized
 
 
+# Bulk request fields that carry the conversation payload. Everything else in
+# the request is scalar configuration the SDK transform handles in microseconds.
+_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
+
+
+def _is_plain_json_data(value: Any) -> bool:
+    """True when ``value`` is composed purely of JSON wire types.
+
+    The SDK's request transform exists to convert typed params (TypedDict
+    key aliases, pydantic models, ``PropertyInfo`` formats) into wire
+    format.  Hermes assembles Codex payloads from JSON round-trips, so they
+    are already wire format — but that is only provable when every node is
+    a plain JSON type.  Anything else must keep the typed SDK path.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _is_plain_json_data(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return all(_is_plain_json_data(item) for item in value)
+    return False
+
+
+def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
+    """Route bulk payload fields around the SDK's ``maybe_transform`` (#93650).
+
+    ``responses.create`` re-walks the entire request body against the
+    ``ResponseCreateParams`` union graph before any byte leaves the process.
+    That walk runs with the GIL held, and #93650 documents it wedging for
+    12+ hours on a ~1.4 MB conversation — starving every other thread,
+    including the TTFB/stale watchdogs whose job is to rescue this exact
+    call.  Because the hang is client-side and pre-network, no socket kill
+    can unblock it.
+
+    The SDK merges ``extra_body`` into the JSON body *after* the transform
+    (``_base_client._build_request``), so moving the already-wire-format
+    bulk fields there skips the walk entirely and produces a byte-identical
+    request.  Fields containing anything that is not plain JSON data (e.g.
+    pydantic models, generators) stay on the typed path, which still needs
+    the transform.  Set HERMES_CODEX_SDK_TRANSFORM=1 to restore the pre-fix
+    behavior.
+    """
+    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return stream_kwargs
+
+    moved = {
+        field: stream_kwargs[field]
+        for field in _SDK_TRANSFORM_BYPASS_FIELDS
+        if isinstance(stream_kwargs.get(field), (dict, list))
+        and _is_plain_json_data(stream_kwargs[field])
+    }
+    if not moved:
+        return stream_kwargs
+
+    bypassed = {
+        key: value for key, value in stream_kwargs.items() if key not in moved
+    }
+    extra_body = bypassed.get("extra_body")
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    for field, value in moved.items():
+        # An explicit caller-provided extra_body entry keeps precedence,
+        # matching what the SDK's post-transform merge would have done.
+        merged.setdefault(field, value)
+    bypassed["extra_body"] = merged
+    return bypassed
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1543,6 +1616,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 next_api_kwargs,
             )
             stream_kwargs["stream"] = True
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
             return active_client.responses.create(**stream_kwargs)
 
         def _codex_stream_created(_raw_stream: Any) -> None:

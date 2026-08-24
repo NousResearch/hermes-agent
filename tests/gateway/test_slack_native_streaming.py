@@ -199,6 +199,54 @@ class TestSendFinalization:
         assert "D1" in adapter._active_streams
 
     @pytest.mark.asyncio
+    async def test_rewritten_final_updates_stream_message_without_duplicate(self):
+        """A final answer that is not a raw prefix still owns the stream.
+
+        Slack markdown formatting and post-stream finalization can change the
+        completed text. The adapter must update the existing stream message,
+        rather than post a second answer.
+        """
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "notify": True},
+        )
+
+        assert result.success
+        assert result.message_id == "123.456"
+        client.chat_stopStream.assert_awaited_once_with(
+            channel="D1",
+            ts="123.456",
+        )
+        client.chat_update.assert_awaited_once()
+        update = client.chat_update.await_args.kwargs
+        assert update["channel"] == "D1"
+        assert update["ts"] == "123.456"
+        assert update["text"] == "Final answer with the completed details."
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_interim_send_cannot_replace_stream_message(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Unrelated notice",
+            metadata={**META, "_interim_send": True, "notify": True},
+        )
+
+        assert result.success
+        client.chat_stopStream.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_stop_stream_failure_falls_back_to_post(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Hello", metadata=META)

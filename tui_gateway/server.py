@@ -586,7 +586,11 @@ def write_json(obj: dict) -> bool:
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
-    params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    runtime = globals().get("_turn_recovery_runtime")
+    if runtime is not None:
+        params = runtime.decorate_event(event, sid, payload)
+    else:
+        params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -3231,3 +3235,11 @@ for _m in (
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier):
     _m.register(sys.modules[__name__])
 del _m
+
+# Install only after the split handler modules above registered their legacy
+# methods: turn recovery wraps prompt.submit/session.interrupt and adds the
+# negotiated v2 methods without changing legacy dispatch.
+from tui_gateway.turn_recovery_runtime import install as _install_turn_recovery
+
+_turn_recovery_runtime = _install_turn_recovery(sys.modules[__name__])
+del _install_turn_recovery

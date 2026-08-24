@@ -238,6 +238,33 @@ def _write_or_exit(payload: dict, reason: str) -> None:
         sys.exit(0)
 
 
+def build_gateway_ready_payload(
+    skin: dict,
+    *,
+    change_events: bool = True,
+    heartbeat: bool = False,
+) -> dict:
+    """Build the ``gateway.ready`` payload, including turn-recovery capability.
+
+    ``heartbeat`` is advertised only by the WS sidecar (handle_ws), which is the
+    transport that actually sends heartbeats; the stdio TUI leaves it off.
+
+    ``replay_epoch`` is part of the upstream WS replay contract: a reconnecting
+    client compares it to detect a backend restart and reset its per-session
+    seq watermarks. It is emitted here — rather than at each call site — so the
+    turn-recovery capability and the replay contract cannot drift apart again;
+    dropping either one silently degrades a client to legacy transport.
+    """
+    base: dict = {
+        "skin": skin,
+        "change_events": change_events,
+        "replay_epoch": replay_epoch(),
+    }
+    if heartbeat:
+        base["heartbeat"] = True
+    return server._turn_recovery_runtime.ready_payload(base)
+
+
 def main():
     _install_sidecar_publisher()
 
@@ -255,10 +282,12 @@ def main():
     ensure_mcp_discovery_started()
 
     # change_events: clients demote legacy polls; replay_epoch: WS restart detection.
+    # build_gateway_ready_payload emits replay_epoch + the turn-recovery
+    # capability so the two contracts cannot drift apart again.
     _write_or_exit({
         "jsonrpc": "2.0", "method": "event",
-        "params": {"type": "gateway.ready", "payload": {
-            "skin": resolve_skin(), "change_events": True, "replay_epoch": replay_epoch()}}},
+        "params": {"type": "gateway.ready",
+                   "payload": build_gateway_ready_payload(resolve_skin())}},
         "startup write failed (broken stdout pipe before first event)")
 
     # Live-apply skins Hermes activates mid-conversation.

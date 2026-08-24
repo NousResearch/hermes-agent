@@ -261,6 +261,33 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
+def build_gateway_ready_payload(
+    skin: dict,
+    *,
+    change_events: bool = True,
+    heartbeat: bool = False,
+) -> dict:
+    """Delegates to ``tui_gateway.entry`` so both transports emit one payload.
+
+    Defining a second, narrower copy here is what let the WS sidecar drop
+    ``replay_epoch`` (or the turn-recovery capability) independently of the
+    stdio path. One implementation, one contract.
+
+    Imported lazily: ``entry`` pulls in the full CLI/agent stack, and importing
+    it at module scope would make the WS sidecar pay that cost — and risk an
+    import cycle — on every load.
+    """
+    from tui_gateway.entry import (
+        build_gateway_ready_payload as _entry_build_gateway_ready_payload,
+    )
+
+    return _entry_build_gateway_ready_payload(
+        skin,
+        change_events=change_events,
+        heartbeat=heartbeat,
+    )
+
+
 async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
@@ -291,15 +318,24 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
-        # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
-        # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
-        # their per-session seq watermarks (event_replay).
-        ready_ok = await transport.write_async({
-            "jsonrpc": "2.0", "method": "event",
-            "params": {"type": "gateway.ready", "payload": {
-                "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
-            }},
-        })
+        # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote
+        # legacy polls to backstops; replay_epoch lets reconnecting clients detect a backend
+        # restart and reset their per-session seq watermarks. The builder emits both plus the
+        # turn-recovery capability in one place (entry), so the contracts cannot drift apart.
+        ready_ok = await transport.write_async(
+            {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                    "type": "gateway.ready",
+                    "payload": build_gateway_ready_payload(
+                        skin_payload,
+                        change_events=True,
+                        heartbeat=True,
+                    ),
+                },
+            }
+        )
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.

@@ -17,10 +17,10 @@ invisible. Everything in this module is therefore built to be exact.
 
 Scope
 -----
-This module owns only the in-memory journal and the capability dict. Wiring it
-into ``gateway.ready`` and the JSON-RPC method table is deliberately left to
-later, separately reviewed changes, so that advertising the capability is the
-*last* step — never before the methods behind it actually work.
+This module owns the bounded in-process journal and exact capability dict. The
+separate :mod:`tui_gateway.turn_recovery_runtime` adapter wires those primitives
+into ``gateway.ready`` and the JSON-RPC method table only after every advertised
+method has been installed, so the client never negotiates a partial route.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "TURN_STATUSES",
     "TurnJournal",
+    "TurnHandle",
     "TurnLimits",
     "TurnRecoveryError",
     "build_protocol_frame",
@@ -369,6 +370,35 @@ class TurnJournal:
     def get_turn(self, session_id: str, client_turn_id: str) -> _Turn:
         with self._lock:
             return self._require(session_id, client_turn_id)
+
+    def resolve_turn(
+        self,
+        session_id: str,
+        *,
+        client_turn_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ) -> _Turn:
+        """Resolve one turn by either client id or server id, scoped to session."""
+
+        with self._lock:
+            if bool(client_turn_id) == bool(turn_id):
+                raise TurnRecoveryError(
+                    "provide exactly one of client_turn_id or turn_id"
+                )
+            if client_turn_id:
+                return self._require(session_id, client_turn_id)
+            for (candidate_session_id, _), turn in self._turns.items():
+                if candidate_session_id == session_id and turn.turn_id == turn_id:
+                    return turn
+            raise TurnRecoveryError(
+                f"unknown turn for session={session_id!r} turn_id={turn_id!r}"
+            )
+
+    def discard_turn(self, session_id: str, client_turn_id: str) -> None:
+        """Forget a submission that the underlying prompt handler rejected."""
+
+        with self._lock:
+            self._turns.pop((session_id, client_turn_id), None)
 
     # -- mutation ----------------------------------------------------------
 

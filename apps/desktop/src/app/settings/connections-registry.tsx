@@ -989,7 +989,11 @@ export function ConnectionsRegistrySection() {
         </div>
       )}
 
-      {!loading && registry && registry.connections.length > 1 && (
+      {/* Not gated on connections.length > 1: a registry that drifted down to
+          local-only is exactly the state where a user needs to see and change
+          the launch behavior, and hiding the control there left hand-editing
+          connections.json as the only recourse (#90174). */}
+      {!loading && registry && (
         <div className="mt-6 border-t border-border/60 pt-4">
           <ToggleRow
             checked={registry.launchMode === 'last-used'}

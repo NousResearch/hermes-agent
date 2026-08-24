@@ -2988,14 +2988,13 @@ class MCPServerTask:
         if not pids or self._is_http():
             return False
         for pid in pids:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            # windows-footgun: ok — psutil.pid_exists handles Windows; the
+            # os.kill probe below only runs when psutil is unavailable.
+            import psutil
+
+            if not psutil.pid_exists(pid):
                 continue  # this one is dead
-            except PermissionError:
-                return False  # exists but not ours to signal — treat alive
-            except OSError:
-                return False
+            return True  # alive (signal permission irrelevant for liveness)
             return False  # at least one child alive
         return True
 

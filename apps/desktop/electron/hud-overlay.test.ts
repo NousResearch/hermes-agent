@@ -6,6 +6,7 @@ import { applyHudElectronOverlay } from './hud-overlay'
 
 test('macOS uses the floating panel level and all-spaces visibility', () => {
   const calls: string[] = []
+
   const win = {
     setAlwaysOnTop(flag: boolean, level?: string) {
       calls.push(`alwaysOnTop:${flag}:${level}`)
@@ -23,6 +24,7 @@ test('macOS uses the floating panel level and all-spaces visibility', () => {
 test('Linux and Windows only set the screen-saver always-on-top level', () => {
   for (const platform of ['linux', 'win32']) {
     const calls: string[] = []
+
     const win = {
       setAlwaysOnTop(flag: boolean, level?: string) {
         calls.push(`alwaysOnTop:${flag}:${level}`)

@@ -96,6 +96,35 @@ const BOOT_RETRY_MAX_ATTEMPTS = 5
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
 const BOOT_RETRY_BASE_DELAY_MS = 2_000
 
+// desktop.getConnection() / resolveGatewayWsUrl() are IPC round-trips into the
+// main process with no timeout of their own (#93454). A remote backend that
+// looks alive to a fresh probe but leaves the main-process reconnect path
+// stuck (e.g. a wedged revalidation after a liveness-probe trip) hangs these
+// awaits forever. While either is pending, `reconnecting` never clears, so
+// scheduleReconnect()/attemptReconnect() early-return permanently and the
+// backoff loop is latched — the UI stays "reconnecting" until the app is
+// restarted even though the gateway is reachable again. Bound both so a stall
+// rejects instead, letting the existing catch/finally clear the guard and
+// resume backoff. gateway.connect() already has its own connect timeout.
+const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      err => {
+        clearTimeout(timer)
+        reject(err)
+      }
+    )
+  })
+}
+
 /** Registry identity whose runtimes died with the primary connection. */
 export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'connectionId' | 'mode'>): null | string {
   const connectionId = connection.connectionId?.trim()
@@ -240,7 +269,11 @@ export function useGatewayBoot({
         // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
         // this primary socket at a secondary profile's backend after a live swap.
         // Secondaries reconnect via reconnectSecondaryGateways().
-        const conn = await desktop.getConnection()
+        const conn = await withTimeout(
+          desktop.getConnection(),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out reconnecting to Hermes backend'
+        )
 
         if (cancelled) {
           return
@@ -261,7 +294,12 @@ export function useGatewayBoot({
         // explicit auth rejection asks for sign-in; transport failures stay in
         // this reconnect loop. For local/token gateways the URL carries a
         // long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out re-minting the gateway WebSocket URL'
+        )
+
         await gateway.connect(wsUrl)
 
         if (cancelled) {

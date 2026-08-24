@@ -471,6 +471,50 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().error).toBeNull()
   })
 
+  it('a getConnection() that hangs on reconnect does not permanently latch the backoff loop (#93454)', async () => {
+    // Repro: a remote gateway drops, the backoff loop kicks off a reconnect,
+    // and the IPC round-trip into main (desktop.getConnection) never settles
+    // — e.g. a wedged revalidation after a liveness-probe trip, even though
+    // the backend itself answers fine. Without an internal timeout on that
+    // await, `reconnecting` never clears and every later
+    // scheduleReconnect()/attemptReconnect() early-returns forever, so the UI
+    // stays stuck until the app is restarted.
+    const desktop = fakeDesktop()
+    const originalGetConnection = desktop.getConnection
+    let callCount = 0
+
+    desktop.getConnection = vi.fn((profile?: null | string) => {
+      callCount += 1
+
+      // The initial boot call succeeds; every reconnect attempt after the
+      // drop hangs indefinitely.
+      return callCount === 1 ? originalGetConnection(profile) : new Promise(() => undefined)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(callCount).toBe(1)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    expect(callCount).toBe(2)
+    expect($gatewayState.get()).not.toBe('open')
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // await must reject so the `reconnecting` guard clears and the backoff
+    // loop schedules another attempt, instead of latching forever on the
+    // still-pending first hang.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    await advanceBackoff()
+
+    expect(callCount).toBeGreaterThanOrEqual(3)
+  })
+
   it('rebinds Bot tabs owned by the restarted primary without touching another gateway', async () => {
     render(<Harness />)
     await flushAsync()

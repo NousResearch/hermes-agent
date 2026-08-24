@@ -42,6 +42,13 @@ is nothing to install. A user plugin of the same name at
 (last-writer-wins), so the profile can be replaced without editing the
 checkout.
 
+The plugin depends on provider-profile hook points in core
+(requested-provider resolution, reasoning echo, server timings) that
+ship in the same change. Installing only the plugin directory as a user
+plugin on a release without those hooks is inert: the provider registers
+but requests keep the stock custom-provider shape, so nothing changes
+on the wire.
+
 Point it at your server and pick a model:
 
     model:

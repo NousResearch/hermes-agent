@@ -190,6 +190,7 @@ import {
   writeSecretFileAtomic
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
@@ -327,7 +328,7 @@ import {
 } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
-import { readWindowBelow } from './window-below'
+import { enumerateWindowsFrontToBack, readWindowBelow } from './window-below'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -11668,6 +11669,46 @@ function startHudCursorFeed(win: BrowserWindow) {
   win.on('closed', () => clearInterval(timer))
 }
 
+/**
+ * Watch for a fullscreen app under the HUD (the Discord-style game overlay
+ * cue) and feed the answer to its renderer. Pure detection lives in
+ * hud-game-overlay.ts; enumeration is the same front-to-back walk the
+ * read_window_below tool uses. The renderer answers with the low-opacity
+ * treatment (`data-hud-game`), so main stays out of the styling business.
+ */
+function startHudGameOverlayFeed(win: BrowserWindow) {
+  const titlesAvailable = IS_MAC ? systemPreferences.getMediaAccessStatus?.('screen') === 'granted' : true
+
+  let last = { active: false, app: '' }
+
+  const push = (state: { active: boolean; app: string }) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:hud:game-overlay', state)
+    }
+  }
+
+  // Replay the latest state to every load of this window. The watch pushes only
+  // on CHANGE and its first tick fires the moment the window is created — well
+  // before the renderer has mounted its listener — so a HUD opened over a game
+  // that is already fullscreen would hear the one and only message before it
+  // could receive it, then sit at "no game" forever while main was certain it
+  // had reported one. (Same reason quick entry caches its last state push.)
+  // did-finish-load also covers HMR full reloads during development.
+  win.webContents.on('did-finish-load', () => push(last))
+
+  const dispose = startHudGameOverlayWatch({
+    enumerate: () => enumerateWindowsFrontToBack(process.pid, titlesAvailable),
+    displayBounds: () => screen.getDisplayMatching(win.getBounds()).bounds,
+    selfPid: process.pid,
+    send: state => {
+      last = state
+      push(state)
+    }
+  })
+
+  win.on('closed', dispose)
+}
+
 function hudBounds() {
   // Remembered spot first — validated against the LIVE displays so a HUD
   // parked on an unplugged monitor comes back on-screen instead of lost.
@@ -11802,6 +11843,7 @@ function spawnHudWindow(sessionId, profile) {
   bindGeometryPersistence(win, schedulePersistHudState)
 
   startHudCursorFeed(win)
+  startHudGameOverlayFeed(win)
 
   wireWindowReveal(win, {
     show: () => {

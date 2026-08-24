@@ -101,6 +101,7 @@ declare global {
         onGoto: (callback: (sessionId: string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
+        onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the

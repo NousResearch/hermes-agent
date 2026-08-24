@@ -10,6 +10,7 @@ import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 
 import { useHudClickThrough } from './click-through'
+import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
 import { hudTranscriptHeight } from './layout'
@@ -135,17 +136,52 @@ function useRecentActivity(): [boolean, () => void] {
 /**
  * True while the HUD must stay up regardless of the hold timer.
  *
- * Only a question: a clarify/approval/sudo/secret prompt is something the agent
- * cannot continue without, and letting it fade hands you a surface you cannot
- * use — zero opacity, and the window goes mouse-transparent under it, so the
- * prompt is neither readable nor clickable.
+ * Three things qualify:
  *
- * A merely BUSY session is not that. Pinning the band for the length of a turn
- * meant a HUD you had walked away from sat open across the screen for as long
- * as the agent worked; the answer arriving flashes it anyway.
+ * - A clarify/approval/sudo/secret prompt: something the agent cannot continue
+ *   without, and letting it fade hands you a surface you cannot use — zero
+ *   opacity, and the window goes mouse-transparent under it, so the prompt is
+ *   neither readable nor clickable.
+ * - The session being BUSY at all — thinking, calling a tool, streaming — plus
+ *   a grace window after the turn ends, so the answer you were waiting for is
+ *   still there when it arrives.
+ * - GAME OVERLAY MODE, unconditionally. Over a fullscreen game the HUD is the
+ *   chat frame, and a chat frame that erases itself a second after each line is
+ *   useless: you look back at it when there is a lull in the game, not when the
+ *   text happens to be fresh. This is what every in-game chat log does, and it
+ *   costs nothing here because the band over a game is bare text with no panel.
+ *
+ * Pinning on busy was deliberately avoided while the band brought its tinted
+ * sheet up with it — that put an opaque panel across the screen for as long as
+ * the agent worked. The sheet is a translucent scrim now, so a held band is
+ * legible text rather than a slab.
  */
-function useHudHeld(): boolean {
-  return useStore($activeSessionAwaitingInput)
+function useHudHeld(gameUnder: boolean): boolean {
+  const awaiting = useStore($activeSessionAwaitingInput)
+  const busy = useStore($busy)
+
+  // The reply landing must stay readable. Held for the whole turn AND for a
+  // grace window after it ends, tracked here rather than by re-arming
+  // `useRecentActivity`'s timer: that timer deliberately refuses to re-arm for
+  // ambient activity on an unfocused HUD, so the turn's own end could not buy a
+  // hold through it and the answer blinked out the instant it finished.
+  const [grace, setGrace] = useState(false)
+
+   
+  useEffect(() => {
+    if (busy) {
+      setGrace(true)
+
+      return
+    }
+
+    // Falling edge: keep it up a moment longer, then let the fade have it.
+    const timer = setTimeout(() => setGrace(false), HUD_RECENT_HOLD_MS)
+
+    return () => clearTimeout(timer)
+  }, [busy])
+
+  return gameUnder || awaiting || busy || grace
 }
 
 /**
@@ -165,7 +201,11 @@ function useHudHeld(): boolean {
  */
 export function HudShell() {
   const [recent, holdBand] = useRecentActivity()
-  const held = useHudHeld()
+  // A fullscreen app (a game) is under the HUD: wear `data-hud-game` so the
+  // idle bar steps back to overlay opacity (see styles.css). Detection is
+  // main's — the page cannot see other apps' windows.
+  const gameUnder = useHudGameOverlay()
+  const held = useHudHeld(gameUnder)
 
   // Clicking away to another APP is the most common way the HUD is let go of,
   // and it fires no focusout: the composer stays document.activeElement while
@@ -358,6 +398,7 @@ export function HudShell() {
     <div
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
+      data-hud-game={gameUnder ? '' : undefined}
       data-hud-recent={recent || held ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps

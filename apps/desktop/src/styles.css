@@ -2682,6 +2682,11 @@ button[data-slot='aui_msg-reactions'] svg {
    no blur to separate the band from what it lies over, the sheet is the only
    thing keeping half-opacity text off someone else's UI. Fade the words, keep
    the paper. */
+/* A DARK scrim, not the theme's card. The band's ink is white unconditionally
+   (see above), so the sheet it lands on has to be dark in every theme —
+   `--dt-card` is near-white on a light theme and would put white text on a white
+   panel. This is the overlay's own surface, the way a game's chat backdrop is
+   its own thing rather than a piece of the desktop UI. */
 [data-hud-shell] [data-hud-glass] {
   position: absolute;
   right: var(--hud-band-inset);
@@ -2690,7 +2695,7 @@ button[data-slot='aui_msg-reactions'] svg {
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
-  background: color-mix(in srgb, var(--dt-card) 80%, transparent);
+  background: rgb(12 14 18 / 0.62);
   /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
      composited, so it stays smooth where animating height re-lays-out the panel
      every frame and looked coarse — and it leaves the box alone, which matters
@@ -2714,9 +2719,11 @@ button[data-slot='aui_msg-reactions'] svg {
     background-color var(--hud-dim) var(--hud-ease-enter);
 }
 
-/* Engaged: as tall as the transcript needs, capped at the window. An empty
-   session measures 0, so it stays rolled up. */
-[data-hud-shell][data-hud-recent] [data-hud-glass],
+/* The sheet is FOCUS-ONLY. A turn landing brings the text up (see
+   `composer-bounds` below) but must not paint a panel behind it: over a game
+   the tinted sheet is the thing that reads as a desktop window parked on the
+   action, and it is most of the HUD's rectangle. Streaming shows words on the
+   game; sitting down to read promotes the surface. */
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
   translate: none;
   opacity: 1;
@@ -2733,7 +2740,10 @@ button[data-slot='aui_msg-reactions'] svg {
    transparent window that owns its own backgrounds (isChatWindow). Two flags,
    because the HUD wants the setting without the rewrite. */
 :root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
-  background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+  /* Same dark scrim under Glass. The docked thread's `--ui-bg-chrome` follows
+     the theme and goes near-white on a light one, which is the wrong paper for
+     this band's white ink — the HUD is over a game, not inside the app. */
+  background: rgb(12 14 18 / 0.55);
 }
 
 /* The band spans the window edge to edge under glass. The 8px side inset keeps
@@ -2741,23 +2751,33 @@ button[data-slot='aui_msg-reactions'] svg {
    but the frost is the WINDOW, so an inset sheet leaves a hairline of bare
    untinted material down both sides. Nothing to hold off the material's edge:
    the window's own rounded corners are where the band ends. */
+/* Inset under Glass too — 6px, so the sheet is narrower than the bar and
+   centered under it. Full-bleed looked like a slab with two slivers beside the
+   bar's rounded bottom corners: the sheet's square top corners poked out past
+   the bar's silhouette, which is the gap down each side. Narrower than the bar
+   means the bar's shape is the widest thing in the HUD and nothing peeks. */
 :root[data-hermes-glass-on] [data-hud-shell] {
-  --hud-band-inset: 0px;
+  --hud-band-inset: 0.375rem;
 }
 
+/* Radius follows the edge the band hangs from, and this rule has to carry the
+   edge itself: `:root[data-hermes-glass-on] … [data-hud-glass]` outweighs the
+   `[data-hud-edge='top']` flip below (four compound parts against three), so a
+   radius set here unqualified wins everywhere and rounds the corners that meet
+   the bar while squaring the free ones. */
 :root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
   border-radius: 0.75rem 0.75rem 0 0;
+}
+
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+  border-radius: 0 0 0.75rem 0.75rem;
 }
 
 /* Engaged, the field steps up the same way the docked thread's does — but
    never below the resting tint, so a high lever cannot make focusing the
    composer paint MORE transparent than glancing at it. */
 :root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
-  background: color-mix(
-    in srgb,
-    var(--ui-bg-chrome) min(100%, calc(var(--translucency-glass-keep, 100%) + 12%)),
-    transparent
-  );
+  background: rgb(12 14 18 / 0.72);
 }
 
 /* Engaged means the caret is in the composer, not merely that the window holds
@@ -2767,7 +2787,7 @@ button[data-slot='aui_msg-reactions'] svg {
    below stays on :focus-within — being permissive about what can be clicked is
    harmless, being permissive about what lights up is not. */
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
-  background: color-mix(in srgb, var(--dt-card) 92%, transparent);
+  background: rgb(12 14 18 / 0.82);
 }
 
 /* Flipped, the sheet hangs from the bar instead of standing on it. */
@@ -2793,12 +2813,14 @@ button[data-slot='aui_msg-reactions'] svg {
   pointer-events: none;
 }
 
-/* Clickable whenever it's actually on screen, not only while the caret is in
-   the composer — a link in the transcript is worth clicking the moment you can
-   see it. Faded out it goes back to `none`, which is what lets clicks over the
-   HUD reach whatever you're really working in. */
-[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'],
-[data-hud-shell]:focus-within [data-slot='composer-bounds'] {
+/* WHAT ANSWERS THE CURSOR is FOCUS, not visibility. A streaming reply is
+   something you read over the game, not something you aim at: while the band is
+   merely visible every click inside its rectangle is a click the game does not
+   get (the window is only mouse-transparent where the document reports nothing,
+   so an interactive band IS a dead zone over the action). Sitting down in the
+   composer is the deliberate act that makes the transcript a surface you can
+   scroll and click links in. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
   pointer-events: auto;
 }
 
@@ -2808,12 +2830,105 @@ button[data-slot='aui_msg-reactions'] svg {
    hasn't earned. Focus is what promotes it to properly readable; the hold and
    fade then take it away from wherever it was. */
 [data-hud-shell][data-hud-recent] [data-slot='composer-bounds'] {
-  opacity: 0.5;
+  opacity: 1;
   translate: none;
   /* Same duration AND curve as the sheet's tint step, or the two visibly ease
      apart on the way down. */
   transition-duration: var(--hud-dim);
   transition-timing-function: var(--hud-ease-enter);
+}
+
+/* THE BAND IS ALWAYS LIGHT-ON-DARK. Unconditional, and that is the point: the
+   transcript here is either bare text over another app or text on a translucent
+   scrim, and in both cases the theme's near-black body ink is the wrong ink.
+   Every earlier cut gated this on something — focus, then `data-hud-game` — and
+   every gate produced a state where the words went black on a dark game. A
+   HUD's legibility cannot depend on a condition being evaluated correctly; it
+   is a property of the surface. The scrim below is darkened to match, so white
+   is right whether the sheet is up or not. */
+[data-hud-shell] [data-slot='composer-bounds'] {
+  --hud-overlay-ink: #fff;
+  /* WoW-epic gold: reads as "yours" against white agent text and survives being
+     over a dark cave or a bright loading screen. */
+  --hud-overlay-ink-user: #ffcf6b;
+  color: var(--hud-overlay-ink);
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.9),
+    0 0 6px rgb(0 0 0 / 0.55);
+  /* Ramp the scrollback out at the top instead of guillotining it against the
+     bar. With no sheet to end on, a hard edge reads as text sliced off; the
+     fade says "there is more above" the way a game's chat log does. */
+  --hud-top-fade: 3.5rem;
+}
+
+/* The mask has to ride the SCROLLER, not the band. `composer-bounds` is a
+   static box: the rows scroll inside the thread viewport nested in it, so a
+   mask there ramps over the band's own first 3.5rem while the overflowing text
+   is already ABOVE that box (measured: rows at -117px, -81px, -55px relative
+   to the band, and `scrollHeight === clientHeight` — nothing overflows the
+   band itself). The viewport clips it hard before the band's mask is ever
+   consulted, which is why raising the value changed nothing on screen. Masking
+   the viewport puts the ramp where the clipping actually happens. */
+[data-hud-shell] [data-slot='aui_thread-viewport'] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hud-top-fade, 3.5rem));
+}
+
+/* Every descendant that sets its own colour — assistant prose, user text,
+   markdown, timestamps — inherits it too, or the ink change reaches the
+   wrapper and nothing you can actually read. Widgets carve themselves out by
+   resetting the variable (see below), so this stays one rule. */
+[data-hud-shell] [data-slot='composer-bounds'] * {
+  color: var(--hud-overlay-ink) !important;
+}
+
+/* Anything that paints its OWN light surface inside the band keeps the theme's
+   ink — a clarify question, an approval prompt, an artifact card, a code block,
+   a form control. The overlay's white ink exists for text sitting on the game;
+   a widget brings its own paper, and forcing white there made the panel
+   unreadable (a clarify prompt with white options on a near-white card).
+   Done by moving the VARIABLE rather than adding a competing `color` rule: the
+   one !important above reads `--hud-overlay-ink` from whatever ancestor is
+   nearest, so a widget re-pointing it at the theme's ink re-inks its whole
+   subtree with no specificity fight and no second copy of the selector list.
+   The list is deliberately by SURFACE, not by feature: every entry paints a
+   fill. That distinction matters for approvals — `tool-approval-fallback` wraps
+   a real card (`--ui-chat-surface-background`) and its `<pre>` command block
+   brings its own, but `tool-approval-inline` / `-actions` are bare rows sitting
+   directly on the band, so they must stay WHITE like ordinary prose. Matching
+   them by slot made their labels dark-on-game, which is the exact bug this rule
+   exists to prevent, one level down. Match the fill, never the feature.
+   Widgets on the shared shell (components/chat/widget-shell.ts →
+   `--ui-widget-surface-background`) and any chat-surface card are matched on
+   their class, so new ones inherit this without touching the list. */
+[data-hud-shell] [data-slot='composer-bounds']
+  :is(
+    [data-slot='clarify-inline'],
+    [data-slot='tool-block'],
+    [data-slot='file-diff-panel'],
+    [data-slot='code-card'],
+    [data-slot='aui_system-message-root'],
+    [class*='ui-widget-surface-background'],
+    [class*='ui-chat-surface-background'],
+    pre,
+    input,
+    textarea,
+    select
+  ) {
+  --hud-overlay-ink: var(--ui-text-primary);
+  --hud-overlay-ink-user: var(--ui-text-primary);
+  text-shadow: none;
+}
+
+/* …except your OWN lines. With the bubble gone at rest, white-on-white is the
+   only thing telling you apart from the agent, and it doesn't: the log reads as
+   one voice. Tint them instead — the same job the bubble was doing, done with
+   ink so it costs no surface. Warm gold rather than the theme's accent: it has
+   to hold up over whatever is behind the window, and a blue or purple lands on
+   top of exactly the palette most games use for their own UI. */
+[data-hud-shell] :is([data-slot='aui_user-message-root'], .composer-human-message),
+[data-hud-shell] :is([data-slot='aui_user-message-root'], .composer-human-message) * {
+  color: var(--hud-overlay-ink-user) !important;
 }
 
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
@@ -2843,19 +2958,28 @@ button[data-slot='aui_msg-reactions'] svg {
    user row paints an OPAQUE chat-surface slab behind it (so a stuck bubble can
    slide over scrolled text) and the bubble is solid --dt-user-bubble — inside
    the smoked band both read as fully opaque cards that ignore every fade. The
-   slab goes unconditionally; the bubble smokes at rest and returns solid when
-   engaged. ONE variable carries the fill so there is no specificity fight
+   slab goes unconditionally; the bubble is gone entirely at rest and returns
+   when engaged. ONE variable carries the fill so there is no specificity fight
    between rest/engaged rules — the states just move the var. */
 [data-hud-shell] {
-  --hud-bubble-fill: color-mix(in srgb, var(--dt-user-bubble) 65%, transparent);
+  /* At rest there is no bubble: unfocused, the band is bare text over someone
+     else's window, and a card around your own lines is the one thing in it
+     that still reads as an app. The words stay (they are the log); the
+     container stops being drawn. */
+  --hud-bubble-fill: transparent;
+  --hud-bubble-stroke: transparent;
 }
 
 /* ONE opacity law for the whole band: solid on focus, material otherwise.
    Bubbles going solid on `recent` too made them opaque cards floating on the
    62% band mid-stream — the band only steps solid on focus, so nothing inside
    it may step earlier. */
+/* No bubble in the HUD, ever. The band's ink already distinguishes the two
+   voices (white agent / gold yours), and a light card behind gold text is the
+   one thing in here that fights the overlay's own contrast. */
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) {
-  --hud-bubble-fill: var(--dt-user-bubble);
+  --hud-bubble-fill: transparent;
+  --hud-bubble-stroke: transparent;
 }
 
 [data-hud-shell] [data-slot='aui_user-message-root'] {
@@ -2878,7 +3002,7 @@ button[data-slot='aui_msg-reactions'] svg {
    Fill and border both ride the same variable, so they cannot desync. */
 [data-hud-shell] .composer-human-message {
   background: var(--hud-bubble-fill) !important;
-  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 45%, transparent) !important;
+  border-color: var(--hud-bubble-stroke) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   transition:
@@ -2963,7 +3087,13 @@ button[data-slot='aui_msg-reactions'] svg {
    lines tall they're most of the surface. Bottom pad drops to a hairline —
    the band already ends at the bar, so any block-end padding here reads as a
    gap between the last message and the composer. */
+/* Nudged inward, not edge to edge. The thread is a log floating over someone
+   else's window, and text running into the band's rounded corners reads as a
+   panel that has outgrown its box. The composer keeps the full width — it is
+   the object; the log is what hangs off it. */
 [data-hud-shell] [data-slot='aui_thread-content'] {
+  width: 92% !important;
+  margin-inline: auto !important;
   padding-inline: 0.6rem !important;
   padding-block: 0.35rem 0.25rem !important;
   /* A chat frame fills from the bottom. The docked thread hangs from the top
@@ -3136,6 +3266,33 @@ button[data-slot='aui_msg-reactions'] svg {
    space, cannot be clipped, and leaves the working arc as the only ring. */
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
   border-color: var(--dt-primary) !important;
+}
+
+/* GAME OVERLAY — a fullscreen app owns the screen (data-hud-game, pushed by
+   main's window watch). The Discord treatment: the idle bar steps back to a
+   low, glanceable opacity so it reads as part of the game's own HUD instead of
+   a desktop window parked over the action. The bar's "always fully opaque"
+   contract above is about never being COMPROMISED by what's behind it; over a
+   game the whole bar fades as one object, which keeps it legible the moment it
+   returns.
+
+   Engagement wins, exactly like the band's own reveal: a recent turn, the
+   caret in the composer, or the cursor over the bar (mousemove keeps flowing
+   through the click-through window, so :hover is live even while ignoring)
+   restores full strength — fast in, slow out, on the shell's shared clocks.
+
+   The window keeps normal chrome-free behavior otherwise: no other state
+   changes, so leaving the game hands back the standard HUD without a rebuild. */
+[data-hud-shell][data-hud-game] [data-slot='composer-dock'] {
+  opacity: 0.35;
+  transition: opacity var(--hud-fade) var(--hud-ease-exit);
+}
+
+[data-hud-shell][data-hud-game][data-hud-recent] [data-slot='composer-dock'],
+[data-hud-shell][data-hud-game]:focus-within [data-slot='composer-dock'],
+[data-hud-shell][data-hud-game] [data-slot='composer-dock']:hover {
+  opacity: 1;
+  transition: opacity var(--hud-reveal) var(--hud-ease-enter);
 }
 
 /* Long-press drag armed — the whole bar is the handle until release. */

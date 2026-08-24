@@ -80,6 +80,7 @@ function load({ requestProfile, agents, profileRoutes } = {}) {
     .concat(`
       globalThis.__race = {
         $botMeta,
+        botActivitySession,
         botConnectionRoute,
         botRosterKey,
         botSelectionKey,
@@ -280,6 +281,41 @@ test('non-identity alias resolves the canonical chat by NAME on the backend prof
   assert.equal(lookup[1].include_hidden, true)
   const opened = runtime.calls.find(call => call[0] === 'openSession')
   assert.equal(opened[1], 'worker-chat-tip', 'the lineage tip opens; the registry row stays the identity')
+})
+
+test('canonical sidebar activity and an explicit bot switch converge on a forced-resume open', async () => {
+  const bot = {
+    ...remoteBot,
+    canonical_session: { id: 'bot-chat', last_active: 20, preview: 'new canonical activity' },
+    last_session: { id: 'old-visible-chat', last_active: 10, preview: 'stale visible activity' }
+  }
+  const runtime = load({
+    requestProfile: async (_route, method) => {
+      if (method === 'session.list') {
+        return {
+          sessions: [{ id: 'bot-chat', resolved_id: 'bot-chat-tip', title: 'Bot Chat', message_count: 4 }]
+        }
+      }
+
+      return {}
+    }
+  })
+
+  assert.equal(
+    runtime.context.__race.botActivitySession(bot).id,
+    'bot-chat',
+    'the sidebar activity tile follows the hidden canonical chat'
+  )
+
+  const result = await runtime.context.__race.openBotCanonicalChat(bot)
+  const opened = runtime.calls.find(call => call[0] === 'openSession')
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { registryId: 'bot-chat', openedId: 'bot-chat-tip' })
+  assert.equal(opened[1], 'bot-chat-tip', 'the explicit switch opens the canonical lineage tip')
+  assert.equal(opened[2].awaitHydration, true)
+  assert.equal(opened[2].expectHistory, true)
+  assert.equal(opened[2].forceResume, true, 'a cached stale runtime must never suppress session.resume')
+  assert.equal(opened[2].route.connectionId, 'remote-a', 'resume stays on the canonical chat owner')
 })
 
 test('remote canonical lookup failure rejects instead of minting on the remote source', async () => {

@@ -488,6 +488,7 @@ class HonchoClientConfig:
     def resolve_session_name(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
     ) -> str | None:
         """Resolve the Honcho session name; with ``session_ai_peer_prefix`` the result is prefixed
         ``{ai_peer}-`` on every path, including the AI-peer-agnostic gateway session key."""
@@ -523,7 +524,9 @@ class HonchoClientConfig:
         manual = self.sessions.get(cwd)
         if manual:
             return manual
-        if session_title and _slug(session_title):
+        # Absent provenance retains the legacy explicit-title override. Generated
+        # display titles must not change a strategy-selected memory identity.
+        if session_title and session_title_source not in {"derived", "llm"} and _slug(session_title):
             return self._with_peer_prefix(_slug(session_title))
         if self.session_strategy == "per-repo":
             return self._with_peer_prefix(self._git_repo_name(cwd) or Path(cwd).name)

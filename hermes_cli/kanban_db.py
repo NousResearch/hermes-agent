@@ -1311,7 +1311,7 @@ def _skill_validation_workspace(
         return None
     if workspace_kind == "worktree" and project_repo:
         return Path(project_repo) / ".worktrees" / "__kanban_skill_validation__"
-    if workspace_kind == "worktree":
+    if workspace_kind in {"dir", "worktree"}:
         try:
             metadata = read_board_metadata(board if board else get_current_board())
             default_workdir = metadata.get("default_workdir")

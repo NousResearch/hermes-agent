@@ -294,6 +294,36 @@ def test_create_task_resolves_project_skill_from_dir_workspace(
     assert task_id
 
 
+def test_create_task_resolves_project_skill_from_board_default_dir_workspace(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    workspace = tmp_path / "board-default-project"
+    _init_git_repo(workspace)
+    _write_project_skill(workspace, "board-default-only")
+    creator = tmp_path / "creator-cwd"
+    creator.mkdir()
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{workspace}]\n", encoding="utf-8"
+    )
+    kb.write_board_metadata(None, default_workdir=str(workspace))
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="board default project skill",
+            assignee="coder",
+            workspace_kind="dir",
+            skills=["board-default-only"],
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.workspace_path == str(workspace)
+
+
 def test_create_task_rejects_skill_only_in_creator_cwd(
     kanban_home, monkeypatch, tmp_path
 ):

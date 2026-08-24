@@ -116,6 +116,26 @@ def resolve_compact_threshold(
     return max(1_024, min(configured, upper))
 
 
+_checkpoint_suppression_logged = False
+
+
+def _warn_native_compaction_suppressed_by_checkpoint_gate() -> None:
+    """Log once per process that the checkpoint gate suppresses native compaction.
+
+    The suppression itself is re-evaluated per request; only the log line is
+    deduplicated so a long session does not repeat it on every API call.
+    """
+    global _checkpoint_suppression_logged
+    if _checkpoint_suppression_logged:
+        return
+    _checkpoint_suppression_logged = True
+    logger.warning(
+        "compression.checkpoint_required is enabled: server-side native "
+        "compaction (context_management) is disabled for this agent so the "
+        "checkpoint-aware Hermes compressor stays authoritative."
+    )
+
+
 def native_compaction_context_management(
     agent: Any,
     *,
@@ -136,6 +156,14 @@ def native_compaction_context_management(
     # compression.enabled: false disables ALL automatic compaction, native
     # included — mirrors the codex_app_server_auto contract.
     if not bool(getattr(agent, "compression_enabled", True)):
+        return None
+    # compression.checkpoint_required: server-side compaction is a lossy
+    # boundary the provider owns — no pre-compress checkpoint can run before
+    # the server replaces older context. Keep the checkpoint-aware Hermes
+    # compressor authoritative instead of silently letting the server
+    # compact. Explicit-True check matches the compress_context() gate.
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
     if is_xai_responses or is_github_responses:
         return None

@@ -546,8 +546,12 @@ compression:
   # implements the pre-compress checkpoint contract (API v1) confirms its
   # durable checkpoint (default: false). With this on and no checkpoint, the
   # compaction attempt errors with BLOCKED_MISSING_PREREQUISITE and the
-  # uncompressed transcript is preserved for a later retry. Only enable it
-  # with a checkpoint-capable provider configured — see
+  # uncompressed transcript is preserved for a later retry. The gate binds to
+  # every compaction authority: server-side native compaction
+  # (codex_responses_native) is suppressed while armed, and the
+  # codex_app_server API mode is refused at agent init (the codex agent
+  # compacts its own thread — no checkpoint can be guaranteed there). Only
+  # enable it with a checkpoint-capable provider configured — see
   # website/docs/developer-guide/memory-provider-plugin.md
   # ("Pre-Compress Checkpoints").
   checkpoint_required: false

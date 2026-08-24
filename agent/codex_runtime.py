@@ -691,6 +691,20 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    # Defense in depth for compression.checkpoint_required: agent init
+    # already refuses this combination, but api_mode is a plain attribute a
+    # future code path could mutate on a live agent. Fail closed before the
+    # codex agent can compact its thread — once run_turn() executes, a
+    # codex-owned compaction may already have happened with no pre-compress
+    # checkpoint. Explicit-True check matches the compress_context() gate.
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        from agent.conversation_compression import _checkpoint_blocked
+
+        raise _checkpoint_blocked(
+            "codex_app_server owns the authoritative thread and compacts it "
+            "without a truthful pre-compaction transcript boundary"
+        )
+
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,

@@ -239,3 +239,87 @@ def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
 
     model_history, _display = upgraded.get_resume_conversations("legacy")
     assert model_history[-1].get("_compressed_summary") is True
+
+
+def test_native_responses_compaction_is_suppressed_when_checkpoint_required():
+    """checkpoint_required must keep ``context_management`` off the wire.
+
+    Server-side native compaction is a lossy boundary the provider owns; no
+    pre-compress checkpoint can run before it, so the gate suppresses the
+    payload while ordinary checkpoint-aware Hermes compression stays
+    available.
+    """
+    from types import SimpleNamespace
+
+    from agent.native_compaction import native_compaction_context_management
+
+    def agent(checkpoint_required):
+        return SimpleNamespace(
+            model="gpt-5.6",
+            base_url="https://api.openai.com/v1",
+            codex_responses_native_compaction=True,
+            compression_enabled=True,
+            compression_checkpoint_required=checkpoint_required,
+            codex_responses_compact_threshold=0.8,
+            context_compressor=None,
+        )
+
+    assert native_compaction_context_management(
+        agent(False), is_codex_backend=True
+    )
+    assert (
+        native_compaction_context_management(agent(True), is_codex_backend=True)
+        is None
+    )
+
+
+def test_codex_app_server_turn_fails_closed_before_codex_can_compact():
+    """checkpoint_required + app-server must never reach ``run_turn()``.
+
+    The codex agent compacts its own thread; once ``run_turn()`` executes, a
+    codex-owned compaction may already have happened with no checkpoint. The
+    turn entrypoint must raise first — the session is never even created.
+    """
+    from types import SimpleNamespace
+
+    from agent.codex_runtime import run_codex_app_server_turn
+
+    class _ExplodingSession:
+        def run_turn(self, *args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("run_turn() must not be reached")
+
+    agent = SimpleNamespace(
+        api_mode="codex_app_server",
+        compression_checkpoint_required=True,
+        _codex_session=_ExplodingSession(),
+    )
+
+    with pytest.raises(CompressionCheckpointUnavailable, match="codex_app_server"):
+        run_codex_app_server_turn(
+            agent,
+            user_message="hello",
+            original_user_message="hello",
+            messages=[],
+            effective_task_id="t1",
+        )
+
+
+def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
+    """The incompatible configuration must fail closed at init time.
+
+    In the default "native" auto-compaction mode Hermes never initiates the
+    compaction, so the compress_context() guard alone cannot cover native
+    turns — init_agent has to refuse before a turn exists.
+    """
+    from agent.agent_init import (
+        _refuse_checkpoint_required_on_codex_app_server,
+    )
+
+    with pytest.raises(RuntimeError, match="BLOCKED_MISSING_PREREQUISITE"):
+        _refuse_checkpoint_required_on_codex_app_server(True, "codex_app_server")
+
+    # Every other combination stays permitted.
+    _refuse_checkpoint_required_on_codex_app_server(True, "chat_completions")
+    _refuse_checkpoint_required_on_codex_app_server(True, "codex_responses")
+    _refuse_checkpoint_required_on_codex_app_server(False, "codex_app_server")
+    _refuse_checkpoint_required_on_codex_app_server(False, None)

@@ -326,6 +326,13 @@ class TestCustomProviderOpenAIWireCapability:
 
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_equivalent_base_url_spelling_reaches_capability_lookup(self):
+        agent = self._configured_agent(enabled=True)
+        agent.provider = "unrelated-runtime-alias"
+        agent._custom_providers[0]["base_url"] = "HTTPS://models.example.net/v1/"
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
     def test_undeclared_chat_completions_route_stays_conservative(self):
         agent = self._configured_agent(enabled=True)
         agent._custom_providers[0]["models"]["vendor-agnostic-model"] = {

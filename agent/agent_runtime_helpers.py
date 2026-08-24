@@ -2330,6 +2330,9 @@ def anthropic_prompt_cache_policy(
         _provider_ids = {provider_lower}
         if provider_lower.startswith("custom:"):
             _provider_ids.add(provider_lower.removeprefix("custom:"))
+        from hermes_cli.route_identity import normalize_route_base_url
+
+        _runtime_route_url = normalize_route_base_url(eff_base_url)
         for _entry in _custom_providers:
             if not isinstance(_entry, dict):
                 continue
@@ -2338,8 +2341,9 @@ def anthropic_prompt_cache_policy(
                 str(_entry.get("provider_key") or "").strip().lower(),
             }
             if _provider_ids & (_entry_ids - {""}) or (
-                eff_base_url
-                and str(_entry.get("base_url") or "") == eff_base_url
+                _runtime_route_url
+                and normalize_route_base_url(_entry.get("base_url"))
+                == _runtime_route_url
             ):
                 _route_may_be_custom = True
                 break

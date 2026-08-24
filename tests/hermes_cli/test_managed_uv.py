@@ -1411,7 +1411,7 @@ class TestWindowsRuntimeSelfLock:
 
         assert result.status == "skipped"
         assert "live venv" in result.detail
-        mock_install.assert_not_called(), (
+        assert mock_install.call_count == 0, (
             "a self-locked updater must not provision a candidate it can "
             "never cut over"
         )

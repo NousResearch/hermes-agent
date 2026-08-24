@@ -545,12 +545,20 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(powerResume).not.toBeNull()
 
     // macOS can discard the TCP connection during sleep without updating the
-    // renderer WebSocket object. Leave readyState OPEN and emit only resume.
+    // renderer WebSocket object. Leave readyState OPEN, swallow the liveness
+    // ping (a half-open socket never answers), and emit only resume. The wake
+    // path no longer blind-closes an open-looking socket — it probes first and
+    // closes only when the probe times out.
+    FakeWebSocket.pingMode = 'silent'
     act(() => powerResume?.())
-    await flushAsync()
-    await flushAsync()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
 
     expect(staleSocket.readyState).toBe(FakeWebSocket.CLOSED)
+    // The probe-driven close schedules the regular backoff reconnect, which
+    // revalidates the (possibly dead) remote descriptor before re-dialing.
+    await advanceBackoff()
     expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')

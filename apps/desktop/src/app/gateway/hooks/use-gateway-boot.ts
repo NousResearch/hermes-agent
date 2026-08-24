@@ -353,14 +353,10 @@ export function useGatewayBoot({
       reconnectSecondaryGateways({ forceOpenSockets: forceOpenSocket })
 
       // Browser WebSocket state can remain OPEN after sleep even though the OS
-      // discarded the underlying TCP connection. Strong recovery signals must
-      // retire that half-open socket before the normal reconnect path can run.
-      if (forceOpenSocket && gatewayOpen()) {
-        gateway.close()
-        // close() publishes `closed`, which schedules the regular backoff.
-        // This path reconnects immediately, so remove that redundant timer.
-        clearReconnectTimer()
-      }
+      // discarded the underlying TCP connection. Strong recovery signals used
+      // to blind-close here, but that churned perfectly healthy connections on
+      // every wake/online blip — the liveness probe below now decides, closing
+      // only a socket that is provably dead.
 
       if (!gatewayOpen()) {
         await attemptReconnect()

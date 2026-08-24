@@ -18,6 +18,7 @@ import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
+import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
@@ -539,6 +540,14 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
     void checkBackendUpdates()
+    // The update restarted the gateway process, which strands this window's
+    // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies
+    // without a close event, so connectionState still reads 'open' while every
+    // RPC hangs — users force-quit the app to recover. Nudge the registered
+    // reconnect handler (forceReconnectNow), which retires the half-open
+    // socket and re-dials with a fresh ticket. Best-effort: local installs
+    // whose socket survived treat it as a cheap probe.
+    void reconnectGateway().catch(() => undefined)
     // The backend caught up, but the CLIENT may still be behind — the exact
     // gap that strands remote-mode users on an old GUI forever (every update
     // affordance in remote mode targets the backend, so nothing ever told

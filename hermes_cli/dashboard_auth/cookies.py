@@ -17,14 +17,24 @@ Three cookies in play:
   - hermes_session_pkce: short-lived PKCE state + CSRF nonce + provider
                          hint (HttpOnly, lifetime = 10 minutes)
 
-All three are ``SameSite=Lax`` (browser will send on cross-site GET
-top-level navigation, which we need for the IDP redirect back to
-``/auth/callback``) and live under the prefix's Path. ``Secure`` is set
-ONLY when the dashboard was reached over HTTPS — detected via the
-request URL scheme, which honours ``X-Forwarded-Proto`` upstream of
-Fly's TLS terminator when uvicorn is configured with
-``proxy_headers=True``. Loopback dev traffic is always HTTP so
-``Secure`` would lock the cookies out of the browser.
+The two session cookies are ``SameSite=Lax`` and live under the prefix's
+Path. The PKCE cookie is the exception: ``SameSite=None`` over HTTPS,
+falling back to ``Lax`` on plain HTTP (where ``SameSite=None`` is invalid
+without ``Secure``). It is set on the ``/auth/login`` 302 and must survive
+the cross-site redirect chain out to the IDP and back to
+``/auth/callback``; Chromium intermittently drops ``Lax`` cookies set on a
+302 in such a chain (crbug 40508226), which surfaces as "Missing PKCE
+state cookie". ``Secure`` is set ONLY when the dashboard was reached over
+HTTPS — detected via the request URL scheme, which honours
+``X-Forwarded-Proto`` upstream of Fly's TLS terminator when uvicorn is
+configured with ``proxy_headers=True``. Loopback dev traffic is always
+HTTP so ``Secure`` would lock the cookies out of the browser.
+
+NOTE: uvicorn only honours ``X-Forwarded-Proto`` from a peer inside its
+``forwarded_allow_ips`` (default: ``127.0.0.1``). A TLS terminator that
+reaches the dashboard from a non-loopback address — e.g. a reverse proxy
+in its own container — is not trusted, so the request still looks like
+HTTP here and these cookies are written in their HTTP shape.
 
 Cookie prefix selection (browser hardening per
 https://datatracker.ietf.org/doc/html/draft-west-cookie-prefixes):

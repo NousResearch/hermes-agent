@@ -1147,6 +1147,7 @@ def _profile_skill_names(
             # validation does not advertise a name the worker cannot resolve.
             bare_candidates: dict[str, list[tuple[bool, Path]]] = {}
             qualified_candidates: dict[str, list[tuple[bool, Path]]] = {}
+            path_candidates: dict[str, list[tuple[bool, Path]]] = {}
             for root in skill_roots:
                 if not root.is_dir():
                     continue
@@ -1183,6 +1184,10 @@ def _profile_skill_names(
                             bare_candidates.setdefault(alias, []).append(
                                 (root in project_dirs, candidate_path)
                             )
+                    try:
+                        relative_parts = skill_md.relative_to(root).parts
+                    except ValueError:
+                        relative_parts = ()
                     if name and name not in disabled:
                         try:
                             candidate_path = skill_md.resolve()
@@ -1193,10 +1198,6 @@ def _profile_skill_names(
                         # ``<root>/<category>/<name>/SKILL.md`` layout. Keep
                         # validation in parity with that runtime lookup while
                         # retaining the frontmatter/bare name above.
-                        try:
-                            relative_parts = skill_md.relative_to(root).parts
-                        except ValueError:
-                            relative_parts = ()
                         if (
                             len(relative_parts) == 3
                             and relative_parts[-1] == "SKILL.md"
@@ -1211,6 +1212,20 @@ def _profile_skill_names(
                                 qualified_candidates.setdefault(qualified_name, []).append(
                                     (root in project_dirs, candidate_path)
                                 )
+                    # ``skill_view`` also accepts the canonical relative path
+                    # to a local skill directory (for example
+                    # ``category/sample``). Register every safe relative
+                    # parent path so validation matches that direct lookup,
+                    # including nested categories and external roots.
+                    if (
+                        len(relative_parts) >= 2
+                        and relative_parts[-1] == "SKILL.md"
+                    ):
+                        path_name = "/".join(relative_parts[:-1])
+                        if path_name and path_name not in disabled:
+                            path_candidates.setdefault(path_name, []).append(
+                                (root in project_dirs, candidate_path)
+                            )
 
             # Plugin skills are registered only after the profile's enabled plugin
             # set has been discovered.  Use the manager scoped to this profile's
@@ -1244,6 +1259,17 @@ def _profile_skill_names(
                 # refusal for the categorized local fallback path.
                 unique_candidates = list(dict.fromkeys(candidates))
                 project_candidates = [candidate for candidate in unique_candidates if candidate[0]]
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
+            for name, candidates in path_candidates.items():
+                # Direct local paths use the same project-tier precedence,
+                # collision refusal, and resolved-path deduplication as the
+                # other filesystem aliases above.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [
+                    candidate for candidate in unique_candidates if candidate[0]
+                ]
                 winning = project_candidates or unique_candidates
                 if len(winning) == 1:
                     names.add(name)

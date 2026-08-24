@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -284,6 +285,61 @@ def test_create_task_accepts_categorized_profile_skill(kanban_home):
         )
 
     assert kb.get_task(conn, task_id).skills == ["category:sample"]
+
+
+def test_create_task_accepts_direct_path_profile_skill_and_runtime_resolves(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Direct path test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="direct path profile skill",
+            assignee="coder",
+            skills=["category/sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["category/sample"]
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.skills_tool import skill_view
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        result = json.loads(skill_view("category/sample"))
+    finally:
+        reset_hermes_home_override(token)
+    assert result["success"] is True
+
+
+def test_create_task_rejects_disabled_direct_path_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Disabled direct path skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [category/sample]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category/sample"):
+            kb.create_task(
+                conn,
+                title="disabled direct path skill",
+                assignee="coder",
+                skills=["category/sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
 def test_create_task_rejects_disabled_categorized_profile_skill(kanban_home):

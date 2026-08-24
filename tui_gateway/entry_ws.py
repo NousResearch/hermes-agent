@@ -182,6 +182,12 @@ def run(host: str = "127.0.0.1", port: int = 0) -> None:
     """
     import signal
 
+    # Capture the real stdout BEFORE importing tui_gateway.server —
+    # server.py redirects sys.stdout → sys.stderr at module level
+    # (line 392: `sys.stdout = sys.stderr`) to keep JSON-RPC over stdio
+    # clean. Our ready sentinel must go to the pipe the desktop reads.
+    _real_stdout = sys.stdout
+
     # tui_gateway.server does NOT import fastapi/starlette/uvicorn — it's
     # pure stdlib + agent modules. Importing it here is what boots the
     # dispatch surface (session store, thread pool, skin resolver, etc).
@@ -209,11 +215,13 @@ def run(host: str = "127.0.0.1", port: int = 0) -> None:
         sockets = ws_server.sockets
         actual_port = sockets[0].getsockname()[1] if sockets else port
 
-        # Ready sentinel — the desktop's main.cjs parses this line.
-        print(
-            f"HERMES_BACKEND_READY port={actual_port} token={_SESSION_TOKEN}",
-            flush=True,
+        # Ready sentinel — the desktop's main.cjs parses this from stdout.
+        # Use the captured _real_stdout because tui_gateway.server redirects
+        # sys.stdout → sys.stderr at module level.
+        _real_stdout.write(
+            f"HERMES_BACKEND_READY port={actual_port} token={_SESSION_TOKEN}\n"
         )
+        _real_stdout.flush()
         _log.info("ws-only gateway listening on %s:%d", host, actual_port)
 
         # Block forever.

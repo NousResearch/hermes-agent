@@ -82,6 +82,10 @@ _HARDLINE_BLOCK = [
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
     "mkfs.xfs /dev/nvme0n1",
+    # Command position via separator/wrapper still blocks (#93392)
+    "true && mkfs.ext4 /dev/sda1",
+    "sudo mkfs.ext4 /dev/sda1",
+    "nohup mkfs /dev/sdb",
     # Raw block device overwrites
     "dd if=/dev/zero of=/dev/sda bs=1M",
     "dd if=/dev/urandom of=/dev/nvme0n1",
@@ -183,6 +187,10 @@ _HARDLINE_ALLOW = [
     "echo 'halt and catch fire'",
     "python3 -c 'print(\"shutdown\")'",
     "find . -name '*reboot*'",
+    # Quoted prose mentioning mkfs must not trip the hardline floor (#93392):
+    # the word appears in an argument, not at a command position.
+    'echo "does this workflow use mkfs anywhere?"',
+    "echo 'run mkfs.ext4 on the backup disk later'",
     # Word-boundary protection
     "mkfs_helper --version",
     # systemctl non-destructive verbs

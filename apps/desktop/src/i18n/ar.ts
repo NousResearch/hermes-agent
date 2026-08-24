@@ -218,6 +218,7 @@ export const ar = defineLocale({
     openStarmap: 'فتح خريطة الذاكرة',
     enterHud: 'وضع HUD',
     exitHud: 'إنهاء وضع HUD',
+    resetHudLayout: 'إعادة تعيين حجم HUD وموضعه',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
   },

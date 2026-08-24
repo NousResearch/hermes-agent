@@ -4,16 +4,17 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $hudActive, $hudSession, openHud } from './hud'
+import { $hudActive, $hudSession, openHud, resetHudLayout } from './hud'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
 const open = vi.fn().mockResolvedValue({ ok: true })
+const resetLayout = vi.fn().mockResolvedValue({ ok: true })
 
 function installBridge() {
   desktopWindow.hermesDesktop = {
-    hud: { open }
+    hud: { open, resetLayout }
   } as unknown as Window['hermesDesktop']
 }
 
@@ -23,6 +24,7 @@ function session(overrides: Partial<SessionInfo>): SessionInfo {
 
 beforeEach(() => {
   open.mockClear()
+  resetLayout.mockClear()
   installBridge()
   $hudActive.set(false)
   $hudSession.set(null)
@@ -36,6 +38,14 @@ afterEach(() => {
   } else {
     delete desktopWindow.hermesDesktop
   }
+})
+
+describe('resetHudLayout', () => {
+  it('uses the native HUD recovery capability', () => {
+    resetHudLayout()
+
+    expect(resetLayout).toHaveBeenCalledOnce()
+  })
 })
 
 describe('openHud profile targeting (#82285)', () => {

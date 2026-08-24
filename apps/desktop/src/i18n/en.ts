@@ -251,6 +251,7 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     enterHud: 'HUD mode',
     exitHud: 'Exit HUD mode',
+    resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },

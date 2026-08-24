@@ -958,8 +958,24 @@ function ClarifyToolBatchPending({
           continue
         }
 
-        const asChoice = (question.choices ?? []).find(choice => bareChoice(choice) === answer)
-        next[question.qid] = asChoice ? { choices: [asChoice], draft: '' } : { choices: [], draft: answer }
+        const options = question.choices ?? []
+        let replayedAnswers = [answer]
+
+        if (question.multiSelect) {
+          try {
+            const parsed = JSON.parse(answer)
+
+            if (Array.isArray(parsed) && parsed.every(value => typeof value === 'string')) {
+              replayedAnswers = parsed
+            }
+          } catch {
+            // Older/non-JSON replies remain a one-value replay below.
+          }
+        }
+
+        const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
+        next[question.qid] =
+          matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
       }
 
       return next

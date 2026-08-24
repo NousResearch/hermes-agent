@@ -543,7 +543,7 @@ function liveBatchProps(): ToolCallMessagePartProps {
   }
 }
 
-function renderLiveBatch(lockedAnswers?: Record<string, string>) {
+function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = false) {
   const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
 
   $activeSessionId.set('session-1')
@@ -554,7 +554,7 @@ function renderLiveBatch(lockedAnswers?: Record<string, string>) {
     multiSelect: false,
     question: '',
     questions: [
-      { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+      { choices: ['red', 'blue'], multiSelect, qid: 'q0', question: 'Color?' },
       { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
     ],
     requestId: 'request-batch',
@@ -661,6 +661,14 @@ describe('ClarifyTool batch card', () => {
     renderLiveBatch({ q0: 'red' })
 
     // The replayed answer counts as staged: one question left to answer.
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+  })
+
+  it('reselects every choice from a replayed multi-select JSON answer', () => {
+    renderLiveBatch({ q0: '["red","blue"]' }, true)
+
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
   })
 

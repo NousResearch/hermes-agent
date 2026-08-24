@@ -500,7 +500,13 @@ export function useGatewayBoot({
         }
 
         publish(conn)
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        // Bounded for the same reason as attemptReconnect() (#93454): a wedged
+        // ticket mint would otherwise hang the gateway switch forever.
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out re-minting the gateway WebSocket URL'
+        )
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -785,8 +791,14 @@ export function useGatewayBoot({
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
         // connecting with a dead ticket. Auth rejection asks for sign-in;
-        // connectivity failures remain retryable.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        // connectivity failures remain retryable. Bounded like the reconnect
+        // path (#93454) so a wedged mint fails into boot retry instead of
+        // hanging "Starting Hermes…" forever.
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out minting the gateway WebSocket URL'
+        )
         await gateway.connect(wsUrl)
 
         if (cancelled) {

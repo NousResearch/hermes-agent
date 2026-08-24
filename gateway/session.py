@@ -632,6 +632,14 @@ def is_shared_multi_user_session(
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
+# Sentinel participant slot for Telegram *group* messages that have no
+# from_user (channel posts, anonymous admins, observe-mode shared sources).
+# Isolating keys stay 5-part and distinct from the isolation-off 4-part form
+# ``agent:<ns>:telegram:group:<chat_id>``.  Not a real Telegram user id
+# (those are numeric), so it cannot collide with a member suffix.
+_TELEGRAM_GROUP_ANONYMOUS_PARTICIPANT = "__channel__"
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
@@ -667,11 +675,46 @@ def build_session_key(
 ) -> str:
     """Build a deterministic session key from a message source (single source of truth).
 
-    Layout: ``<ns>:<platform>:<chat_type>[:<slack scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
-    Slack ``scope_id`` precedes chat ids (Discord guild scope is deliberately NOT added, for key
-    compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
-    session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
-    not in a thread (threads are shared unless ``thread_sessions_per_user``).
+    This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
+
+    DM rules:
+      - Slack ``scope_id`` identifies the workspace before chat/user ids. Other
+        platforms retain their existing key format; in particular, Discord
+        guild scope is intentionally not added here as a compatibility change.
+      - DMs include chat_id when present, so each private conversation is isolated.
+      - thread_id further differentiates threaded DMs within the same DM chat.
+      - Without chat_id, thread_id is used as a best-effort fallback.
+      - Without thread_id or chat_id, DMs share a single session.
+
+    Group/channel rules:
+      - Slack ``scope_id`` identifies the workspace before chat/thread ids.
+      - chat_id identifies the parent group/channel.
+      - user_id/user_id_alt isolates participants within that parent chat when available when
+        ``group_sessions_per_user`` is enabled.
+      - Telegram group messages with no participant_id (channel posts /
+        anonymous admins / observe-mode shared sources) append the stable
+        sentinel ``__channel__`` rather than omitting the suffix.  Omitting it
+        made the same chat flap between ``...:group:<chat_id>:<user>`` and
+        ``...:group:<chat_id>`` (the isolation-off form), splitting history.
+        Identified-member keys keep the pre-d4773d13e shape
+        ``...:group:<chat_id>:<user_id>``, so a single active participant
+        resumes their original isolated session.  Unsuffixed keys produced
+        by d4773d13e (and by the empty-participant fallback before it) are
+        no longer generated while isolation is on and are not adopted —
+        anonymous traffic starts a new ``...:__channel__`` session.
+      - thread_id differentiates threads within that parent chat.  When
+        ``thread_sessions_per_user`` is False (default), threads are *shared* across all
+        participants — user_id is NOT appended, so every user in the thread
+        shares a single session.  This is the expected UX for threaded
+        conversations (Telegram forum topics, Discord threads, Slack threads).
+      - Without participant identifiers, or when isolation is disabled, messages fall back to one
+        shared session per chat.
+      - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
@@ -693,26 +736,26 @@ def build_session_key(
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
-    # Carried local fix (0432e37839, re-applied on upstream structure): for
-    # Telegram group chats suppress the participant_id suffix. TG group
-    # messages may or may not carry a user_id (channel posts lack from_user),
-    # so the same group flaps between keys with/without :<user_id> suffix
-    # non-deterministically. DM sessions and non-Telegram platforms retain
-    # per-user isolation.
-    suppress_tg_group_participant = (
-        source.platform == Platform.TELEGRAM and source.chat_type == "group"
-    )
     parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
     if source.platform == Platform.SLACK and source.scope_id:
         parts.append(str(source.scope_id))
     if chat_id:
         parts.append(chat_id)
     # DMs put the participant before the thread; groups/threads put it after.
-    user_part = (
-        [str(participant_id)]
-        if isolate_user and participant_id and not suppress_tg_group_participant
-        else []
-    )
+    user_part = [str(participant_id)] if isolate_user and participant_id else []
+    # Carried fix (0b03734f43, re-applied on upstream structure): Telegram
+    # group messages with no participant_id (channel posts / anonymous
+    # admins / observe-mode shared sources) get a stable sentinel slot
+    # instead of omitting the suffix — omitting it made the same chat flap
+    # between ``...:group:<chat_id>:<user>`` and ``...:group:<chat_id>``
+    # (the isolation-off form), splitting history.
+    if (
+        not user_part
+        and isolate_user
+        and source.platform == Platform.TELEGRAM
+        and source.chat_type == "group"
+    ):
+        user_part = [_TELEGRAM_GROUP_ANONYMOUS_PARTICIPANT]
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
     return ":".join(str(part) for part in parts)

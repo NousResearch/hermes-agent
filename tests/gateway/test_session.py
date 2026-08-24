@@ -896,6 +896,67 @@ class TestWhatsAppSessionKeyConsistency:
         assert "bob" not in build_session_key(bob)
 
 
+class TestTelegramGroupSessionKeyDeterminism:
+    """Telegram groups keep per-user isolation; anonymous posts get a stable key.
+
+    Channel posts / anonymous admins / observe-mode shared sources omit
+    from_user.  Dropping the participant suffix made the same chat flap
+    between ``...:group:<chat_id>:<user>`` and ``...:group:<chat_id>``.
+    The anonymous slot is the sentinel ``__channel__`` so those keys stay
+    deterministic without collapsing member sessions.
+    """
+
+    _CHAT = "-1002285219667"
+
+    def _group(self, user_id=None, **kwargs):
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=self._CHAT,
+            chat_type="group",
+            user_id=user_id,
+            **kwargs,
+        )
+
+    def test_member_message_keeps_user_suffix(self):
+        alice = self._group(user_id="alice")
+        assert build_session_key(alice) == (
+            f"agent:main:telegram:group:{self._CHAT}:alice"
+        )
+
+    def test_channel_post_without_user_id_is_deterministic(self):
+        post = self._group(user_id=None)
+        first = build_session_key(post)
+        second = build_session_key(post)
+        assert first == second
+        assert first == f"agent:main:telegram:group:{self._CHAT}:__channel__"
+
+    def test_same_member_message_is_idempotent(self):
+        alice = self._group(user_id="alice")
+        assert build_session_key(alice) == build_session_key(alice)
+        assert build_session_key(alice) == (
+            f"agent:main:telegram:group:{self._CHAT}:alice"
+        )
+
+    def test_channel_post_does_not_collide_with_member(self):
+        alice = self._group(user_id="alice")
+        post = self._group(user_id=None)
+        assert build_session_key(alice) != build_session_key(post)
+
+    def test_isolation_off_shares_member_and_anonymous(self):
+        alice = self._group(user_id="alice")
+        post = self._group(user_id=None)
+        shared = f"agent:main:telegram:group:{self._CHAT}"
+        assert build_session_key(alice, group_sessions_per_user=False) == shared
+        assert build_session_key(post, group_sessions_per_user=False) == shared
+
+    def test_shared_thread_does_not_use_channel_sentinel(self):
+        """Default shared-thread keys stay unsuffixed even without from_user."""
+        threaded = self._group(user_id=None, thread_id="17585")
+        assert build_session_key(threaded) == (
+            f"agent:main:telegram:group:{self._CHAT}:17585"
+        )
+
+
 class TestSlackWorkspaceSessionKeys:
 
 

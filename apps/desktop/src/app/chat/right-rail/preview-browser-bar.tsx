@@ -14,13 +14,14 @@
  * buttons, so a glyph here and a glyph on the strip are still the same button.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
 
 interface PreviewBrowserBarProps {
   canGoBack: boolean
@@ -105,9 +106,18 @@ export function PreviewBrowserBar({
   // Null while the field is idle, so the address tracks navigation on its own;
   // a string once the user takes it over, so typing survives a page load.
   const [draft, setDraft] = useState<null | string>(null)
+  // The address we asked for and are still waiting on. Without it, committing
+  // dropped the field straight back to `url` — the page you were LEAVING —
+  // so every navigation flashed the old address before the new one arrived.
+  const [pending, setPending] = useState<null | string>(null)
   // Only while the user is typing: a page that navigates itself is never the
   // user's mistake to flag.
   const invalid = draft !== null && draft.trim().length > 0 && !normalizePreviewAddress(draft)
+  const shown = draft ?? pending ?? url
+
+  // The page moved (or a redirect landed somewhere else entirely), so the real
+  // address supersedes what we asked for.
+  useEffect(() => setPending(null), [url])
 
   const commit = (value: string) => {
     const address = normalizePreviewAddress(value)
@@ -117,6 +127,7 @@ export function PreviewBrowserBar({
     }
 
     setDraft(null)
+    setPending(address)
     onNavigate(address)
   }
 
@@ -144,15 +155,26 @@ export function PreviewBrowserBar({
           It copies what the field shows: on a remote gateway, that is the
           reach-resolved address. */}
       <div className="relative min-w-0 flex-1">
+        {/* Progress lives IN the field, where the address it belongs to is —
+            the reload glyph also spins, but it sits in a row of four and
+            reads as chrome rather than as this page's state. */}
+        {loading && (
+          <Codicon
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+            name="loading"
+            size="0.75rem"
+            spinning
+          />
+        )}
         <Input
           aria-invalid={invalid || undefined}
           aria-label={copy.address}
-          className="pr-7"
+          className={cn('pr-7', loading && 'pl-6')}
           inputMode="url"
           onBlur={() => setDraft(null)}
           onChange={event => setDraft(event.target.value)}
           onFocus={event => {
-            setDraft(url)
+            setDraft(shown)
             event.currentTarget.select()
           }}
           onKeyDown={event => {
@@ -169,7 +191,7 @@ export function PreviewBrowserBar({
           placeholder={copy.addressPlaceholder}
           size="xs"
           spellCheck={false}
-          value={draft ?? url}
+          value={shown}
         />
         <CopyButton
           appearance="inline"

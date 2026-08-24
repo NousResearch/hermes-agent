@@ -390,6 +390,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const navigateTo = useCallback(
     (url: string) => {
       setLoadError(null)
+      // The reach probe below is a round-trip of its own, and `did-start-loading`
+      // can't fire until it resolves — so own the loading state from the moment
+      // we accept the address, or the bar sits idle over a request in flight.
+      setLoading(true)
       // Typed addresses get the same loopback reach as agent-opened ones — on a
       // remote gateway `localhost:5173` is usually the dev server the user is
       // there to look at, not something on their own laptop.

@@ -51,6 +51,16 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def get_desktop_ssh_runtime_root() -> Path:
+    """Return the machine-scoped runtime root used by Desktop SSH.
+
+    The Desktop writer expands the literal ``~/.hermes/desktop-ssh`` on the
+    target host. This path must never follow ``HERMES_HOME`` or a context-local
+    profile override: ownership records coordinate every profile on a machine.
+    """
+    return Path.home() / ".hermes" / "desktop-ssh"
+
+
 def _warn_profile_fallback_once() -> None:
     """Warn once when HERMES_HOME is unset but a non-default profile is sticky-active (wrong fallback)."""
     global _profile_fallback_warned

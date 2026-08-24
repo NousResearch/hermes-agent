@@ -2583,12 +2583,12 @@ def probe_api_models(
             if isinstance(item, dict) and note_catalog_item(item):
                 continue
             probed.append(str(item.get("id") or "").strip())
-        # Filter empty IDs and sort + dedupe case-insensitively so
+        # Coerce ids to strings at extraction and filter the
+        # generation rows on the way: a misbehaving proxy may
+        # return non-string ids (e.g. {"id": 12345}), which would
+        # crash the sort below and take down the whole probe.
+        # Filter empty ids and sort + dedupe case-insensitively so
         # the /model picker renders a stable, alphabetical order.
-        # Built-in providers (anthropic/xai/github) already sort
-        # their catalogs; this custom OpenAI-compatible path did
-        # not, so the ordering changed with every /v1/models
-        # response and cache refresh.
         models = [m for m in probed if m]
         models = sorted(set(models), key=str.lower)
         return _probe_result(

@@ -92,3 +92,40 @@ def test_probe_api_models_sort_is_stable_on_already_sorted_input():
         result = probe_api_models("sk-key", "https://gw.example.com/v1")
 
     assert result["models"] == ["alpha-model", "bravo-model", "charlie-model"]
+
+
+def test_probe_api_models_coerces_non_string_ids():
+    """Non-string ids (e.g. numeric) are coerced to strings, not crashed on.
+
+    A misbehaving proxy may return ``{"id": 12345}``; extraction must
+    coerce it to a string so the case-insensitive sort does not raise
+    ``AttributeError`` and take down the whole probe.
+    """
+    unordered = [
+        {"id": "bravo-model"},
+        {"id": 12345},
+        {"id": "alpha-model"},
+    ]
+    with patch(
+        "hermes_cli.models._urlopen_model_catalog_request",
+        return_value=_Resp(_payload(unordered)),
+    ):
+        result = probe_api_models("sk-key", "https://gw.example.com/v1")
+
+    assert result["models"] == ["12345", "alpha-model", "bravo-model"]
+
+
+def test_probe_api_models_deduplicates_repeated_ids():
+    """A provider echoing the same id twice returns it exactly once."""
+    duplicated = [
+        {"id": "alpha-model"},
+        {"id": "bravo-model"},
+        {"id": "alpha-model"},
+    ]
+    with patch(
+        "hermes_cli.models._urlopen_model_catalog_request",
+        return_value=_Resp(_payload(duplicated)),
+    ):
+        result = probe_api_models("sk-key", "https://gw.example.com/v1")
+
+    assert result["models"] == ["alpha-model", "bravo-model"]

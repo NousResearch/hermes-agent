@@ -659,26 +659,30 @@ export function mergeSessionPage(
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
-  const merged = incoming.map(session => {
-    const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
-    // User-send stamps last_active before the DB flushes the user row
-    // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
-    const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
-    const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
-    // Carry the owning connection onto a row that arrives untagged. The
-    // primary aggregate serves a `local` registry source's rows as plain
-    // local rows (the unified-list splice tags only NON-local sources), so
-    // the first refresh after a routed create used to replace the optimistic
-    // row's exact owner (connection_id + profile) with a bare profile — after
-    // which only the transient owner hint knew which socket held the runtime.
-    // A refresh is new information layered over what we know, not a clobber;
-    // the tag is kept only while the row still names the same profile.
-    const connection_id = carriedConnectionId(prev, session)
 
-    return last_active === session.last_active && title === session.title && connection_id === session.connection_id
-      ? session
-      : { ...session, last_active, title, ...(connection_id ? { connection_id } : {}) }
-  })
+  const merged = incoming
+    .filter(session => !session.is_internal_child)
+    .map(session => {
+
+      const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+      // User-send stamps last_active before the DB flushes the user row
+      // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
+      const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
+      const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
+      // Carry the owning connection onto a row that arrives untagged. The
+      // primary aggregate serves a `local` registry source's rows as plain
+      // local rows (the unified-list splice tags only NON-local sources), so
+      // the first refresh after a routed create used to replace the optimistic
+      // row's exact owner (connection_id + profile) with a bare profile — after
+      // which only the transient owner hint knew which socket held the runtime.
+      // A refresh is new information layered over what we know, not a clobber;
+      // the tag is kept only while the row still names the same profile.
+      const connection_id = carriedConnectionId(prev, session)
+
+      return last_active === session.last_active && title === session.title && connection_id === session.connection_id
+        ? session
+        : { ...session, last_active, title, ...(connection_id ? { connection_id } : {}) }
+    })
 
   if (keep.size === 0) {
     return merged
@@ -732,6 +736,9 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // An internal delegate child is never listed; the authoritative page
+      // already omits it, so the keep-list must not resurrect it (#94124).
+      !session.is_internal_child &&
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).

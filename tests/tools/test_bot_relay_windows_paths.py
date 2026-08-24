@@ -1,4 +1,4 @@
-"""Windows-path viability and venv CLI resolution for bot relay (#93590).
+r"""Windows-path viability and venv CLI resolution for bot relay (#93590).
 
 Two failures on a Windows desktop install talking to a remote gateway:
 
@@ -102,10 +102,26 @@ def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     assert argv[argv.index("--query-file") + 1] == "query.json"
 
 
+def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch):
+    """Without a venv sibling, a PATH hit (shutil.which) wins next —
+    interactive shells keep resolving exactly what they resolve today."""
+    empty = tmp_path / "nowhere"
+    empty.mkdir(parents=True)
+    monkeypatch.setattr("sys.executable", str(empty / "python"))
+    which_hit = str(tmp_path / "usr-local-bin" / "hermes")
+    monkeypatch.setattr(
+        bot_relay.shutil, "which", lambda name: which_hit if name == "hermes" else None
+    )
+
+    argv = bot_relay.local_delivery_command("ops", "query.json")
+    assert argv[0] == which_hit
+
+
 def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
     empty = tmp_path / "nowhere"
     empty.mkdir(parents=True)
     monkeypatch.setattr("sys.executable", str(empty / "python"))
+    monkeypatch.setattr(bot_relay.shutil, "which", lambda name: None)
 
     argv = bot_relay.local_delivery_command("ops", "query.json")
     assert argv[0] == "hermes"

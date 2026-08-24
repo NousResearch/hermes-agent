@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -542,12 +543,19 @@ def _hermes_cli() -> str:
     entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
     service contexts (systemd units, desktop launchers, non-login SSH
     shells) do not provide, so delivery died with ENOENT there (#93590).
-    Falls back to the bare name when no sibling exists (e.g. running from
-    a source tree without an installed script), preserving PATH lookup.
+    When no sibling exists (e.g. running from a source tree without an
+    installed script), a ``shutil.which`` lookup runs next — it honors
+    whatever PATH the process does have — before falling back to the bare
+    name, preserving today's behavior for interactive shells.
     """
     exe = Path(sys.executable or "")
-    sibling = exe.parent / ("hermes.exe" if os.name == "nt" else "hermes")
-    return str(sibling) if sibling.is_file() else "hermes"
+    sibling = exe.parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    if sibling.is_file():
+        return str(sibling)
+    found = shutil.which("hermes")
+    if found:
+        return found
+    return "hermes"
 
 
 def local_delivery_command(profile: str, query_file: str) -> list[str]:

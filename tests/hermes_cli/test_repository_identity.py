@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,17 @@ def test_missing_marker_is_audited(tmp_path):
     assert MARKERS[1] in str(exc.value)
 
 
+@pytest.mark.parametrize("marker", ["../outside", "/tmp/outside"])
+def test_marker_path_escape_fails_closed(tmp_path, marker):
+    root = _git_repo(tmp_path / "hermes")
+    with pytest.raises(RepositoryIdentityError, match="relative paths"):
+        validate_repository_identity(
+            root,
+            expected_manifest_name="hermes-agent",
+            required_markers=[marker],
+        )
+
+
 def test_candidate_selection_rejects_ambiguity_and_lists_evidence(tmp_path):
     first = _git_repo(tmp_path / "one")
     second = _git_repo(tmp_path / "two")
@@ -131,3 +143,47 @@ def test_kanban_worktree_resolution_honors_explicit_board_identity(tmp_path, mon
     )
     with pytest.raises(ValueError, match="BLOCKED/needs-input"):
         kb._validate_workspace_repository(unrelated, board="default")
+
+
+def _committed_linked_worktree(root: Path, branch: str, target: Path) -> Path:
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "-q", "-b", branch, str(target)],
+        check=True,
+    )
+    return target
+
+
+@pytest.mark.parametrize(
+    "requested_branch",
+    ["occupied", "other"],
+    ids=["matching-branch-reuse", "different-branch-fallback"],
+)
+def test_worktree_resolution_validates_existing_linked_checkout_before_return(
+    tmp_path, monkeypatch, requested_branch
+):
+    root = _git_repo(tmp_path / "wrong", name="old-plugin")
+    target = _committed_linked_worktree(root, requested_branch, tmp_path / "linked")
+    monkeypatch.setattr(
+        kb,
+        "read_board_metadata",
+        lambda _board: {
+            "repository_identity": {
+                "expected_manifest_name": "hermes-agent",
+                "required_markers": MARKERS,
+            }
+        },
+    )
+    task = SimpleNamespace(
+        id="t_identity",
+        branch_name="occupied" if requested_branch == "occupied" else "wanted",
+        workspace_path=str(target),
+    )
+    with pytest.raises(ValueError, match="BLOCKED/needs-input"):
+        kb._resolve_worktree_workspace(task, board="default")

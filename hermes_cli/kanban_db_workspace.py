@@ -481,6 +481,8 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     requested_resolved = requested.resolve(strict=False)
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
+        linked_root = _git_toplevel(requested_resolved) or requested_resolved
+        _validate_workspace_repository(linked_root, board=board)
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
             return requested_resolved, actual_branch
@@ -491,6 +493,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         # unsafe under concurrency — so fall back to our own worktree.
         fallback_root = _repo_root_for_worktree_target(requested.parent)
         if fallback_root is not None:
+            _validate_workspace_repository(fallback_root, board=board)
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
                 _ensure_git_worktree(fallback_root, fallback, branch_name)

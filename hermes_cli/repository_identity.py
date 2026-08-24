@@ -73,7 +73,27 @@ def validate_repository_identity(
             f"(found {actual_name!r})"
         )
     markers = tuple(str(marker) for marker in required_markers)
-    absent = [marker for marker in markers if not (root / marker).exists()]
+    marker_paths: list[tuple[str, Path]] = []
+    invalid_markers: list[str] = []
+    for marker in markers:
+        marker_path = Path(marker)
+        resolved_marker = (root / marker_path).resolve(strict=False)
+        if marker_path.is_absolute() or ".." in marker_path.parts:
+            invalid_markers.append(marker)
+            continue
+        try:
+            resolved_marker.relative_to(root)
+        except ValueError:
+            invalid_markers.append(marker)
+            continue
+        marker_paths.append((marker, resolved_marker))
+    if invalid_markers:
+        raise RepositoryIdentityError(
+            "BLOCKED/needs-input: repository identity required markers must be "
+            "relative paths contained by the canonical Git root; invalid markers: "
+            + ", ".join(repr(marker) for marker in invalid_markers)
+        )
+    absent = [marker for marker, path in marker_paths if not path.exists()]
     missing.extend(f"required source marker {marker!r}" for marker in absent)
     evidence = {
         "candidate": str(requested),

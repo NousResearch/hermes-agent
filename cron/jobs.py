@@ -105,6 +105,7 @@ _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 _fire_fence_locks: Dict[str, threading.RLock] = {}
 _fire_fence_locks_guard = threading.Lock()
+_fire_fence_lock_state = threading.local()
 
 # Upper bound on waiting for the cross-process .jobs.lock flock (#60703).
 # Every cron function in the process funnels through _jobs_lock(), and the
@@ -387,7 +388,23 @@ def _fire_job_lock(job_id: str):
     with _fire_fence_locks_guard:
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
-    with local_lock:
+    if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
+        logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
+        yield False
+        return
+
+    held_locks = getattr(_fire_fence_lock_state, "held", None)
+    if held_locks is None:
+        held_locks = {}
+        _fire_fence_lock_state.held = held_locks
+    if lock_key in held_locks:
+        try:
+            yield held_locks[lock_key]
+        finally:
+            local_lock.release()
+        return
+
+    try:
         ensure_dirs()
         lock_name = uuid.uuid5(uuid.NAMESPACE_URL, lock_key).hex
         lock_path = cron_dir / f".fire-{lock_name}.lock"
@@ -421,9 +438,11 @@ def _fire_job_lock(job_id: str):
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
 
+        held_locks[lock_key] = acquired
         try:
             yield acquired
         finally:
+            held_locks.pop(lock_key, None)
             if lock_fd is not None:
                 try:
                     if acquired and fcntl is not None:
@@ -436,6 +455,8 @@ def _fire_job_lock(job_id: str):
                     pass
                 finally:
                     lock_fd.close()
+    finally:
+        local_lock.release()
 
 
 @contextlib.contextmanager

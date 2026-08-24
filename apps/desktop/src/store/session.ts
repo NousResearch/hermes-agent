@@ -125,10 +125,7 @@ export function sessionBelongsToProfile(
  * (Bot Mode's canonical "Bot Chat") never appear in the row list, so the hint is
  * often the only sync source.
  */
-export function knownSessionProfile(
-  sessions: readonly SessionInfo[],
-  sessionId: null | string
-): string | undefined {
+export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId: null | string): string | undefined {
   if (!sessionId) {
     return undefined
   }

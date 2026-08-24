@@ -4,7 +4,9 @@ import { sessionTileResumeFailure } from './session-tile'
 
 describe('sessionTileResumeFailure', () => {
   it('keeps a confirmed durable session retryable instead of repeating a stale 404', () => {
-    expect(sessionTileResumeFailure('session not found', true, true)).toBe('Session is still available — retry resuming it.')
+    expect(sessionTileResumeFailure('session not found', true, true)).toBe(
+      'Session is still available — retry resuming it.'
+    )
   })
 
   it('fails safe on an inconclusive durable lookup', () => {

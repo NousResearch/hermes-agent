@@ -1297,10 +1297,10 @@ test('Apply between two remotes keeps each real registration once and activates 
 
   const remotes = second.connections.filter(connection => connection.kind === 'remote')
 
-  assert.deepEqual(
-    remotes.map(connection => connection.url).sort(),
-    ['https://one.example.com', 'https://two.example.com']
-  )
+  assert.deepEqual(remotes.map(connection => connection.url).sort(), [
+    'https://one.example.com',
+    'https://two.example.com'
+  ])
   assert.equal(new Set(remotes.map(connection => connection.id)).size, 2)
   assert.equal(second.primary, remotes.find(connection => connection.url === 'https://two.example.com')?.id)
   assert.equal(second.lastUsed, second.primary)

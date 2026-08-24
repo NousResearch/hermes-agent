@@ -268,17 +268,12 @@ describe('revalidatePooledRemoteBackends', () => {
   const harness = (
     rawEntries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string; authMode?: string }]>
   ) => {
-    const entries: Array<[
-      string,
-      TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }
-    ]> = rawEntries.map(([profile, entry]) => {
-      const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
+    const entries: Array<[string, TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }]> =
+      rawEntries.map(([profile, entry]) => {
+        const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
 
-      return [
-        profile,
-        { ...connection, connectionPromise: Promise.resolve(connection) }
-      ]
-    })
+        return [profile, { ...connection, connectionPromise: Promise.resolve(connection) }]
+      })
 
     const unreachable = new Set<string>()
     const log = vi.fn()

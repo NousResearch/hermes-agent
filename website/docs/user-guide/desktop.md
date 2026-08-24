@@ -139,7 +139,11 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 #### Linux / Wayland
 
-Electron 20+ already runs as a native Wayland client on a Wayland session. Drag, click-through, and resize work on that path. A few compositors (notably COSMIC) ignore `always-on-top` for native Wayland windows. To restore pinning, run the app under XWayland:
+Electron 20+ already runs as a native Wayland client on a Wayland session. Drag, click-through, and resize work on that path.
+
+On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
+
+A few compositors (notably COSMIC) ignore `always-on-top` for native Wayland windows. To restore pinning there, run the app under XWayland:
 
 ```yaml
 desktop:

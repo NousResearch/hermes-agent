@@ -205,6 +205,7 @@ import {
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
+import { promoteHudOnHyprland } from './hud-hyprland'
 import { hudInputPolicy } from './hud-input-policy'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
@@ -11983,6 +11984,12 @@ function spawnHudWindow(sessionId, profile) {
       if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.hide()
       }
+
+      // Hyprland tiles new toplevels. alwaysOnTop is compositor-owned on
+      // native Wayland, and xdg_toplevel.move is ignored on a tiled window,
+      // so the HUD never becomes an overlay and cannot be dragged. Same
+      // socket as read_window_below; no-op everywhere else.
+      void promoteHudOnHyprland({ title: HUD_WINDOW_TITLE })
     }
   })
 

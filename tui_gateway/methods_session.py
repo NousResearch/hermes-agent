@@ -3637,6 +3637,47 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cols": session["cols"]})
 
 
+@method("session.events.since")
+def _(rid, params: dict) -> dict:
+    """Replay recorded events for a session newer than the client's last-seen seq.
+
+    Reconnect contract (desktop / web clients): every event frame now carries
+    ``params.seq``. After a WS reconnect the client calls this with its last
+    observed seq; this returns the buffered frames in order so no mid-stream
+    event is lost. Frames older than the ring window report ``truncated`` so
+    the client knows to refetch history instead of silently accepting a gap.
+    """
+    sid = str(params.get("session_id") or "")
+    try:
+        last_seen = int(params.get("last_seen", 0))
+    except (TypeError, ValueError):
+        return _err(rid, -32602, "invalid params: last_seen must be an integer")
+    from tui_gateway import event_replay
+
+    frames = event_replay.events_since(sid, last_seen)
+    # Truncated when the buffer's OLDEST retained seq is past last_seen+1 —
+    # i.e. events between last_seen and the buffer start were evicted.
+    truncated = False
+    with event_replay._replay_lock:
+        buf = event_replay._replay_buffers.get(sid)
+        if buf and last_seen + 1 < buf[0][0]:
+            truncated = True
+    return _ok(rid, {
+        "events": [f for f in frames],
+        "latest_seq": event_replay.latest_seq(sid),
+        "truncated": truncated,
+        "count": len(frames),
+    })
+
+
+@method("session.events.stats")
+def _(rid, params: dict) -> dict:
+    """Replay-buffer telemetry (ops/debug)."""
+    from tui_gateway import event_replay
+
+    return _ok(rid, event_replay.replay_stats())
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)

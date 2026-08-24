@@ -1999,12 +1999,24 @@ def write_json(obj: dict) -> bool:
        :func:`dispatch` for the lifetime of a request).
     3. Otherwise the module-level stdio transport, matching the historical
        behaviour and keeping tests that monkey-patch ``_real_stdout`` green.
+
+    Every routed event frame is stamped with a per-session monotonic
+    ``seq`` and recorded in the bounded replay ring (tui_gateway.event_replay)
+    so a WS client can resume losslessly after a reconnect via
+    ``session.events.since``.
     """
     if obj.get("method") == "event":
-        sid = ((obj.get("params") or {}).get("session_id")) or ""
+        params = obj.get("params")
+        sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
+            from tui_gateway.event_replay import _stamp_event
+
+            _stamp_event(obj)
             return t.write(obj)
 
+    from tui_gateway.event_replay import _stamp_event
+
+    _stamp_event(obj)
     return (current_transport() or _stdio_transport).write(obj)
 
 

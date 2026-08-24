@@ -84,8 +84,7 @@ def test_leading_dash_pattern_finds_matches_grep_fallback(tmp_path, monkeypatch)
     for pattern in ("-77", "--pdf-engine", "->"):
         result = ops.search(pattern=pattern, path=str(tmp_path), target="content")
         assert not result.error, f"{pattern!r} failed: {result.error}"
-        blob = "\n".join(result.matches or []) + "".join(result.files or [])
-        assert pattern.lstrip("-")[:2] in blob or result.total_count >= 1, (
+        assert result.total_count >= 1, (
             f"leading-dash pattern {pattern!r} returned no matches"
         )
 

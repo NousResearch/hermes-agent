@@ -54,4 +54,3 @@ test('finalizeGatewayDownload prompts a save dialog then streams the response', 
   // HTTP errors carry their status so a 404 can trigger the fallback.
   assert.match(fn, /error\.statusCode = statusCode/)
 })
-

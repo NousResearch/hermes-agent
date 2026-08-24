@@ -62,7 +62,16 @@ function destroyKeepaliveAgents() {
 }
 
 // Transient transport errors: retry MAY be safe (subject to verb gating).
-const TRANSIENT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH'])
+const TRANSIENT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ENETUNREACH'
+])
 
 // Errors that prove the request never reached the server: the TCP connection
 // (or name resolution) failed outright, so nothing was submitted.
@@ -75,9 +84,13 @@ function isIdempotentMethod(method) {
 }
 
 function isTransientTransportError(error) {
-  if (!error) {return false}
+  if (!error) {
+    return false
+  }
 
-  if (TRANSIENT_CODES.has(error.code)) {return true}
+  if (TRANSIENT_CODES.has(error.code)) {
+    return true
+  }
   const msg = String(error.message || '')
 
   return msg.includes('socket hang up') || msg.includes('read ECONNRESET')
@@ -93,14 +106,22 @@ function isTransientTransportError(error) {
  *                     flushed, so a `false` here proves nothing went out.
  */
 function shouldRetryRequest(error, method, requestState: any = {}) {
-  if (!isTransientTransportError(error)) {return false}
+  if (!isTransientTransportError(error)) {
+    return false
+  }
 
-  if (isIdempotentMethod(method)) {return true}
+  if (isIdempotentMethod(method)) {
+    return true
+  }
 
   // Non-idempotent: only when the request provably never reached the server.
-  if (NEVER_SENT_CODES.has(error && error.code)) {return true}
+  if (NEVER_SENT_CODES.has(error && error.code)) {
+    return true
+  }
 
-  if (requestState.bodySent === false) {return true}
+  if (requestState.bodySent === false) {
+    return true
+  }
 
   // Ambiguous (reset/hang-up after the body was flushed): the server may have
   // processed it. Surface the error rather than risk a double submit.
@@ -118,7 +139,8 @@ function shouldRetryRequest(error, method, requestState: any = {}) {
 async function withRetry(makeAttempt, options: any = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2
-  const delayFn = options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
+  const delayFn =
+    options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
 
   let lastError
 

@@ -121,7 +121,9 @@ describe('withRetry', () => {
       () => {
         attempts += 1
 
-        if (attempts < 3) {return Promise.reject(errWithCode('ECONNRESET'))}
+        if (attempts < 3) {
+          return Promise.reject(errWithCode('ECONNRESET'))
+        }
 
         return Promise.resolve('ok')
       },
@@ -141,7 +143,9 @@ describe('withRetry', () => {
         state.bodySent = true
         attempts += 1
 
-        if (attempts < 2) {return Promise.reject(errWithCode('ECONNREFUSED'))}
+        if (attempts < 2) {
+          return Promise.reject(errWithCode('ECONNREFUSED'))
+        }
 
         return Promise.resolve(null)
       },

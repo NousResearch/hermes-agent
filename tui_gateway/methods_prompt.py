@@ -14,11 +14,13 @@ _profile_scoped = _registry.profile_scoped
 
 
 def _history_user_indices(history: list) -> list:
-    """Indices of model-visible user turns (excludes display_kind timeline markers)."""
+    """Indices of canonical live-user turns, including composite carriers."""
+    from agent.context_compressor import user_originated_turn_view
+
     return [
         i
         for i, m in enumerate(history)
-        if m.get("role") == "user" and not m.get("display_kind")
+        if user_originated_turn_view(m) is not None
     ]
 
 
@@ -50,17 +52,28 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
         return False
     if mem.get("role") != db_msg.get("role"):
         return False
+    if mem.get("role") == "user":
+        from agent.context_compressor import user_originated_turn_view
+        from agent.memory_manager import sanitize_context
+
+        mem_view = user_originated_turn_view(mem)
+        db_view = user_originated_turn_view(db_msg)
+        if (mem_view is None) != (db_view is None):
+            return False
+        if mem_view is None:
+            return bool(mem.get("display_kind")) == bool(
+                db_msg.get("display_kind")
+            )
+        mem_content = mem_view.get("content")
+        db_content = db_view.get("content")
+        if isinstance(mem_content, str) and isinstance(db_content, str):
+            if sanitize_context(mem_content).strip() != sanitize_context(
+                db_content
+            ).strip():
+                return False
+        return True
     if bool(mem.get("display_kind")) != bool(db_msg.get("display_kind")):
         return False
-    if mem.get("role") == "user" and not mem.get("display_kind"):
-        mem_content = mem.get("content")
-        db_content = db_msg.get("content")
-        if (
-            isinstance(mem_content, str)
-            and isinstance(db_content, str)
-            and mem_content.strip() != db_content.strip()
-        ):
-            return False
     return True
 
 
@@ -72,7 +85,11 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
     return None
 
 
-def _load_durable_truncation_history(session: dict, fallback_sid: str = ""):
+def _load_durable_truncation_history(
+    session: dict,
+    fallback_sid: str = "",
+    repair_alternation: bool = True,
+):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
     session_key = str(session.get("session_key") or fallback_sid or "")
     if not session_key:
@@ -83,7 +100,9 @@ def _load_durable_truncation_history(session: dict, fallback_sid: str = ""):
             if not callable(get_conv):
                 return None
             history = get_conv(
-                session_key, repair_alternation=True, include_row_ids=True
+                session_key,
+                repair_alternation=repair_alternation,
+                include_row_ids=True,
             )
     except Exception:
         logger.debug(
@@ -368,6 +387,17 @@ def _(rid, params: dict) -> dict:
     # the fresh post-rewrite row ids of the surviving user turns, for client
     # rowId rebinding (see comment at the assignment site).
     survivor_user_row_ids = None
+    survivor_row_id_map = None
+    raw_rebind_ids = params.get("rebind_survivor_row_ids")
+    requested_rebind_ids = (
+        {
+            row_id
+            for row_id in raw_rebind_ids
+            if isinstance(row_id, int) and not isinstance(row_id, bool)
+        }
+        if isinstance(raw_rebind_ids, list)
+        else None
+    )
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
@@ -394,7 +424,9 @@ def _(rid, params: dict) -> dict:
             or truncate_message_id is not None
             or truncate_row_id is not None
         ):
-            history = session.get("history", [])
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
 
             # Malformed params refuse first (4004), regardless of consent —
             # the historical ordinal-path precedence.
@@ -451,12 +483,10 @@ def _(rid, params: dict) -> dict:
             # ordinal and a tip-relative ordinal below can translate, instead
             # of loading ancestors into the tip (which would duplicate
             # compressed history on later resumes).
-            prefix_user_count = sum(
-                1
-                for message in session.get("display_history_prefix") or []
-                if isinstance(message, dict)
-                and message.get("role") == "user"
-                and not message.get("display_kind")
+            prefix_user_count = len(
+                _history_user_indices(
+                    session.get("display_history_prefix") or []
+                )
             )
 
             user_indices = _history_user_indices(history)
@@ -602,7 +632,11 @@ def _(rid, params: dict) -> dict:
                     "target user message is no longer in session history",
                     data=_stale_target_data(resolved_ordinal=ordinal),
                 )
-            truncated = history[: user_indices[ordinal]]
+            from agent.context_compressor import history_before_user_originated_turn
+
+            truncated, _live_view = history_before_user_originated_turn(
+                history, user_indices[ordinal]
+            )
             # Second gate, on top of confirm_truncate: ordinal 0 resolves to
             # history[:0] == [] and replace_messages() DELETEs every durable
             # row. A confirmed rewind that happens to erase the whole
@@ -679,11 +713,48 @@ def _(rid, params: dict) -> dict:
                         # default fix have no key, and replace_messages(None)
                         # triggers an FK violation.
                         truncation_key = session.get("session_key") or sid
+                        old_active_row_ids = {
+                            row_id
+                            for message in history
+                            if isinstance(
+                                (row_id := _message_row_id(message)), int
+                            )
+                        }
+                        if requested_rebind_ids is not None:
+                            # Row-id fallback can resolve a durable target even
+                            # when the live list is too misaligned to stamp safely,
+                            # and alternation repair can merge a physical user;user
+                            # pair while preserving only the first row id. Read the
+                            # authoritative un-repaired pre-write active-id set so
+                            # a rewritten row is never mistaken for an untouched
+                            # archived/ancestor row by the bounded client map.
+                            durable_rebind_history = (
+                                _load_durable_truncation_history(
+                                    session,
+                                    truncation_key,
+                                    repair_alternation=False,
+                                )
+                            )
+                            if durable_rebind_history is None:
+                                raise RuntimeError(
+                                    "could not load durable row identities for truncation"
+                                )
+                            old_active_row_ids.update(
+                                row_id
+                                for message in durable_rebind_history
+                                if isinstance(
+                                    (row_id := _message_row_id(message)), int
+                                )
+                            )
+                        old_survivor_row_ids = [
+                            _message_row_id(message) for message in truncated
+                        ]
                         db.replace_messages(
                             truncation_key,
                             truncated,
                             active_only=True,
                             archive_dropped=True,
+                            reject_active_turn_lease=True,
                         )
                     except Exception as exc:
                         logger.error(
@@ -716,6 +787,26 @@ def _(rid, params: dict) -> dict:
                         _message_row_id(truncated[i])
                         for i in _history_user_indices(truncated)
                     ]
+                    if requested_rebind_ids is not None:
+                        survivor_row_id_map = {
+                            str(old_row_id): new_row_id
+                            for old_row_id, new_row_id in zip(
+                                old_survivor_row_ids,
+                                (
+                                    _message_row_id(message)
+                                    for message in truncated
+                                ),
+                            )
+                            if isinstance(old_row_id, int)
+                            and isinstance(new_row_id, int)
+                            and old_row_id in requested_rebind_ids
+                        }
+                        for dropped_row_id in requested_rebind_ids.intersection(
+                            old_active_row_ids
+                        ):
+                            survivor_row_id_map.setdefault(
+                                str(dropped_row_id), None
+                            )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
         session["running"] = True
@@ -728,13 +819,15 @@ def _(rid, params: dict) -> dict:
             rid, sid, session, text, display_kind=display_kind
         )
         if not isolated_response.get("error"):
-            if survivor_user_row_ids is not None:
+            if survivor_user_row_ids is not None and requested_rebind_ids is None:
                 # The truncation already happened inline above (memory + DB),
                 # before compute-host dispatch — the rebind payload applies to
                 # this path exactly as it does to the inline one.
                 isolated_response["result"][
                     "survivor_user_row_ids"
                 ] = survivor_user_row_ids
+            if survivor_row_id_map is not None:
+                isolated_response["result"]["survivor_row_id_map"] = survivor_row_id_map
             return isolated_response
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s",
@@ -829,6 +922,12 @@ def _(rid, params: dict) -> dict:
             **(
                 {"survivor_user_row_ids": survivor_user_row_ids}
                 if survivor_user_row_ids is not None
+                and requested_rebind_ids is None
+                else {}
+            ),
+            **(
+                {"survivor_row_id_map": survivor_row_id_map}
+                if survivor_row_id_map is not None
                 else {}
             ),
         },

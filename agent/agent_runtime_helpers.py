@@ -771,6 +771,19 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and merged[-1].get("role") == "user"
         ):
             prev = merged[-1]
+            # A summary carrier followed by a new user row is a deliberate
+            # durable shape after retry/rewind.  Do not absorb the fresh ask
+            # into the already-persisted carrier: mutating that dict can make
+            # the only in-memory copy diverge from its durable row.  Provider
+            # sanitizers merge copies later when strict alternation requires
+            # it, without rewriting either durable message.
+            from agent.context_compressor import split_user_originated_turn
+
+            handoff, _ = split_user_originated_turn(prev)
+            if handoff is not None:
+                merged.append(msg)
+                continue
+
             prev_content = prev.get("content", "")
             new_content = msg.get("content", "")
             # Only merge plain-text content; leave multimodal (list)
@@ -1428,8 +1441,6 @@ def drop_thinking_only_and_merge_users(
         )
     ]
     dropped = len(messages) - len(kept)
-    if dropped == 0:
-        return messages
 
     # Pass 2: merge any newly-adjacent user messages.
     merged: List[Dict[str, Any]] = []
@@ -1478,6 +1489,9 @@ def drop_thinking_only_and_merge_users(
             merges += 1
         else:
             merged.append(m)
+
+    if dropped == 0 and merges == 0:
+        return messages
 
     _ra().logger.debug(
         "Pre-call sanitizer: dropped %d thinking-only assistant turn(s), "

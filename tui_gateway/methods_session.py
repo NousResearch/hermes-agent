@@ -2821,25 +2821,34 @@ def _(rid, params: dict) -> dict:
         )
     removed = 0
     with session["history_lock"]:
-        history = session.get("history", [])
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /undo"
+            )
+        history = _history_without_ephemeral_scaffolding(
+            session.get("history", [])
+        )
         # Truncate from the last *real* user turn. Popping only trailing
         # assistant/tool then one user left timeline markers
         # (async_delegation_complete, model_switch, …) or compaction
         # handoffs as the undo target — so session.undo removed
         # bookkeeping instead of the last exchange (#80622).
-        # Match list_recent_user_messages / CLI turn counting.
-        from agent.context_compressor import is_user_originated_turn
+        # Match user_originated_turn_view / CLI turn counting.
+        from agent.context_compressor import user_originated_turn_view
 
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_idx = i
-                break
-        if last_user_idx is not None:
-            removed = len(history) - last_user_idx
-            del history[last_user_idx:]
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+        user_indices = [
+            index
+            for index, message in enumerate(history)
+            if user_originated_turn_view(message) is not None
+        ]
+        if user_indices:
+            try:
+                _installed, _live_view, rewound_count = (
+                    _rewind_active_session_history(session, len(user_indices) - 1)
+                )
+                removed = rewound_count
+            except Exception as exc:
+                return _err(rid, 5008, f"undo: {exc}")
     return _ok(rid, {"removed": removed})
 
 

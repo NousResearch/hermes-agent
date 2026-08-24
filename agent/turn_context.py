@@ -274,18 +274,26 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     scaffolding, not the active ask. Returns -1 when the list has no
     user-originated message at all.
     """
-    from agent.context_compressor import is_user_originated_turn
+    from agent.context_compressor import user_originated_turn_view
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             continue
+        # Typed synthetic current events still need their physical persistence
+        # anchor when their raw content is unchanged.  They are not eligible
+        # for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        live_view = user_originated_turn_view(msg)
+        if live_view is None:
+            continue
+        if live_view.get("content") == user_message:
             return i
         # Prefer a real human turn over a synthetic handoff / continuation
         # marker when the exact content was rewritten by merge-into-tail.
-        if fallback < 0 and is_user_originated_turn(msg):
+        if fallback < 0:
             fallback = i
     return fallback
 

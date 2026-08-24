@@ -365,6 +365,28 @@ describe('toChatMessages', () => {
     }
   })
 
+  it('projects persisted composite compaction carriers to their live user turn', () => {
+    const messages = toChatMessages([
+      {
+        id: 71,
+        role: 'user',
+        content: 'internal summary scaffold\n\nREAL ASK',
+        display_content: 'REAL ASK',
+        timestamp: 1
+      },
+      {
+        id: 72,
+        role: 'user',
+        content: 'prior live ask\n\ninternal summary scaffold',
+        display_content: 'prior live ask',
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['REAL ASK', 'prior live ask'])
+    expect(messages.map(message => message.rowId)).toEqual([71, 72])
+  })
+
   it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },

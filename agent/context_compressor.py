@@ -16,6 +16,7 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -8103,6 +8104,218 @@ def is_compaction_summary_message(message: Any) -> bool:
     return ContextCompressor._is_context_summary_content(content)
 
 
+# Display metadata that describes the durable message independently of the
+# compaction wrapper.  Other metadata may describe a synthetic timeline event
+# and must not make that event look human after projection.
+SUMMARY_CARRIER_DURABLE_DISPLAY_METADATA_KEYS = ("reactions",)
+
+
+def _handoff_only_content(content: Any) -> Any:
+    """Project summary-bearing content to the synthetic handoff alone.
+
+    The compressor has two composite layouts.  Ordinary merge-into-tail keeps
+    the live content before ``_MERGED_SUMMARY_DELIMITER``; the force-user-
+    leading layout keeps it after ``_SUMMARY_END_MARKER``.  This is the inverse
+    of ``_strip_context_summary_handoff_message`` and deliberately never keeps
+    live media blocks.
+    """
+    if isinstance(content, str):
+        if _MERGED_SUMMARY_DELIMITER in content:
+            suffix = content.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
+            marker_idx = suffix.find(_SUMMARY_END_MARKER)
+            if marker_idx >= 0:
+                return suffix[: marker_idx + len(_SUMMARY_END_MARKER)]
+            return suffix
+        marker_idx = content.find(_SUMMARY_END_MARKER)
+        if marker_idx >= 0:
+            return content[: marker_idx + len(_SUMMARY_END_MARKER)]
+        return content
+
+    if not isinstance(content, list):
+        return content
+
+    # Ordinary merge: the summary suffix begins in the delimiter-bearing text
+    # part.  Do not retain later parts: malformed/legacy rows may carry live
+    # media there rather than synthetic scaffold content.
+    for item in content:
+        text = (
+            item
+            if isinstance(item, str)
+            else item.get("text")
+            if isinstance(item, dict)
+            else None
+        )
+        if not isinstance(text, str) or _MERGED_SUMMARY_DELIMITER not in text:
+            continue
+        suffix = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
+        marker_idx = suffix.find(_SUMMARY_END_MARKER)
+        if marker_idx >= 0:
+            suffix = suffix[: marker_idx + len(_SUMMARY_END_MARKER)]
+        if not suffix:
+            return []
+        if isinstance(item, dict):
+            copied = item.copy()
+            copied["text"] = suffix
+            return [copied]
+        return [suffix]
+
+    # Force-user-leading merge: keep textual parts through the end marker and
+    # truncate the marker-bearing part before the live ask.
+    projected: list[Any] = []
+    for item in content:
+        text = (
+            item
+            if isinstance(item, str)
+            else item.get("text")
+            if isinstance(item, dict)
+            else None
+        )
+        if isinstance(text, str) and _SUMMARY_END_MARKER in text:
+            prefix = text.split(_SUMMARY_END_MARKER, 1)[0] + _SUMMARY_END_MARKER
+            if isinstance(item, dict):
+                copied = item.copy()
+                copied["text"] = prefix
+                projected.append(copied)
+            else:
+                projected.append(prefix)
+            return projected
+        if isinstance(text, str):
+            projected.append(item.copy() if isinstance(item, dict) else item)
+    return projected
+
+
+def split_user_originated_turn(
+    message: Any,
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Split a user row into hidden handoff scaffold and canonical live view.
+
+    Returns ``(handoff_only, live_view)``.  A normal human row has no
+    handoff; a pure compaction handoff has no live view; a composite carrier
+    has both.  Rewritten projections are fresh dictionaries and never retain
+    stale API-content or physical persistence identity.
+    """
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return None, None
+
+    is_summary = is_compaction_summary_message(message)
+    handoff: Optional[Dict[str, Any]] = None
+    if is_summary:
+        handoff = {
+            "role": "user",
+            "content": _handoff_only_content(message.get("content")),
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            "display_kind": "hidden",
+        }
+        if COMPRESSED_SUMMARY_HAS_USER_TURN_KEY in message:
+            handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = bool(
+                message.get(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY)
+            )
+        if message.get(MICRO_COMPACT_MARKER_KEY):
+            handoff[MICRO_COMPACT_MARKER_KEY] = True
+        if message.get("timestamp") is not None:
+            handoff["timestamp"] = message["timestamp"]
+        drop_stale_api_content(handoff)
+
+        # Hidden is the legacy physical wrapper used for compaction rows and
+        # does not hide a successfully unwrapped human payload.  Other typed
+        # display rows are synthetic timeline events, never user input.
+        display_kind = message.get("display_kind")
+        if display_kind and display_kind != "hidden":
+            return handoff, None
+        candidate = ContextCompressor._strip_context_summary_handoff_message(message)
+        if candidate is None:
+            return handoff, None
+    else:
+        if message.get("display_kind"):
+            return None, None
+        candidate = message.copy()
+
+    candidate.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
+    candidate.pop(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY, None)
+    candidate.pop(MICRO_COMPACT_MARKER_KEY, None)
+    candidate.pop(_DB_PERSISTED_MARKER, None)
+    if is_summary:
+        candidate.pop("_row_id", None)
+    candidate.pop("display_kind", None)
+    candidate.pop("display_metadata", None)
+    carrier_metadata = message.get("display_metadata")
+    if isinstance(carrier_metadata, dict):
+        durable_metadata = {
+            key: copy.deepcopy(carrier_metadata[key])
+            for key in SUMMARY_CARRIER_DURABLE_DISPLAY_METADATA_KEYS
+            if key in carrier_metadata
+        }
+        if durable_metadata:
+            candidate["display_metadata"] = durable_metadata
+    drop_stale_api_content(candidate)
+    if ContextCompressor._is_synthetic_compression_user_turn(candidate):
+        return handoff, None
+    if not ContextCompressor._is_actionable_user_turn(candidate):
+        return handoff, None
+    return handoff, candidate
+
+
+def user_originated_turn_view(message: Any) -> Optional[Dict[str, Any]]:
+    """Return the live human-authored projection of a user row, if any."""
+    return split_user_originated_turn(message)[1]
+
+
+def history_before_user_originated_turn(
+    messages: List[Dict[str, Any]],
+    index: int,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Return a rewind prefix and canonical live view for ``index``.
+
+    When the selected row is a composite carrier, the hidden handoff scaffold
+    remains at the new history head while the live ask and later rows are
+    removed.  This retains the only representation of already-compacted turns.
+    """
+    if index < 0 or index >= len(messages):
+        raise IndexError("user turn index is outside the transcript")
+    handoff, live_view = split_user_originated_turn(messages[index])
+    if live_view is None:
+        raise ValueError("selected row is not a user-originated turn")
+    prefix = [message.copy() for message in messages[:index]]
+    if handoff is not None:
+        prefix.append(handoff)
+    return prefix, live_view
+
+
+def retryable_user_text(content: Any) -> str:
+    """Return lossless retry text or raise before destructive mutation.
+
+    Retry has no attachment replay protocol.  Media and unknown structured
+    parts therefore fail closed; already-persisted strings are replayed as
+    text, including any textual degradation labels. Structured content is
+    flattened only when every part is plain text.
+    """
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+                continue
+            if not isinstance(part, dict):
+                raise ValueError("retry does not support non-text content")
+            if part.get("type") not in {"text", "input_text", "output_text"}:
+                raise ValueError("retry does not support media or unknown content parts")
+            if set(part) - {"type", "text"}:
+                raise ValueError("retry cannot losslessly flatten annotated text parts")
+            part_text = part.get("text")
+            if not isinstance(part_text, str):
+                raise ValueError("retry text parts must contain text")
+            chunks.append(part_text)
+        text = "".join(chunks)
+    else:
+        raise ValueError("retry does not support non-text content")
+
+    if not text.strip():
+        raise ValueError("retry found no text to send")
+    return text
+
+
 def _handoff_carries_live_user_content(message: Any) -> bool:
     """Return True when a summary-bearing row still carries a live user ask.
 
@@ -8112,13 +8325,11 @@ def _handoff_carries_live_user_content(message: Any) -> bool:
     shape must remain actionable (#80622 must not treat them as sole-handoff).
 
     Delegates to ``_strip_context_summary_handoff_message`` — the canonical
-    "does anything survive once the handoff is removed" logic (it also
-    handles multimodal list content and returns ``None`` for a merged-shaped
-    row whose preserved prior tail is EMPTY, which a bare
-    ``classify_summary_content(...) == "merged"`` check would wrongly treat
-    as live). Callers must pre-filter with ``is_compaction_summary_message``:
-    for non-summary rows the strip helper returns the message unchanged,
-    which would read as "carries live content" here.
+    "does anything survive once the handoff is removed" logic.  This helper
+    also applies to merged assistant carriers whose pending tool calls keep an
+    exchange in flight, so it must not use the user-row-only display projection.
+    Callers must pre-filter with ``is_compaction_summary_message`` because a
+    non-summary row is returned unchanged by the strip helper.
     """
     if not isinstance(message, dict):
         return False
@@ -8197,15 +8408,8 @@ def is_user_originated_turn(message: Any) -> bool:
     this instead of ``role == "user" and not display_kind`` — standalone
     handoffs with ``_compressed_summary_has_user_turn`` were previously left
     without ``display_kind=hidden`` and could be mistaken for real asks (#80622).
-    Summary-bearing rows are never user-originated, even when they embed a
-    live ask after the end marker (callers that need that text should unwrap).
+    Summary-bearing rows count only when their canonical live-user projection
+    recovers an actionable ask.  Pure handoffs and typed synthetic rows never
+    count.
     """
-    if not isinstance(message, dict) or message.get("role") != "user":
-        return False
-    if message.get("display_kind"):
-        return False
-    if is_compaction_summary_message(message):
-        return False
-    if ContextCompressor._is_synthetic_compression_user_turn(message):
-        return False
-    return ContextCompressor._is_actionable_user_turn(message)
+    return user_originated_turn_view(message) is not None

@@ -1390,14 +1390,71 @@ def init_agent(
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
             else:
-                # When the user explicitly chose a non-OpenRouter provider
-                # but no credentials were found, fail fast with a clear
-                # message instead of silently routing through OpenRouter.
+                # No credentials resolved for the configured provider.  Give
+                # the user-configured fallback chain a chance BEFORE failing
+                # (#17929) — regardless of WHICH provider failed.  An
+                # exhausted single-entry pool (typically ``openrouter``
+                # under free-tier daily quotas) must still reach the chain
+                # instead of dying at init with a misleading "No LLM
+                # provider configured" error.  Only providers explicitly
+                # chosen by name keep the dedicated missing-key diagnostic.
                 _explicit = (agent.provider or "").strip().lower()
-                if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                    # Look up the actual env var name from the provider
-                    # config — some providers use non-standard names
-                    # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                # --- Init-time fallback (#17929) ---
+                _fb_entries = []
+                if isinstance(fallback_model, list):
+                    _fb_entries = [
+                        f for f in fallback_model
+                        if isinstance(f, dict) and f.get("provider") and f.get("model")
+                    ]
+                elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                    _fb_entries = [fallback_model]
+                _fb_resolved = False
+                for _fb in _fb_entries:
+                    try:
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+                        _fb_explicit_key = resolve_entry_api_key(_fb)
+                        _fb_client, _fb_model = resolve_provider_client(
+                            _fb["provider"], model=_fb["model"], raw_codex=True,
+                            explicit_base_url=_fb.get("base_url"),
+                            explicit_api_key=_fb_explicit_key,
+                        )
+                    except Exception as _fb_exc:
+                        logger.debug(
+                            "Init-time fallback entry %s failed: %s",
+                            _fb.get("provider"), _fb_exc,
+                        )
+                        continue
+                    if _fb_client is not None:
+                        agent.provider = _fb["provider"]
+                        agent.model = _fb_model or _fb["model"]
+                        agent._fallback_activated = True
+                        client_kwargs = {
+                            "api_key": _fb_client.api_key,
+                            "base_url": str(_fb_client.base_url),
+                        }
+                        if _provider_timeout is not None:
+                            client_kwargs["timeout"] = _provider_timeout
+                        _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                        if not _fb_headers:
+                            _fb_headers = getattr(_fb_client, "default_headers", None)
+                        if not _fb_headers:
+                            _fb_headers = getattr(_fb_client, "_default_headers", None)
+                        if _fb_headers:
+                            client_kwargs["default_headers"] = dict(_fb_headers)
+                        _fb_resolved = True
+                        break
+                if (
+                    not _fb_resolved
+                    and _explicit
+                    and _explicit not in {"auto", "openrouter", "custom"}
+                ):
+                    # Explicitly chosen non-OpenRouter provider with neither
+                    # credentials nor a usable fallback: fail fast with a
+                    # clear message instead of silently routing through
+                    # OpenRouter.  Look up the actual env var name from the
+                    # provider config — some providers use non-standard
+                    # names (e.g. alibaba → DASHSCOPE_API_KEY, not
+                    # ALIBABA_API_KEY).
                     _env_hint = f"{_explicit.upper()}_API_KEY"
                     try:
                         from hermes_cli.auth import PROVIDER_REGISTRY
@@ -1406,56 +1463,11 @@ def init_agent(
                             _env_hint = _pcfg.api_key_env_vars[0]
                     except Exception:
                         pass
-                    # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
-                    _fb_resolved = False
-                    for _fb in _fb_entries:
-                        try:
-                            from hermes_cli.fallback_config import resolve_entry_api_key
-                            _fb_explicit_key = resolve_entry_api_key(_fb)
-                            _fb_client, _fb_model = resolve_provider_client(
-                                _fb["provider"], model=_fb["model"], raw_codex=True,
-                                explicit_base_url=_fb.get("base_url"),
-                                explicit_api_key=_fb_explicit_key,
-                            )
-                        except Exception as _fb_exc:
-                            logger.debug(
-                                "Init-time fallback entry %s failed: %s",
-                                _fb.get("provider"), _fb_exc,
-                            )
-                            continue
-                        if _fb_client is not None:
-                            agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
-                            agent._fallback_activated = True
-                            client_kwargs = {
-                                "api_key": _fb_client.api_key,
-                                "base_url": str(_fb_client.base_url),
-                            }
-                            if _provider_timeout is not None:
-                                client_kwargs["timeout"] = _provider_timeout
-                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "default_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "_default_headers", None)
-                            if _fb_headers:
-                                client_kwargs["default_headers"] = dict(_fb_headers)
-                            _fb_resolved = True
-                            break
-                    if not _fb_resolved:
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
-                        )
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_env_hint} environment "
+                        f"variable, or switch to a different provider with `hermes model`."
+                    )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.
                     raise RuntimeError(

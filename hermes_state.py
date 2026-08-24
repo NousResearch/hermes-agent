@@ -3946,6 +3946,29 @@ def _is_inactive_orphan_desktop_holder(
     )
 
 
+def _concrete_state_db_holder_pids(
+    db_path: Path, holders: List[Tuple[int, str]]
+) -> List[int]:
+    """Return unique PIDs proven to hold this DB or one of its sidecars."""
+    canonical_db = os.path.normcase(os.path.abspath(os.fspath(db_path)))
+    watched = {
+        canonical_db,
+        canonical_db + "-wal",
+        canonical_db + "-shm",
+    }
+    pids: List[int] = []
+    seen = set()
+    for pid, path in holders:
+        canonical_path = os.path.normcase(
+            os.path.abspath(path.removesuffix(" (deleted)"))
+        )
+        if pid <= 0 or pid in seen or canonical_path not in watched:
+            continue
+        seen.add(pid)
+        pids.append(pid)
+    return pids
+
+
 def _read_proc_cmdline(pid: int) -> Optional[str]:
     """Read /proc/<pid>/cmdline, world-readable even when fd table is not.
 
@@ -5184,9 +5207,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         now = time.time()
         candidates = []
-        for pid, _path in holders:
-            if pid <= 0:
-                continue
+        for pid in _concrete_state_db_holder_pids(self.db_path, holders):
             try:
                 process = psutil.Process(pid)
                 statuses = [

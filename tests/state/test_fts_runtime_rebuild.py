@@ -30,6 +30,7 @@ from hermes_state import (
     SCHEMA_SQL,
     SessionDB,
     _FTS_TRIGGERS,
+    _concrete_state_db_holder_pids,
     _is_inactive_orphan_desktop_holder,
 )
 
@@ -91,6 +92,31 @@ def _base_fts_triggers(db_path):
 
 
 class TestRuntimeFtsRebuild:
+    def test_reap_candidates_exclude_uninspectable_holder_suspicions(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "state.db"
+
+        assert _concrete_state_db_holder_pids(
+            db_path,
+            [
+                (222, "uninspectable holder: python -m hermes_cli.main serve --port 0"),
+                (-1, "open-file scan failed"),
+            ],
+        ) == []
+
+    def test_reap_candidates_deduplicate_multiple_proven_watched_fds(self, tmp_path):
+        db_path = tmp_path / "state.db"
+
+        assert _concrete_state_db_holder_pids(
+            db_path,
+            [
+                (222, str(db_path)),
+                (222, f"{db_path}-wal"),
+                (222, f"{db_path}-shm (deleted)"),
+            ],
+        ) == [222]
+
     def test_inactive_orphan_reap_predicate_preserves_live_or_ambiguous_holders(self):
         common = {
             "ppid": 1,

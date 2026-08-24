@@ -140,14 +140,17 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import _reapply_durability_barriers
+    from hermes_state import apply_durability_barriers
 
     # state.db's owning SessionDB connection establishes the configured journal
     # mode. This secondary durability ledger must preserve that mode: applying
     # WAL here on every short-lived connection requires an exclusive lock when
     # the file is not already WAL and can collide with live transcript/FTS
-    # writers. The ledger works in either WAL or DELETE mode.
-    _reapply_durability_barriers(conn)
+    # writers. The ledger works in either WAL or DELETE mode; if it opens a new
+    # file first, the default rollback journal remains valid until SessionDB
+    # establishes the configured mode. sqlite3.connect(timeout=10) above also
+    # gives its small transactions a busy handler for ordinary contention.
+    apply_durability_barriers(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,

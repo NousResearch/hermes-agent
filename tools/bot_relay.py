@@ -505,7 +505,12 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        "            print('Delivery to ' + label + ' failed: ' + d['error'])\n"
+        # The typed reason code (#93091) rides ahead of the free text so the
+        # sending agent can branch on it (auth vs rate limit vs offline)
+        # without parsing provider prose.
+        "            code = str(d.get('reason') or '').strip()\n"
+        "            tag = ' [reason: ' + code + ']' if code else ''\n"
+        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
         "            sys.exit(1)\n"
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"

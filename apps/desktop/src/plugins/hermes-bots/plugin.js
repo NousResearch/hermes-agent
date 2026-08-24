@@ -1594,8 +1594,17 @@ async function drainRelayOutboxes() {
           clearBotAttention(attentionKey)
           await postReply({ reply: String(res?.reply || '') })
         } catch (error) {
-          noteBotAttention(attentionKey, error?.message || error)
-          await postReply({ error: String(error?.message || error || 'delivery failed') })
+          // #93091: bot_relay.deliver classifies the failed turn and ships the
+          // typed code in the JSON-RPC error's `data.reason`; forward it into
+          // the sender-side reply file so the waiter (and the sending agent)
+          // get the machine-readable cause, and prefer it for the badge —
+          // classified codes beat free-text re-parsing.
+          const reason = String(error?.data?.reason || '').trim()
+          noteBotAttention(attentionKey, reason || error?.message || error)
+          await postReply({
+            error: String(error?.message || error || 'delivery failed'),
+            ...(reason ? { reason } : {})
+          })
         }
       }
     }

@@ -459,6 +459,136 @@ class TestSend:
         # Should NOT attempt APP_CMD_SEND
         adapter._send_request.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_send_reconnects_and_retries_lost_subscription_response(self):
+        from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._invalidate_connection = AsyncMock()
+        calls = []
+
+        async def fake_send_request(cmd, body):
+            calls.append((cmd, body))
+            if len(calls) == 1:
+                return {
+                    "errcode": 846609,
+                    "errmsg": "aibot websocket not subscribed",
+                }
+            return {"headers": {"req_id": "req-2"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-123", "Hello WeCom")
+
+        assert result.success is True
+        assert result.message_id == "req-2"
+        adapter._invalidate_connection.assert_awaited_once()
+        assert [cmd for cmd, _body in calls] == [APP_CMD_SEND, APP_CMD_SEND]
+
+    @pytest.mark.asyncio
+    async def test_send_reconnects_and_retries_lost_subscription_exception(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._cached_reply_req_id = MagicMock(return_value="req-1")
+        adapter._invalidate_connection = AsyncMock()
+        adapter._send_reply_markdown = AsyncMock(
+            side_effect=[
+                RuntimeError(
+                    "send reply markdown failed: WeCom errcode 846609: "
+                    "aibot websocket not subscribed"
+                ),
+                {"headers": {"req_id": "req-2"}, "errcode": 0},
+            ]
+        )
+
+        result = await adapter.send("chat-123", "Hello WeCom", reply_to="msg-1")
+
+        assert result.success is True
+        assert result.message_id == "req-2"
+        adapter._invalidate_connection.assert_awaited_once()
+        assert adapter._send_reply_markdown.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_retry_failure_returns_original_error(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._invalidate_connection = AsyncMock()
+        calls = []
+
+        async def fake_send_request(cmd, body):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return {
+                    "errcode": 846609,
+                    "errmsg": "aibot websocket not subscribed",
+                }
+            raise RuntimeError("reconnect succeeded but send still failed")
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-123", "Hello WeCom")
+
+        assert result.success is False
+        assert "846609" in (result.error or "")
+        adapter._invalidate_connection.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_non_subscription_error_does_not_reconnect(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._invalidate_connection = AsyncMock()
+        adapter._send_request = AsyncMock(
+            return_value={"errcode": 40001, "errmsg": "invalid credential"}
+        )
+
+        result = await adapter.send("chat-123", "Hello WeCom")
+
+        assert result.success is False
+        assert "40001" in (result.error or "")
+        adapter._invalidate_connection.assert_not_awaited()
+        adapter._send_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_json_wraps_frame_write_with_timeout(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setattr(wecom_module, "SEND_FRAME_TIMEOUT_SECONDS", 0.05)
+
+        async def wedged_write(_payload):
+            await asyncio.sleep(10)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = SimpleNamespace(closed=False, send_json=wedged_write)
+
+        start = asyncio.get_event_loop().time()
+        with pytest.raises(asyncio.TimeoutError):
+            await adapter._send_json({"cmd": 1})
+        elapsed = asyncio.get_event_loop().time() - start
+
+        assert elapsed < 1.0, "wedged frame write must not hang the caller"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_force_closes_after_consecutive_failures(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setattr(wecom_module, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        ws = SimpleNamespace(closed=False, close=AsyncMock())
+        adapter._ws = ws
+        adapter._send_json = AsyncMock(side_effect=RuntimeError("send failed"))
+
+        task = asyncio.create_task(adapter._heartbeat_loop())
+        await asyncio.wait_for(task, timeout=2)
+
+        ws.close.assert_awaited_once_with(code=1011, message=b"heartbeat timeout")
+
 
 class TestInboundMessages:
     @pytest.mark.asyncio

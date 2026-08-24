@@ -144,7 +144,7 @@ function load({ failFirstSubmitWith = null, failEverySubmitWith = null, reply = 
           timeline.push(method)
         }
       },
-      retainProfile: async route => {
+      retainProfile: async () => {
         timeline.push('retain')
         acquire()
         let released = false

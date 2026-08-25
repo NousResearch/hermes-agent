@@ -2,7 +2,7 @@
 
 > 中文版见 [`README.zh-CN.md`](README.zh-CN.md) · Chinese readme: [`README.zh-CN.md`](README.zh-CN.md)
 
-The OneBot adapter connects Hermes to QQ through the **OneBot 11 protocol**, compatible with [NapCat](https://napneko.github.io/), [Lagrange](https://github.com/LagrangeDev/Lagrange.Core), LLOneBot, and go-cqhttp. Instead of the official QQ Bot platform (which requires a Tencent-approved app), OneBot drives a regular QQ account via a local bridge, useful for personal bots and groups the official platform can't reach.
+The OneBot adapter connects Hermes to QQ through the **OneBot 11 protocol**, compatible with [NapCat](https://napneko.github.io/), [Lagrange](https://github.com/LagrangeDev/Lagrange.Core), LLOneBot, and go-cqhttp. Instead of the official QQ Bot platform (which requires a Tencent-approved app), it drives a regular QQ account through a local bridge. Good for personal bots and groups the official platform can't reach.
 
 ```
 User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
@@ -82,13 +82,13 @@ gateway:
 | `image_max_size` | `2048` | inbound image long-edge cap (px); `0` keeps originals |
 | `max_inbound_file_bytes` | `20971520` (20 MB) | inbound file size cap; larger files degrade to a `[文件:name]` marker |
 | `interim_recall_seconds` | `90` | auto-recall timeout for unsettled interim messages (`0` disables) |
-| `hot_reload` | `false` | dev only: reload `onebot_utils.py` / `t2i_render.py` on mtime change (saves a gateway restart while iterating styles; keep off in production — an in-place write during upgrade can reload a half-written module) |
+| `hot_reload` | `false` | dev only: reload `onebot_utils.py` / `t2i_render.py` on mtime change (saves a gateway restart while iterating styles; keep off in production, an in-place write during upgrade can reload a half-written module) |
 
 Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEBOT_ALLOW_ALL_USERS=true` (dev only), and the global `GATEWAY_ALLOW_ALL_USERS`.
 
 > **`dm_policy: open` + allow-all env**: `ONEBOT_ALLOW_ALL_USERS=true` (or
 > `GATEWAY_ALLOW_ALL_USERS=true`) is the explicit opt-in that makes `open`
-> actually open to non-admins. Without it, `open` means **admins only** —
+> actually open to non-admins. Without it, `open` means **admins only**:
 > the adapter rejects non-admin DMs at intake, before the gateway's
 > allow-all check would ever run.
 
@@ -235,7 +235,7 @@ The downloaded file is stored under the temp media dir, annotated `[文件:本�
 
 ## Outbound media
 
-The adapter implements the gateway's native media senders as OneBot segments, so the agent can deliver rich media through the standard `MEDIA:` / markdown-image mechanism:
+The adapter implements the gateway's native media senders as OneBot segments, so the agent can send media through the standard `MEDIA:` / markdown-image mechanism:
 
 | Capability | OneBot segment | Notes |
 |---|---|---|

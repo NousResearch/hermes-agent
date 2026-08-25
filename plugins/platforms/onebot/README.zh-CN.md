@@ -1,6 +1,6 @@
 # QQ（OneBot）
 
-Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.github.io/)、[Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、LLOneBot 和 go-cqhttp。与官方 QQ Bot 平台（需要腾讯审核的应用）不同，OneBot 通过本地桥接驱动一个普通 QQ 号，适合个人机器人和不被官方平台覆盖的群。
+Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.github.io/)、[Lagrange](https://github.com/LagrangeDev/Lagrange.Core)、LLOneBot 和 go-cqhttp。跟需要腾讯审核的官方 QQ Bot 平台不同，它用本地桥驱动一个普通 QQ 号，适合个人机器人和官方平台覆盖不到的群。
 
 ```
 用户 (QQ) ←→ NapCat ←→ Hermes onebot 适配器 ←→ Hermes agent
@@ -163,7 +163,7 @@ gateway:
 
 ## 群 @ 触发
 
-`require_mention: true`（默认）时机器人在群里只响应显式 @ 或回复已有消息。设为 `false` 则响应每条群消息（很吵，大群不推荐）。未配置 `bot_qq` 时机器人从 OneBot meta 事件学自己的 id，@ 检测开箱即用。
+`require_mention: true`（默认）时机器人在群里只响应显式 @ 或回复已有消息。设为 `false` 则响应每条群消息（很吵，大群不推荐）。未配置 `bot_qq` 时机器人从 OneBot meta 事件学自己的 id，@ 检测不需要额外设置。
 
 ## 长回复（三档，全可配置）
 

@@ -4640,17 +4640,17 @@ export const en: Translations = {
     appControls: 'App controls',
     routeTitles: {
       chat: 'Chat',
+      'session-import': 'Import session',
       settings: 'Settings',
       'command-center': 'Command center',
-      skills: 'Capabilities',
+      capabilities: 'Capabilities',
       messaging: 'Messaging',
       webhooks: 'Webhooks',
       artifacts: 'Artifacts',
       cron: 'Scheduled jobs',
       profiles: 'Profiles',
       agents: 'Agents',
-      starmap: 'Starmap',
-      extension: 'Extension'
+      starmap: 'Starmap'
     },
     modelMenu: {
       search: 'Search models',

@@ -3564,17 +3564,17 @@ export const zhHant = defineLocale({
     appControls: '應用程式控制項',
     routeTitles: {
       chat: '聊天',
+      'session-import': '匯入工作階段',
       settings: '設定',
       'command-center': '命令中心',
-      skills: '技能',
+      capabilities: '功能',
       messaging: '訊息',
-      webhooks: '網路鉤子',
-      artifacts: '產物',
+      webhooks: 'Webhooks',
+      artifacts: '產出',
       cron: '排程工作',
       profiles: '設定檔',
       agents: '代理程式',
-      starmap: '星圖',
-      extension: '擴充功能'
+      starmap: '星圖'
     },
     modelMenu: {
       search: '搜尋模型',

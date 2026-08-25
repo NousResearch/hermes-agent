@@ -27,8 +27,8 @@ describe('RouteHeading', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Chat')
   })
 
-  it('tracks non-chat routes (skills, stripping the query)', () => {
-    renderAt('/skills?tab=mcp')
+  it('tracks non-chat routes (capabilities, stripping the query)', () => {
+    renderAt('/capabilities?tab=mcp')
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Capabilities')
   })
 })

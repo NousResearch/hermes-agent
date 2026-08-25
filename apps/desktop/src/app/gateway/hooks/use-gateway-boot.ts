@@ -674,6 +674,10 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
+      // The primary socket has no secondary entry to carry registry identity.
+      // Electron's published active descriptor is authoritative after boot;
+      // a true legacy primary has no connectionId and remains unqualified.
+      activeConnectionId: () => $connection.get()?.connectionId ?? null,
       // Every dispose path in the registry (live-work pruner AND the
       // refcount-0 request leases) spares a socket a mounted tile, the
       // primary thread or a just-created session's owner hold is bound to

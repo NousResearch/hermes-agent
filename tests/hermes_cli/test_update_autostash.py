@@ -610,6 +610,53 @@ def test_restore_rejects_later_failure_masked_by_preexisting_failure(
     assert "gateway was not restarted" in output
 
 
+def test_restore_rejects_system_exit_masked_by_preexisting_failure(
+    monkeypatch, tmp_path, capsys
+):
+    """A terminating import must be compared instead of hiding the marker."""
+    import subprocess
+    from hermes_cli import update_cmd
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "first.py").write_text(
+        "raise RuntimeError('missing local config')\n", encoding="utf-8"
+    )
+    second = tmp_path / "second.py"
+    second.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    second.write_text("raise SystemExit('restored exit')\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("first", "second"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
+
+    assert exc_info.value.code == 1
+    assert second.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert git("status", "--porcelain").stdout == ""
+    assert git("stash", "list").stdout.strip()
+    output = capsys.readouterr().out
+    assert "agent import second" in output
+    assert "restored exit" in output
+    assert "gateway was not restarted" in output
+
+
 def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     prompts = []
 

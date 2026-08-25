@@ -708,10 +708,14 @@ def _critical_module_import_failures(
         "    except Exception as exc:\n"
         "        if %r:\n"
         "            failures.append((name, str(exc)))\n"
+        "    except BaseException as exc:\n"
+        "        if %r:\n"
+        "            failures.append((name, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (
             _UPDATE_CRITICAL_MODULES,
             tuple(sorted(FIRST_PARTY_MODULE_ROOTS)),
+            report_runtime_errors,
             report_runtime_errors,
             marker,
         )

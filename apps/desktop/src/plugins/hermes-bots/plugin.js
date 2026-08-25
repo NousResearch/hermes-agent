@@ -5301,17 +5301,71 @@ function botBackendProfileScope(route, fallbackProfile = 'default') {
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
  * explicit descriptor, including a registered local source. */
 async function requestForBot(bot, method, params = {}) {
-  const route = botConnectionRoute(bot)
+  try {
+    const route = botConnectionRoute(bot)
 
-  if (route) {
-    if (typeof host.requestProfile !== 'function') {
-      throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
+    if (route) {
+      if (typeof host.requestProfile !== 'function') {
+        throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
+      }
+
+      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
     }
 
-    return host.requestProfile(route, method, scopedBotParams(route, method, params))
+    return await host.request(method, params)
+  } catch (error) {
+    // React 19 formats query errors with `(error.name || '').trim()`. IPC /
+    // JSON-RPC rejections are often plain objects whose `name` is a number,
+    // which crashes the Routines pane and hides the original failure (#94471).
+    throw asRpcError(error, `Gateway request ${method} failed`)
+  }
+}
+
+/** Coerce an IPC/JSON-RPC rejection into an Error with a string `name`.
+ *
+ *  React Query stores whatever the queryFn throws. React 19 then formats it
+ *  with `(e.name || '').trim()`, which throws TypeError when `name` is a
+ *  number (JSON-RPC codes) or another non-string — the Routines pane crash
+ *  in #94471. Real Error instances are returned as-is when already safe.
+ */
+function asRpcError(value, fallback) {
+  // Duck-type across realms (plugin tests run the source in `vm`, and IPC
+  // can deliver Error-like objects whose prototype is not this realm's
+  // Error). React 19 only needs a string `name`; a stack marks a real
+  // exception vs a JSON-RPC payload like `{ name: 32000, message }`.
+  const isObject = value != null && typeof value === 'object'
+  const name = isObject ? value.name : undefined
+  const message = isObject ? value.message : undefined
+  const hasStringName = typeof name === 'string'
+  const hasStringMessage = typeof message === 'string'
+  const hasStack = isObject && typeof value.stack === 'string'
+
+  if (isObject && hasStringName && (hasStack || hasStringMessage)) {
+    return value
   }
 
-  return host.request(method, params)
+  if (hasStack) {
+    try {
+      value.name = 'Error'
+      if (typeof value.name === 'string') {
+        return value
+      }
+    } catch {
+      void 0
+    }
+    const copy = new Error(hasStringMessage && message ? String(message) : fallback)
+    copy.cause = value
+    return copy
+  }
+
+  if (isObject) {
+    const text = hasStringMessage && String(message).trim() ? String(message) : fallback
+    const error = new Error(text)
+    error.cause = value
+    return error
+  }
+
+  return new Error(value == null || value === '' ? fallback : String(value))
 }
 
 /** Stable per-member identity inside a group room. Local members keep their

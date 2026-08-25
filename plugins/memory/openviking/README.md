@@ -78,6 +78,9 @@ profile's `.env`:
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
 Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
+Hermes also sends `User-Agent: openviking-memory-hermes/<version>` on
+OpenViking requests. This standard harness identifier contains the Hermes
+version, but no per-user identifier, and does not add a separate request.
 
 ## Tools
 

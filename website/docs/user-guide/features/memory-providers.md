@@ -330,6 +330,9 @@ live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
 `OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
+requests. This standard harness identifier contains no per-user identifier and
+does not add a separate request.
 
 ---
 

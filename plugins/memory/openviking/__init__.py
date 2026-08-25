@@ -52,6 +52,7 @@ from urllib.request import url2pathname
 from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from hermes_cli import __version__ as _HERMES_VERSION
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -65,6 +66,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = "hermes"
+_OPENVIKING_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 _AGENT_PROMPT_LABEL = "Hermes peer ID in OpenViking"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
@@ -340,7 +342,10 @@ class _VikingClient:
         if include_tenant is None:
             include_tenant = not bool(self._api_key)
 
-        h = {"Content-Type": "application/json"}
+        h = {
+            "Content-Type": "application/json",
+            "User-Agent": _OPENVIKING_USER_AGENT,
+        }
         if self._agent:
             h["X-OpenViking-Actor-Peer"] = self._agent
         if include_tenant:
@@ -481,7 +486,12 @@ class _VikingClient:
     def _anonymous_json(self, path: str) -> dict:
         """Probe server identity without disclosing credentials or tenant IDs."""
         resp = self._httpx.get(
-            self._url(path), headers={"Accept": "application/json"}, timeout=3.0
+            self._url(path),
+            headers={
+                "Accept": "application/json",
+                "User-Agent": _OPENVIKING_USER_AGENT,
+            },
+            timeout=3.0,
         )
         return self._parse_response(resp)
 

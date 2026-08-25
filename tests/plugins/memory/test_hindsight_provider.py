@@ -605,10 +605,21 @@ class TestToolHandlers:
         monkeypatch.setattr(provider, "_http_patch_memory", MagicMock())
         result = json.loads(provider.handle_tool_call(
             "hindsight_invalidate",
-            {"memory_id": "abc-123-def"},
+            {"memory_id": "abc-123-def", "reason": "stale info"},
         ))
         assert provider._http_patch_memory.called
         assert "invalidated" in result["result"]
+
+    def test_invalidate_requires_reason(self, provider, monkeypatch):
+        """Invalidating without a reason returns an error."""
+        mock_req_class = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: mock_req_class)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123-def"},
+        ))
+        assert "error" in result
+        assert "reason is required" in result["error"]
 
     def test_invalidate_missing_params(self, provider):
         """Neither query nor memory_id returns error."""
@@ -660,10 +671,37 @@ class TestToolHandlers:
         )
         result = json.loads(provider.handle_tool_call(
             "hindsight_invalidate",
-            {"memory_id": "obs-123"},
+            {"memory_id": "obs-123", "reason": "stale"},
         ))
         assert "error" in result
         assert "422" in result["error"]
+
+    def test_invalidate_observation_redirect(self, provider, monkeypatch):
+        """Observation refusal redirects to the source facts."""
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: None)
+        monkeypatch.setattr(
+            provider, "_http_patch_memory",
+            MagicMock(side_effect=RuntimeError(
+                "HTTP 422: only world/experience facts can be curated; "
+                "observations are derived and regenerate from their sources"
+            )),
+        )
+        monkeypatch.setattr(
+            provider, "_http_get_memory",
+            MagicMock(return_value={
+                "source_memories": [
+                    {"id": "d658bf5a-1111", "text": "用户下周三要和供应商开合同评审会", "type": "world"},
+                    {"id": "d658bf5a-2222", "text": "另一个源事实", "type": "world"},
+                ]
+            }),
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "obs-123", "reason": "stale"},
+        ))
+        assert "error" in result
+        assert "Retire one of its source facts instead" in result["error"]
+        assert "d658bf5a-1111" in result["error"]
 
 
 class TestHttpHelpersWire:
@@ -733,6 +771,17 @@ class TestHttpHelpersWire:
         assert captured["method"] == "PATCH"
         assert "abc%23frag%3Fx%3D1" in captured["path"]
         assert "#" not in captured["path"]
+
+    def test_get_memory_quotes_id(self, provider, _http_server):
+        """_http_get_memory hits /memories/{id} (not /list) with encoded id."""
+        base_url, captured = _http_server
+        provider._api_url = base_url
+        provider._timeout = 5
+        body = provider._http_get_memory("abc#frag")
+        assert captured["method"] == "GET"
+        assert "/memories/abc%23frag" in captured["path"]
+        assert "/memories/list" not in captured["path"]
+        assert isinstance(body, dict)
 
 
 # ---------------------------------------------------------------------------

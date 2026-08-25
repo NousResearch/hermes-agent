@@ -139,7 +139,7 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph); supports optional `types` param |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
-| `hindsight_invalidate` | Soft-delete or restore memories (world/experience only). Two modes: mutation (invalidate/restore by ID) and discovery (search for previously-invalidated memories by query). Use query mode to find IDs, then mutation mode to restore. |
+| `hindsight_invalidate` | Soft-delete or restore memories (world/experience only). Two modes: mutation (invalidate/restore by ID, `reason` required when invalidating) and discovery (search for previously-invalidated memories by query). Use query mode to find IDs, then mutation mode to restore. Invalidating an observation redirects to its curatable source facts. |
 
 ## Environment Variables
 

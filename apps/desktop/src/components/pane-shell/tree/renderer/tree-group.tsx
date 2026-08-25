@@ -97,6 +97,7 @@ function ZoneMenu({
   minimized,
   nodeId,
   stripVisible,
+  tabMenuPrefix,
   targetPane
 }: {
   children: ReactNode
@@ -111,6 +112,8 @@ function ZoneMenu({
   /** Whether the strip is on screen — the Hide/Show row toggles against what
    *  the user can see, not against the stored mode (a zone on auto has none). */
   stripVisible?: boolean
+  /** Domain verbs for the right-clicked pane, resolved when the menu opens. */
+  tabMenuPrefix?: (kit: MenuKit) => ReactNode
   /** The right-clicked chip (else the active pane) — what the close-others /
    *  to-the-right / all verbs measure from. Called when the menu RENDERS, not
    *  on every zone re-render: resolving the siblings reads the layout tree,
@@ -131,8 +134,12 @@ function ZoneMenu({
     const paneId = closable?.()
     const targetId = targetPane()
 
+    const prefix = tabMenuPrefix?.(kit)
+
     return (
       <>
+        {prefix}
+        {prefix ? <kit.Separator /> : null}
         {renderActionItem(kit, {
           icon: 'refresh',
           label: t.zones.reload,
@@ -394,6 +401,7 @@ export function TreeGroup({
     minimized: node.minimized,
     nodeId: node.id,
     stripVisible,
+    tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane
   }
 

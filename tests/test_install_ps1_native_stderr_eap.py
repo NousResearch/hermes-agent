@@ -47,35 +47,23 @@ def test_repository_stage_relieves_eap_for_ssh_and_https_git_clone() -> None:
     )
 
 
-def test_uv_venv_and_dependency_installs_relax_eap() -> None:
+def test_dependency_installs_relax_eap() -> None:
     text = _install_ps1()
-    _assert_relaxed_call(text, r"& \$UvCmd venv venv --python \$PythonVersion")
     _assert_relaxed_call(text, r"& \$UvCmd sync --extra all --locked")
     _assert_relaxed_call(text, r"& \$UvCmd pip install -e \$tier\.Spec")
 
 
-def test_uv_venv_failure_is_not_swallowed_after_eap_relax() -> None:
-    """Relaxing EAP must not let a genuine `uv venv` failure pass as success.
-
-    Once EAP is relaxed, a real non-zero `uv venv` exit no longer aborts on its
-    own, so install.ps1 must capture $LASTEXITCODE right after the call and fail
-    fast — otherwise the `venv` stage falsely reports success (Invoke-Stage emits
-    ok=true) when no venv was created. Regression guard for the gap caught while
-    reviewing #48372 (the explicit check originally proposed in #48463).
-    """
+def test_uv_venv_failure_is_not_swallowed() -> None:
+    """The redirected uv process exit code must gate venv-stage success."""
     text = _install_ps1()
-    # The uv-venv invocation, then an exit-code capture, then a throw — all
-    # within a small window after the relaxed call.
     guard = re.search(
-        r"& \$UvCmd venv venv --python \$PythonVersion[\s\S]{0,400}?"
-        r"\$LASTEXITCODE[\s\S]{0,200}?"
+        r"\$venvExitCode\s*=\s*\$venvProcess\.ExitCode[\s\S]{0,400}?"
         r"-ne 0[\s\S]{0,200}?throw",
         text,
     )
     assert guard is not None, (
-        "install.ps1 must capture uv venv's exit code and throw on failure after "
-        "relaxing ErrorActionPreference, so a genuine venv-creation failure isn't "
-        "reported as a successful stage"
+        "install.ps1 must capture the redirected uv venv process exit code and "
+        "throw so a genuine creation failure is not reported as success"
     )
 
 

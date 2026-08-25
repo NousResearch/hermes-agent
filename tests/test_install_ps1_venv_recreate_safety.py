@@ -46,7 +46,7 @@ def test_manual_recovery_hints_do_not_delete_live_venv() -> None:
 def test_previous_venv_survives_until_replacement_is_ready() -> None:
     body = _install_venv_body()
 
-    create = body.index("& $UvCmd venv venv")
+    create = body.index("$venvProcess.Start()")
     stale_cleanup = body.index('Get-ChildItem -Directory -Filter "venv.stale.*"')
     assert create < stale_cleanup, (
         "stale backups must not be cleaned before uv can succeed or rollback"

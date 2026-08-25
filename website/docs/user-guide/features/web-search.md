@@ -77,6 +77,16 @@ Only successful responses are cached. Failures always retry the backend, respons
 
 **Local development URLs are never cached.** Anything on `localhost`, `127.0.0.1`, `*.local`, single-label LAN hostnames, or private/link-local IP ranges (`192.168.*`, `10.*`, `172.16-31.*`) bypasses the extract cache entirely — dev servers, hot-reload builds, and chat-GUI artifact previews change on every save, and a cached copy would show you a stale build. Every fetch of a local page is live. (These URLs are only reachable at all when `security.allow_private_urls` is enabled.)
 
+**Testing over the public internet?** Staging deploys and tunnel URLs are public DNS, so the local-dev rule can't catch them — list them in `web.cache_exempt_hosts` and they're always fetched live too. Entries match exactly, as a `*.` wildcard, or as a domain suffix (`mysite.dev` also covers `preview.mysite.dev`):
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  cache_exempt_hosts:
+    - mysite.vercel.app
+    - "*.ngrok-free.app"
+```
+
 ```yaml
 # ~/.hermes/config.yaml
 web:

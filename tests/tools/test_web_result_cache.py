@@ -226,6 +226,56 @@ def test_extract_cache_public_urls_still_cache(url, _isolated_cache):
     assert hit is not None and hit["content"] == "public content"
 
 
+class TestCacheExemptHosts:
+    """web.cache_exempt_hosts: staging/tunnel sites on public DNS that the
+    user is actively developing — always fetched live."""
+
+    def _config(self, monkeypatch, hosts):
+        monkeypatch.setattr(
+            wrc, "_web_config", lambda: {"cache_exempt_hosts": hosts}
+        )
+
+    @pytest.mark.parametrize("pattern,url", [
+        ("mysite.vercel.app", "https://mysite.vercel.app/page"),
+        ("MYSITE.VERCEL.APP", "https://mysite.vercel.app/page"),   # case
+        ("*.ngrok-free.app", "https://abc123.ngrok-free.app/"),
+        ("mysite.dev", "https://preview.mysite.dev/build/7"),      # suffix
+        ("mysite.dev", "https://mysite.dev/"),                     # exact
+    ])
+    def test_exempt_host_never_cached(self, monkeypatch, _isolated_cache,
+                                      pattern, url):
+        self._config(monkeypatch, [pattern])
+        extract_cache_put(url, "stale staging build")
+        assert extract_cache_get(url) is None
+
+    def test_non_matching_host_still_caches(self, monkeypatch, _isolated_cache):
+        self._config(monkeypatch, ["mysite.vercel.app"])
+        extract_cache_put("https://docs.python.org/3/", "cached fine")
+        assert extract_cache_get("https://docs.python.org/3/") is not None
+
+    def test_suffix_cannot_match_lookalike_domain(self, monkeypatch,
+                                                  _isolated_cache):
+        """'mysite.dev' must not exempt 'evilmysite.dev' — suffix matching
+        is label-boundary aware."""
+        self._config(monkeypatch, ["mysite.dev"])
+        extract_cache_put("https://evilmysite.dev/x", "content")
+        assert extract_cache_get("https://evilmysite.dev/x") is not None
+
+    def test_garbage_config_fails_open_to_caching(self, monkeypatch,
+                                                  _isolated_cache):
+        self._config(monkeypatch, "not-a-list")
+        extract_cache_put("https://example.com/a", "content")
+        assert extract_cache_get("https://example.com/a") is not None
+
+    def test_exemption_applies_at_get_time_too(self, monkeypatch,
+                                               _isolated_cache):
+        """Adding an exemption mid-TTL takes effect immediately: an entry
+        cached before the config change must not be served after it."""
+        extract_cache_put("https://mysite.vercel.app/p", "old build")
+        self._config(monkeypatch, ["mysite.vercel.app"])
+        assert extract_cache_get("https://mysite.vercel.app/p") is None
+
+
 def test_extract_cache_tampered_index_path_is_miss(_isolated_cache, tmp_path):
     """An index entry pointing outside cache/web must never be read."""
     outside = tmp_path / "outside.md"

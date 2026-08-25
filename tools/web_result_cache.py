@@ -275,6 +275,45 @@ def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional
     return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
 
 
+def _host_matches_pattern(host: str, pattern: str) -> bool:
+    """Case-insensitive host match: exact, ``*.wildcard``, or bare-domain
+    suffix (``mysite.dev`` also matches ``preview.mysite.dev``)."""
+    host = host.lower().strip(".")
+    pattern = (pattern or "").lower().strip().strip(".")
+    if not pattern:
+        return False
+    if pattern.startswith("*."):
+        base = pattern[2:]
+        return host == base or host.endswith("." + base)
+    return host == pattern or host.endswith("." + pattern)
+
+
+def _is_cache_exempt_host(url: str) -> bool:
+    """True when the URL's host matches ``web.cache_exempt_hosts``.
+
+    For sites the user is actively developing but testing over the public
+    internet (staging deploys, tunnel URLs, preview builds) — public DNS,
+    so the local-dev heuristic can't catch them, but every fetch must be
+    live. List entries match exactly, as ``*.wildcard``, or as a domain
+    suffix.
+    """
+    try:
+        patterns = _web_config().get("cache_exempt_hosts") or []
+        if not isinstance(patterns, (list, tuple)):
+            return False
+        if not patterns:
+            return False
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").strip("[]")
+        if not host:
+            return False
+        return any(
+            _host_matches_pattern(host, str(p)) for p in patterns
+        )
+    except Exception:  # noqa: BLE001 — config problems never break tools
+        return False
+
+
 def _is_local_dev_url(url: str) -> bool:
     """True for loopback/private/LAN URLs — never cached.
 
@@ -320,7 +359,7 @@ def extract_cache_get(
     """Return {'url','title','content'} for a fresh cached page, else None."""
     if not cache_enabled():
         return None
-    if _is_local_dev_url(url):
+    if _is_local_dev_url(url) or _is_cache_exempt_host(url):
         return None
     with _index_lock:
         index = _load_index()
@@ -366,7 +405,7 @@ def extract_cache_put(
     """
     if not cache_enabled() or not content:
         return
-    if _is_local_dev_url(url):
+    if _is_local_dev_url(url) or _is_cache_exempt_host(url):
         return
     try:
         from tools.web_tools import MAX_STORED_TEXT_CHARS

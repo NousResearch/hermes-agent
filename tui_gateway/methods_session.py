@@ -152,7 +152,15 @@ def _(rid, params: dict) -> dict:
                             Path(profile_home).name if profile_home else None
                         ),
                     )
-                    if history:
+                    # Compensation guard (#93959 review): if the transcript
+                    # copy or title write fails AFTER the row committed, the
+                    # durable-but-empty row would defeat the lazy first-prompt
+                    # fallback (_ensure_session_db_row is INSERT OR IGNORE —
+                    # the row exists, so the seed never lands and the renderer
+                    # fail-latches on a "transcript-less" session again).
+                    # Roll back just this child so the seed path can retry
+                    # cleanly on first submit.
+                    try:
                         db.append_messages_batch(
                             key,
                             [
@@ -161,13 +169,32 @@ def _(rid, params: dict) -> dict:
                             ],
                             chunk_rows=500,
                         )
-                    db.set_session_title(key, branch_title)
+                        db.set_session_title(key, branch_title)
+                    except Exception as exc:
+                        from hermes_state import is_disk_full_error
+
+                        if is_disk_full_error(exc):
+                            raise
+                        try:
+                            db.delete_session(key)
+                        except Exception:
+                            logger.debug(
+                                "branch seed compensation delete failed for %s",
+                                key,
+                                exc_info=True,
+                            )
+                        raise
                     _sessions[sid]["pending_title"] = None
         except Exception:
             # Persistence is best-effort here: a failed write must not break
             # session.create itself — the lazy first-prompt path remains as the
             # fallback, exactly as for plain drafts.
-            logger.debug("branch seed persistence failed for %s", key, exc_info=True)
+            logger.warning(
+                "seeded-branch persistence failed for %s; falling back to "
+                "lazy row creation",
+                key,
+                exc_info=True,
+            )
 
     # Return the lightweight session immediately so Ink can paint the composer
     # + skeleton panel, then build the real AIAgent just after this response is

@@ -15555,6 +15555,143 @@ def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
     server._sessions.pop(resp["result"]["stored_session_id"], None)
 
 
+def test_session_create_seed_failure_after_row_compensates(monkeypatch):
+    """Partial-failure compensation (#93959 review): if the row commits but
+    the transcript copy fails, the just-created child is DELETED so the lazy
+    first-prompt fallback can retry cleanly. Without this, a durable empty
+    row defeats _ensure_session_db_row's INSERT OR IGNORE and the renderer
+    fail-latches on a transcript-less session again."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    seen: dict = {}
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            return "Parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            seen["created"] = key
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            raise RuntimeError("transcript write failed")
+
+        def delete_session(self, session_id):
+            seen["deleted"] = session_id
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "source": "desktop",
+                "parent_session_id": "parent-1",
+                "title": "My Branch",
+                "messages": [{"role": "user", "content": "seed"}],
+            },
+        }
+    )
+
+    assert "result" in resp
+    key = resp["result"]["stored_session_id"]
+    # The half-written child was rolled back — no durable empty row left to
+    # shadow the lazy seed path.
+    assert seen.get("deleted") == key
+    # pending_title survived: it still lands via the lazy post-turn apply.
+    runtime_sid = resp["result"]["session_id"]
+    assert server._sessions[runtime_sid]["pending_title"] == "My Branch"
+
+    server._sessions.pop(runtime_sid, None)
+
+
+def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
+    """Disk-full is NOT compensated: the row stays (deleting data on a full
+    disk can make things worse), create still succeeds, and the failure is
+    observable at warning level (#93959 review)."""
+
+    import logging as _logging
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            return "Parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            pass
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    records: list = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=_logging.WARNING)
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.create",
+                "params": {
+                    "source": "desktop",
+                    "parent_session_id": "parent-1",
+                    "messages": [{"role": "user", "content": "seed"}],
+                },
+            }
+        )
+    finally:
+        root.removeHandler(handler)
+
+    assert "result" in resp
+    # The failure surfaced at WARNING (observable), not buried at debug.
+    warnings = [r for r in records if r.levelno >= _logging.WARNING]
+    assert any("seeded-branch persistence failed" in r.getMessage() for r in warnings)
+
+    server._sessions.pop(resp["result"]["stored_session_id"], None)
+
+
 def test_session_create_without_parent_still_defers_row(monkeypatch):
     """Plain drafts keep the lazy-row contract: no parent + no explicit branch
     intent means no eager persistence (the original draft-hygiene invariant)."""

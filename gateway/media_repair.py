@@ -21,8 +21,11 @@ tasks, and cron job delivery — shares one implementation.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, Iterator, List
+
+logger = logging.getLogger(__name__)
 
 # Absolute-path prefix accepted for canonical capture paths: Windows drive
 # letter, POSIX root, or UNC share. Kept as a pattern string so the summary
@@ -125,10 +128,27 @@ def repair_explicit_computer_use_media_paths(
     """Recover model-mangled paths for explicitly requested screenshots.
 
     Repair only an already-explicit ``MEDIA:`` directive whose unique
-    generated basename matches a canonical screenshot path from this turn.
-    This does not auto-attach ordinary computer-use captures, and normal
-    media path validation still runs after the repair.
+    generated basename case-insensitively matches a canonical screenshot
+    path from this turn. This does not auto-attach ordinary computer-use
+    captures, and normal media path validation still runs after the repair.
+
+    Fail-open: the repair is cosmetic, so an unexpected error returns the
+    response unchanged rather than aborting delivery.
     """
+    try:
+        return _repair_explicit_computer_use_media_paths_inner(
+            response, messages, history_offset
+        )
+    except Exception:
+        logger.debug("computer_use media path repair failed", exc_info=True)
+        return response
+
+
+def _repair_explicit_computer_use_media_paths_inner(
+    response: str,
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+) -> str:
     if "MEDIA:" not in response:
         return response
 
@@ -176,6 +196,10 @@ def repair_explicit_computer_use_media_paths(
     if not canonical_by_basename:
         return response
 
+    # Lazy on purpose: keeps `import gateway.media_repair` cheap for
+    # standalone cron processes that may never hit a MEDIA: response.
+    # No import cycle either way (base.py imports neither this module
+    # nor gateway.run at module level).
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, _ = BasePlatformAdapter.extract_media(response)

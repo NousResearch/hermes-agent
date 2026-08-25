@@ -224,7 +224,9 @@ class TestMediaExtraction:
         """
         import json as _json
 
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_dddddddddddddddddddddddddddddddd.png"
         canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
@@ -251,7 +253,9 @@ class TestMediaExtraction:
         closed (no rewrite) when no user message remains."""
         import json as _json
 
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.png"
         canonical = rf"C:\cache\images\{capture_name}"

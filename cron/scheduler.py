@@ -6272,23 +6272,17 @@ def run_job(
         final_response = result.get("final_response", "") or ""
         # Recover model-mangled computer_use screenshot paths before delivery
         # media extraction (same repair as the gateway turn/background paths).
-        # Cron runs start a fresh conversation, so history_offset=0.
-        if final_response and "MEDIA:" in final_response:
-            try:
-                from gateway.media_repair import (
-                    repair_explicit_computer_use_media_paths,
-                )
+        # Cron runs start a fresh conversation, so history_offset=0. The
+        # helper is fail-open and no-ops without a MEDIA: directive.
+        if final_response:
+            from gateway.media_repair import (
+                repair_explicit_computer_use_media_paths,
+            )
 
-                final_response = repair_explicit_computer_use_media_paths(
-                    final_response,
-                    result.get("messages", []),
-                )
-            except Exception:
-                logger.debug(
-                    "Job '%s': computer_use media path repair failed",
-                    job_name,
-                    exc_info=True,
-                )
+            final_response = repair_explicit_computer_use_media_paths(
+                final_response,
+                result.get("messages", []),
+            )
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""

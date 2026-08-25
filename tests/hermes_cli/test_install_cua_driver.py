@@ -440,7 +440,8 @@ class TestRequireConfirmedUpdate:
     still reinstall when the check can't answer.
     """
 
-    def _install(self, check_state, require_confirmed, contract_status=None):
+    def _install(self, check_state, require_confirmed, contract_status=None,
+                 binary_missing=False):
         """Drive ``install_cua_driver`` on the host, whatever it is.
 
         The old signature took a ``system`` string and faked
@@ -454,11 +455,15 @@ class TestRequireConfirmedUpdate:
 
         from hermes_cli import tools_config
 
+        _which_names = {"curl", "powershell"}
+        if not binary_missing:
+            _which_names.add("cua-driver")
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/x/" + n
-                          if n in {"cua-driver", "curl", "powershell"} else None), \
+                          if n in _which_names else None), \
              patch.object(tools_config, "_resolved_cua_driver_cmd",
-                          return_value="/x/cua-driver"), \
+                          return_value=None if binary_missing
+                          else "/x/cua-driver"), \
              patch.object(tools_config, "_cua_install_target_writable",
                           return_value=True), \
              patch.object(
@@ -545,6 +550,38 @@ class TestRequireConfirmedUpdate:
             "computer-use install --upgrade" in call.args[0]
             for call in info.call_args_list
         )
+
+    @pytest.mark.windows_only
+    def test_windows_missing_binary_defers_interactive_install(self):
+        """Driver enabled but never installed (or wiped by a failed install):
+        the automatic update must not launch install.ps1 either — this path
+        reached the installer before the top-level guard (#94296 review)."""
+        ok, runner, info = self._install(
+            None,
+            require_confirmed=True,
+            binary_missing=True,
+        )
+
+        assert ok is False
+        runner.assert_not_called()
+        assert any(
+            "computer-use install --upgrade" in call.args[0]
+            for call in info.call_args_list
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX installers are non-interactive; missing binary installs",
+    )
+    def test_posix_missing_binary_still_installs(self):
+        ok, runner, _ = self._install(
+            None,
+            require_confirmed=True,
+            binary_missing=True,
+        )
+
+        assert ok is True
+        runner.assert_called_once()
 
     def test_up_to_date_short_circuits(self):
         state = {"current_version": "0.6.0", "latest_version": "0.6.0",

@@ -462,6 +462,34 @@ def _get_or_create_env(task_id: str):
         return env, env_type
 
 
+def _dispatch_sandbox_tool_call(
+    tool_name: str,
+    tool_args: dict,
+    *,
+    task_id: str,
+    dispatch=None,
+) -> str:
+    """Dispatch one sandbox RPC while preserving programmatic result contracts.
+
+    Session kernels pass *dispatch* so each call rebinds to the current cell's
+    authority. Per-call sandboxes omit it and use ``handle_function_call``.
+    Programmatic ``read_file`` wrapping applies in both cases.
+    """
+    from model_tools import handle_function_call
+
+    def _run() -> str:
+        if dispatch is not None:
+            return dispatch(tool_name, tool_args)
+        return handle_function_call(tool_name, tool_args, task_id=task_id)
+
+    if tool_name == "read_file":
+        from tools.file_tools import programmatic_read_context
+
+        with programmatic_read_context():
+            return _run()
+    return _run()
+
+
 def _ship_file_to_remote(env, remote_path: str, content: str, *, atomic: bool = False) -> None:
     """Write *content* owner-only to *remote_path*; the payload rides
     ``stdin_data``, never an ``echo`` argv (see _remote_write). Raises on write

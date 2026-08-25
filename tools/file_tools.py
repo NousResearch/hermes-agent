@@ -15,7 +15,8 @@ import re
 import stat
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
@@ -47,6 +48,17 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+_programmatic_read = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_read_context():
+    """Select stable raw read results for one standard dispatcher call."""
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
@@ -487,7 +499,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": (file_ops._add_line_numbers(page_text, offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -633,7 +645,7 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", *, line_numbers: bool = True, deduplicate: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -705,11 +717,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # read-before-write guard needs a real read, which the stub path never records (#95976).
         file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
-        if (cached_version is not None and not is_background_review()
+        if (deduplicate and cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        if result.content and not line_numbers:
+            result.content = _strip_read_file_gutter(result.content, offset)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -760,12 +774,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
-        count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
+        count = (_record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
                                         redacted=redacted or bool(result_dict.get("truncated_lines")),
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
                                         snapshot=getattr(result, "_snapshot", None))
+                 if deduplicate else 0)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -782,6 +797,41 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _strip_read_file_gutter(content: str, start_line: int) -> str:
+    """Remove the display-only ``LINE|`` prefix added by ``read_file``."""
+    raw_lines = []
+    for line_number, line in enumerate(content.split("\n"), start=start_line):
+        prefix = f"{line_number}|"
+        raw_lines.append(line[len(prefix):] if line.startswith(prefix) else line)
+    return "\n".join(raw_lines)
+
+
+def read_file_programmatic_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = DEFAULT_READ_LIMIT,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+        deduplicate=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result")
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result")
+    payload.pop("_warning", None)
+    payload.pop("_hint", None)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────

@@ -11,6 +11,7 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
+import json
 import re
 from unittest.mock import MagicMock
 
@@ -104,6 +105,114 @@ def extract_media_tags_broken(result_messages):
 
 class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
+
+    def test_repairs_explicit_computer_use_media_path_from_json_result(self):
+        from gateway.run import _repair_explicit_computer_use_media_paths
+
+        capture_name = "computer_use_0123456789abcdef0123456789abcdef.png"
+        canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
+        response = (
+            "Here is the screenshot.\n"
+            f"MEDIA:/Users/Alice/AppData/Local/hermes/cache/images/{capture_name}"
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "capture", "function": {"name": "computer_use"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "capture",
+                "content": json.dumps({"screenshot_path": canonical}),
+            },
+        ]
+
+        repaired = _repair_explicit_computer_use_media_paths(response, messages)
+
+        assert repaired == f"Here is the screenshot.\nMEDIA:{canonical}"
+
+    def test_repairs_explicit_path_from_multimodal_text_summary(self):
+        from gateway.run import _repair_explicit_computer_use_media_paths
+
+        capture_name = "computer_use_fedcba9876543210fedcba9876543210.jpg"
+        canonical = rf"D:\Hermes Data\cache\images\{capture_name}"
+        response = f'MEDIA:"/Users/Alice/Hermes Data/cache/images/{capture_name}"'
+        messages = [
+            {
+                "role": "tool",
+                "name": "computer_use",
+                "tool_call_id": "capture",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "capture mode=screen 1920x1080\n"
+                            f"  (shareable screenshot saved to {canonical})"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,AAAA"},
+                    },
+                ],
+            }
+        ]
+
+        repaired = _repair_explicit_computer_use_media_paths(response, messages)
+
+        assert repaired == f'MEDIA:"{canonical}"'
+
+    def test_does_not_auto_attach_computer_use_capture(self):
+        from gateway.run import _repair_explicit_computer_use_media_paths
+
+        capture_name = "computer_use_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+        canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
+        messages = [
+            {
+                "role": "tool",
+                "name": "computer_use",
+                "content": json.dumps({"screenshot_path": canonical}),
+            }
+        ]
+
+        assert (
+            _repair_explicit_computer_use_media_paths("Done.", messages)
+            == "Done."
+        )
+
+    def test_does_not_rewrite_unmatched_or_previous_turn_capture(self):
+        from gateway.run import _repair_explicit_computer_use_media_paths
+
+        old_name = "computer_use_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
+        current_name = "computer_use_cccccccccccccccccccccccccccccccc.png"
+        old_canonical = rf"C:\cache\images\{old_name}"
+        current_canonical = rf"C:\cache\images\{current_name}"
+        history = [
+            {
+                "role": "tool",
+                "name": "computer_use",
+                "content": json.dumps({"screenshot_path": old_canonical}),
+            },
+        ]
+        current_turn = [
+            {"role": "user", "content": "Send the current screenshot."},
+            {
+                "role": "tool",
+                "name": "computer_use",
+                "content": json.dumps({"screenshot_path": current_canonical}),
+            },
+        ]
+        response = f"MEDIA:/Users/Alice/cache/images/{old_name}"
+
+        repaired = _repair_explicit_computer_use_media_paths(
+            response,
+            history + current_turn,
+            history_offset=len(history),
+        )
+
+        assert repaired == response
 
     def test_gateway_auto_append_ignores_media_examples_in_skill_docs(self):
         """Skill/documentation examples must not be appended as real attachments."""

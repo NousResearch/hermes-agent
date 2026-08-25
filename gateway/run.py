@@ -1823,6 +1823,146 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
+_COMPUTER_USE_CAPTURE_BASENAME_RE = re.compile(
+    r"^computer_use_[0-9a-f]{32}\.(?:png|jpe?g)$",
+    re.IGNORECASE,
+)
+_COMPUTER_USE_CAPTURE_SUMMARY_RE = re.compile(
+    r"\(shareable screenshot saved to "
+    r"(?P<path>(?:[A-Za-z]:[/\\]|/|\\\\)[^\r\n]*?"
+    r"computer_use_[0-9a-f]{32}\.(?:png|jpe?g))\)",
+    re.IGNORECASE,
+)
+
+
+def _computer_use_capture_basename(path: Any) -> str:
+    """Return a canonical capture basename for either path separator style."""
+    value = str(path or "").strip().strip("`\"'")
+    basename = re.split(r"[/\\]", value)[-1]
+    if _COMPUTER_USE_CAPTURE_BASENAME_RE.fullmatch(basename):
+        return basename.lower()
+    return ""
+
+
+def _iter_computer_use_capture_paths(content: Any):
+    """Yield persisted screenshot paths from computer_use result content.
+
+    The tool can return JSON, a multimodal content list, or a text fallback.
+    The latter two retain the canonical path in the human-readable summary
+    even though the multimodal envelope's ``meta`` dictionary is not stored in
+    the tool message.
+    """
+    if isinstance(content, str):
+        for match in _COMPUTER_USE_CAPTURE_SUMMARY_RE.finditer(content):
+            yield match.group("path").strip()
+        stripped = content.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                payload = None
+            if isinstance(payload, (dict, list)):
+                yield from _iter_computer_use_capture_paths(payload)
+        return
+
+    if isinstance(content, list):
+        for part in content:
+            yield from _iter_computer_use_capture_paths(part)
+        return
+
+    if not isinstance(content, dict):
+        return
+
+    screenshot_path = content.get("screenshot_path")
+    if isinstance(screenshot_path, str):
+        yield screenshot_path
+    meta = content.get("meta")
+    if isinstance(meta, dict) and isinstance(meta.get("screenshot_path"), str):
+        yield meta["screenshot_path"]
+    for field in ("content", "text", "text_summary", "summary"):
+        nested = content.get(field)
+        if isinstance(nested, (str, dict, list)):
+            yield from _iter_computer_use_capture_paths(nested)
+
+
+def _repair_explicit_computer_use_media_paths(
+    response: str,
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+) -> str:
+    """Recover model-mangled paths for explicitly requested screenshots.
+
+    ``computer_use`` persists a bounded screenshot and gives its absolute path
+    to the model. Some models rewrite a Windows path into a POSIX-looking path
+    before emitting ``MEDIA:``, which makes the gateway reject the nonexistent
+    path. Repair only an already-explicit directive whose unique generated
+    basename matches a canonical screenshot path from this turn. This does not
+    auto-attach ordinary computer-use captures, and normal media path
+    validation still runs after the repair.
+    """
+    if "MEDIA:" not in response:
+        return response
+
+    if history_offset and len(messages) >= history_offset:
+        turn_messages = messages[history_offset:]
+    elif history_offset:
+        # Compression can invalidate the original slice boundary. Recover the
+        # current turn from its last user message; fail closed if none remains.
+        last_user = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].get("role") == "user"
+            ),
+            None,
+        )
+        turn_messages = messages[last_user:] if last_user is not None else []
+    else:
+        turn_messages = messages
+
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in turn_messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            call_id = call.get("id") or call.get("call_id")
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_name_by_call_id[str(call_id)] = name
+
+    canonical_by_basename: Dict[str, str] = {}
+    for msg in turn_messages:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        tool_name = str(
+            msg.get("name")
+            or msg.get("tool_name")
+            or tool_name_by_call_id.get(call_id)
+            or ""
+        )
+        if tool_name != "computer_use":
+            continue
+        for path in _iter_computer_use_capture_paths(msg.get("content")):
+            basename = _computer_use_capture_basename(path)
+            if basename and re.match(r"^(?:[A-Za-z]:[/\\]|/|\\\\)", path):
+                canonical_by_basename[basename] = path
+
+    if not canonical_by_basename:
+        return response
+
+    media_files, _ = BasePlatformAdapter.extract_media(response)
+    repaired = response
+    for emitted_path, _is_voice in media_files:
+        canonical = canonical_by_basename.get(
+            _computer_use_capture_basename(emitted_path)
+        )
+        if canonical and emitted_path != canonical:
+            repaired = repaired.replace(emitted_path, canonical)
+    return repaired
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
@@ -6429,6 +6569,20 @@ class TurnRunner:
             except Exception:
                 pass
             reset_current_session_key(_approval_session_token)
+        # Canonicalize an explicitly emitted computer-use screenshot path at
+        # the common result boundary. The streaming finalizer below and the
+        # normal non-streaming delivery path must see the same response;
+        # repairing only during later media scanning leaves streaming with the
+        # model-mangled path and a rejected attachment.
+        if isinstance(result, dict):
+            _result_final = result.get("final_response")
+            if isinstance(_result_final, str):
+                result["final_response"] = _repair_explicit_computer_use_media_paths(
+                    _result_final,
+                    result.get("messages", []),
+                    history_offset=len(agent_history),
+                )
+
         ctx.result_holder[0] = result
 
         # Signal the stream consumer that the agent is done. Pass the

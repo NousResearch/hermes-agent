@@ -271,7 +271,7 @@ def test_cron_delivery_runs_inside_job_profile_secret_scope(
             None,
         ),
     )
-    monkeypatch.setattr(sched, "_is_interrupted", lambda _id: False)
+    monkeypatch.setattr(sched, "_is_interrupted", lambda *_args: False)
     monkeypatch.setattr(sched, "save_job_output", lambda *a, **k: None)
     monkeypatch.setattr(sched, "mark_job_run", lambda *a, **k: None)
 

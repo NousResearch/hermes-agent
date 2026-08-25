@@ -107,7 +107,9 @@ class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
 
     def test_repairs_explicit_computer_use_media_path_from_json_result(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_0123456789abcdef0123456789abcdef.png"
         canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
@@ -134,7 +136,9 @@ class TestMediaExtraction:
         assert repaired == f"Here is the screenshot.\nMEDIA:{canonical}"
 
     def test_repairs_explicit_path_from_multimodal_text_summary(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_fedcba9876543210fedcba9876543210.jpg"
         canonical = rf"D:\Hermes Data\cache\images\{capture_name}"
@@ -165,7 +169,9 @@ class TestMediaExtraction:
         assert repaired == f'MEDIA:"{canonical}"'
 
     def test_does_not_auto_attach_computer_use_capture(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
         canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
@@ -183,7 +189,9 @@ class TestMediaExtraction:
         )
 
     def test_does_not_rewrite_unmatched_or_previous_turn_capture(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         old_name = "computer_use_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
         current_name = "computer_use_cccccccccccccccccccccccccccccccc.png"

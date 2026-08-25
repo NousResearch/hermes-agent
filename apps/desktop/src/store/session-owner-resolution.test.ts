@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connectionsRegistry } from './connections'
 import { $profiles } from './profile'
@@ -21,7 +21,28 @@ beforeEach(() => {
   $profiles.set([])
 })
 
+afterEach(() => {
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
 describe('session owner topology', () => {
+  it('fails closed while the modern registry bridge is present but its async cache is not loaded', () => {
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      connections: { list: vi.fn(async () => Promise.reject(new Error('ipc unavailable'))) }
+    }
+    $connectionsRegistry.set(null)
+    $profiles.set([{ name: 'default' }] as never)
+
+    expect(sessionOwnerIsKnown('default')).toBe(true)
+    expect(ambientGatewayOwnsEverySession()).toBe(false)
+    expect(() =>
+      assertSessionOwnerResolved('default', { method: 'session.resume', sessionId: 'registry-loading' })
+    ).not.toThrow()
+    expect(() => assertSessionOwnerResolved(null, { method: 'session.resume', sessionId: 'registry-loading' })).toThrow(
+      /could not be resolved/i
+    )
+  })
+
   it('fails closed on an unknown owner in registry topology while preserving legacy profile routes', () => {
     // A connection registry means the ambient gateway is never provably the
     // sole backend, even with one profile listed: an unknown owner fails

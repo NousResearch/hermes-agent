@@ -65,6 +65,7 @@ import {
 } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionOwnerHoldRevision,
   $sessionTiles,
   $workingSessionIds,
   foregroundSessionScopes,
@@ -854,6 +855,7 @@ export function useGatewayBoot({
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
     const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
     const offSelectedSession = $selectedStoredSessionId.subscribe(() => recomputeKeptGateways())
+    const offSessionOwnerHolds = $sessionOwnerHoldRevision.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -1052,6 +1054,7 @@ export function useGatewayBoot({
       offActiveProfile()
       offTiles()
       offSelectedSession()
+      offSessionOwnerHolds()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onFocus)

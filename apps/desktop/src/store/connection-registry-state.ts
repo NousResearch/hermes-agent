@@ -7,5 +7,8 @@ import type { DesktopConnectionsRegistry } from '@/global'
 export const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
 
 export function hasRegistryTopology(): boolean {
-  return $connectionsRegistry.get() !== null
+  // The bridge exists before its asynchronous cache load. Treat that window
+  // (and a failed list IPC) as registry topology so owner routing fails closed;
+  // only an older Desktop without the registry capability is truly legacy.
+  return $connectionsRegistry.get() !== null || Boolean(window.hermesDesktop?.connections?.list)
 }

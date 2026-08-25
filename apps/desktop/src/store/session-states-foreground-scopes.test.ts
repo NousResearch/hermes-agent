@@ -8,6 +8,7 @@ import {
 } from '@/store/session'
 
 import {
+  $sessionOwnerHoldRevision,
   $sessionTiles,
   _resetSessionOwnerHoldsForTests,
   foregroundSessionScopes,
@@ -83,6 +84,25 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     holdSessionOwnerUntilForeground('stored-c', omar)
     vi.advanceTimersByTime(60_000 + 1)
     expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
+  it('publishes hold release and TTL expiry so pending gateway redials can drain without unrelated UI state', () => {
+    vi.useFakeTimers()
+    const revisions: number[] = []
+    const off = $sessionOwnerHoldRevision.subscribe(value => revisions.push(value))
+
+    const release = holdSessionOwnerUntilForeground('stored-release', omar)
+    const afterHold = revisions.at(-1)!
+    release()
+    expect(revisions.at(-1)).toBeGreaterThan(afterHold)
+
+    holdSessionOwnerUntilForeground('stored-expiry', omar)
+    const beforeExpiry = revisions.at(-1)!
+    vi.advanceTimersByTime(60_000 + 1)
+    expect(revisions.at(-1)).toBeGreaterThan(beforeExpiry)
+    expect(foregroundSessionScopes()).toEqual(new Set())
+
+    off()
   })
 
   it('ignores blank ids, null owners and profile-only owners map to the legacy pool key', () => {

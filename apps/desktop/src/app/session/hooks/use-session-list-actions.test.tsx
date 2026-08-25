@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch,
+  registerGatewaySwitchLifecycle
+} from '@/store/gateway-switch'
+import {
   $cronSessions,
   $messagingPlatformTotals,
   $messagingSessions,
@@ -300,6 +306,59 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessionProfilesUsage.get()).toEqual({ winner: { cost_usd: 2, tokens: 20 } })
     expect($sessionsLoading.get()).toBe(true)
     expect(getCronJobs).not.toHaveBeenCalled()
+  })
+
+  it('keeps failed-switch recovery from publishing through a newer switch', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => undefined,
+      refreshSessions: result.current.refreshSessions
+    })
+
+    let newer: number | undefined
+
+    try {
+      const failed = beginGatewaySwitch()
+
+      recoverActiveSourceAfterFailedGatewaySwitch(failed)
+      endGatewaySwitch(failed)
+      await vi.waitFor(() => expect(listSidebarSessions).toHaveBeenCalledTimes(1))
+
+      // A newer switch owns the freshly wiped lists and loading barrier while
+      // the failed switch's real sidebar publisher is still in flight.
+      newer = beginGatewaySwitch()
+
+      await act(async () => {
+        pending.resolve({
+          recents: {
+            profiles_truncated: { stale: true },
+            profiles_usage: { stale: { cost_usd: 1, tokens: 10 } },
+            sessions: [row('stale')]
+          },
+          cron: { sessions: [row('stale-cron', { source: 'cron' })] },
+          messaging: { sessions: [row('stale-message', { source: 'telegram' })] }
+        })
+        await pending.promise
+      })
+
+      expect($sessions.get()).toEqual([])
+      expect($cronSessions.get()).toEqual([])
+      expect($messagingSessions.get()).toEqual([])
+      expect($messagingTruncated.get()).toBe(false)
+      expect($sessionProfilesTruncated.get()).toEqual({})
+      expect($sessionProfilesUsage.get()).toEqual({})
+      expect($sessionsLoading.get()).toBe(true)
+      expect($cronJobs.get()).toEqual([])
+      expect(getCronJobs).not.toHaveBeenCalled()
+    } finally {
+      endGatewaySwitch(newer)
+      off()
+    }
   })
 
   it('clears initial loading after a failed source activation advances the gateway epoch', async () => {

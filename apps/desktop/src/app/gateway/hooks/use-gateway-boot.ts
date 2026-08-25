@@ -186,7 +186,7 @@ export function useGatewayBoot({
     // one reset, so the two doors can't drift apart again (#93937).
     const offSwitchLifecycle = registerGatewaySwitchLifecycle({
       beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
-      refreshSessions: () => callbacksRef.current.refreshSessions()
+      refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)
     })
 
     // --- Reconnect-after-sleep machinery -------------------------------------

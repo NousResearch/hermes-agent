@@ -46,7 +46,7 @@ export const $gatewaySwitching = atom(false)
 export interface GatewaySwitchLifecycle {
   beforeConnectionSwitch: () => void
   /** Re-pull the session lists from whichever backend is active NOW. */
-  refreshSessions: () => Promise<void>
+  refreshSessions: (shouldPublish?: () => boolean) => Promise<void>
 }
 
 let switchLifecycle: GatewaySwitchLifecycle | null = null
@@ -152,7 +152,9 @@ export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitch
   }
 
   void Promise.resolve()
-    .then(() => (isCurrentGatewaySwitch(token) ? lifecycle.refreshSessions() : undefined))
+    .then(() =>
+      isCurrentGatewaySwitch(token) ? lifecycle.refreshSessions(() => isCurrentGatewaySwitch(token)) : undefined
+    )
     .catch(() => undefined)
     .finally(() => {
       if (isCurrentGatewaySwitch(token)) {

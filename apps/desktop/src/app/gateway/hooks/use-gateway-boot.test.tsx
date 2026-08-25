@@ -11,7 +11,12 @@ import {
 } from '@/store/connections'
 import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
-import { $gatewaySwitching, beginGatewaySwitch, endGatewaySwitch } from '@/store/gateway-switch'
+import {
+  $gatewaySwitching,
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch
+} from '@/store/gateway-switch'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import {
@@ -763,6 +768,29 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect(publications).toEqual(['settings-b'])
     expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  it('forwards failed-switch recovery ownership through its registered lifecycle', async () => {
+    const refreshSessions = vi.fn(async (_shouldPublish?: () => boolean) => undefined)
+
+    render(<Harness refreshSessions={refreshSessions} />)
+    await flushAsync()
+
+    const failed = beginGatewaySwitch()
+
+    recoverActiveSourceAfterFailedGatewaySwitch(failed)
+    endGatewaySwitch(failed)
+    await vi.waitFor(() => expect(refreshSessions).toHaveBeenCalledTimes(2))
+
+    const shouldPublish = refreshSessions.mock.calls[1][0]
+
+    expect(shouldPublish).toBeTypeOf('function')
+    expect(shouldPublish?.()).toBe(true)
+
+    const newer = beginGatewaySwitch()
+
+    expect(shouldPublish?.()).toBe(false)
+    endGatewaySwitch(newer)
   })
 
   it('a superseded Settings switch cannot publish delayed cwd or config work after the winner', async () => {

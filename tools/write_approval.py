@@ -208,10 +208,21 @@ def _interactive_approval_available() -> bool:
     """
     try:
         from tools.approval import _is_single_query_approval_context
-
-        if _is_single_query_approval_context():
+    except ImportError:
+        # Keep the pre-existing callback path available if the optional context
+        # probe cannot be imported during early startup.
+        pass
+    else:
+        try:
+            if _is_single_query_approval_context():
+                return False
+        except Exception:
+            # An unreadable headless-context probe must fail safe to staging.
             return False
+
+    try:
         from tools.terminal_tool import _get_approval_callback
+
         return _get_approval_callback() is not None
     except Exception:
         return False

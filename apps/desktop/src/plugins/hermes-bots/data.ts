@@ -771,6 +771,9 @@ export function warmUnionRoster() {
 
   warmingRosterFor.add(connectionId)
 
+  // A hung fetch must not block warms for this connection forever.
+  const evict = setTimeout(() => warmingRosterFor.delete(connectionId), 15000)
+
   void fetchRoster(connectionId)
     .then(roster => {
       if (Array.isArray(roster?.profiles)) {
@@ -779,6 +782,7 @@ export function warmUnionRoster() {
     })
     .catch(() => undefined)
     .finally(() => {
+      clearTimeout(evict)
       warmingRosterFor.delete(connectionId)
     })
 }

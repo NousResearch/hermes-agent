@@ -2271,11 +2271,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
-        # Server-asserted user space for explicit-uid URIs (#91995). Bind the
-        # cached value to the client object that supplied it: /reload can swap
-        # endpoint, credentials, and identity on this provider instance, and
-        # an in-flight probe from the old client must not populate the new
-        # connection's cache.
+        # Server-asserted user space for explicit-uid URIs (#91995). Key the
+        # cache on the connection snapshot so all clients built from the same
+        # snapshot share the resolved user. /reload can swap endpoint,
+        # credentials, and identity on this provider instance — a different
+        # snapshot invalidates the cache automatically.
         self._user_space_cache: Optional[tuple[Any, str]] = None
         self._hermes_home = ""
         self._run_id = uuid.uuid4().hex
@@ -3912,21 +3912,25 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return f"{head}{marker}{tail}" if tail else _head_only()
 
     def _user_space(self, client=None, *, timeout: Optional[float] = None) -> str:
-        """Resolve the user space, caching only a confirmed client identity."""
+        """Resolve the user space, caching only a confirmed connection identity."""
         active = client if client is not None else getattr(self, "_client", None)
+        # Key the cache on the connection snapshot, not the client object.
+        # _new_client() builds fresh _VikingClient objects from the same
+        # snapshot, so object-identity keying would miss the cache on every
+        # write. The snapshot tuple is published atomically under
+        # _client_refresh_lock and changes on every config reload.
+        snapshot = getattr(self, "_conn_snapshot", None)
         cached = getattr(self, "_user_space_cache", None)
-        if active is not None and cached is not None and cached[0] is active:
+        if active is not None and cached is not None and cached[0] == snapshot:
             return cached[1]
 
         if active is not None:
             resolved = _resolve_user_space(active, timeout=timeout)
             if resolved:
-                # The probe can overlap a config reload. Only publish it when
-                # this is still the provider's active client. Old in-flight
-                # work can use its resolved value without contaminating the
-                # replacement client's cache.
-                if active is getattr(self, "_client", None):
-                    self._user_space_cache = (active, resolved)
+                # Only publish when the snapshot hasn't changed under us.
+                current_snapshot = getattr(self, "_conn_snapshot", None)
+                if snapshot is not None and snapshot is current_snapshot:
+                    self._user_space_cache = (snapshot, resolved)
                 return resolved
 
         configured = str(
@@ -3935,9 +3939,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
             or "default"
         ).strip()
         return configured or "default"
-
-    def _user_scoped_uri(self, suffix: str, client=None) -> str:
-        return _user_scoped_uri(self._user_space(client), suffix)
 
     def _session_start_uris(self, user: Optional[str] = None) -> tuple:
         user = user or self._user_space()
@@ -4872,7 +4873,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             old_session_id, new_id, parent_session_id, reset,
         )
 
-    def _build_memory_uri(self, subdir: str, *, client=None) -> str:
+    def _build_memory_uri(self, subdir: str, *, client=None, timeout: Optional[float] = None) -> str:
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
         # Explicit-uid URIs are canonical under every auth mode; the uid-less
@@ -4885,7 +4886,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             or _DEFAULT_AGENT
         ).strip()
         return _user_scoped_uri(
-            self._user_space(active_client),
+            self._user_space(active_client, timeout=timeout),
             f"peers/{agent}/memories/{subdir}/mem_{slug}.md",
         )
 
@@ -4911,7 +4912,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _write():
             try:
-                uri = self._build_memory_uri(subdir, client=client)
+                uri = self._build_memory_uri(
+                    subdir, client=client, timeout=_RECALL_MIN_TIMEOUT_SECONDS,
+                )
                 client.post("/api/v1/content/write", {
                     "uri": uri,
                     "content": content,
@@ -5263,13 +5266,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         category = args.get("category", "")
         subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        client = self._ensure_client()
+        if not client:
+            return tool_error("OpenViking server not connected")
+        uri = self._build_memory_uri(subdir, client=client)
 
         # Write directly via content/write API.
         # This creates the file, stores the content, and queues vector indexing
         # in a single call — no dependency on session commit / VLM extraction.
         try:
-            result = self._client.post("/api/v1/content/write", {
+            result = client.post("/api/v1/content/write", {
                 "uri": uri,
                 "content": content,
                 "mode": "create",

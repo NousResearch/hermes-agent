@@ -51,6 +51,37 @@ class TestGetChannelOverride:
         assert result.system_prompt == "You are a summarizer."
 
 
+    def test_falls_back_to_default_when_no_specific_match(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "default": ChannelOverride(system_prompt="Applies everywhere."),
+                    },
+                ),
+            },
+        )
+        result = _get_channel_override(config, Platform.DISCORD, "any_chat_id")
+        assert result is not None
+        assert result.system_prompt == "Applies everywhere."
+
+    def test_specific_match_wins_over_default(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "default": ChannelOverride(system_prompt="Generic."),
+                        "chan_1": ChannelOverride(system_prompt="Specific."),
+                    },
+                ),
+            },
+        )
+        result = _get_channel_override(config, Platform.DISCORD, "chan_1")
+        assert result is not None
+        assert result.system_prompt == "Specific."
+
     def test_thread_id_lookup_when_chat_id_misses(self):
         config = GatewayConfig(
             platforms={

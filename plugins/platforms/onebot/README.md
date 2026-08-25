@@ -18,13 +18,14 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 | Area | Capability |
 |---|---|
 | Connection | reverse WS (NapCat ws-reverse dials in, default port 8643) or forward WS (dial out, default `ws://127.0.0.1:3001`); auto-reconnect |
-| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), image resolution (url/base64/file/hash via `get_image`), large-image downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`), inbound files via CDN direct link then `get_file` fallback (container paths bypassed) |
-| Agent tools | model-facing senders (`qq_send_image` / `qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`), `qq_napcat_api` (15-action whitelist), `qq_group_history`; HTTP `/api/napcat` + `/api/send_media` endpoints |
-| Voice | ffmpeg → 16 kHz mono WAV → Hermes STT pipeline; voice without a URL is fetched via `get_record` (base64) first; failure degrades to `[语音]` |
-| Text image | AstrBot-style t2i card renderer (bold/italic/strikethrough/quote/list/code block/table/inline-code pill/emoji/CJK punctuation rules); 800 px wide |
-| Outbound | long replies split at sentence boundaries (default ≤100 chars), **>150 chars rendered as a text-image card**, markdown stripped to plain text, `[[qq_forward]]` merged forwarding, loop interim messages merged + retracted, typing indicator (private chats) |
-| Permissions | admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policy (open/allowlist/disabled), group mention gating, restricted-member soft limits |
-| Ops | hot reload for `onebot_utils.py` / `t2i_render.py` (no gateway restart), temp-media TTL cleanup |
+| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), **image resolution (url/base64/file/hash via `get_image`)** + downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`), **file dual-channel receive (CDN direct `get_private_file_url` + `get_file` base64/url fallback)** |
+| Voice | ffmpeg → 16 kHz mono WAV → Hermes STT pipeline; voice without a URL fetched via `get_record` (base64); failure degrades to `[语音]` |
+| Text image | AstrBot-style t2i card renderer: headings / bold / italic / strikethrough / quote / list / code block / **table** / inline-code pill / color emoji / CJK punctuation rules; 800 px wide |
+| Outbound | sentence-boundary split (default ≤100 chars), **>150 chars rendered as a t2i card**, markdown stripped to plain text, `[[qq_forward]]` merged forwarding, **loop interim merge + recall** (turn-end **"本轮进展" summary card**, 60 ms recall spacing), typing indicator (private chats) |
+| Commands | admin-only local slash commands: `/ocr` / `/mode` / `/id` / `/ver`; other slashes keep flowing to the gateway core |
+| Tools | `qq_send_image` (≤9, path or URL), `qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`, `qq_napcat_api` (15-action whitelist), `qq_group_history`; HTTP `/api/napcat` + `/api/send_media`; available in CLI/TUI too via `provides_tools` |
+| Permissions | admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policy (open/allowlist/disabled), group mention gating, restricted-member `[受限用户:仅问答]` soft limits, outbound sensitive-intent audit |
+| Ops | hot reload for `onebot_utils.py` / `t2i_render.py` (`extra.hot_reload`, no gateway restart), temp-media TTL cleanup, startup t2i ink check (font chain self-test) |
 
 ## Compatibility
 

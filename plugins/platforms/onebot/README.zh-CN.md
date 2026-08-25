@@ -13,20 +13,21 @@ Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.gi
 
 ## 功能总览
 
-| 领域 | 能力 |
+| 类别 | 能力 |
 |---|---|
-| 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（主动拨出，默认 `ws://127.0.0.1:3001`）；自动重连 |
-| 入站 | 私聊/群聊，段数组优先解析（CQ 字符串回退），CQ 反转义，@/回复触发检测（fail-closed），图片解析（url/base64/file/hash 经 `get_image`），大图压缩，file/voice/video/face/json/poke 段类型，引用取原文（`get_msg`），入站文件走 CDN 直链再 `get_file` 回退（绕过容器路径） |
-| 语音 | ffmpeg → 16 kHz 单声道 WAV → Hermes STT 管线；无 URL 的语音先经 `get_record`（base64）取；失败降级为 `[语音]` |
-| 文字图 | AstrBot 风格 t2i 卡片渲染器（粗体/斜体/删除线/引用/列表/代码块/表格/行内代码胶囊/emoji/中文标点禁则）；800px 宽 |
-| 出站 | 长回复按句子边界分段（默认 ≤100 字），**>150 字渲染文字图卡片**，markdown 剥离为纯文本，`[[qq_forward]]` 合并转发，loop 中间消息合并+撤回，正在输入提示（私聊） |
-| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`），dm/group 策略（open/allowlist/disabled），群 @ 门控，受限成员软限制 |
-| 运维 | 热加载 `onebot_utils.py` / `t2i_render.py`（免网关重启），临时媒体 TTL 清理 |
-| Agent 工具 | 模型侧发送器（`qq_send_image` / `qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`），`qq_napcat_api`（15 个 action 白名单），`qq_group_history`；HTTP `/api/napcat` + `/api/send_media` 端点 |
+| 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（拨出，默认 `ws://127.0.0.1:3001`）；断线自动重连 |
+| 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、**图片四路解析（url/base64/file/hash 经 `get_image`）** + 大图压缩、file/voice/video/face/json/poke 段类型、引用自动取原文（`get_msg`）、**文件段双通道接收（CDN 直链 `get_private_file_url` + `get_file` base64/url 回退）** |
+| 语音 | ffmpeg 转 16 kHz 单声道 WAV → Hermes STT 管线；无 URL 语音先经 `get_record`（base64）取；失败降级 `[语音]` |
+| 文字图 | AstrBot 风格 t2i 卡片渲染器：标题/粗体/斜体/删除线/引用/列表/代码块/**表格**/行内 code 胶囊/彩色 emoji/中文标点禁则；800px 宽 |
+| 出站 | 按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**、Markdown 剥离为 QQ 纯文本、`[[qq_forward]]` 合并转发（群/私聊）、**loop 中间消息合并+撤回**（回合末 **“本轮进展”小结卡**、撤回限速 60ms）、正在输入提示（仅私聊） |
+| 命令 | 管理员本地斜杠命令：`/ocr` / `/mode` / `/id` / `/ver`；其余斜杠照常流转网关核心 |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`、`qq_napcat_api`（15 个白名单 action）、`qq_group_history`；HTTP `/api/napcat` + `/api/send_media`；`provides_tools` 让 CLI/TUI 也可用 |
+| 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @ 门控、受限成员 `[受限用户:仅问答]` 软限制、出站敏感意图审计 |
+| 运维 | 热加载 `onebot_utils.py` / `t2i_render.py`（`extra.hot_reload`，免网关重启）、临时媒体 TTL 清理、启动时 t2i 墨源自检（字体链自测） |
 
 ## 兼容性
 
-| 项目 | 要求 |
+| 项 | 要求 |
 |---|---|
 | Hermes | 网关启用 onebot 平台 |
 | OneBot 11 桥 | NapCat / Lagrange / LLOneBot / go-cqhttp（反向或正向 WebSocket） |
@@ -61,7 +62,7 @@ gateway:
 
 ### 扩展键（全部可选）
 
-| 键 | 默认值 | 含义 |
+| 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `reverse` | `reverse`（桥拨入）/ `forward`（适配器拨出） |
 | `host` / `port` | `0.0.0.0` / `8643` | 反向监听 |

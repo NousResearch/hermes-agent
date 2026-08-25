@@ -9,6 +9,7 @@ import math
 import os
 import random
 import re
+import shutil
 import socket as _socket
 import subprocess
 import sys
@@ -605,23 +606,31 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
+def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: Union[bytes, Path]) -> str:
     """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
 
     The file is written owner-only (0600) — inbound media is private user
     content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
     one directory should not carry two file-mode conventions. Best-effort on
     platforms where POSIX mode bits are advisory (Windows): falls back to a
-    plain write rather than failing the media write.
+    plain write rather than failing the media write. A ``Path`` is copied in
+    chunks, so a file already on disk never passes through memory.
     """
     filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
-        filepath.write_bytes(data)
+        if isinstance(data, Path):
+            shutil.copyfile(data, filepath)
+        else:
+            filepath.write_bytes(data)
         return str(filepath)
     with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
+        if isinstance(data, Path):
+            with data.open("rb") as source:
+                shutil.copyfileobj(source, handle)
+        else:
+            handle.write(data)
     return str(filepath)
 
 
@@ -1418,9 +1427,9 @@ def _strip_media_tag_directives(text: str) -> str:
     return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
-def cache_document_from_bytes(data: bytes, filename: str) -> str:
-    """Save raw document bytes to the cache as ``doc_{uuid12}_{original_name}`` and return
-    the absolute path; raises ValueError if the sanitized path escapes the cache directory."""
+def _document_cache_path(filename: str) -> Path:
+    """``<document cache>/doc_{uuid12}_{original_name}``; raises ValueError if the sanitized
+    path escapes the cache directory."""
     cache_dir = get_document_cache_dir()
     # Sanitize: strip directory components, null bytes, and control characters
     safe_name = (Path(filename).name if filename else "document").replace("\x00", "").strip()
@@ -1430,6 +1439,13 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):
         raise ValueError(f"Path traversal rejected: {filename!r}")
+    return filepath
+
+
+def cache_document_from_bytes(data: bytes, filename: str) -> str:
+    """Save raw document bytes to the cache as ``doc_{uuid12}_{original_name}`` and return
+    the absolute path; raises ValueError if the sanitized path escapes the cache directory."""
+    filepath = _document_cache_path(filename)
     filepath.write_bytes(data)
     return str(filepath)
 
@@ -1470,24 +1486,23 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
     return ext or _MIME_TO_EXT.get((mime_type or "").lower(), "")
 
 
-def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
-                      default_kind: Optional[str] = None) -> Optional[CachedMedia]:
-    """Classify and cache raw attachment bytes -> CachedMedia (None only for images failing
-    validation). ``default_kind`` biases ambiguous ext/MIME (Telegram native photo, no name);
-    anything not image/video/audio is a document."""
+def _cache_classified(filename: str, mime_type: str, default_kind: Optional[str], write_media,
+                      write_document) -> Optional[CachedMedia]:
+    """Classify one attachment by ext/MIME and cache it via ``write_media(kind, ext)`` (image /
+    video / audio) or ``write_document(name)``; shared by the bytes and on-disk entry points."""
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
-    # (kind, ext->mime table, default ext, cache fn, whether a matching caller MIME passes through)
-    for kind, table, default_ext, cache_fn, passthrough in (
-            ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", cache_image_from_bytes, True),
-            ("video", SUPPORTED_VIDEO_TYPES, ".mp4", cache_video_from_bytes, False),
-            ("audio", _AUDIO_MIME_TYPES, ".ogg", cache_audio_from_bytes, True)):
+    # (kind, ext->mime table, default ext, whether a matching caller MIME passes through)
+    for kind, table, default_ext, passthrough in (
+            ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", True),
+            ("video", SUPPORTED_VIDEO_TYPES, ".mp4", False),
+            ("audio", _AUDIO_MIME_TYPES, ".ogg", True)):
         if not (mime.startswith(f"{kind}/") or ext in table or default_kind == kind):
             continue
         kind_ext = ext if ext in table else default_ext
         try:
-            path = cache_fn(data, ext=kind_ext)
+            path = write_media(kind, kind_ext)
         except ValueError:
             if kind != "image":
                 raise
@@ -1497,9 +1512,68 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
     # Any other type is cached and surfaced as a path — an authorized user's uploads must never be
     # silently dropped. Unknown types get octet-stream so the agent reaches for terminal tools.
     fallback_name = filename or (f"document{ext}" if ext else "document.bin")
-    path = cache_document_from_bytes(data, fallback_name)
+    path = write_document(fallback_name)
     out_mime = SUPPORTED_DOCUMENT_TYPES.get(ext) or mime or "application/octet-stream"
     return CachedMedia(path, out_mime, "document", display or fallback_name)
+
+
+def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
+                      default_kind: Optional[str] = None) -> Optional[CachedMedia]:
+    """Classify and cache raw attachment bytes -> CachedMedia (None only for images failing
+    validation). ``default_kind`` biases ambiguous ext/MIME (Telegram native photo, no name);
+    anything not image/video/audio is a document."""
+    def write_media(kind: str, ext: str) -> str:
+        cache_fn = {"image": cache_image_from_bytes, "video": cache_video_from_bytes, "audio": cache_audio_from_bytes}[kind]
+        return cache_fn(data, ext=ext)
+    return _cache_classified(filename, mime_type, default_kind, write_media,
+                             lambda name: cache_document_from_bytes(data, name))
+
+
+def cache_media_path(source_path: str, *, filename: str = "", mime_type: str = "",
+                     default_kind: Optional[str] = None) -> Optional[CachedMedia]:
+    """:func:`cache_media_bytes` for a file already on this filesystem: copied in chunks, so the
+    payload never enters memory. A local ``telegram-bot-api`` (``--local``) answers ``getFile``
+    with an absolute server-side path for files up to 2000 MB, where the bytes path would need a
+    multi-GB allocation. The same caps apply, from ``stat()``; images are still read and
+    validated as images (only after the size check, so an oversized one is never read)."""
+    src = Path(source_path)
+    if not src.is_file():
+        return None
+    size = src.stat().st_size
+
+    def write_media(kind: str, ext: str) -> str:
+        validate_inbound_media_size(size, media_type=kind)
+        if kind == "image":
+            return cache_image_from_bytes(src.read_bytes(), ext=ext)
+        if kind == "audio":
+            from tools.audio_container import sniff_audio_ext
+            with src.open("rb") as head:
+                return _write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(head.read(64), ext), src)
+        return _write_cache_file(get_video_cache_dir(), "video", ext, src)
+
+    def write_document(name: str) -> str:
+        filepath = _document_cache_path(name)
+        shutil.copyfile(src, filepath)
+        return str(filepath)
+
+    return _cache_classified(filename or src.name, mime_type, default_kind, write_media, write_document)
+
+
+async def cache_media_path_async(
+    source_path: str,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Cache an on-disk attachment without blocking the event loop (a 2 GB copy takes a while)."""
+    return await asyncio.to_thread(
+        cache_media_path,
+        source_path,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+    )
 
 
 async def cache_media_bytes_async(

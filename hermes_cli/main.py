@@ -2246,19 +2246,28 @@ def _tui_need_npm_install(root: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
-    def comparable(pkg: dict) -> dict:
-        # npm >= 10/11 writes a reduced hidden lockfile that omits declarative
-        # fields (`version`, `dependencies`, `dev`, `engines`, `bin`, ...) or
-        # stores them as null.  Comparing every key field-by-field then flags
-        # nearly every installed package as "changed".  Compare only the keys
-        # both sides actually record with a non-null value (`resolved`,
-        # `integrity`, ...): a genuinely stale install (root lockfile bumped
-        # while node_modules is behind) still differs on those keys, while the
-        # reduced-lockfile field omissions no longer false-positive.
+    def entries_differ(pkg: dict, installed_pkg: dict) -> bool:
+        # Only compare keys present in *both* lockfiles with non-null values.
+        # npm's hidden .package-lock.json intentionally omits many metadata
+        # fields the root lock records (version, dependencies, license,
+        # engines, bin, ...), and npm >= 10/11 writes a further *reduced*
+        # hidden lockfile that stores some of them as null.  Missing- or
+        # null-on-one-side is a normal npm artefact, not a real skew.  The
+        # authoritative fields "resolved" and "integrity" are present in both
+        # locks for installed packages, so a genuinely stale install (root
+        # lockfile bumped while node_modules is behind) still differs on them.
         a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-        b = {k: v for k, v in installed_pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-        common = a.keys() & b.keys()
-        return {k: a[k] for k in common if a[k] is not None and b[k] is not None}
+        b = {
+            k: v
+            for k, v in installed_pkg.items()
+            if k not in _NPM_LOCK_RUNTIME_KEYS
+        }
+        for k in a.keys() & b.keys():
+            if a[k] is None or b[k] is None:
+                continue
+            if a[k] != b[k]:
+                return True
+        return False
 
     # In a shared workspace checkout the launch install is scoped to the ui-tui
     # workspace (plus its child packages/* workspaces on Termux), so only that
@@ -2295,21 +2304,10 @@ def _tui_need_npm_install(root: Path) -> bool:
                 continue
             return True
 
-        if isinstance(installed[name], dict):
-            w = comparable(pkg)
-            i = comparable(installed[name])
-            # Only compare keys present in *both* lockfiles.  npm's hidden
-            # .package-lock.json intentionally omits many metadata fields
-            # (version, dependencies, license, engines, dev, optional, etc.)
-            # that the root lock records.  Missing-on-one-side is a normal
-            # npm artefact, not a real skew.  The authoritative fields
-            # "resolved" and "integrity" are always present for installed
-            # packages, so a real version/dependency change will still
-            # be caught through them.
-            common = set(w) & set(i)
-            for k in common:
-                if w[k] != i[k]:
-                    return True
+        if isinstance(installed[name], dict) and entries_differ(
+            pkg, installed[name]
+        ):
+            return True
 
     return False
 

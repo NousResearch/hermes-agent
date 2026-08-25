@@ -1576,9 +1576,35 @@ class TestMacOSTCCGrants:
         doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "TCC signing identity is stable" in out
+        assert "identifier-pinned" in out
+        # Identifier-pinned is stable but not the strongest anchor — the check
+        # should point at the cert-anchored upgrade path.
+        assert "--setup-tcc-identity" in out
         assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
         assert "toggle" in out
         assert "relaunch" in out
+
+    def test_ok_on_certificate_anchored_dr(self, monkeypatch, capsys, tmp_path):
+        """A cert-anchored DR (hermes desktop --setup-tcc-identity, or a
+        notarized release) classifies as stable in its own class — no upgrade
+        hint, still prints the stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and certificate root = H"aabbcc"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "certificate-anchored" in out
+        assert "--setup-tcc-identity" not in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
 
     def test_warns_when_dr_unreadable(self, monkeypatch, capsys, tmp_path):
         """codesign failure → warn, never crash."""

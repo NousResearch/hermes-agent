@@ -616,9 +616,15 @@ def collect_relay_plugin_cutover_findings(
                 )
 
     effective_env = dict(env_map or {})
-    for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
-        if name not in effective_env and os.environ.get(name) is not None:
-            effective_env[name] = os.environ[name]
+    # Fall through to process-level env ONLY when no explicit env_map was
+    # given: run_doctor passes None and wants live-process vars included, but
+    # callers (and tests) that hand in an explicit map are describing a
+    # complete environment — merging os.environ on top breaks hermeticity on
+    # any box that exports legacy relay vars (10-vs-2 findings, Aug 2026).
+    if env_map is None:
+        for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
+            if name not in effective_env and os.environ.get(name) is not None:
+                effective_env[name] = os.environ[name]
     if not str(effective_env.get(RELAY_PLUGINS_CONFIG_ENV, "")).strip():
         for name in configured_legacy_relay_env_vars(effective_env):
             findings.append(
@@ -1086,10 +1092,19 @@ def check_macos_tcc_grants() -> None:
             "identity, then re-grant permissions once.",
         )
         return
-    check_ok(
-        "macOS TCC signing identity is stable",
-        "(identifier-pinned DR; grants survive rebuilds)",
-    )
+    if "certificate" in dr.lower():
+        # Certificate-anchored DR (hermes desktop --setup-tcc-identity, or a
+        # notarized release build): the strongest anchor TCC can key on.
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(certificate-anchored DR; grants survive rebuilds)",
+        )
+    else:
+        check_ok(
+            "macOS TCC signing identity is stable",
+            "(identifier-pinned DR; grants survive rebuilds — for the strongest "
+            "anchor, see `hermes desktop --setup-tcc-identity`)",
+        )
     check_info(
         "If macOS still re-prompts for permissions (toggle shows ON): the stored "
         "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` "

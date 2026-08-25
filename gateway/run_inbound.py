@@ -935,15 +935,16 @@ class GatewayInboundMixin:
             source = event.source
             source_platform = getattr(source, "platform", "")
             origin_platform = getattr(source_platform, "value", source_platform)
-            sanitized_env["HERMES_ORIGIN_PLATFORM"] = str(origin_platform or "")
-            sanitized_env["HERMES_ORIGIN_CHAT_ID"] = str(
-                getattr(source, "chat_id", "") or ""
-            )
-            origin_thread_id = getattr(source, "thread_id", None)
-            if origin_thread_id is not None:
-                sanitized_env["HERMES_ORIGIN_THREAD_ID"] = str(origin_thread_id)
-            else:
-                sanitized_env.pop("HERMES_ORIGIN_THREAD_ID", None)
+            origin_values = {
+                "HERMES_ORIGIN_PLATFORM": origin_platform,
+                "HERMES_ORIGIN_CHAT_ID": getattr(source, "chat_id", None),
+                "HERMES_ORIGIN_THREAD_ID": getattr(source, "thread_id", None),
+            }
+            for env_name, value in origin_values.items():
+                if value is None or value == "":
+                    sanitized_env.pop(env_name, None)
+                else:
+                    sanitized_env[env_name] = str(value)
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=sanitized_env,

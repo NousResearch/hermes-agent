@@ -836,6 +836,9 @@ class TestValidateCustomUnreachableFallback:
         assert result["persist"] is True
         assert result["recognized"] is False
         assert "could not reach" in result["message"]
+        assert "accepted without verification" in result["message"]
+        assert "inference may fail" in result["message"]
+        assert "provider's model catalog" in result["message"]
 
     def test_named_custom_chat_completions_accepted_when_unreachable(self):
         result = self._validate(
@@ -846,6 +849,9 @@ class TestValidateCustomUnreachableFallback:
         assert result["persist"] is True
         assert result["recognized"] is False
         assert "could not reach" in result["message"]
+        assert "accepted without verification" in result["message"]
+        assert "inference may fail" in result["message"]
+        assert "provider's model catalog" in result["message"]
 
     def test_unreachable_warning_includes_suggested_base_url_hint(self):
         result = self._validate(
@@ -854,6 +860,9 @@ class TestValidateCustomUnreachableFallback:
         )
         assert result["accepted"] is True
         assert "If this server expects `/v1`" in result["message"]
+        assert "accepted without verification" in result["message"]
+        assert "inference may fail" in result["message"]
+        assert "provider's model catalog" in result["message"]
 
     def test_anthropic_messages_fallback_unchanged(self):
         result = self._validate(

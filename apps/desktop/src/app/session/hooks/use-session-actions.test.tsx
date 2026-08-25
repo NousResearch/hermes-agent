@@ -102,7 +102,8 @@ vi.mock('@/store/profile', async importOriginal => ({
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn(),
-  requestGatewayForProfile: vi.fn()
+  requestGatewayForProfile: vi.fn(),
+  retainGatewayForAgent: vi.fn(async () => () => undefined)
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({

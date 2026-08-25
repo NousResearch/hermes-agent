@@ -36,6 +36,19 @@ interface RegistryConfig {
    * (#89206: the stale-profile split-brain that stranded bot wake-ups).
    */
   onActiveRouteChanged?: (profile: string) => void
+  /**
+   * Scopes a FOREGROUND surface is bound to right now — every mounted
+   * session tile's owner and the primary thread's (foregroundSessionScopes in
+   * store/session-states; a config hook because that store imports this
+   * one). Consulted by EVERY dispose path — the live-work pruner and the
+   * dispose-at-refcount-0 request/relay leases alike (#93892): a tile's
+   * resume mints its runtime on its owner's socket, and any path that closes
+   * that socket makes the backend orphan-reap the runtime, whose
+   * `session.reclaimed` unbinds the tile and re-arms its resume — a spinner
+   * loop with no terminal state. Read at decision time, never cached: it
+   * follows the tile set, so closing the tile releases the socket.
+   */
+  foregroundScopes?: () => ReadonlySet<string>
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -56,7 +69,16 @@ interface Secondary {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   reconnecting: boolean
-  /** True when a foreground/prewarmed consumer owns this entry beyond one RPC. */
+  /**
+   * True when a foreground/prewarmed consumer owns this entry beyond one RPC.
+   * Guards ONLY the dispose-at-refcount-0 paths (request/relay leases), never
+   * the live-work pruner: it is a one-way latch that every hover pre-warm and
+   * profile switch sets and nothing ever clears, so honoring it in
+   * pruneSecondaryGateways would pin every socket ever warmed. A foreground
+   * surface that must keep its owner socket (a mounted session tile, the
+   * primary thread) is represented in the pruner's keep-set instead — see
+   * foregroundSessionScopes in store/session-states (#93892).
+   */
   retained: boolean
   /**
    * Bot-relay retainers pinning this socket open across drain ticks (#93594).
@@ -695,7 +717,13 @@ async function gatewayForProfile(
       released = true
       entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-      if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
+      if (
+        entry.activeRequests === 0 &&
+        !entry.retained &&
+        !relayRetained(entry) &&
+        !foregroundPinned(entry) &&
+        g.activeKey !== entry.scope
+      ) {
         disposeSecondary(entry)
 
         if (g.secondaries.get(entry.scope) === entry) {
@@ -811,7 +839,13 @@ export async function requestGatewayForAgent<T>(
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-    if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
+    if (
+      entry.activeRequests === 0 &&
+      !entry.retained &&
+      !relayRetained(entry) &&
+      !foregroundPinned(entry) &&
+      g.activeKey !== entry.scope
+    ) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -830,6 +864,22 @@ export async function requestGatewayForAgent<T>(
 // counted retention that keeps the pooled socket (and its existing
 // scheduleReconnect/backoff machinery) alive across ticks; stopBotRelay (and
 // plugin dispose) releases it, restoring the dispose-at-refcount-0 behavior.
+
+/**
+ * True when a foreground surface (mounted tile / primary thread) is bound to
+ * this entry's scope (#93892). Registry-scoped entries match on their
+ * composite key only; local/legacy entries also match on the bare profile —
+ * the same key language pruneSecondaryGateways' keep-set speaks.
+ */
+function foregroundPinned(entry: Secondary): boolean {
+  const scopes = g.config?.foregroundScopes?.()
+
+  if (!scopes) {
+    return false
+  }
+
+  return scopes.has(entry.scope) || (!entry.connectionId && scopes.has(entry.profile))
+}
 
 /** True when the bot relay currently pins this entry open. Number guard:
  *  dev-HMR entries predate the field. */
@@ -879,6 +929,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
       entry.relayRetainCount === 0 &&
       entry.activeRequests === 0 &&
       !entry.retained &&
+      !foregroundPinned(entry) &&
       g.activeKey !== entry.scope &&
       g.secondaries.get(entry.scope) === entry
     ) {
@@ -941,7 +992,13 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     released = true
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-    if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
+    if (
+      entry.activeRequests === 0 &&
+      !entry.retained &&
+      !relayRetained(entry) &&
+      !foregroundPinned(entry) &&
+      g.activeKey !== entry.scope
+    ) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -1400,6 +1457,16 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // source exposes a 'default' profile, so matching a non-local entry on the
 // bare profile name kept gateway B's 'default' socket alive off gateway A's
 // 'default' activity (and vice versa) — cross-connection attribution.
+//
+// Live work is not the only thing worth a socket: an idle tile still holds a
+// resumed runtime on its owner's socket, and closing that socket makes the
+// backend detach and orphan-reap the runtime, whose `session.reclaimed`
+// unbinds the tile and re-resumes it on a fresh socket that the next
+// recompute closes again — a spinner loop with no terminal state (#93892).
+// Foreground-bound scopes come from the registry's `foregroundScopes` hook
+// (foregroundPinned), not from `keep`, so every dispose path sees the same
+// pin. `entry.retained` is deliberately NOT consulted here (see the field's
+// doc).
 export function pruneSecondaryGateways(keep: Set<string>): void {
   const now = Date.now()
 
@@ -1412,6 +1479,9 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // its whole active lifetime; the live-work pruner must not undo that
       // pin between drain ticks or the socket churn returns.
       relayRetained(entry) ||
+      // A mounted tile / the primary thread is bound to a runtime on this
+      // socket (#93892) — pinned for as long as that surface is mounted.
+      foregroundPinned(entry) ||
       // Mid-dial activation target: the profile being switched TO is not yet
       // active and has no live work, so without this lease any recompute
       // during its cold spawn disposed the entry and the click died silently

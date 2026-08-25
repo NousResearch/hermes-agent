@@ -26,13 +26,16 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
+  _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
+  forgetSessionOwnerHintsForConnection,
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
   getSessionOwnerHint,
+  hydrateSessionOwnerHints,
   knownSessionOwner,
   knownSessionProfile,
   mergeSessionPage,
@@ -61,6 +64,10 @@ import {
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 describe('session owner hints', () => {
+  afterEach(() => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+  })
+
   it('preserves the registry owner recorded on a discovered session row', () => {
     expect(
       knownSessionOwner(
@@ -108,6 +115,93 @@ describe('session owner hints', () => {
     const scope = { connectionId: 'bounded-source', profile: 'worker' }
     expect(getSessionOwnerHint('bounded-0', scope)).toBeUndefined()
     expect(getSessionOwnerHint('bounded-256', scope)).toMatchObject({ connectionId: 'bounded-source' })
+  })
+
+  it('survives a relaunch: hints are persisted and rehydrated in LRU order', () => {
+    const omar = { connectionId: 'local', mode: 'local' as const, profile: 'omar' }
+    const remote = { connectionId: 'homelab', mode: 'remote' as const, profile: 'worker', targetProfile: 'w' }
+
+    setSessionOwnerHint('stored-omar', omar)
+    setSessionOwnerHint('stored-remote', remote)
+
+    // "Relaunch": the in-memory map is gone, storage is not.
+    _resetSessionOwnerHintsForTests()
+    expect(getSessionOwnerHint('stored-omar')).toBeUndefined()
+
+    hydrateSessionOwnerHints()
+
+    expect(getSessionOwnerHint('stored-omar')).toEqual(omar)
+    expect(getSessionOwnerHint('stored-remote')).toEqual(remote)
+
+    // LRU order survives: the oldest persisted entry is the first evicted.
+    for (let index = 0; index < 255; index += 1) {
+      setSessionOwnerHint(`filler-${index}`, { connectionId: 'filler', profile: 'p' })
+    }
+
+    expect(getSessionOwnerHint('stored-omar')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-remote')).toEqual(remote)
+  })
+
+  it('ignores malformed persisted entries and never throws on hydrate', () => {
+    window.localStorage.setItem(
+      'hermes.desktop.sessionOwnerHints.v1',
+      JSON.stringify([
+        'junk',
+        ['no-route', null],
+        ['bad-shape', { connectionId: 7, profile: 'x' }],
+        ['good', { connectionId: 'local', profile: 'omar', mode: 'sideways' }]
+      ])
+    )
+
+    _resetSessionOwnerHintsForTests()
+    expect(() => hydrateSessionOwnerHints()).not.toThrow()
+    expect(getSessionOwnerHint('good')).toEqual({ connectionId: 'local', profile: 'omar' })
+    expect(getSessionOwnerHint('no-route')).toBeUndefined()
+    expect(getSessionOwnerHint('bad-shape')).toBeUndefined()
+  })
+
+  it('forgets every hint naming a removed connection, in memory and on disk', () => {
+    setSessionOwnerHint('stored-a', { connectionId: 'gone', profile: 'omar' })
+    setSessionOwnerHint('stored-b', { connectionId: 'gone', profile: 'default' })
+    setSessionOwnerHint('stored-c', { connectionId: 'local', profile: 'omar' })
+
+    forgetSessionOwnerHintsForConnection('gone')
+
+    expect(getSessionOwnerHint('stored-a')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-b')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+
+    _resetSessionOwnerHintsForTests()
+    hydrateSessionOwnerHints()
+    expect(getSessionOwnerHint('stored-a')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+})
+
+describe('knownSessionOwner', () => {
+  afterEach(() => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+  })
+
+  it('returns the EXACT route for a connection-tagged row, the bare profile otherwise', () => {
+    const rows = [
+      session({ connection_id: 'local', id: 'tagged', profile: 'omar' }),
+      session({ id: 'untagged', profile: 'coder' }),
+      session({ connection_id: '  ', id: 'blank-tag', profile: 'coder' })
+    ]
+
+    expect(knownSessionOwner(rows, 'tagged')).toEqual({ connectionId: 'local', profile: 'omar' })
+    expect(knownSessionOwner(rows, 'untagged')).toBe('coder')
+    expect(knownSessionOwner(rows, 'blank-tag')).toBe('coder')
+    expect(knownSessionOwner(rows, null)).toBeUndefined()
+  })
+
+  it('falls through to the EXACT hint route for an unlisted session', () => {
+    const route = { connectionId: 'homelab', profile: 'worker', targetProfile: 'w' }
+
+    setSessionOwnerHint('hidden', route)
+
+    expect(knownSessionOwner([], 'hidden')).toEqual(route)
   })
 })
 
@@ -201,6 +295,39 @@ describe('shouldMigrateComposerScope', () => {
 })
 
 describe('mergeSessionPage', () => {
+  it('carries the owning connection onto a row that comes back untagged (local registry source)', () => {
+    // A `local` registry source's rows are served by the primary aggregate as
+    // plain local rows: the unified-list splice tags only non-local sources.
+    // The refresh must not strip the exact owner the routed create stamped.
+    const previous = [session({ connection_id: 'local', id: 'omar-1', last_active: 5, profile: 'omar' })]
+    const incoming = [session({ id: 'omar-1', last_active: 5, profile: 'omar' })]
+
+    expect(mergeSessionPage(previous, incoming, [])[0]).toMatchObject({ connection_id: 'local', profile: 'omar' })
+  })
+
+  it('drops the carried tag when the refreshed row names a different profile, and never overrides an incoming tag', () => {
+    const previous = [
+      session({ connection_id: 'local', id: 'moved', profile: 'omar' }),
+      session({ connection_id: 'local', id: 'foreign', profile: 'omar' })
+    ]
+
+    const incoming = [
+      session({ id: 'moved', profile: 'default' }),
+      session({ connection_id: 'homelab', id: 'foreign', profile: 'omar' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+    expect(merged.find(s => s.id === 'moved')?.connection_id).toBeUndefined()
+    expect(merged.find(s => s.id === 'foreign')?.connection_id).toBe('homelab')
+  })
+
+  it('keeps reference identity when the carried tag is already present', () => {
+    const previous = [session({ connection_id: 'local', id: 'same', last_active: 1, profile: 'omar' })]
+    const incoming = [session({ connection_id: 'local', id: 'same', last_active: 1, profile: 'omar' })]
+
+    expect(mergeSessionPage(previous, incoming, [])[0]).toBe(incoming[0])
+  })
+
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]

@@ -23,15 +23,20 @@
  *
  * Session-scoped RPCs route to the backend that OWNS the session — never to
  * whatever is "active" (active is presentation only). The owner ladder is
- * resolveSessionRpcOwner (tile route → exact unique owner hint → row profile),
- * then a cross-profile REST probe for a hidden/unlisted session. Only a
- * request with NO session at all falls to the ambient socket.
+ * resolveSessionRpcOwner (tile route → exact unique owner hint → the row's
+ * owner: exact when connection-tagged, else its profile), then a
+ * cross-profile REST probe for a hidden/unlisted session. A request with a
+ * session whose owner STILL cannot be named fails closed with an explicit
+ * SessionOwnerResolutionError rather than riding the ambient socket (the one
+ * exception: the legacy single-backend Desktop, where ambient IS the owner).
+ * Only a request with NO session at all falls to the ambient socket.
  */
 import type { MutableRefObject } from 'react'
 
-import { resolveSessionProfile } from '@/app/session/hooks/use-session-actions/utils'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
 import { $sessions, getSessionOwnerHint, knownSessionOwner } from '@/store/session'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
 
@@ -78,15 +83,19 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     if (!owner && routingSessionId) {
       // Unknown owner for a REAL session: probe across profiles (REST, not the
       // gateway socket, so no recursion) rather than defaulting to active. A
-      // hit stamps ownership + caches a hint; a miss leaves owner undefined
-      // and the request falls to ambient, exactly as an unroutable session did
-      // before — but only after we tried, never as a silent active fallback.
-      const probed = await resolveSessionProfile(routingSessionId)
+      // hit stamps ownership on the row (exact when the row came back
+      // connection-tagged); a miss leaves owner undefined.
+      const probed = await resolveSessionOwner(routingSessionId)
 
       if (probed) {
         owner = probed
       }
     }
+
+    // A request that names a session but whose owner nobody can name must not
+    // ride the ambient socket: that turns missing metadata into a misleading
+    // backend "session not found" on a backend that never held the runtime.
+    assertSessionOwnerResolved(owner, { method, sessionId: paramSessionId ? routingSessionId : null })
 
     return requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
   }

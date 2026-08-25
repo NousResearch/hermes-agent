@@ -53,7 +53,8 @@ import {
   setBusy,
   setSessions
 } from './session'
-import { requestForSessionProfile, type SessionOwnerScope, type SessionProfileRoute } from './session-request-router'
+import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { requestForSessionProfile, type SessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -102,6 +103,43 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
+// ── Owner hold across the create → foreground gap ───────────────────────────
+// A routed session.create returns a stored id on the owner's socket, but the
+// surface that will PIN that socket (the selected primary thread, or a tile)
+// is published later and asynchronously: navigate → route effect →
+// $selectedStoredSessionId, or openSessionTile → $sessionTiles. In that gap
+// the entry has no active request, is not yet foreground-bound and, if the
+// user switched source meanwhile, is not the active key either — so the
+// live-work pruner or a refcount-0 lease release could close the socket that
+// holds the just-minted runtime before the first prompt.submit. The hold
+// names the owner in foregroundSessionScopes from the moment the create
+// returns until the foreground publication takes over (the stored id becomes
+// selected or tiled), the caller releases it (failed create / drift close),
+// or a bounded TTL expires — nothing latches.
+const SESSION_OWNER_HOLD_TTL_MS = 60_000
+const sessionOwnerHolds = new Map<string, { owner: SessionOwnerScope; until: number }>()
+
+export function holdSessionOwnerUntilForeground(storedSessionId: string, owner: SessionOwnerScope): () => void {
+  const id = storedSessionId.trim()
+
+  if (!id || !owner) {
+    return () => undefined
+  }
+
+  sessionOwnerHolds.set(id, { owner, until: Date.now() + SESSION_OWNER_HOLD_TTL_MS })
+
+  return () => releaseSessionOwnerHold(id)
+}
+
+export function releaseSessionOwnerHold(storedSessionId: string): void {
+  sessionOwnerHolds.delete(storedSessionId.trim())
+}
+
+/** @internal Tests. */
+export function _resetSessionOwnerHoldsForTests(): void {
+  sessionOwnerHolds.clear()
+}
+
 /**
  * Registry scopes owned by an open foreground surface, when known.
  *
@@ -111,6 +149,11 @@ export function liveSessionScopes(): Set<string> {
  * the same ownership contract: a non-focused idle tile is still user-visible
  * state and must not be evicted just because another pane has focus. Prefer the
  * live event scope, with the tile's persisted route as the pre-bind fallback.
+ *
+ * A just-created session's owner is named by its create → foreground hold
+ * (holdSessionOwnerUntilForeground) until the selected/tiled publication or
+ * a bounded TTL retires it, so nothing can close the socket that minted the
+ * runtime before the first prompt lands.
  */
 export function foregroundSessionScopes(): Set<string> {
   const scopes = new Set<string>()
@@ -123,7 +166,7 @@ export function foregroundSessionScopes(): Set<string> {
     }
   }
 
-  const addRouteScope = (route: SessionProfileRoute | undefined) => {
+  const addRouteScope = (route: SessionOwnerRoute | undefined) => {
     const connectionId = route?.connectionId?.trim()
     const profile = route?.profile?.trim()
 
@@ -137,6 +180,28 @@ export function foregroundSessionScopes(): Set<string> {
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)
     addRouteScope(tile.ownerRoute)
+  }
+
+  // Create → foreground holds. A hold whose scope the rungs above already
+  // name (the runtime's event scope once selected, a mounted tile's route) is
+  // covered and retires; an expired one retires too.
+  const now = Date.now()
+
+  for (const [storedSessionId, hold] of [...sessionOwnerHolds]) {
+    const scope =
+      typeof hold.owner === 'string'
+        ? normalizeProfileKey(hold.owner)
+        : hold.owner?.connectionId?.trim()
+          ? registryBackendScopeKey(hold.owner.connectionId.trim(), normalizeProfileKey(hold.owner.profile))
+          : null
+
+    if (!scope || hold.until <= now || scopes.has(scope)) {
+      sessionOwnerHolds.delete(storedSessionId)
+
+      continue
+    }
+
+    scopes.add(scope)
   }
 
   return scopes
@@ -609,13 +674,13 @@ export interface SessionTile {
   /** Exact opaque owner key for Bot Mode tabs. */
   workspaceOwnerKey?: string
   /** Credential-free exact route used to resume this tab after relaunch. */
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerRoute
   /** Stable title for hidden relationship chats absent from the Sessions list. */
   workspaceTabTitle?: string
 }
 
 export interface SessionTileWorkspaceScope {
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerRoute
   workspaceMode: WorkspaceMode
   workspaceOwnerKey?: string
   workspaceTabTitle?: string
@@ -803,7 +868,7 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
-export function sessionTileOwnerRoute(storedSessionId: string): SessionProfileRoute | undefined {
+export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRoute | undefined {
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
@@ -846,11 +911,12 @@ export function openTileGatewayScopes(): Set<string> {
  * Sync owner resolution for a session id that may be a RUNTIME or a STORED id.
  * Tile route first (exact connectionId+profile, survives relaunch), then the
  * exact unique owner hint (stamped when a routed create returns / at open
- * time), then the known session owner (a connection-tagged row's exact route,
- * else its profile / the hint). The hint outranks the row for the same reason
- * as contrib/wiring's ladder: a row can be stamped from the ambient profile
- * and carries no connection. Returns undefined when no owner is known — the
- * caller falls back to ambient, never to "active".
+ * time; persisted), then the session row's owner (an exact route when the row
+ * is connection-tagged, else its bare profile, else the hint's profile). The
+ * hint outranks the row for the same reason as contrib/wiring's ladder: a
+ * row can be stamped from the ambient profile and carries no connection.
+ * Returns undefined when no owner is known — the caller fails closed
+ * (assertSessionOwnerResolved), never falls to "active".
  */
 export function knownOwnerForSession(sessionId: null | string | undefined): SessionOwnerScope {
   if (!sessionId) {
@@ -889,10 +955,12 @@ export function isSessionRemote(sessionId: null | string | undefined): boolean {
 
 /**
  * Dispatch a session-scoped RPC through the OWNER of `sessionId` (tile route →
- * known profile), falling back to the ambient dispatcher only when no owner is
- * known. This is the client half of #91684: approval.respond (and siblings)
- * sent on the ambient socket land on whatever backend is active, which for a
- * cross-profile session is a backend that never held the approval.
+ * hint → connection-tagged row / known profile). This is the client half of
+ * #91684: approval.respond (and siblings) sent on the ambient socket land on
+ * whatever backend is active, which for a cross-profile session is a backend
+ * that never held the approval. An UNKNOWN owner fails closed with an
+ * explicit SessionOwnerResolutionError unless the ambient gateway is provably
+ * the only backend (legacy single-profile, no registry source).
  */
 export function requestForOwnedSession<T>(
   sessionId: null | string | undefined,
@@ -907,7 +975,15 @@ export function requestForOwnedSession<T>(
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
-  return requestForSessionProfile<T>(knownOwnerForSession(sessionId), ambientRequest, method, params, timeoutMs, signal)
+  const owner = knownOwnerForSession(sessionId)
+
+  try {
+    assertSessionOwnerResolved(owner, { method, sessionId })
+  } catch (error) {
+    return Promise.reject(error)
+  }
+
+  return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
 }
 
 /** Resolve a session id THAT MAY BE A RUNTIME ID to the stored id its tile
@@ -935,7 +1011,14 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
     }
   }
 
-  return null
+  // The per-runtime state mirror carries the stored id the wiring cache bound
+  // (ensureSessionState / a resume). This is how a MAIN-PANE runtime id — an
+  // approval.respond from a native notification, a queued send — finds its
+  // durable identity, and through it the exact owner (hint / tagged row).
+  // Without this rung such ids fell straight to the ambient socket.
+  const mirrored = $sessionStates.get()[sessionId]?.storedSessionId?.trim()
+
+  return mirrored || null
 }
 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {

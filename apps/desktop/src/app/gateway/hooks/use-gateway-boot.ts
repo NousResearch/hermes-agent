@@ -54,8 +54,10 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
+  forgetSessionOwnerHintsForConnection,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
@@ -672,6 +674,11 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
+      // Every dispose path in the registry (live-work pruner AND the
+      // refcount-0 request leases) spares a socket a mounted tile, the
+      // primary thread or a just-created session's owner hold is bound to
+      // (#93892).
+      foregroundScopes: foregroundSessionScopes,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only
@@ -770,6 +777,13 @@ export function useGatewayBoot({
       }
 
       disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
+
+      if (payload.reason !== 'updated') {
+        // Nothing can dial the removed source again: drop the persisted exact
+        // owner hints naming it so its sessions are not pinned (fail-closed)
+        // to a route that no longer exists.
+        forgetSessionOwnerHintsForConnection(payload.connectionId)
+      }
     })
 
     const onOnline = () => void forceReconnectNow()
@@ -821,6 +835,11 @@ export function useGatewayBoot({
         keep.add(scope)
       }
 
+      // A just-created session's owner hold and every open pane's owner ride
+      // in through foregroundSessionScopes above; the registry ALSO reads that
+      // set itself (its `foregroundScopes` hook) so the refcount-0 lease
+      // releases agree with this pruner. This recompute only has to RUN when
+      // they change — see the tile / selected session / hold subscriptions.
       pruneSecondaryGateways(keep)
     }
 
@@ -830,6 +849,7 @@ export function useGatewayBoot({
     const offSessionTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
     const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
+    const offSelectedSession = $selectedStoredSessionId.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -1027,6 +1047,7 @@ export function useGatewayBoot({
       offSessionTiles()
       offActiveProfile()
       offTiles()
+      offSelectedSession()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onFocus)

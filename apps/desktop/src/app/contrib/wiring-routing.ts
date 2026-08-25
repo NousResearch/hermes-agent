@@ -5,6 +5,8 @@
  * React/Electron controller module.
  */
 
+import type { SessionOwnerRoute } from '@/store/session-request-router'
+
 /**
  * Resolve a runtime session id back to its stored id by reverse-scanning the
  * stored->runtime binding map — the same ladder use-session-tile-delegate's
@@ -51,14 +53,8 @@ export function resolveRoutingSessionId(args: {
 
 /** The owner shapes the ladder below can return: an exact route (connection +
  *  profile), a bare profile name, or undefined (unknown — probe, never
- *  "active"). Structural twin of store/session-request-router's
- *  SessionOwnerScope, kept local so this module stays import-free. */
-export interface SessionRpcOwnerRoute {
-  connectionId: string
-  mode?: 'local' | 'remote'
-  profile: string
-  targetProfile?: string
-}
+ *  "active"). The type-only import keeps this module runtime-import-free. */
+export type SessionRpcOwnerRoute = SessionOwnerRoute
 
 /**
  * The SYNC owner a session-scoped RPC routes to, resolved in this order:
@@ -66,21 +62,23 @@ export interface SessionRpcOwnerRoute {
  *   1. the persisted tile owner route (a bot chat / split tile records the
  *      exact connectionId + profile it was opened with, survives relaunch);
  *   2. the exact, UNIQUE session owner hint (recorded the moment a routed
- *      session.create returns, or at plugin open time) — the only durable
- *      exact owner a fresh main-pane chat or a hidden session has;
+ *      session.create returns, or at plugin open time; persisted, bounded);
  *   3. the session row's owner — an EXACT route when the row is
- *      connection-tagged (optimistic row from a routed create, or the
- *      unified list splice), else its bare profile (the cross-profile
- *      aggregator tags rows, but a bare profile loses the connection and
- *      can lag the create);
- *   4. undefined → the caller runs the cross-profile probe.
+ *      connection-tagged (optimistic row from a routed create, the unified
+ *      list splice, or a tag carried across a refresh), else its bare
+ *      profile (the cross-profile aggregator tags rows, but a bare profile
+ *      loses the connection and can lag the create);
+ *   4. undefined → the caller runs the cross-profile probe, and fails closed
+ *      if that misses too.
  *
  * The hint outranks the row because the row is presentation state that can
  * be stamped from the AMBIENT profile (an optimistic row minted while
  * All-profiles / Bot routing left `default` active), and because it carries
  * no connection: a fresh chat created on `local::omar` whose row read
  * `default` ran its first turn on omar and then 4001'd "session not found"
- * on the second, when the row's `default` owner won the route.
+ * on the second, when the row's `default` owner won the route. The
+ * connection-tagged row rung is what keeps two-turn continuity from resting
+ * on the transient hint alone (bounded, evictable, gone after a relaunch).
  */
 export function resolveSessionRpcOwner(args: {
   routingSessionId: null | string

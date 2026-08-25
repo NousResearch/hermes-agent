@@ -10,7 +10,7 @@ import type { SessionResumeResponse } from '@/types/hermes'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
-import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
+import { resolveSessionOwner } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
@@ -74,11 +74,14 @@ export function useSessionTileDelegate({
       }
     }
 
+    // Same ladder as the window's session-RPC dispatcher: tile route → the
+    // row's owner (exact when connection-tagged, else the hint / profile) →
+    // the async cross-profile probe (exact when the resolved row is tagged).
     const ownerForStoredSession = async (storedSessionId: string): Promise<SessionOwnerScope> => {
       const owner =
         sessionTileOwnerRoute(storedSessionId) ??
         knownSessionOwner($sessions.get(), storedSessionId) ??
-        (await resolveSessionProfile(storedSessionId))
+        (await resolveSessionOwner(storedSessionId))
 
       return owner
     }

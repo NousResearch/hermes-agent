@@ -208,12 +208,24 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+  const next = normKey(profile)
+
   if (g.primaryGateway !== gateway) {
     g.primaryConnectionId = null
   }
 
+  // Route identity is exact-scope, never bare-name (#93892 follow-up): when
+  // the active route IS the primary and the primary re-homes to another
+  // profile, the active key must follow it. Leaving the old bare profile name
+  // behind lets a later same-named LOCAL secondary inherit the active-route
+  // spare in pruneSecondaryGateways — a remote tile keep-set of composite
+  // scopes then appears to "pin" that unrelated local socket forever.
+  if (g.activeKey === g.primaryProfile) {
+    g.activeKey = next
+  }
+
   g.primaryGateway = gateway
-  g.primaryProfile = normKey(profile)
+  g.primaryProfile = next
 }
 
 /** Publish the registry source owned by the window primary socket. */

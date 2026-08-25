@@ -38,7 +38,7 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0 SELF_TEST_NODE_GATE=0 NODE_VERSION_ARG=""
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
@@ -56,11 +56,13 @@ while [ $# -gt 0 ]; do
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
+    --self-test-node-gate) SELF_TEST_NODE_GATE=1; shift ;;
+    --node-version) NODE_VERSION_ARG="$2"; shift 2 ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
-[ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$SELF_TEST_UI" -eq 1 ] || [ "$SELF_TEST_NODE_GATE" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
@@ -157,6 +159,62 @@ notify_fallback() { # status message — renderer-free recovery surface.
 write_status() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
+}
+
+# ── node build-toolchain gate ────────────────────────────────────────────────
+# The desktop dependency tree (nanoid@6 and friends) only accepts Node
+# 22.22+/24/26+; odd-numbered releases (23/25) pass the root `engines.node:
+# >=22.22.0` floor but then die in `npm ci` with EBADENGINE. `hermes update`
+# makes the GUI build failure non-fatal, so a bad Node silently leaves the
+# user on the previous build with a generic "rebuild failed — retry" message.
+#
+# The version predicate is not hardcoded here: node-version-check.js reads
+# apps/desktop/package.json's `engines.node` fresh on every call, so when the
+# official dependency declaration changes the gate follows automatically —
+# no manual copy to keep in sync, no drift window.
+#
+# Unlike the install path (install.sh, which replaces an unsupported system
+# Node with the Hermes-managed one), this is the REBUILD path: prefer an
+# already-installed compatible Node on PATH, and if the system Node is
+# incompatible, look for a Homebrew/usr-local Node to prepend to PATH —
+# zero-download and immediate, so existing installs don't need a fresh
+# toolchain. Falls back to reporting the version clearly if nothing
+# compatible is found.
+node_satisfies_build() {
+  local ver="${1#v}"
+  local node_bin="${2:-}"
+  if [ -z "$node_bin" ]; then
+    command -v node >/dev/null 2>&1 || return 1
+    node_bin="$(command -v node)"
+  fi
+  "$node_bin" "$SCRIPT_DIR/../lib/node-version-check.js" "$ver" "$SCRIPT_DIR/../../apps/desktop/package.json" >/dev/null 2>&1
+}
+
+prepare_node_for_build() {
+  # Already-good Node on PATH? Leave it alone.
+  if command -v node >/dev/null 2>&1 && node_satisfies_build "$(node --version 2>/dev/null)"; then
+    return 0
+  fi
+  # Otherwise look for a compatible installed Node and prepend its bin dir
+  # to PATH for the build. Default candidates are the Homebrew versioned
+  # formulae and /usr/local; HERMES_NODE_CANDIDATE_DIRS overrides the list
+  # (space-separated) for custom install layouts and tests.
+  # A candidate only counts if BOTH node and npm are present — a node
+  # binary without its npm (partial/keg-only install) would still fail
+  # `npm ci` later, just with a more confusing error.
+  local cand v
+  for cand in ${HERMES_NODE_CANDIDATE_DIRS:-/opt/homebrew/opt/node@22/bin /opt/homebrew/opt/node@24/bin \
+              /opt/homebrew/opt/node@26/bin /usr/local/opt/node@22/bin \
+              /usr/local/opt/node@24/bin /usr/local/opt/node@26/bin}; do
+    [ -x "$cand/node" ] && [ -x "$cand/npm" ] || continue
+    v="$("$cand/node" --version 2>/dev/null)"
+    if node_satisfies_build "$v" "$cand/node"; then
+      log "build Node: system $(command -v node >/dev/null 2>&1 && node --version || echo none) is not compatible; using $cand ($v)"
+      export PATH="$cand:$PATH"
+      return 0
+    fi
+  done
+  log "WARNING: no compatible Node found for desktop rebuild (see apps/desktop/package.json engines.node; system: $(command -v node >/dev/null 2>&1 && node --version || echo none))"
 }
 
 publish_stage() { # a long wait the orchestrator is already gating on. No poll
@@ -627,6 +685,17 @@ if [ "$SELF_TEST_GATE" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$SELF_TEST_NODE_GATE" -eq 1 ]; then
+  # Prints the node-build-compat decision and exits. Used by
+  # tests-js/desktop-rebuild-node-gate.test.ts to assert the version
+  # predicate without sourcing internals.
+  # Usage: posix.sh --self-test-node-gate --node-version <v>
+  trap - EXIT
+  [ -n "$NODE_VERSION_ARG" ] || { echo "usage: --self-test-node-gate --node-version <v>" >&2; exit 64; }
+  if node_satisfies_build "$NODE_VERSION_ARG"; then echo "compatible"; else echo "incompatible"; fi
+  exit 0
+fi
+
 if [ "$SELF_TEST_UI" -eq 1 ]; then
   start_ui
   log "SELF-TEST: shim simulation (no update will run)"
@@ -730,6 +799,12 @@ tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
 if [ "${UPDATE_INVOKE[0]}" != "$HERMES_BIN" ]; then
   log "venv/bin/python3 still unbootable; invoking the update via ${UPDATE_INVOKE[*]}"
 fi
+# The desktop build inside `hermes update` runs `npm ci` with whatever Node
+# is on PATH. Gate it here so an incompatible system Node (e.g. 23/25, which
+# nanoid@6 rejects) gets swapped for an installed compatible one BEFORE the
+# build runs — otherwise the failure is silent and the user is left on the
+# previous build with a generic retry message.
+prepare_node_for_build
 
 # Run FROM the install root: `hermes update` resolves the tree it mutates
 # from the working directory, and we inherit the Desktop's cwd (which can be
@@ -789,7 +864,11 @@ if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; the
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
   "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
-    FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
+    # Include the Node actually used for the build: if prepare_node_for_build
+    # auto-selected a compatible Node and the build still failed, the user
+    # needs to see WHICH Node was used to diagnose (e.g. a partial install).
+    build_node_ver="$(command -v node >/dev/null 2>&1 && node --version 2>/dev/null || echo none)"
+    FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build (build Node: $build_node_ver). Run hermes desktop --force-build from a terminal to retry."
     exit 6
   }
 fi

@@ -283,6 +283,13 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
+  BROWSER_WINDOW_HEIGHT,
+  BROWSER_WINDOW_MIN_HEIGHT,
+  BROWSER_WINDOW_MIN_WIDTH,
+  BROWSER_WINDOW_WIDTH,
+  buildBrowserWindowUrl
+} from './browser-windows'
+import {
   classifyStoredSecret,
   readSecretStoragePolicy,
   SECRET_STORAGE_POLICY_FILE,
@@ -11598,6 +11605,87 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
 }
 
+// Popped-out in-app Browser: same webview + address bar as a docked Browser
+// tab, in its own OS window. One window per tab id (re-open focuses); closing
+// it tells the other renderers so they can dock the tab again.
+const browserWindows = createSessionWindowRegistry()
+
+function notifyBrowserPopoutClosed(tabId) {
+  if (typeof tabId !== 'string' || !tabId) {
+    return
+  }
+
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (!other.isDestroyed()) {
+      other.webContents.send('hermes:browser-popout:closed', tabId)
+    }
+  }
+}
+
+function spawnBrowserWindow(tabId) {
+  const icon = getAppIconPath()
+
+  const win = new BrowserWindow({
+    width: BROWSER_WINDOW_WIDTH,
+    height: BROWSER_WINDOW_HEIGHT,
+    minWidth: BROWSER_WINDOW_MIN_WIDTH,
+    minHeight: BROWSER_WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    ...chatWindowSurfaceOptions(),
+    icon,
+    show: false,
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  translucencyBackedWindows.add(win)
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  wireWindowReveal(win)
+
+  win.on('enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  attachRendererConsoleCapture(win, 'browser-window', rememberLog)
+
+  installWindowRendererLifecycle(win, {
+    kind: 'browser',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
+  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
+
+  loadWindowUrl(
+    win,
+    buildBrowserWindowUrl(tabId, {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Browser window'
+  )
+
+  return win
+}
+
+function createBrowserWindow(tabId) {
+  return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
+}
+
 // Additional full "instance" windows — peers of the primary that render the
 // COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
 // a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
@@ -12878,6 +12966,15 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 })
 ipcMain.handle('hermes:window:openInstance', async () => {
   createInstanceWindow()
+
+  return { ok: true }
+})
+ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
+  if (typeof tabId !== 'string' || !tabId.trim()) {
+    return { ok: false, error: 'invalid-tab-id' }
+  }
+
+  createBrowserWindow(tabId.trim())
 
   return { ok: true }
 })

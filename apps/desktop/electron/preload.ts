@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  onBrowserPopoutClosed: callback => {
+    const listener = (_event, tabId) => callback(tabId)
+    ipcRenderer.on('hermes:browser-popout:closed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
+  },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),

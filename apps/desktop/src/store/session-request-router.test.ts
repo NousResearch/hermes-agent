@@ -78,6 +78,7 @@ const {
 } = await import('./gateway')
 
 const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
+const { $connectionsRegistry } = await import('./connection-registry-state')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -103,6 +104,7 @@ function makePrimary() {
 beforeEach(() => {
   secondaryGateways.length = 0
   promptAckStatus = null
+  $connectionsRegistry.set(null)
   configureGatewayRegistry({ onEvent: vi.fn() })
   closeSecondaryGateways()
 })
@@ -177,6 +179,26 @@ describe('sessionRpcNeedsProfileRoute', () => {
 })
 
 describe('requestForSessionProfile', () => {
+  it('keeps routing a bare profile owner through its legacy profile pool when a connection registry exists', async () => {
+    // A profile pick on the primary or the explicit `local` source takes the
+    // legacy profile-only door (store/profile activateOnCurrentSource), so a
+    // session minted there is owned by that profile's pool socket in every
+    // topology — a registry does not turn the bare profile into a guess.
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    $connectionsRegistry.set({ connections: [{ id: 'local' }] } as never)
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    await expect(
+      requestForSessionProfile('loki', ambient as never, 'session.resume', { session_id: 'stored-a' })
+    ).resolves.toEqual({ method: 'session.resume', params: { session_id: 'stored-a' } })
+    expect(window.hermesDesktop!.getConnection).toHaveBeenCalledWith('loki')
+    expect(secondaryGateways).toHaveLength(1)
+    expect(primary.request).not.toHaveBeenCalled()
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
   it('keeps concurrent same-name requests pinned while foreground activation changes', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

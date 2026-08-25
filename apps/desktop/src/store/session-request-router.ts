@@ -131,6 +131,8 @@ async function withRoutedTurnLease<T>(
  *
  * A KNOWN owner (route or profile name) always needs its own socket: the
  * session belongs to that profile regardless of what the window is showing.
+ * A bare profile names the legacy profile door's pool socket in every
+ * topology (a pick on the primary / explicit `local` source dials it).
  * There is deliberately NO comparison against the active profile — "active" is
  * presentation state, never a routing authority. Only a null/empty owner (a
  * fresh draft with no session, or global chrome) routes ambient.

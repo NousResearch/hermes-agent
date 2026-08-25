@@ -3,6 +3,7 @@ import { atom, computed } from 'nanostores'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -32,7 +33,7 @@ const SWITCH_DIAL_TIMEOUT_MS = 20_000
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 
-export const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
+export { $connectionsRegistry } from '@/store/connection-registry-state'
 
 // Use only the resolved descriptor identity Electron publishes. `primary`
 // means the registry default, not necessarily the source this window is using;

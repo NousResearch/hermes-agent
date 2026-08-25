@@ -13,12 +13,12 @@
  * session is left untouched for the next correctly-routed attempt.
  *
  * The ONE case where the ambient gateway is not a fallback but the owner by
- * construction: no registry source is live (legacy v1 primary) AND at most
+ * construction: no registry topology exists (legacy v1 primary) AND at most
  * one profile exists — a single backend serves every session, so there is
  * nothing to misroute to. Older single-profile backends omit `profile` on
  * their rows entirely; those users keep working unchanged.
  */
-import { activeGatewayConnectionId } from './gateway'
+import { hasRegistryTopology } from './connection-registry-state'
 import { $profiles } from './profile'
 import { isSessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
 
@@ -44,13 +44,19 @@ export function isSessionOwnerResolutionError(error: unknown): error is SessionO
 }
 
 /** True when the ambient gateway is provably the only backend any session
- *  can live on (legacy single-backend Desktop): no registry source is active
- *  and there is at most one profile. Everything else has somewhere to misroute. */
+ *  can live on (legacy single-backend Desktop): Electron has published no
+ *  connection registry and there is at most one profile. The active route is
+ *  presentation state; a null active connection does not prove sole topology. */
 export function ambientGatewayOwnsEverySession(): boolean {
-  return activeGatewayConnectionId() === null && $profiles.get().length <= 1
+  return !hasRegistryTopology() && $profiles.get().length <= 1
 }
 
-/** True when `owner` names a backend (an exact route or a profile). */
+/** True when `owner` names a backend: an exact connection route, or a bare
+ *  profile. A bare profile stays an owner in registry topology too — a profile
+ *  pick on the primary or the explicit `local` source takes the legacy
+ *  profile-only door (store/profile activateOnCurrentSource, so a per-profile
+ *  remote override resolves), and a session minted there is owned by that
+ *  profile's pool socket, which requestForSessionProfile dials by name. */
 export function sessionOwnerIsKnown(owner: SessionOwnerScope): boolean {
   if (isSessionOwnerRoute(owner)) {
     return Boolean(owner.connectionId.trim())

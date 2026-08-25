@@ -59,7 +59,9 @@ const {
   ensureActiveGatewayOpen,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   openGatewayForProfile,
+  pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retireLocalProfileGateways,
   setPrimaryGateway
@@ -180,6 +182,44 @@ describe('disposeSecondariesForConnection', () => {
 })
 
 describe('secondary reconnect runtime scope', () => {
+  it('invalidates stale runtime bindings before a direct secondary reopen publishes open', async () => {
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await openGatewayForAgent('homelab', 'writer')
+    const firstSocket = gatewayMocks.instances[0]
+    pruneSecondaryGateways(new Set())
+    expect(firstSocket.close).toHaveBeenCalledOnce()
+
+    let finishReconnect!: () => void
+
+    const reconnect = new Promise<void>(resolve => {
+      finishReconnect = resolve
+    })
+
+    gatewayMocks.connect.mockImplementationOnce(() => reconnect)
+
+    // A real user action after the renderer/main-process pool reaped an idle
+    // profile creates a fresh Secondary entry and opens it directly. Runtime
+    // bindings from the previous backend generation must be gone before the
+    // new socket can publish `open`, or the request can immediately reuse a
+    // process-local id the respawned backend never minted.
+    const reopening = openGatewayForAgent('homelab', 'writer')
+
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2))
+    expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+      connectionId: 'homelab',
+      profile: 'writer'
+    })
+    expect(reconnectStateMocks.resetTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
+      gatewayMocks.connect.mock.invocationCallOrder[1]
+    )
+
+    finishReconnect()
+    await reopening
+  })
+
   it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
     installDesktop({
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))

@@ -47,6 +47,8 @@ interface Secondary {
   connectionId: null | string
   connection: HermesConnection | null
   gateway: HermesGateway
+  /** True after this entry completed at least one socket connection. */
+  openedOnce: boolean
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
@@ -106,6 +108,8 @@ interface GatewayRegistryState {
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
+  /** Scopes that opened in this renderer generation, even if later pruned. */
+  openedSecondaryScopes?: Set<string>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
   $activeProfile: ReturnType<typeof atom<string>>
 }
@@ -121,6 +125,7 @@ function createRegistryState(): GatewayRegistryState {
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
+    openedSecondaryScopes: new Set<string>(),
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
@@ -154,6 +159,10 @@ function gatewayState(): GatewayRegistryState {
 }
 
 const g = gatewayState()
+
+// Dev HMR can hand a newer module an older state-container shape. Keep the
+// generation ledger lazy so an already-open socket still survives the update.
+const openedSecondaryScopes = (): Set<string> => (g.openedSecondaryScopes ??= new Set<string>())
 
 // Re-exported as a stable binding: the atom instance lives in `g`, so every hot
 // reload of this module hands back the SAME atom subscribers are already wired
@@ -355,6 +364,35 @@ async function openSecondary(entry: Secondary): Promise<void> {
   }
 
   const pending = (async () => {
+    // A secondary can be reopened directly by the next routed user action,
+    // without passing through reconnectSecondary(). Its previous backend may
+    // have been respawned, so every stored→runtime binding for this exact scope
+    // is process-local stale state. Invalidate BEFORE connect publishes `open`:
+    // otherwise an eager route effect / submit can send the old runtime id in
+    // the narrow window between the new socket opening and post-connect cleanup.
+    //
+    // Dynamic import keeps the existing session-states → gateway module cycle
+    // open. Awaiting it is intentional: correctness at the generation boundary
+    // outranks the single local-module microtask this adds to a reconnect.
+    const openedScopes = openedSecondaryScopes()
+    const reopening = entry.openedOnce || entry.connection !== null || openedScopes.has(entry.scope)
+    let reconcileBusyAfterOpen: null | (() => void) = null
+
+    if (reopening) {
+      try {
+        const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
+
+        resetTileRuntimeBindings({
+          connectionId: entry.connectionId || 'local',
+          profile: entry.profile
+        })
+        reconcileBusyAfterOpen = () => reconcileBusyStatesOnReconnect(entry.scope)
+      } catch {
+        // Best effort for partial test/HMR graphs. Production always loads the
+        // real store; a failed import must not make the transport unrecoverable.
+      }
+    }
+
     // Registry-scoped entries dial through getConnectionFor when the bridge has
     // it. Local/legacy entries retain the existing getConnection path.
     const conn =
@@ -377,6 +415,15 @@ async function openSecondary(entry: Secondary): Promise<void> {
     const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
 
     await entry.gateway.connect(wsUrl)
+    entry.openedOnce = true
+    openedScopes.add(entry.scope)
+
+    try {
+      reconcileBusyAfterOpen?.()
+    } catch {
+      // The socket is already open. A best-effort UI-state reconcile must not
+      // turn that successful transport recovery into a reported dial failure.
+    }
 
     if (!entry.wantOpen) {
       entry.gateway.close()
@@ -427,27 +474,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
-    // The re-dialed backend may have respawned and re-minted runtime ids —
-    // busy flags recorded from THIS socket's pre-drop events would then never
-    // receive their terminal busy:false, leaving the session's running arc
-    // armed forever (#53902/#73082 stale-flag half). Scoped: only runtimes
-    // whose events arrived on this connection are reconciled; live work on
-    // other sockets is untouched, and a genuinely live turn here re-asserts
-    // busy on its next event. Lazy import: a static edge here closes a module
-    // cycle (session-states → … → gateway) that leaves nanostores atoms
-    // undefined at init for whichever module loads second. Best-effort catch:
-    // under partial vi.mock('@/hermes') harnesses the transitive graph can
-    // fail to load — a skipped reconcile there must not surface as an
-    // unhandled rejection (the real graph always loads in production).
-    void import('@/store/session-states')
-      .then(({ reconcileBusyStatesOnReconnect, resetTileRuntimeBindings }) => {
-        reconcileBusyStatesOnReconnect(entry.scope)
-        resetTileRuntimeBindings({
-          connectionId: entry.connectionId || 'local',
-          profile: entry.profile
-        })
-      })
-      .catch(() => undefined)
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself
@@ -506,6 +532,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     connectionId,
     connection: null,
     gateway,
+    openedOnce: false,
     activeRequests: 0,
     connectPromise: null,
     offEvent: () => {},
@@ -1209,6 +1236,7 @@ export function closeSecondaryGateways(): void {
   }
 
   g.secondaries.clear()
+  openedSecondaryScopes().clear()
   restoreActiveToPrimaryIfEvicted()
 }
 

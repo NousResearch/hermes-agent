@@ -163,3 +163,93 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
         )
     finally:
         clear_session_vars(tokens)
+
+
+# --- Persistent Docker is PROFILE-scoped, not session-scoped ------------------
+#
+# Product contract: TERMINAL_ENV=docker + container_persistent:true means ONE
+# long-lived container per Hermes profile, shared by every session of that
+# profile (CLI, gateway chats, WebUI). The a270c4ade session-key fallback must
+# NOT fragment persistent Docker into per-session containers; it exists for
+# backends where cross-session reuse is dangerous (SSH).
+
+
+def _persistent_docker(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+
+
+def test_persistent_docker_default_profile_shares_default_container(monkeypatch):
+    # A gateway session of the default profile lands on the SAME container key
+    # CLI mode uses — "default" — not a per-session key.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "default"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="agent:main:discord:guild:456", profile="work")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == b == "profile:work"
+
+
+def test_persistent_docker_distinct_profiles_get_distinct_containers(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    tokens = set_session_vars(session_key="sess-X", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="sess-X", profile="research")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == "profile:work"
+    assert b == "profile:research"
+    assert a != b
+
+
+def test_nonpersistent_docker_keeps_session_scoping(monkeypatch):
+    # container_persistent:false is an explicit isolation statement (#82731) —
+    # the profile-scope gate must not fire there.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_ssh_backend_keeps_session_scoping(monkeypatch):
+    # The original a270c4ade leak: SSH environments must stay session-scoped
+    # regardless of profile, or profile A's SSHEnvironment leaks into B.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
+    finally:
+        clear_session_vars(tokens)

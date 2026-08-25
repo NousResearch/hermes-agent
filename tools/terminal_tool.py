@@ -1407,6 +1407,39 @@ def _docker_session_isolation_enabled() -> bool:
     return _session_isolation_enabled()
 
 
+def _docker_persistent_profile_scoped() -> bool:
+    """True when the persistent Docker container is shared per PROFILE.
+
+    The product contract for ``TERMINAL_ENV=docker`` +
+    ``container_persistent: true`` is ONE long-lived container per Hermes
+    profile, shared by every session of that profile (CLI, gateway chats,
+    WebUI). Commit a270c4ade added a session-key fallback to
+    :func:`_resolve_container_task_id` to stop cross-profile SSH environment
+    reuse, but the fallback wasn't backend-gated, so persistent Docker
+    silently fragmented into one container per gateway session (#93950 was
+    downstream damage from that). This predicate gates the resolver back to
+    profile scoping for exactly this backend/mode; SSH and other backends
+    keep the session-scoped cache key that fixed the original leak.
+    """
+    _ensure_terminal_env_bridged()
+    if os.getenv("TERMINAL_ENV", "local") != "docker":
+        return False
+    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"}
+
+
+def _current_session_profile() -> str:
+    """Return the active session's Hermes profile name, or "" when unset.
+
+    Same lookup discipline as :func:`_current_session_key`: the ContextVar
+    (bound per message by the gateway, per session by the WebUI streaming
+    layer) with the ``get_session_env`` os.environ fallback for CLI, cron,
+    and test processes.
+    """
+    from gateway.session_context import get_session_env
+
+    return get_session_env("HERMES_SESSION_PROFILE", "")
+
+
 _ISOLATION_OVERRIDE_KEYS = frozenset({
     "docker_image", "modal_image", "singularity_image",
     "daytona_image", "env_type",
@@ -1474,6 +1507,18 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     # would otherwise collapse to the shared "default" key (notably SSH).
     session_key = _current_session_key()
     if session_key:
+        # Persistent Docker is PROFILE-scoped by contract: one long-lived
+        # container shared by every session of the profile. Key it by profile
+        # (not session) so gateway chats, CLI, and WebUI all land in the same
+        # container and sandbox. The bare "profile:default" key stays literally
+        # "default" so CLI mode (no session key at all) and gateway sessions of
+        # the default profile share the SAME container — CLI's historical key
+        # IS the default profile's container.
+        if _docker_persistent_profile_scoped():
+            profile = _current_session_profile() or "default"
+            if profile == "default":
+                return "default"
+            return f"profile:{profile}"
         return f"session:{session_key}"
     return "default"
 

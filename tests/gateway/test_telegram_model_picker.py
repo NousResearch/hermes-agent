@@ -5,7 +5,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+
+
+class _FakeInlineKeyboardButton:
+    def __init__(self, text, callback_data=None):
+        self.text = text
+        self.callback_data = callback_data
+
+
+class _FakeInlineKeyboardMarkup:
+    def __init__(self, inline_keyboard):
+        self.inline_keyboard = inline_keyboard
 
 
 def _make_adapter():
@@ -16,6 +28,18 @@ def _make_adapter():
 
 
 class TestTelegramModelPicker:
+    def test_bedrock_model_buttons_show_distinguishing_suffix_and_keep_index_callback(self, monkeypatch):
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+        model_id = "global.anthropic.claude-sonnet-4-6"
+
+        keyboard, _ = adapter._build_model_keyboard([model_id], page=0)
+        button = keyboard.inline_keyboard[0][0]
+
+        assert button.text == "claude-sonnet-4-6"
+        assert button.callback_data == "mm:0"
+
     @pytest.mark.asyncio
     async def test_send_model_picker_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()

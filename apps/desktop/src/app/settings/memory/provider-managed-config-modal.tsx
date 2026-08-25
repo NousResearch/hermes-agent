@@ -59,6 +59,7 @@ function FieldLink({ field }: { field: MemoryProviderField }) {
     <ExternalLink
       className="text-xs font-medium text-primary decoration-primary/30 hover:decoration-primary/70"
       href={field.help_url}
+      native
       showExternalIcon={false}
     >
       {field.help_label || 'Learn more'}

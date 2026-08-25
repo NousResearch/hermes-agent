@@ -5,6 +5,7 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
 const notify = vi.fn()
+const openExternal = vi.fn().mockResolvedValue(undefined)
 const runMemoryProviderAction = vi.fn()
 
 class TestResizeObserver {
@@ -95,6 +96,8 @@ function schema(): MemoryProviderConfig {
         visible_when: profile
       }),
       field({
+        help_label: 'Get API key',
+        help_url: 'https://console.example.com/api-keys',
         key: 'api_key',
         kind: 'secret',
         label: 'API key',
@@ -137,6 +140,10 @@ async function renderModal(config = schema(), profile: null | string = null) {
 }
 
 beforeEach(() => {
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { openExternal }
+  })
   getMemoryProviderConfig.mockResolvedValue(schema())
   runMemoryProviderAction.mockResolvedValue({ ok: true })
 })
@@ -147,6 +154,14 @@ afterEach(() => {
 })
 
 describe('ProviderManagedConfigModal', () => {
+  it('opens field help links in the system browser', async () => {
+    await renderModal()
+
+    fireEvent.click(await screen.findByRole('link', { name: 'Get API key' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.example.com/api-keys')
+  })
+
   it('shows only the fields for the selected setup type', async () => {
     await renderModal()
 

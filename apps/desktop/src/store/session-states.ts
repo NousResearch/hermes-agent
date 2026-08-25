@@ -1600,8 +1600,11 @@ export function dropTilesForProfile(
   route?: { connectionId?: string; profile?: string; targetProfile?: string }
 ): void {
   const name = normalizeProfileKey(profile)
-  const routeProfile = String(route?.profile ?? '').trim()
-  const routeTarget = String(route?.targetProfile ?? '').trim()
+  // Route fields go through the SAME canonicalization as `name` below — a
+  // source-scoped delete must not be defeated by stray whitespace around a
+  // profile name that a non-route delete trims away.
+  const routeProfile = route?.profile ? normalizeProfileKey(route.profile) : ''
+  const routeTarget = route?.targetProfile ? normalizeProfileKey(route.targetProfile) : ''
   const routeConnection = String(route?.connectionId ?? '').trim()
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
@@ -1609,8 +1612,8 @@ export function dropTilesForProfile(
       return false
     }
 
-    const ownerProfile = String(owner.profile ?? '').trim()
-    const ownerTarget = String(owner.targetProfile ?? '').trim()
+    const ownerProfile = normalizeProfileKey(owner.profile)
+    const ownerTarget = normalizeProfileKey(owner.targetProfile)
     const ownerConnection = String(owner.connectionId ?? '').trim()
 
     if (routeProfile) {
@@ -1627,7 +1630,11 @@ export function dropTilesForProfile(
       return !routeConnection || ownerConnection === routeConnection
     }
 
-    return ownerProfile === name || ownerTarget === name
+    // Desktop-local delete: also require the tile's owner connection to be the
+    // LOCAL connection. A same-named bot on another connection is a different
+    // agent — the deleted local profile never owned it, and dropping its tile
+    // would orphan a live conversation (hermes-agent#94235).
+    return (ownerProfile === name || ownerTarget === name) && ownerConnection === 'local'
   }
 
   // The profile's own sessions bucket (Bot tiles live in the shared bucket
@@ -1650,6 +1657,7 @@ export function dropTilesForProfile(
   // profile IS the live gateway's profile — the session tiles in view (they
   // belong to that bucket; the caller re-homes afterwards).
   const live = $sessionTiles.get()
+
   const next = live.filter(tile =>
     tile.workspaceMode === 'bots' ? !ownerMatches(tile.ownerRoute) : profileKey() !== name
   )

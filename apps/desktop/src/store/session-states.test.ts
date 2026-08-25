@@ -13,6 +13,7 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
+import type * as SessionStatesModule from '@/store/session-states'
 import {
   $focusedStoredSessionId,
   $sessionStates,
@@ -20,7 +21,6 @@ import {
   blankDraftTile,
   clearAllSessionStates,
   closeAllOpenSessionTiles,
-  dropTilesForProfile,
   focusedSessionNeedsRoute,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
@@ -436,15 +436,17 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
 describe('dropTilesForProfile', () => {
   const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
   const BOTS_BUCKET = '__bots_workspace__'
+
   const storedTiles = (): Record<string, unknown> => {
     const raw = window.localStorage.getItem(TILES_KEY)
+
     return raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
   }
   // The tile buckets are module-private and other suites leave persisted
   // entries behind, so each test re-imports a FRESH session-states module
   // (empty tilesByProfile + empty storage) instead of fighting the residue —
   // the same isolation the browser gets between app launches.
-  type SessionStates = typeof import('@/store/session-states')
+  type SessionStates = typeof SessionStatesModule
   let mod: SessionStates
   let activeGatewayProfile: { set: (name: string) => void }
   beforeEach(async () => {
@@ -504,6 +506,7 @@ describe('dropTilesForProfile', () => {
       profile: 'worker',
       targetProfile: 'backend-worker'
     }
+
     mod.openSessionTile('bot-a', 'right', undefined, undefined, {
       ownerRoute: route,
       workspaceMode: 'bots' as const,
@@ -529,6 +532,92 @@ describe('dropTilesForProfile', () => {
     expect(
       (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
     ).toEqual(['bot-b', 'bot-local'])
+  })
+
+  it('keeps a same-named bot tile owned by another connection when a local profile is deleted', () => {
+    mod.openSessionTile('bot-local', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'copilot' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'copilot'
+    })
+    mod.openSessionTile('bot-remote', 'right', undefined, undefined, {
+      ownerRoute: {
+        connectionId: 'work-vps',
+        mode: 'remote' as const,
+        profile: 'copilot',
+        targetProfile: 'copilot'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'work-vps::copilot'
+    })
+
+    mod.dropTilesForProfile('copilot')
+
+    // Only the LOCAL connection's tile points at the deleted local profile; the
+    // same-named agent on another connection keeps its tile and conversation.
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-remote'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['bot-remote'])
+  })
+
+  it('normalizes whitespace in the deleted identity on both delete paths', () => {
+    mod.openSessionTile('bot-local', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'press-bot' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'press-bot'
+    })
+    mod.openSessionTile('bot-routed', 'right', undefined, undefined, {
+      ownerRoute: {
+        connectionId: 'source-a',
+        mode: 'remote' as const,
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'source-a::worker'
+    })
+
+    // Non-route delete with a whitespace-padded name matches the trimmed tile.
+    mod.dropTilesForProfile('   press-bot   ')
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-routed'])
+
+    // Route delete with padded route fields matches the exact route's tile.
+    mod.dropTilesForProfile('worker', {
+      connectionId: ' source-a ',
+      profile: '  worker  ',
+      targetProfile: '  backend-worker  '
+    })
+    expect(mod.$sessionTiles.get()).toEqual([])
+  })
+
+  it('keeps profile identity case-exact on both delete paths', () => {
+    mod.openSessionTile('bot-local', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'press-bot' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'press-bot'
+    })
+    mod.openSessionTile('bot-routed', 'right', undefined, undefined, {
+      ownerRoute: {
+        connectionId: 'source-a',
+        mode: 'remote' as const,
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'source-a::worker'
+    })
+
+    // normalizeProfileKey trims but never lowercases: a differing case is a
+    // different profile identity, consistently in the local and route branches.
+    mod.dropTilesForProfile('PRESS-BOT')
+    mod.dropTilesForProfile('worker', {
+      connectionId: 'source-a',
+      profile: 'WORKER',
+      targetProfile: 'backend-worker'
+    })
+
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-local', 'bot-routed'])
   })
 })
 

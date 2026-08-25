@@ -128,6 +128,21 @@ test('computeWindowOptions does not clamp when displays are unknown', () => {
   assert.deepEqual(computeWindowOptions(saved, []), { width: 2560, height: 1440 })
 })
 
+test('computeWindowOptions recovers stale fullscreen normal bounds to a centered windowed size', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions preserves full bounds when the saved state is actually maximized', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: true })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1920, height: 1040, x: 0, y: 0 })
+})
+
+test('computeWindowOptions does not shrink a large normal window away from the work-area origin', () => {
+  const saved = sanitizeWindowState({ x: 240, y: 120, width: 1740, height: 950, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1740, height: 950, x: 240, y: 120 })
+})
+
 // ─── debounce ──────────────────────────────────────────────────────────────
 
 test('debounce coalesces a burst into one trailing run', () => {

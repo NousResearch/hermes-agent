@@ -53,20 +53,6 @@ def test_dependency_installs_relax_eap() -> None:
     _assert_relaxed_call(text, r"& \$UvCmd pip install -e \$tier\.Spec")
 
 
-def test_uv_venv_failure_is_not_swallowed() -> None:
-    """The redirected uv process exit code must gate venv-stage success."""
-    text = _install_ps1()
-    guard = re.search(
-        r"\$venvExitCode\s*=\s*\$venvProcess\.ExitCode[\s\S]{0,400}?"
-        r"-ne 0[\s\S]{0,200}?throw",
-        text,
-    )
-    assert guard is not None, (
-        "install.ps1 must capture the redirected uv venv process exit code and "
-        "throw so a genuine creation failure is not reported as success"
-    )
-
-
 def test_native_eap_helper_always_restores_previous_preference() -> None:
     text = _install_ps1()
     m = re.search(

@@ -13,11 +13,24 @@ using System.Linq;
 
 public static class FakeUv {
     public static int Main(string[] args) {
+        if (Path.GetFileName(Environment.GetCommandLineArgs()[0]).Equals(
+                "python.exe", StringComparison.OrdinalIgnoreCase)) {
+            Console.WriteLine(Environment.GetEnvironmentVariable("FAKE_PYTHON_VERSION")
+                ?? "Python 3.11.0");
+            return 0;
+        }
+
         File.AppendAllText(Environment.GetEnvironmentVariable("FAKE_UV_LOG"),
             string.Join(" ", args) + Environment.NewLine);
 
         if (args.Length >= 2 && args[0] == "python" && args[1] == "find") {
             bool managed = args.Contains("--managed-python");
+            string availableVersion = Environment.GetEnvironmentVariable(
+                "FAKE_MANAGED_PYTHON_VERSION");
+            if (managed && !string.IsNullOrEmpty(availableVersion)
+                    && (args.Length < 3 || args[2] != availableVersion)) {
+                return 1;
+            }
             Console.WriteLine(Environment.GetEnvironmentVariable(
                 managed ? "FAKE_MANAGED_PYTHON" : "FAKE_THIRD_PARTY_PYTHON"));
             return 0;
@@ -26,6 +39,10 @@ public static class FakeUv {
             return 0;
         }
         if (args.Length >= 2 && args[0] == "venv" && args[1] == "venv") {
+            string forcedExit = Environment.GetEnvironmentVariable("FAKE_UV_VENV_EXIT");
+            if (!string.IsNullOrEmpty(forcedExit)) {
+                return int.Parse(forcedExit);
+            }
             string managedPython = Environment.GetEnvironmentVariable("FAKE_MANAGED_PYTHON");
             int pythonAt = Array.IndexOf(args, "--python");
             bool correctPython = pythonAt >= 0 && pythonAt + 1 < args.Length
@@ -37,7 +54,7 @@ public static class FakeUv {
             }
             string scripts = Path.Combine(Environment.CurrentDirectory, "venv", "Scripts");
             Directory.CreateDirectory(scripts);
-            File.WriteAllText(Path.Combine(scripts, "python.exe"), "fake");
+            File.Copy(managedPython, Path.Combine(scripts, "python.exe"), true);
             return 0;
         }
         return 2;

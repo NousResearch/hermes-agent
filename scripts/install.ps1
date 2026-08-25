@@ -387,9 +387,9 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
-# available, in preference order.  uv discovers both uv-managed and system
-# interpreters, so this list also matches a pre-existing system Python.  Single
-# source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
+# available, in preference order. Only checkout-private uv-managed interpreters
+# are eligible. Single source of truth shared by Test-Python's fallback and
+# Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
@@ -1225,6 +1225,7 @@ function Resolve-AvailablePythonVersion {
             if ($foundPath) {
                 $absolute = [System.IO.Path]::GetFullPath($foundPath)
                 if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $script:PythonVersion = $ver
                     return $absolute
                 }
             }
@@ -1303,7 +1304,6 @@ function Test-Python {
             $ErrorActionPreference = $previousFallbackEAP
             $pythonPath = Resolve-AvailablePythonVersion
             if ($pythonPath) {
-                $script:PythonVersion = $fallbackVer
                 $ver = & $pythonPath --version 2>$null
                 Write-Success "Python fallback installed: $ver"
                 return $true

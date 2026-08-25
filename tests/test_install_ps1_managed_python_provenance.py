@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,6 +16,36 @@ from tests.install_ps1_fake_uv import compile_fake_uv
 pytestmark = pytest.mark.windows_only
 
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
+
+
+def _run_venv_stage(
+    powershell: str,
+    tmp_path: Path,
+    hermes_home: Path,
+    install_dir: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_INSTALL_PS1),
+            "-Stage",
+            "venv",
+            "-HermesHome",
+            str(hermes_home),
+            "-InstallDir",
+            str(install_dir),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
@@ -34,13 +65,13 @@ def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
     uv.parent.mkdir(parents=True)
     install_dir.mkdir()
     managed_python.parent.mkdir(parents=True)
-    managed_python.write_text("fake", encoding="ascii")
     third_party.parent.mkdir(parents=True)
     third_party.write_text("fake", encoding="ascii")
     compile_fake_uv(powershell, uv)
+    shutil.copy2(uv, managed_python)
 
     env = {
-        **dict(__import__("os").environ),
+        **os.environ,
         "FAKE_UV_LOG": str(log),
         "FAKE_MANAGED_PYTHON": str(managed_python),
         "FAKE_THIRD_PARTY_PYTHON": str(third_party),
@@ -48,36 +79,9 @@ def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
         "UV_NO_MANAGED_PYTHON": "1",
         "UV_SYSTEM_PYTHON": "1",
     }
-    stdout_path = tmp_path / "installer.stdout"
-    stderr_path = tmp_path / "installer.stderr"
-    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as stderr:
-        run = subprocess.run(
-            [
-                powershell,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(_INSTALL_PS1),
-                "-Stage",
-                "venv",
-                "-HermesHome",
-                str(hermes_home),
-                "-InstallDir",
-                str(install_dir),
-            ],
-            cwd=tmp_path,
-            env=env,
-            stdout=stdout,
-            stderr=stderr,
-            text=True,
-            check=False,
-        )
-
-    installer_stdout = stdout_path.read_text(encoding="utf-8")
-    installer_stderr = stderr_path.read_text(encoding="utf-8")
+    run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
+    installer_stdout = run.stdout
+    installer_stderr = run.stderr
     frames = [
         json.loads(line) for line in installer_stdout.splitlines() if line.startswith("{")
     ]
@@ -92,3 +96,82 @@ def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
     assert f"--python {managed_python}" in venv_command
     assert "--managed-python" in venv_command
     assert "--no-python-downloads" in venv_command
+
+
+def test_fallback_minor_is_reported_from_resolved_managed_interpreter(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    hermes_home = tmp_path / "hermes-home"
+    install_dir = tmp_path / "install"
+    managed_python = (
+        install_dir / ".hermes-runtime" / "python" / "cpython-3.12" / "python.exe"
+    )
+    uv = hermes_home / "bin" / "uv.exe"
+    uv.parent.mkdir(parents=True)
+    managed_python.parent.mkdir(parents=True)
+    install_dir.mkdir(exist_ok=True)
+    compile_fake_uv(powershell, uv)
+    shutil.copy2(uv, managed_python)
+    env = {
+        **os.environ,
+        "FAKE_UV_LOG": str(tmp_path / "uv.log"),
+        "FAKE_MANAGED_PYTHON": str(managed_python),
+        "FAKE_MANAGED_PYTHON_VERSION": "3.12",
+        "FAKE_PYTHON_VERSION": "Python 3.12.13",
+    }
+
+    run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "Creating virtual environment with Python 3.12" in run.stdout
+    assert "Virtual environment ready (Python 3.12)" in run.stdout
+    created_python = install_dir / "venv" / "Scripts" / "python.exe"
+    version = subprocess.run(
+        [str(created_python), "--version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert version.stdout.strip() == "Python 3.12.13"
+
+
+def test_venv_failure_fails_stage_and_restores_existing_environment(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    hermes_home = tmp_path / "hermes-home"
+    install_dir = tmp_path / "install"
+    managed_python = (
+        install_dir / ".hermes-runtime" / "python" / "cpython-3.11" / "python.exe"
+    )
+    old_python = install_dir / "venv" / "Scripts" / "python.exe"
+    uv = hermes_home / "bin" / "uv.exe"
+    for directory in (uv.parent, managed_python.parent, old_python.parent):
+        directory.mkdir(parents=True, exist_ok=True)
+    old_python.write_text("previous environment", encoding="ascii")
+    compile_fake_uv(powershell, uv)
+    shutil.copy2(uv, managed_python)
+    env = {
+        **os.environ,
+        "FAKE_UV_LOG": str(tmp_path / "uv.log"),
+        "FAKE_MANAGED_PYTHON": str(managed_python),
+        "FAKE_UV_VENV_EXIT": "37",
+    }
+
+    run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
+
+    assert run.returncode != 0
+    assert "Failed to create virtual environment (uv venv exited with 37)" in (
+        run.stdout + run.stderr
+    )
+    assert old_python.read_text(encoding="ascii") == "previous environment"
+    frames = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+    assert frames[-1]["ok"] is False

@@ -927,7 +927,44 @@ class TestAuthFailureAborts:
         assert c._last_summary_network_failure is True
         assert c._last_summary_auth_failure is False
 
+    def test_generate_summary_flags_empty_content_failure(self):
+        """An empty-content response on the summary call flags
+        _last_summary_empty_content_failure (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": "   "}}]},
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_summary_auth_failure is False
+        assert c._last_summary_network_failure is False
 
+    def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
+        """Empty-content response from degraded provider aborts compression and
+        preserves original messages without dropping context (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": ""}}]},
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
 
 
 class TestSummaryFallbackToMainModel:
@@ -980,6 +1017,35 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "404" in c._last_aux_model_failure_error
 
+    def test_empty_content_falls_back_to_main_and_succeeds(self):
+        """Aux model returns empty content -> falls back to main model -> succeeds (#94448)."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model after empty aux"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="flaky-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[
+                {"choices": [{"message": {"content": "   "}}]},
+                mock_ok,
+            ],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model after empty aux" in result
+        assert c._last_aux_model_failure_model == "flaky-aux-model"
+        assert "empty content" in (c._last_aux_model_failure_error or "").lower()
 
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back

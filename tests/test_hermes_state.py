@@ -1835,6 +1835,81 @@ class TestSchemaInit:
                 )
 
 
+class TestAsyncDelegationsSchemaAgreement:
+    """SCHEMA_SQL and the delegation tool's own DDL must declare the same
+    shape (#94691).
+
+    The delegation tool carries its own CREATE TABLE for async_delegations
+    (plus a lazy ALTER for pre-existing tables). When its column list drifts
+    ahead of the canonical SCHEMA_SQL, two databases at the same
+    schema_version end up with different async_delegations shapes depending
+    only on whether the delegation tool ever ran — breaking rebuild/replay
+    pipelines that reconstruct state.db from the canonical schema.
+    """
+
+    def _async_delegations_columns(self, conn):
+        import sqlite3
+
+        rows = conn.execute(
+            "PRAGMA table_info(async_delegations)"
+        ).fetchall()
+        return {row[1] for row in rows}
+
+    def test_fresh_db_and_tool_schema_agree(self, tmp_path):
+        import sqlite3
+
+        from tools.async_delegation import _initialize_schema
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            canonical_cols = self._async_delegations_columns(conn)
+            # The drift column from the tool's DDL is present from the
+            # canonical fresh-install shape (#94691).
+            assert "origin_session_id" in canonical_cols
+            _initialize_schema(conn)
+            conn.commit()
+            after_cols = self._async_delegations_columns(conn)
+        finally:
+            conn.close()
+
+        # Running the tool's schema initializer over a canonical database
+        # must not change the table's shape — the two authorities agree.
+        assert after_cols == canonical_cols
+
+    def test_reconcile_backfills_drift_column_on_pre_tool_db(self, tmp_path):
+        """A database created before the column existed (canonical schema
+        without it, delegation tool never run) gets it backfilled by the
+        declarative reconciliation on the next writable open."""
+        import sqlite3
+
+        from hermes_state_common import SCHEMA_SQL
+
+        db_path = tmp_path / "legacy-state.db"
+        legacy_sql = SCHEMA_SQL.replace(
+            "    origin_session_id TEXT NOT NULL DEFAULT ''\n", ""
+        ).replace(
+            "    delivery_claimed_at REAL,\n",
+            "    delivery_claimed_at REAL\n",
+        )
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(legacy_sql)
+            assert "origin_session_id" not in self._async_delegations_columns(conn)
+        finally:
+            conn.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            cols = self._async_delegations_columns(db._conn)
+            assert "origin_session_id" in cols
+        finally:
+            db.close()
+
+
 class TestReconcileColumnsErrorHandling:
     """_reconcile_columns must not bury migration failures (#79531/#80037).
 

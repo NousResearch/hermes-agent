@@ -502,7 +502,16 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
+    -- _initialize_schema). Keeping the canonical fresh-install shape identical
+    -- to the tool's avoids a silent schema drift: the tool's lazy
+    -- ALTER TABLE ADD COLUMN used to be the only source of this column, so two
+    -- databases at the same schema_version had different
+    -- async_delegations shapes depending on whether the delegation tool had
+    -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
+    -- from the canonical schema (#94691).
+    origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);

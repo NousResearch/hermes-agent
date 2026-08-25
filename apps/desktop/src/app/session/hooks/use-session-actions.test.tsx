@@ -1982,6 +1982,14 @@ describe('resumeSession drops a redundant tile when the session loads into main'
 const clientState = (storedSessionId: string | null): ClientSessionState => createClientSessionState(storedSessionId)
 
 describe('resumeSession warm-cache mapping integrity', () => {
+  beforeEach(() => {
+    // Earlier describes (branchStoredSession) drive resumes through the
+    // profile path on the SAME hoisted mock; drop their recorded calls so the
+    // not-called assertions below only see this describe's traffic.
+    vi.mocked(requestGatewayForProfile).mockReset()
+    vi.mocked(requestGatewayForAgent).mockReset()
+  })
+
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)

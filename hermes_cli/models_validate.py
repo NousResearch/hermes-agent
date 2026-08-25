@@ -276,6 +276,12 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     if anthropic_style:
         message += ("\n  Many Anthropic-compatible proxies do not implement the Models API (GET /v1/models).  "
                     "The model name has been accepted without verification.")
+    if req.api_mode == "chat_completions":
+        message += (
+            "\n  The model name was accepted without verification — inference may fail "
+            "if this provider does not serve it.  Check the provider's model catalog "
+            "or model name."
+        )
     if probe.get("suggested_base_url"):
         message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
     # Chat-completions and Anthropic-style proxies may both omit /v1/models.

@@ -847,7 +847,12 @@ export function useSessionActions({
             connectionId: ownerRoute.connectionId,
             profile: ownerRoute.targetProfile || ownerRoute.profile
           }
-        : sessionProfile
+        : storedForProfile?.connection_id
+          ? {
+              connectionId: storedForProfile.connection_id,
+              profile: sessionProfile || 'default'
+            }
+          : sessionProfile
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and

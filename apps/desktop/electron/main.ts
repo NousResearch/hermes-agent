@@ -276,7 +276,8 @@ import {
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
-  spliceRegistrySessionRows
+  spliceRegistrySessionRows,
+  tagRegistrySessionResponse
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -14347,12 +14348,16 @@ async function dispatchRegistryApiRequest(
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
-  return fetchJsonForBackend(connection, requestPath, {
+  const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
+
+  return (request?.method || 'GET').toUpperCase() === 'GET'
+    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+    : response
 }
 
 function registryConnectionKind(connectionId) {

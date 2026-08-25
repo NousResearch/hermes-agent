@@ -2093,6 +2093,49 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(ambientRequest).not.toHaveBeenCalled()
   })
 
+  it('keeps a registry-tagged cached session on its owning connection without an explicit route', async () => {
+    setSessions([
+      storedSession({
+        connection_id: 'test-amnezia',
+        id: 'stored-registry',
+        profile: 'default'
+      })
+    ])
+    vi.mocked(getSession).mockImplementation(async id =>
+      storedSession({ connection_id: 'test-amnezia', id, profile: 'default' })
+    )
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-registry' } as never)
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [],
+          resumed: params?.session_id,
+          session_id: 'runtime-registry'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-registry', true)
+
+    const restScope = { connectionId: 'test-amnezia', profile: 'default' }
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-registry', restScope)
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'test-amnezia',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'stored-registry' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
   it('rejects a cross-wired runtime mapping and falls through to a full resume', async () => {
     // A recycled runtime id ('rt-recycled') is mapped to 'stored-A', but its
     // cached state actually belongs to a DIFFERENT session ('stored-B') — the

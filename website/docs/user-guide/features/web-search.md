@@ -75,6 +75,8 @@ Concurrent identical searches (a parallel subagent fan-out firing the same query
 
 Only successful responses are cached. Failures always retry the backend, responses served by the one-shot keyless rescue are never cached (the next call attempts your chosen backend again), and URLs matched by your `security.website_blocklist` are never served from cache. Cached extracts re-run the normal truncation pipeline, so a different `char_limit` on the second call works off the same stored scrape.
 
+**Local development URLs are never cached.** Anything on `localhost`, `127.0.0.1`, `*.local`, single-label LAN hostnames, or private/link-local IP ranges (`192.168.*`, `10.*`, `172.16-31.*`) bypasses the extract cache entirely — dev servers, hot-reload builds, and chat-GUI artifact previews change on every save, and a cached copy would show you a stale build. Every fetch of a local page is live. (These URLs are only reachable at all when `security.allow_private_urls` is enabled.)
+
 ```yaml
 # ~/.hermes/config.yaml
 web:

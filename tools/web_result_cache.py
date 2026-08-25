@@ -275,6 +275,43 @@ def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional
     return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
 
 
+def _is_local_dev_url(url: str) -> bool:
+    """True for loopback/private/LAN URLs — never cached.
+
+    A page on a private address is one the user controls and is typically
+    changing fast (dev servers, hot reload, chat-GUI artifact previews,
+    LAN preview apps). Freshness is the point of fetching it, so the cache
+    declines these entirely rather than serving a stale build for a whole
+    TTL. Only reachable when ``security.allow_private_urls`` is enabled —
+    default installs SSRF-block these URLs before extraction anyway.
+
+    Hostname heuristics only (no DNS resolution — this is a freshness
+    decision, not a security boundary; SSRF enforcement lives in
+    tools/url_safety.py).
+    """
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").strip("[]").lower()
+        if not host:
+            return True  # unparseable → don't cache
+        if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+            return True
+        # Single-label hostnames (no dot) are LAN names, not public DNS.
+        if "." not in host and ":" not in host:
+            return True
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False  # public DNS name
+        return bool(
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_unspecified
+        )
+    except Exception:  # noqa: BLE001 — on doubt, don't cache
+        return True
+
+
 def extract_cache_get(
     url: str,
     format: Optional[str] = None,
@@ -282,6 +319,8 @@ def extract_cache_get(
 ) -> Optional[dict]:
     """Return {'url','title','content'} for a fresh cached page, else None."""
     if not cache_enabled():
+        return None
+    if _is_local_dev_url(url):
         return None
     with _index_lock:
         index = _load_index()
@@ -326,6 +365,8 @@ def extract_cache_put(
     whole would silently lose the tail.
     """
     if not cache_enabled() or not content:
+        return
+    if _is_local_dev_url(url):
         return
     try:
         from tools.web_tools import MAX_STORED_TEXT_CHARS

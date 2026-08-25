@@ -196,6 +196,36 @@ def test_extract_cache_oversized_page_not_indexed(_isolated_cache):
     assert extract_cache_get("https://big.com") is None
 
 
+@pytest.mark.parametrize("url", [
+    "http://localhost:3000/app",
+    "http://localhost:5173",             # vite dev server
+    "http://127.0.0.1:8080/preview",
+    "http://[::1]:3000/",
+    "http://192.168.1.44/dashboard",
+    "http://10.0.0.5:8000/api/docs",
+    "http://172.16.0.9/",
+    "http://myapp.local/",
+    "http://devbox/page",                # single-label LAN name
+    "http://preview.localhost/artifact",
+])
+def test_extract_cache_never_caches_local_dev_urls(url, _isolated_cache):
+    """Local/private URLs are dev servers and chat-GUI artifact previews —
+    they change on every save, so freshness beats dedup. Neither put nor
+    get may touch the cache for them."""
+    extract_cache_put(url, "stale build output")
+    assert extract_cache_get(url) is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/page",
+    "https://docs.python.org/3/",
+])
+def test_extract_cache_public_urls_still_cache(url, _isolated_cache):
+    extract_cache_put(url, "public content")
+    hit = extract_cache_get(url)
+    assert hit is not None and hit["content"] == "public content"
+
+
 def test_extract_cache_tampered_index_path_is_miss(_isolated_cache, tmp_path):
     """An index entry pointing outside cache/web must never be read."""
     outside = tmp_path / "outside.md"

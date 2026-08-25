@@ -23,6 +23,22 @@ transport:
 auth:
   type: oauth
 
+# Defensive excludes (verified against Grafana's published MCP tool tables).
+# The hosted Cloud server's documented surface (~35 tools: dashboards,
+# datasources, Prometheus/Loki/Tempo/Pyroscope queries, annotations,
+# rendering) is clean — but the sibling OSS roster carries two clusters we
+# never want auto-enabled if the Cloud surface grows toward it:
+#   - ask_assistant: opaque delegation to Grafana Assistant (an agent
+#     meta-tool, same class as Railway's railway-agent) that also bills
+#     Assistant usage per call.
+#   - agento11y_*: eight multiplexed tools for Grafana's own
+#     agent-observability product surface.
+# Both no-op harmlessly while the Cloud server doesn't serve them.
+tools:
+  default_excluded:
+    - ask_assistant
+    - "agento11y_*"
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:
@@ -44,3 +60,6 @@ post_install: |
   Requires a hosted Grafana Cloud stack and the "Assistant Cloud MCP User"
   role (Editor or higher has it by default). Self-hosted Grafana isn't
   supported by this endpoint — use the OSS mcp-grafana server instead.
+
+  Billing note: Grafana counts each user connecting via MCP as an active
+  Grafana Assistant user — see grafana.com Assistant pricing.

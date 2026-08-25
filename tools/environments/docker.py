@@ -158,8 +158,22 @@ def _container_identity(shared_key: str = "") -> str:
 
     Profiles remain isolated by default. An explicit shared key lets trusted
     profiles that intentionally share a workspace use one Docker identity.
+
+    Shared keys are made collision-resistant the same way
+    :func:`sanitize_task_id_for_path` is: label sanitization is lossy
+    (``team/workspace`` and ``team_workspace`` both sanitize to
+    ``team_workspace``, and >63-char keys truncate), and since container
+    reuse is label-keyed, two DIFFERENT keys colliding after sanitization
+    would silently attach to the same running container. A digest of the
+    raw key disambiguates; identical raw keys still map to identical
+    labels across processes. Plain profile names keep their historical
+    un-suffixed labels for backward compatibility with existing containers.
     """
-    return _sanitize_label_value(shared_key or _get_active_profile_name())
+    if not shared_key:
+        return _sanitize_label_value(_get_active_profile_name())
+    digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
+    stem = _sanitize_label_value(shared_key)[:50]
+    return f"{stem}-{digest}"
 
 
 def reap_orphan_containers(

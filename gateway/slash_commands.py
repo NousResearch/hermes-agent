@@ -169,7 +169,12 @@ async def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> Non
     if systemd_run and _user_mgr_hint:
         _probe_unit = f"hermes-update-probe-{os.getpid()}"
         try:
-            _probe = subprocess.run(
+            # Run the probe off the event loop: a hung user
+            # manager must not stall every chat/stream for the
+            # probe timeout while we decide how to spawn the
+            # updater.
+            _probe = await asyncio.to_thread(
+                subprocess.run,
                 [systemd_run, "--user", "--collect",
                  f"--unit={_probe_unit}", "true"],
                 stdout=subprocess.DEVNULL,

@@ -724,14 +724,15 @@ class TestDetachedUpdateExitCodePublication:
 
     @pytest.mark.platforms("linux", "macos")
     @pytest.mark.live_system_guard_bypass  # runs the wrapper around `sh -c 'exit 3'`, never hermes
-    def test_bash_wrapper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_bash_wrapper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
         import subprocess
         from gateway.slash_commands import _spawn_detached_update
 
         output, marker, seen = tmp_path / "out.log", tmp_path / ".update_exit_code", tmp_path / "seen.log"
         spawned = MagicMock()
         with patch("shutil.which", return_value=None), patch("subprocess.Popen", spawned):
-            _spawn_detached_update(["sh", "-c", "exit 3"], output, marker)
+            await _spawn_detached_update(["sh", "-c", "exit 3"], output, marker)
         # Poll the marker at the instant the wrapper's printf runs: a `printf > marker` redirect has
         # already truncated it by then (bash applies redirections before running the command).
         hook = tmp_path / "bash_env.sh"

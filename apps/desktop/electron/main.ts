@@ -9537,7 +9537,17 @@ async function teardownSshConnection(profile) {
       ownershipId: state.ownershipId || sshOwnershipKey(profile)
     },
     {
-      cleanupRemote: state.remotePlatform === 'Windows' ? async () => {} : remoteLifecycle.disconnect
+      cleanupRemote:
+        state.remotePlatform === 'Windows'
+          ? async () => {
+              // connectWindowsRemote does not share POSIX lock/kill. Stay
+              // silent on the kill path, but leave a log so quit is not a
+              // mysterious no-op on Windows remotes.
+              sshRememberLog(
+                '[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply'
+              )
+            }
+          : remoteLifecycle.disconnect
     }
   )
 }

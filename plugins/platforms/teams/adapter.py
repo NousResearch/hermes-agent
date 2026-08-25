@@ -898,29 +898,75 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    async def _get_botframework_token(self) -> str:
+        """Acquire a Bot Framework bearer token via client credentials.
+
+        Needed to download connector attachments (smba.trafficmanager.net
+        /v3/attachments/...), which -- unlike SharePoint file downloadUrls --
+        are NOT pre-authenticated and return 401 without the bot's own
+        token. Token is cached until ~5 minutes before expiry.
+        """
+        import time
+        import httpx
+
+        cached = getattr(self, "_bf_token_cache", None)
+        if cached and cached[1] > time.time() + 300:
+            return cached[0]
+
+        client_id = self._client_id
+        client_secret = self._client_secret
+        tenant_id = self._tenant_id
+        if not (client_id and client_secret and tenant_id):
+            raise ValueError("Missing TEAMS_CLIENT_ID/SECRET/TENANT_ID for attachment auth")
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "scope": "https://api.botframework.com/.default",
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        token = payload["access_token"]
+        self._bf_token_cache = (token, time.time() + int(payload.get("expires_in", 3600)))
+        return token
+
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection.
 
         Teams file attachments carry pre-authenticated SharePoint download
-        URLs (no extra auth header needed). Validates the URL against the
-        SSRF guard and follows redirects through the shared redirect guard,
+        URLs (no extra auth header needed). Bot Framework connector
+        attachment URLs (pasted/inline images on smba.trafficmanager.net /
+        botframework.com hosts) require the bot's bearer token -- detected
+        below and fetched with auth. Validates the URL against the SSRF
+        guard and follows redirects through the shared redirect guard,
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
+        from urllib.parse import urlparse
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
 
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
+        host = (urlparse(url).hostname or "").lower()
+        if host.endswith("trafficmanager.net") or host.endswith("botframework.com"):
+            try:
+                headers["Authorization"] = f"Bearer {await self._get_botframework_token()}"
+            except Exception as e:
+                logger.warning("[teams] Could not acquire Bot Framework token for attachment: %s", e)
+
         async with create_ssrf_safe_async_client(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.content
 
@@ -1024,11 +1070,28 @@ class TeamsAdapter(BasePlatformAdapter):
 
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
-                    if cached:
-                        media_urls.append(cached)
-                        media_types.append(content_type)
-                        media_kinds.append("image")
+                    from urllib.parse import urlparse as _urlparse
+                    _host = (_urlparse(content_url).hostname or "").lower()
+                    if _host.endswith("trafficmanager.net") or _host.endswith("botframework.com"):
+                        # Bot Framework connector URL: needs the bot's own
+                        # bearer token; the generic cache helper sends none.
+                        data = await self._fetch_attachment_bytes(content_url)
+                        ext = content_type.split("/")[-1].split(";")[0] or "png"
+                        cached_m = cache_media_bytes(
+                            data,
+                            filename=att_name or f"image.{ext}",
+                            mime_type=content_type,
+                        )
+                        if cached_m:
+                            media_urls.append(cached_m.path)
+                            media_types.append(content_type)
+                            media_kinds.append("image")
+                    else:
+                        cached = await cache_image_from_url(content_url)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            media_kinds.append("image")
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
                 continue

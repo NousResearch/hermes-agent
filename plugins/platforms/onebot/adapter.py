@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _AUDIO_EXTS,
 )
 from gateway.session import SessionSource
 
@@ -77,6 +78,10 @@ DEFAULT_PORT = 8643
 ACTION_TIMEOUT = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 MAX_RECONNECT_ATTEMPTS = 100
+
+# Image extensions for the standalone HTTP sender (base.py keeps its own
+# _IMAGE_EXTS as a function-local set, so we declare the plugin copy).
+_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"})
 IMAGE_MAX_BYTES = 8 * 1024 * 1024  # skip absurdly large CQ image downloads
 MEDIA_MAX_BYTES = 20 * 1024 * 1024  # voice/video/file base64 cap (NapCat upload)
 MAX_MESSAGE_LENGTH = 4000  # QQ per-message cap (UTF-16-ish, keep safe)
@@ -1192,7 +1197,11 @@ class OneBotAdapter(BasePlatformAdapter):
             if metadata:
                 media_files = metadata.get("media_files") or []
                 for f in media_files:
-                    b64 = await self._file_to_base64(f)
+                    # Hermes media_files entries are (path, is_voice) tuples
+                    # (extract_media contract) — unpack defensively so a tuple
+                    # never reaches Path() as a TypeError and silently drops.
+                    media_path = f[0] if isinstance(f, (tuple, list)) else f
+                    b64 = await self._file_to_base64(media_path)
                     if b64:
                         media_segments.append(
                             {"type": "image", "data": {"file": f"base64://{b64}"}}
@@ -1598,6 +1607,120 @@ class OneBotAdapter(BasePlatformAdapter):
         )
 
 
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[Any]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Out-of-process cron delivery via the OneBot HTTP API.
+
+    Used when cron runs in a separate process from the gateway (no live
+    adapter available). Text goes out as one message; each media file is
+    sent as a record/image/file CQ segment. ``voice_mount``
+    ({host, container}) maps host audio paths so NapCat inside Docker can
+    read them; paths are normalized to forward slashes before comparison so
+    Windows-style backslashes don't silently fail the prefix check.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    http_url = os.getenv("ONEBOT_HTTP_URL") or extra.get("http_url", "")
+    token = os.getenv("ONEBOT_ACCESS_TOKEN") or extra.get("access_token", "")
+    voice_mount = extra.get("voice_mount") or {}
+    # Fallback: pconfig.extra may be stale (cached platform config); re-read
+    # voice_mount from config.yaml so host→container mapping stays live.
+    if not voice_mount:
+        try:
+            from gateway.config import load_gateway_config
+
+            _cfg = load_gateway_config()
+            _pc = _cfg.platforms.get(Platform("onebot"))
+            if _pc is not None:
+                voice_mount = (getattr(_pc, "extra", {}) or {}).get("voice_mount") or {}
+            else:
+                logger.warning("OneBot standalone: onebot platform not in config")
+        except Exception as e:
+            logger.warning("OneBot standalone: voice_mount fallback failed: %s", e)
+    if not http_url:
+        return {"error": "OneBot standalone send: ONEBOT_HTTP_URL not configured"}
+
+    # Resolve target: chat_id is the canonical "private:<id>" / "group:<id>"
+    # form (cron ONEBOT_HOME_CHANNEL), but bare numeric ids are tolerated.
+    raw_target = str(chat_id)
+    api, key = "send_private_msg", "user_id"
+    if ":" in raw_target:
+        kind, target = raw_target.split(":", 1)
+        if kind == "group":
+            api, key = "send_group_msg", "group_id"
+    else:
+        target = raw_target
+    try:
+        target_int = int(target)
+    except (TypeError, ValueError):
+        return {"error": f"OneBot standalone send: bad chat_id {chat_id!r}"}
+
+    try:
+        import aiohttp
+
+        async def _post(action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{http_url.rstrip('/')}/{action}",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    data = await resp.json()
+                    if data.get("retcode") != 0:
+                        raise RuntimeError(f"OneBot API {action} failed: {data}")
+                    return data
+
+        # 1. Text message
+        if message and message.strip():
+            await _post(api, {key: target_int, "message": message})
+
+        # 2. Media files (voice / image / document) — entries are
+        # (path, is_voice) tuples per the Hermes media_files contract.
+        sent_any_media = False
+        for mpath in media_files or []:
+            if isinstance(mpath, (tuple, list)):
+                p = str(mpath[0]) if len(mpath) > 0 else ""
+                is_voice = bool(mpath[1]) if len(mpath) > 1 else False
+            else:
+                p = str(mpath)
+                is_voice = False
+            if not p:
+                continue
+            ext = Path(p).suffix.lower() if p else ""
+            # voice_mount: host path → container path so NapCat in Docker can
+            # see the file. Normalize separators before comparing (Windows
+            # backslash vs config forward slash).
+            target = p
+            host_prefix = (voice_mount or {}).get("host", "") or ""
+            cont_prefix = (voice_mount or {}).get("container", "") or ""
+            norm_p = p.replace("\\", "/")
+            norm_host = host_prefix.replace("\\", "/") if host_prefix else ""
+            if norm_host and norm_p.startswith(norm_host):
+                target = cont_prefix + norm_p[len(norm_host):]
+            if is_voice or ext in _AUDIO_EXTS:
+                cq = f"[CQ:record,file={target}]"
+            elif ext in _IMAGE_EXTS:
+                cq = f"[CQ:image,file={target}]"
+            else:
+                cq = f"[CQ:file,file={target}]"
+            await _post(api, {key: target_int, "message": cq})
+            sent_any_media = True
+
+        return {"success": True, "message_id": str(int(time.time() * 1000))}
+    except Exception as e:
+        return {"error": f"OneBot standalone send failed: {e}"}
+
+
 # ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
@@ -1638,6 +1761,7 @@ def register(ctx) -> None:
         allowed_users_env="ONEBOT_ALLOWED_USERS",
         allow_all_env="ONEBOT_ALLOW_ALL_USERS",
         cron_deliver_env_var="ONEBOT_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
         max_message_length=MAX_MESSAGE_LENGTH,
         emoji="🐧",
         platform_hint=(

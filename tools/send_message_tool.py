@@ -1233,6 +1233,33 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- OneBot (QQ): native media via the plugin's standalone_sender_fn
+    # (plugins/platforms/onebot/adapter.py::_standalone_send). The sender
+    # posts each file as a CQ record/image/file message and applies the
+    # voice_mount host→container mapping so NapCat in Docker can read it.
+    if platform == Platform("onebot") and media_files:
+        from gateway.platform_registry import platform_registry as _pr_ob
+        from hermes_cli.plugins import discover_plugins as _dp_ob
+        _dp_ob()
+        _ob_entry = _pr_ob.get("onebot")
+        if _ob_entry is None or _ob_entry.standalone_sender_fn is None:
+            return {"error": "OneBot plugin not registered or missing standalone_sender_fn"}
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _ob_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Slack: prefer the live gateway adapter, then the plugin's
     # standalone sender.  The live adapter is multi-workspace aware (it maps
     # channels to the workspace client that owns them) and honors adapter-side
@@ -1263,7 +1290,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and onebot; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1271,7 +1298,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and onebot"
         )
 
     last_result = None

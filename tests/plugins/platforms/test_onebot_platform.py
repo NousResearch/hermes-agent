@@ -801,3 +801,132 @@ def test_admin_group_message_no_prefix(monkeypatch) -> None:
     asyncio.run(run())
     assert captured, "admin slash command must be dispatched"
     assert not captured[0].text.startswith("[受限用户")
+
+
+# ---------------------------------------------------------------------------
+# _standalone_send (out-of-process cron delivery via OneBot HTTP API)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOneBotHttp:
+    """Minimal OneBot HTTP server that records incoming action payloads."""
+
+    def __init__(self) -> None:
+        from aiohttp import web
+
+        self.requests: list = []
+        self._app = web.Application()
+        self._app.router.add_post("/{action}", self._handle)
+        self._runner = None
+        self.port = 0
+
+    async def _handle(self, request):
+        action = request.match_info["action"]
+        body = await request.json()
+        self.requests.append((action, body))
+        return _json_response({"status": "ok", "retcode": 0, "data": None})
+
+    async def start(self) -> None:
+        from aiohttp import web
+
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        await site.start()
+        self.port = site._server.sockets[0].getsockname()[1]
+
+    async def stop(self) -> None:
+        if self._runner is not None:
+            await self._runner.cleanup()
+
+
+def _json_response(data):
+    from aiohttp import web
+
+    return web.json_response(data)
+
+
+def test_standalone_send_text_and_voice_with_mount() -> None:
+    """文本 + (path, is_voice) 元组媒体：voice_mount 映射 + record 段。"""
+    from plugins.platforms.onebot.adapter import _standalone_send
+
+    server = _FakeOneBotHttp()
+
+    async def run():
+        await server.start()
+        try:
+            pconfig = PlatformConfig(
+                enabled=True,
+                extra={
+                    "http_url": f"http://127.0.0.1:{server.port}",
+                    "voice_mount": {
+                        "host": "/data/audio",
+                        "container": "/app/napcat/audio",
+                    },
+                },
+            )
+            result = await _standalone_send(
+                pconfig,
+                "private:123456789",
+                "定时提醒",
+                media_files=[("/data/audio/remind.silk", True)],
+            )
+        finally:
+            await server.stop()
+
+    asyncio.run(run())
+    assert server.requests, "expected at least one OneBot HTTP request"
+    actions = [a for a, _ in server.requests]
+    assert actions == ["send_private_msg", "send_private_msg"]
+    text_payload = server.requests[0][1]
+    assert text_payload["user_id"] == 123456789
+    assert text_payload["message"] == "定时提醒"
+    media_payload = server.requests[1][1]
+    assert media_payload["message"] == "[CQ:record,file=/app/napcat/audio/remind.silk]"
+
+
+def test_standalone_send_group_target_and_backslash_normalization() -> None:
+    """群目标走 send_group_msg；Windows 反斜杠路径经 voice_mount 规范化。"""
+    from plugins.platforms.onebot.adapter import _standalone_send
+
+    server = _FakeOneBotHttp()
+
+    async def run():
+        await server.start()
+        try:
+            pconfig = PlatformConfig(
+                enabled=True,
+                extra={
+                    "http_url": f"http://127.0.0.1:{server.port}",
+                    "voice_mount": {
+                        "host": "C:\\data\\audio",
+                        "container": "/app/napcat/audio",
+                    },
+                },
+            )
+            result = await _standalone_send(
+                pconfig,
+                "group:88888",
+                "",
+                media_files=[("C:\\data\\audio\\clip.silk", True)],
+            )
+        finally:
+            await server.stop()
+
+    asyncio.run(run())
+    assert server.requests[0][0] == "send_group_msg"
+    payload = server.requests[0][1]
+    assert payload["group_id"] == 88888
+    assert payload["message"] == "[CQ:record,file=/app/napcat/audio/clip.silk]"
+
+
+def test_standalone_send_missing_http_url_returns_error() -> None:
+    from plugins.platforms.onebot.adapter import _standalone_send
+
+    pconfig = PlatformConfig(enabled=True, extra={})
+
+    async def run():
+        return await _standalone_send(pconfig, "private:123456789", "hi")
+
+    result = asyncio.run(run())
+    assert "ONEBOT_HTTP_URL not configured" in result["error"]

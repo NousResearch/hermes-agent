@@ -2971,6 +2971,8 @@ export const en: Translations = {
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
     openInExternal: 'Open in external',
+    popIn: 'Pop in',
+    popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',

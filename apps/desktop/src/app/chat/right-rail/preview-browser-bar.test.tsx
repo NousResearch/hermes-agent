@@ -12,7 +12,7 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
-  onOpenExternal: vi.fn(),
+  onPopOut: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
@@ -86,7 +86,7 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
@@ -110,7 +110,7 @@ describe('PreviewBrowserBar', () => {
     ['Back', 'onBack'],
     ['Forward', 'onForward'],
     ['Reload page', 'onReload'],
-    ['Open in browser', 'onOpenExternal']
+    ['Pop out', 'onPopOut']
   ] as const)('fires %s', (label, handler) => {
     const spy = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward {...{ [handler]: spy }} />)
@@ -316,5 +316,39 @@ describe('PreviewBrowserBar', () => {
     // code-block copy icon (inline appearance, overlay on the field's edge).
     expect(copyButton.parentElement?.contains(address)).toBe(true)
     expect(copyButton.className).toContain('absolute')
+  })
+
+  it('shows Open in browser when only the external handler is provided', () => {
+    const onOpenExternal = vi.fn()
+    const rendered = render(
+      <PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />
+    )
+
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(onOpenExternal).toHaveBeenCalledOnce()
+  })
+
+  it('prefers pop-out over open-in-browser when both handlers are provided', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={vi.fn()} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+  })
+
+  it('shows Pop in when the window is already popped out', () => {
+    const onPopIn = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onPopIn={onPopIn} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop in' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
+
+    expect(onPopIn).toHaveBeenCalledOnce()
   })
 })

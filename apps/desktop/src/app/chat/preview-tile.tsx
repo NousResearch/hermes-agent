@@ -22,13 +22,18 @@ import { openExternalLink } from '@/lib/external-link'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
+  $dockedPreviewTabs,
   $previewTabs,
+  adoptPersistedBrowserTab,
   type BrowserPage,
   closeRightRailTab,
   forgetBrowserPage,
+  markBrowserTabPopped,
   newBrowserTab,
+  popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
+import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
@@ -63,14 +68,25 @@ function browserTabMenuPrefix(tabId: string) {
     return undefined
   }
 
-  return (kit: MenuKit) =>
-    renderActionItem(kit, {
-      disabled: !browserTabExternalUrl(tabId),
-      icon: 'link-external',
-      key: 'open-external',
-      label: translateNow('preview.openInExternal'),
-      onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
-    })
+  return (kit: MenuKit) => (
+    <>
+      {canOpenBrowserWindow()
+        ? renderActionItem(kit, {
+            icon: 'empty-window',
+            key: 'pop-out',
+            label: translateNow('preview.popOut'),
+            onSelect: () => popOutBrowserTab(tabId)
+          })
+        : null}
+      {renderActionItem(kit, {
+        disabled: !browserTabExternalUrl(tabId),
+        icon: 'link-external',
+        key: 'open-external',
+        label: translateNow('preview.openInExternal'),
+        onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
+      })}
+    </>
+  )
 }
 
 /** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see
@@ -169,7 +185,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
     return inTree
   }
 
-  const other = $previewTabs.get().find(tab => tab.id !== tabId)
+  const other = $dockedPreviewTabs.get().find(tab => tab.id !== tabId)
 
   return other ? previewPaneId(other.id) : undefined
 }
@@ -179,6 +195,11 @@ function existingPreviewAnchor(tabId: string): string | undefined {
  *  selected. Call once from the root. */
 export function watchPreviewTiles(): void {
   watchPreviewTileMirror()
+
+  window.hermesDesktop?.onBrowserPopoutClosed?.(tabId => {
+    adoptPersistedBrowserTab(tabId)
+    markBrowserTabPopped(tabId, false)
+  })
 
   // The reveal analog of session tiles (session-states calls revealTreePane on
   // open): `openPreview` selects the tab, and the TREE must front its pane —
@@ -223,7 +244,7 @@ export function watchPreviewTiles(): void {
 }
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  source: $previewTabs,
+  source: $dockedPreviewTabs,
   // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
   // clicking a link in a bot chat must open the same pane Sessions already
   // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so

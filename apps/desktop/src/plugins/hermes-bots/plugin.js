@@ -11251,7 +11251,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               'Send results to',
               pickerSelect(target, setTarget, [
                 { id: 'history', label: 'Run history only' },
-                { id: 'bot-chat', label: `${displayName({ name: bot }, $botMeta.get()[bot])}\u2019s chat (bot responds)` }
+                { id: 'bot-chat', label: `${displayName(typeof bot === 'string' ? { name: bot } : bot, botRosterMeta(bot, $botMeta.get()))}\u2019s chat (bot responds)` }
               ])
             ),
             jsxs('label', {

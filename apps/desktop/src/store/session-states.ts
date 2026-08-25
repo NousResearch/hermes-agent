@@ -99,6 +99,22 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
+/**
+ * The exact registry scope that owns the foreground runtime, when known.
+ *
+ * The secondary-gateway pruner normally keeps only busy/needs-input work. A
+ * source switch briefly changes the active gateway before the old foreground
+ * runtime is cleared, though, and an idle conversation can otherwise look
+ * disposable during that handoff. Preserve the owner for that narrow window;
+ * tiles have their own persisted owner route and are handled separately.
+ */
+export function foregroundSessionScopes(): Set<string> {
+  const runtimeId = $activeSessionId.get()
+  const scope = runtimeId ? sessionScopeByRuntimeId.get(runtimeId) : undefined
+
+  return scope ? new Set([scope]) : new Set()
+}
+
 // Stored session ids whose authoritative state is still busy, but whose
 // runtime has produced no state publish for the watchdog window. Silence is
 // not completion: long tool calls can legitimately stay quiet, so this is a

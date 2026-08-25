@@ -9,7 +9,7 @@ import {
   selectConnection,
   setConnectionsRegistry
 } from '@/store/connections'
-import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent } from '@/store/gateway'
+import { activeGateway, closeSecondaryGateways, ensureGatewayForAgent, isActivePrimary, requestGatewayForAgent } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
@@ -878,6 +878,45 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
     expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('keeps registered source sockets alive during a legacy mode apply', async () => {
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      getConnectionFor: ReturnType<typeof vi.fn>
+    }
+
+    desktop.getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...coderConn,
+      connectionId,
+      profile,
+      wsUrl: `wss://${connectionId}.example.com/api/ws?token=r`
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('cloud', 'default')
+    })
+    await flushAsync()
+    await opening
+
+    const registeredGateway = activeGateway()
+    expect(registeredGateway).not.toBeNull()
+    expect(isActivePrimary()).toBe(false)
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    // Applying the legacy Local/Cloud mode must not close an independent v2
+    // source. The foreground returns to the new primary, while the registered
+    // socket remains reusable and cannot arm ws_orphan_reap on the old backend.
+    expect(registeredGateway?.connectionState).toBe('open')
+    expect(isActivePrimary()).toBe(true)
   })
 
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {

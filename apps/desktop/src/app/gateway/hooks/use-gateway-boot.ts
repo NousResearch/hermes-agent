@@ -18,6 +18,7 @@ import {
 } from '@/store/boot'
 import {
   $gateway,
+  closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
@@ -62,6 +63,7 @@ import {
   $attentionSessionIds,
   $workingSessionIds,
   $sessionTiles,
+  foregroundSessionScopes,
   liveSessionScopes,
   openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
@@ -524,7 +526,11 @@ export function useGatewayBoot({
         reauthNotified = false
 
         gateway.close()
-        closeSecondaryGateways()
+        // The primary mode is changing, but registered v2 sources remain
+        // independent gateways. Retire only legacy profile sockets whose
+        // routing follows connection.json; closing every secondary here
+        // detached valid registered sessions and armed ws_orphan_reap.
+        closeLegacySecondaryGateways()
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
@@ -788,7 +794,7 @@ export function useGatewayBoot({
       // sources can expose the same profile name (every source has a
       // 'default'), so bare profile names can't represent a non-local
       // source's liveness without keeping the wrong gateway alive.
-      const keep = liveSessionScopes()
+      const keep = new Set([...liveSessionScopes(), ...foregroundSessionScopes()])
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {

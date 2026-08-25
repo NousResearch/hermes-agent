@@ -36,7 +36,10 @@ def test_v38_migration_removes_only_legacy_relay_plugin_keys(tmp_path):
         results = migrate_config(interactive=False, quiet=True)
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert raw["_config_version"] == 38
+    # Behavior contract, not a snapshot: the run must land at (at least) the
+    # v38 relay-cutover step; later migrations legitimately advance the
+    # version further, and pinning the literal broke on every bump.
+    assert raw["_config_version"] >= 38
     assert raw["plugins"]["enabled"] == ["keep-me"]
     assert any(
         "observability/nemo_relay" in warning

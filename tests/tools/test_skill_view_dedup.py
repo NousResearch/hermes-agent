@@ -44,13 +44,15 @@ class TestSkillViewDedup:
         assert r["success"] is True
         assert "Step one" in r.get("content", "")
 
-    def test_repeat_view_returns_stub(self, skills_home):
+    def test_repeat_view_returns_recovery_error(self, skills_home):
         _view("demo-dedup-skill")
         r2 = _view("demo-dedup-skill")
-        assert r2["success"] is True
+        assert r2["success"] is False
         assert r2.get("dedup") is True
         assert r2.get("content_returned") is False
-        assert "unchanged" in r2["message"]
+        assert "required action tool" in r2["error"]
+        assert "Re-reading cannot make progress" in r2["error"]
+        assert "skill_view" not in r2["error"]
         assert "content" not in r2
 
     def test_modified_skill_returns_full_content(self, skills_home):

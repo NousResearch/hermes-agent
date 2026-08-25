@@ -19,6 +19,12 @@ transport:
 auth:
   type: oauth
 
+# Excluded: version probe and Duo-product session listing.
+tools:
+  default_excluded:
+    - get_mcp_server_version
+    - list_duo_sessions
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

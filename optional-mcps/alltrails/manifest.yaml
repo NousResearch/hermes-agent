@@ -29,3 +29,8 @@ suggest:
 post_install: |
   No account or credentials needed — tools are available as soon as the
   session restarts.
+
+  Heads-up: only 5 tools, but their schemas are unusually verbose (~24K
+  tokens total). If you only browse trails occasionally, consider leaving
+  this server disabled and enabling it on demand, or prune tools with:
+    hermes mcp configure alltrails

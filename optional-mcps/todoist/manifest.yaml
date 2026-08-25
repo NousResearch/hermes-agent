@@ -19,6 +19,15 @@ transport:
 auth:
   type: oauth
 
+# Excluded: search/fetch are the OpenAI-connector compatibility layer that
+# duplicates the find-* tools; template import/export is niche.
+tools:
+  default_excluded:
+    - search
+    - fetch
+    - export-project-template
+    - import-project-template
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

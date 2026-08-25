@@ -19,6 +19,22 @@ transport:
 auth:
   type: oauth
 
+# Excluded: six guidance pseudo-tools returning static best-practice text;
+# chart-widget renderer; deep-link generator; bulk variants of
+# Edit-Event/Edit-Property.
+tools:
+  default_excluded:
+    - Get-Experiment-Setup-Guidance
+    - Get-Experiment-Results-Interpretation-Guidance
+    - Explain-Experiment-Health-Check
+    - Run-Experiment-Pre-Launch-Checks
+    - Get-Feature-Flag-Setup-Guidance
+    - Get-Feature-Flag-Lifecycle-Guidance
+    - Display-Query
+    - Get-Lexicon-URL
+    - Bulk-Edit-Events
+    - Bulk-Edit-Properties
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

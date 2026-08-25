@@ -19,6 +19,11 @@ transport:
 auth:
   type: oauth
 
+# Excluded: docs Q&A tool bundled into a DB-management server.
+tools:
+  default_excluded:
+    - search_prisma_documentation
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

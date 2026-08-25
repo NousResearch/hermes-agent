@@ -14,7 +14,10 @@ source: https://learning.postman.com/docs/reference/postman-api/postman-mcp-serv
 
 transport:
   type: http
-  url: https://mcp.postman.com/mcp
+  # /minimal is Postman's own documented essential-CRUD variant (collections,
+  # workspaces, environments). The Full variant at /mcp is 100+ tools with
+  # Enterprise surface; switch mcp_servers.postman.url if you need it.
+  url: https://mcp.postman.com/minimal
 
 auth:
   type: oauth

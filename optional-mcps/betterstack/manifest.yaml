@@ -18,6 +18,29 @@ transport:
 auth:
   type: oauth
 
+# Curated exclude list (106-tool surface). Excluded: vendor-docs search;
+# eight instruction-fetcher pseudo-tools (static how-to text as tools);
+# Execute query / Create cloud connection (raw ClickHouse-SQL escape hatch +
+# direct-DB credential minting); team-membership management (account access
+# changes). ~85 product tools stay enabled; re-enable any with
+# `hermes mcp configure betterstack`.
+tools:
+  default_excluded:
+    - Search documentation
+    - Get query instructions
+    - Get metric query instructions
+    - Get errors query instructions
+    - Get replays query instructions
+    - Get explore logs query instructions
+    - Get chart building instructions
+    - Get chart alert instructions
+    - Get dashboard query instructions
+    - Execute query
+    - Create cloud connection
+    - Invite team member
+    - Remove team member
+    - Change team member role
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

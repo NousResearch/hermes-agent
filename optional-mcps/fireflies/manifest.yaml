@@ -19,6 +19,13 @@ transport:
 auth:
   type: oauth
 
+# Excluded: experimental ChatGPT-connector search/fetch shims duplicating
+# fireflies_get_transcripts / fireflies_get_transcript + get_summary.
+tools:
+  default_excluded:
+    - fireflies_search
+    - fireflies_fetch
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

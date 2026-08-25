@@ -19,6 +19,13 @@ transport:
 auth:
   type: oauth
 
+# Excluded: in-band documentation/usage-guide/rate-limit probes.
+tools:
+  default_excluded:
+    - help
+    - compareLocations
+    - limits
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

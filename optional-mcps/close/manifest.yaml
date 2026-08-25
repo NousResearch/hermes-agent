@@ -19,6 +19,28 @@ transport:
 auth:
   type: oauth
 
+# Excluded (107-tool surface): product-help search; generic search/fetch/
+# paginate layer duplicating lead_search/activity_search; AI field
+# enrichment; and the entire voice-agent cluster — schedule_voice_agent_call
+# places REAL outbound AI phone calls to contacts. Re-enable any with
+# `hermes mcp configure close`.
+tools:
+  default_excluded:
+    - close_product_knowledge_search
+    - customized_builtin_labels
+    - search
+    - fetch
+    - paginate_search
+    - enrich_field
+    - schedule_voice_agent_call
+    - apply_voice_agent_update
+    - propose_voice_agent_update
+    - find_voice_agents
+    - find_agent_configs
+    - get_voice_agents
+    - get_voice_agent_overview_report
+    - get_voice_agent_performance_report
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

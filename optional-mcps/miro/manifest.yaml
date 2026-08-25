@@ -19,6 +19,17 @@ transport:
 auth:
   type: oauth
 
+# Excluded: diagram_create/diagram_get_dsl are vendor-deprecated; the four
+# layout_* tools are 'deprecating soon', duplicated by the canvas_* set.
+tools:
+  default_excluded:
+    - diagram_create
+    - diagram_get_dsl
+    - layout_create
+    - layout_get_dsl
+    - layout_read
+    - layout_update
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

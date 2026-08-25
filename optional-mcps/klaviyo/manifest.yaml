@@ -14,7 +14,11 @@ source: https://developers.klaviyo.com/en/docs/klaviyo_mcp_server
 
 transport:
   type: http
-  url: https://mcp.klaviyo.com/mcp
+  # Vendor-documented debloat params: core-tools-only trims the 262-tool
+  # surface to ~40 core tools; disable-tools-with-user-generated-content
+  # removes tools that read UGC (vendor's prompt-injection mitigation).
+  # Drop the params in mcp_servers.klaviyo.url for the full surface.
+  url: https://mcp.klaviyo.com/mcp?core-tools-only=true&disable-tools-with-user-generated-content=true
 
 auth:
   type: oauth

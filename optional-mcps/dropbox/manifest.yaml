@@ -19,6 +19,14 @@ transport:
 auth:
   type: oauth
 
+# Excluded: account quota probe and the niche file-request feature trio.
+tools:
+  default_excluded:
+    - GetUsageAndQuota
+    - CreateFileRequest
+    - GetFileRequest
+    - ListFileRequests
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

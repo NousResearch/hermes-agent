@@ -19,6 +19,12 @@ transport:
 auth:
   type: oauth
 
+# Excluded: connectivity ping and billing-CSV power-user probe.
+tools:
+  default_excluded:
+    - hello
+    - download_usage_data
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

@@ -17,6 +17,13 @@ transport:
 auth:
   type: none
 
+# The server ships exactly two tools: search-flight (the product) and
+# feedback-to-devs (outbound feedback channel — excluded per Hermes policy:
+# no telemetry/feedback tools without explicit user opt-in).
+tools:
+  default_enabled:
+    - search-flight
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

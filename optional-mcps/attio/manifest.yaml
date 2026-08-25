@@ -19,6 +19,13 @@ transport:
 auth:
   type: oauth
 
+# Excluded: trivial identity probe; query-particle-sql is a plan-gated
+# generic SQL escape hatch.
+tools:
+  default_excluded:
+    - whoami
+    - query-particle-sql
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

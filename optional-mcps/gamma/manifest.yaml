@@ -19,6 +19,14 @@ transport:
 auth:
   type: oauth
 
+# Excluded: per-person viewer tracking (incl. emails) — privacy-sensitive
+# telemetry-grade analytics; get_gamma_analytics covers the useful case.
+tools:
+  default_excluded:
+    - get_gamma_viewer_analytics
+    - get_gamma_viewer_detail_analytics
+    - get_gamma_card_analytics
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

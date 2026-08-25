@@ -19,6 +19,11 @@ transport:
 auth:
   type: oauth
 
+# Excluded: meta-intro tool that spends a call explaining the other four.
+tools:
+  default_excluded:
+    - plaid_get_tools_introduction
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

@@ -19,6 +19,13 @@ transport:
 auth:
   type: oauth
 
+# Excluded: access_token (token self-probe) and get_job_env (can expose
+# secrets from CI env vars into model context).
+tools:
+  default_excluded:
+    - access_token
+    - get_job_env
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

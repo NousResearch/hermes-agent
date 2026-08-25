@@ -19,6 +19,16 @@ transport:
 auth:
   type: oauth
 
+# Excluded: options-tier upsell link and social watchlist engagement
+# features. Trading tools stay enabled by design — see the post_install
+# caution.
+tools:
+  default_excluded:
+    - get_option_level_upgrade_info
+    - get_popular_watchlists
+    - follow_watchlist
+    - unfollow_watchlist
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

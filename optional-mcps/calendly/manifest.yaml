@@ -19,6 +19,13 @@ transport:
 auth:
   type: oauth
 
+# Excluded: vendor skill-discovery pair (instruction-loading indirection —
+# Hermes skills/tool_search cover this).
+tools:
+  default_excluded:
+    - list_calendly_skills
+    - load_calendly_skill
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

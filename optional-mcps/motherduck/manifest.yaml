@@ -19,6 +19,21 @@ transport:
 auth:
   type: oauth
 
+# Curated default: the 9 core catalog/SQL tools. The other 30 (Dive, Flight
+# scheduled-jobs, Guide products + ask_docs_question) stay available via
+# `hermes mcp configure motherduck`.
+tools:
+  default_enabled:
+    - list_columns
+    - list_databases
+    - list_macros
+    - list_shares
+    - list_tables
+    - list_views
+    - query
+    - query_rw
+    - search_catalog
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

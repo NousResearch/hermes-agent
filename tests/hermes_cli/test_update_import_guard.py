@@ -96,6 +96,38 @@ def test_import_guard_can_report_non_import_errors(monkeypatch, tmp_path):
     assert error == "broken config"
 
 
+def test_import_guard_can_report_missing_third_party_dependency(
+    monkeypatch, tmp_path
+):
+    """Stash comparison must see newly introduced missing dependencies."""
+    (tmp_path / "consumer.py").write_text("import totally_not_installed_pkg\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "consumer"
+    assert error is not None and "totally_not_installed_pkg" in error
+
+
+def test_import_failure_comparison_preserves_exception_type(monkeypatch, tmp_path):
+    source = tmp_path / "consumer.py"
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    source.write_text("raise RuntimeError('stopped')\n")
+    runtime_failure = update_cmd._critical_module_import_failures(
+        tmp_path, report_runtime_errors=True
+    )
+    source.write_text("raise SystemExit('stopped')\n")
+    terminating_failure = update_cmd._critical_module_import_failures(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert runtime_failure == {"consumer": ("RuntimeError", "stopped")}
+    assert terminating_failure == {"consumer": ("SystemExit", "stopped")}
+
+
 def test_import_guard_reports_probe_termination_when_comparing_states(
     monkeypatch, tmp_path
 ):

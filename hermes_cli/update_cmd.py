@@ -657,7 +657,7 @@ _UPDATE_CRITICAL_MODULES = (
 
 def _critical_module_import_failures(
     root, *, report_runtime_errors: bool = False
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str]]:
     """Import each module in ``_UPDATE_CRITICAL_MODULES`` in a subprocess.
 
     ``_validate_critical_files_syntax`` only *parses* files, so it cannot see
@@ -703,19 +703,20 @@ def _critical_module_import_failures(
         # The root set is injected from hermes_constants so this can't drift
         # from the hint the user is shown (they disagreed once already).
         "        missing = (getattr(exc, 'name', '') or '').split('.')[0]\n"
-        "        if missing in %r or missing.startswith('hermes_'):\n"
-        "            failures.append((name, str(exc)))\n"
+        "        if missing in %r or missing.startswith('hermes_') or %r:\n"
+        "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except ImportError as exc:\n"
-        "        failures.append((name, str(exc)))\n"
+        "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except Exception as exc:\n"
         "        if %r:\n"
-        "            failures.append((name, str(exc)))\n"
+        "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except BaseException as exc:\n"
-        "        failures.append((name, str(exc)))\n"
+        "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (
             _UPDATE_CRITICAL_MODULES,
             tuple(sorted(FIRST_PARTY_MODULE_ROOTS)),
+            report_runtime_errors,
             report_runtime_errors,
             marker,
         )
@@ -741,7 +742,10 @@ def _critical_module_import_failures(
         )
     except subprocess.TimeoutExpired:
         return {
-            "critical-module probe": "timed out before reporting import health"
+            "critical-module probe": (
+                "TimeoutExpired",
+                "timed out before reporting import health",
+            )
         }
     except (OSError, subprocess.SubprocessError):
         # Can't run the probe — don't block the update on our own tooling.
@@ -750,8 +754,9 @@ def _critical_module_import_failures(
     if marker not in output:
         return {
             "critical-module probe": (
+                "ProbeTerminated",
                 "terminated before reporting import health "
-                f"(exit code {result.returncode})"
+                f"(exit code {result.returncode})",
             )
         }
     try:
@@ -760,15 +765,21 @@ def _critical_module_import_failures(
         failures = json.loads(output.rsplit(marker, 1)[1])
         if not isinstance(failures, list) or any(
             not isinstance(item, list)
-            or len(item) != 2
+            or len(item) != 3
             or not all(isinstance(value, str) for value in item)
             for item in failures
         ):
             raise ValueError("invalid import-health payload")
-        return {str(module): str(detail) for module, detail in failures}
+        return {
+            str(module): (str(kind), str(detail))
+            for module, kind, detail in failures
+        }
     except (TypeError, ValueError):
         return {
-            "critical-module probe": "reported malformed import health data"
+            "critical-module probe": (
+                "MalformedPayload",
+                "reported malformed import health data",
+            )
         }
 
 
@@ -781,7 +792,7 @@ def _validate_critical_modules_import(
     )
     if failures:
         module = next(iter(failures))
-        return False, module, failures[module]
+        return False, module, failures[module][1]
     return True, None, None
 
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
@@ -2479,15 +2490,18 @@ def _park_stashed_changes(stash_ref: str) -> None:
 
 def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str] | None:
     """Return untracked paths, or ``None`` when Git cannot enumerate them."""
-    result = subprocess.run(
-        git_cmd + ["ls-files", "--others", "--exclude-standard", "-z"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-    )
-    if result.returncode != 0:
+    try:
+        result = subprocess.run(
+            git_cmd + ["ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is None or result.returncode != 0:
         print(
             "  ⚠ Could not enumerate untracked files while validating the "
             "restored stash."
@@ -2504,15 +2518,18 @@ def _restored_python_paths(
     This deliberately validates Python source only; non-Python entry scripts
     remain outside the executable import-health check.
     """
-    changed = subprocess.run(
-        git_cmd + ["diff", "--name-only", "-z", "HEAD", "--", "*.py"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-    )
-    if changed.returncode != 0:
+    try:
+        changed = subprocess.run(
+            git_cmd + ["diff", "--name-only", "-z", "HEAD", "--", "*.py"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+        )
+    except (OSError, subprocess.SubprocessError):
+        changed = None
+    if changed is None or changed.returncode != 0:
         print("  ⚠ Could not enumerate tracked Python files restored from the stash.")
         return None
     paths = set(changed.stdout.split("\0"))
@@ -2546,20 +2563,45 @@ def _reject_unsafe_stash_restore(
         if current_untracked is not None
         else set()
     )
-    subprocess.run(
-        git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True
-    )
-    if restored_untracked:
-        subprocess.run(
-            git_cmd + ["clean", "-fd", "--", *sorted(restored_untracked)],
-            cwd=cwd,
-            capture_output=True,
+    try:
+        reset = subprocess.run(
+            git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True
         )
-    elif current_untracked is None:
-        print("  ⚠ Untracked restore leftovers could not be cleaned automatically.")
-        print("    Inspect `git status` before retrying the stash.")
+    except (OSError, subprocess.SubprocessError):
+        reset = None
 
-    print("  The clean updated tree has been restored; the gateway was not restarted.")
+    clean = None
+    if restored_untracked:
+        try:
+            clean = subprocess.run(
+                git_cmd + ["clean", "-fd", "--", *sorted(restored_untracked)],
+                cwd=cwd,
+                capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            clean = None
+    cleanup_ok = (
+        current_untracked is not None
+        and reset is not None
+        and reset.returncode == 0
+        and (not restored_untracked or (clean is not None and clean.returncode == 0))
+    )
+    if cleanup_ok:
+        try:
+            verify = subprocess.run(
+                git_cmd + ["diff", "--quiet", "HEAD", "--"],
+                cwd=cwd,
+                capture_output=True,
+            )
+            cleanup_ok = verify.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            cleanup_ok = False
+
+    if cleanup_ok:
+        print("  The clean updated tree has been restored; the gateway was not restarted.")
+    else:
+        print("  ⚠ The clean updated tree could not be fully restored automatically.")
+        print("    Inspect `git status` and run `git reset --hard HEAD` before retrying.")
     print("  Platform connectivity alone does not mean the agent can execute turns.")
     print(f"  Your local changes remain preserved in stash: {stash_ref}")
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
@@ -2714,7 +2756,7 @@ def _restore_stashed_changes(
             stash_ref,
             preexisting_untracked,
             f"agent import {failing_module or 'unknown'}",
-            import_error,
+            import_error[1],
         )
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)

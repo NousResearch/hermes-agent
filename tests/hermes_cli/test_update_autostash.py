@@ -717,6 +717,24 @@ def test_restore_stays_parked_when_untracked_baseline_is_unknown(
     assert "git stash apply stash@{0}" in output
 
 
+def test_reject_does_not_claim_cleanup_when_git_state_is_unknown(
+    monkeypatch, tmp_path, capsys
+):
+    """Cleanup failures must not be reported as a restored clean tree."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
+
+    with pytest.raises(SystemExit):
+        update_cmd._reject_unsafe_stash_restore(
+            ["git"], tmp_path, "stash@{0}", set(), "consumer.py", "invalid"
+        )
+
+    output = capsys.readouterr().out
+    assert "could not be fully restored automatically" in output
+    assert "The clean updated tree has been restored" not in output
+
+
 def test_restore_rejects_unknown_restored_python_paths(
     monkeypatch, tmp_path, capsys
 ):

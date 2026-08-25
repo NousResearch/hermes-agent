@@ -178,11 +178,19 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
 # pid + window_id), and there is no MCP tool that captures the entire virtual
 # desktop or an arbitrary monitor as one image. But the OS shell surfaces
 # themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
-# that show up in `list_windows`, so "show me my screen" / "click the taskbar"
-# is reachable by targeting those windows. When `app` is one of these
-# sentinels, capture() resolves to the desktop/shell window instead of an
-# application window.
-_SCREEN_CAPTURE_SENTINELS = {"screen", "desktop", "fullscreen", "full screen", "all"}
+# that show up in `list_windows`, so "click the taskbar" is reachable by
+# targeting those windows.
+#
+# Two distinct whole-screen intents, two lanes:
+#   * app="screen" (or "fullscreen"/"full screen"/"all") → a real composited
+#     capture of everything currently displayed, via cua-driver's
+#     `get_desktop_state`. Pixels only — no element tree.
+#   * app="desktop" → the OS shell/desktop window (wallpaper + icons) resolved
+#     through list_windows, WITH interactable elements (desktop icons).
+_FULL_SCREEN_SENTINELS = {"screen", "fullscreen", "full screen", "all"}
+_DESKTOP_SHELL_SENTINELS = {"desktop"}
+# Backwards-compatible union — membership means "some whole-screen intent".
+_SCREEN_CAPTURE_SENTINELS = _FULL_SCREEN_SENTINELS | _DESKTOP_SHELL_SENTINELS
 
 # Known shell/desktop window identifiers across platforms. Matched
 # case-insensitively as a substring against both the window's app_name and
@@ -2921,6 +2929,103 @@ class CuaDriverBackend(ComputerUseBackend):
             and app_lower in str(w.get("title", "")).lower()
         ]
 
+    def _capture_full_screen(self, mode: str) -> CaptureResult:
+        """Capture the whole displayed screen via cua-driver's desktop lane.
+
+        Uses `get_desktop_state` — a composited grab of everything currently
+        on screen (like PrtScn) — instead of resolving a single window through
+        `list_windows`. This is what "screenshot my screen" means: previously
+        the `screen` sentinel resolved to the OS shell window (Progman /
+        WorkerW on Windows), which is the wallpaper + icons layer and never
+        shows the windows stacked above it.
+
+        Bonus resilience (2ndNatureAI, #60081): this lane works even when
+        Windows UIA enumeration (`list_windows` / `list_apps`) hangs
+        (trycua/cua#2110/#2113), because it never enumerates.
+
+        Returns pixels only — a composited image has no single accessibility
+        tree, so `elements` is always empty regardless of requested mode. The
+        result carries a `note` telling the model how to reach the
+        interactive lanes.
+        """
+        self._clear_active_target()
+        previous_scope: Optional[str] = None
+        try:
+            cfg = self._session.call_tool(
+                "get_config", {"session": self._session_id}, timeout=10.0,
+            )
+            sc = cfg.get("structuredContent") or {}
+            if isinstance(sc, dict):
+                val = sc.get("capture_scope")
+                if isinstance(val, str):
+                    previous_scope = val
+        except Exception as e:
+            logger.debug("cua-driver get_config before full-screen capture failed: %s", e)
+
+        try:
+            if previous_scope != "desktop":
+                self._session.call_tool(
+                    "set_config",
+                    {"key": "capture_scope", "value": "desktop",
+                     "session": self._session_id},
+                    timeout=10.0,
+                )
+            out = self._call_capture_tool(
+                "get_desktop_state", {"session": self._session_id},
+            )
+        finally:
+            if previous_scope and previous_scope != "desktop":
+                try:
+                    self._session.call_tool(
+                        "set_config",
+                        {"key": "capture_scope", "value": previous_scope,
+                         "session": self._session_id},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.debug("cua-driver restore capture_scope failed: %s", e)
+
+        png_b64, image_mime_type = _image_from_tool_result(out)
+        if not png_b64:
+            return self._failed_capture(
+                mode,
+                "<get_desktop_state returned no image; the driver may "
+                "predate the desktop capture lane — try "
+                "capture(app='<AppName>') for a specific window>",
+            )
+        structured = out.get("structuredContent") or {}
+        width = int(structured.get("screenshot_width")
+                    or structured.get("screen_width") or 0)
+        height = int(structured.get("screenshot_height")
+                     or structured.get("screen_height") or 0)
+        png_bytes_len = 0
+        try:
+            raw = base64.b64decode(png_b64, validate=False)
+            png_bytes_len = len(raw)
+            detected_width, detected_height = _image_dimensions_from_bytes(raw)
+            if detected_width and detected_height:
+                width = detected_width
+                height = detected_height
+        except Exception:
+            png_bytes_len = len(png_b64) * 3 // 4
+        return CaptureResult(
+            mode="vision",
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=[],
+            app="screen",
+            window_title="Full screen (composited)",
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+            note=(
+                "full-screen capture has no interactable elements; to act on "
+                "what you see, call capture(app='<AppName>') for that app's "
+                "clickable element list, or capture(app='desktop') for the "
+                "desktop shell (wallpaper icons / taskbar) with elements"
+            ),
+        )
+
     # ── Capture ────────────────────────────────────────────────────
     def capture(
         self,
@@ -2949,6 +3054,19 @@ class CuaDriverBackend(ComputerUseBackend):
             pid = None
         if _is_placeholder_id(window_id):
             window_id = None
+        # Step 0: explicit full-screen capture — a composited grab of
+        # everything displayed, via get_desktop_state. Bypasses window
+        # enumeration entirely (also keeps screenshots working when Windows
+        # UIA enumeration hangs — trycua/cua#2110/#2113, #60081).
+        # app='desktop' intentionally does NOT take this lane: it resolves to
+        # the shell/desktop window below so desktop icons stay clickable.
+        if (
+            pid is None
+            and window_id is None
+            and app
+            and app.strip().lower() in _FULL_SCREEN_SENTINELS
+        ):
+            return self._capture_full_screen(mode)
         # An exact pid/window pair is both the stable capture_after target and
         # the escape hatch when app/window discovery is unavailable on X11.
         if pid is not None or window_id is not None:
@@ -2987,13 +3105,12 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if pid is None and window_id is None and app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
-            # Whole-screen / desktop request. cua-driver has no virtual-desktop
-            # capture tool, so resolve to the OS shell/desktop window (the
-            # desktop backdrop or the taskbar/menu-bar), which list_windows
-            # does surface. This makes "show me my screen" and "click the
-            # taskbar" work; a single image still can't span multiple monitors
-            # — that's a driver limitation, not a wrapper one.
+        if pid is None and window_id is None and app and app.strip().lower() in _DESKTOP_SHELL_SENTINELS:
+            # Desktop-shell request (app='desktop'): resolve to the OS
+            # shell/desktop window (the desktop backdrop or the
+            # taskbar/menu-bar) via list_windows. Unlike the full-screen lane
+            # above, this carries the shell's interactable elements (desktop
+            # icons), so "click the taskbar" / "open the recycle bin" work.
             def _is_desktop_window(w: Dict[str, Any]) -> bool:
                 haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
                 return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)

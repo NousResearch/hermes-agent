@@ -1444,15 +1444,11 @@ class TestReconnection:
             if run_count == 1:
                 # Initial connection succeeds and registers tools. Setting
                 # ``_ever_connected`` mirrors what the real ``_run_stdio``
-                # does right after a successful ``_discover_tools()`` call;
-                # guarded because the pre-fix class has no such slot.
+                # does right after a successful ``_discover_tools()`` call.
                 self_srv.session = MagicMock()
                 self_srv._tools = []
                 self_srv._ready.set()
-                try:
-                    self_srv._ever_connected = True
-                except AttributeError:
-                    pass
+                self_srv._ever_connected = True
                 return "reconnect"
             if run_count <= 5:
                 # Four consecutive failures on later reconnect attempts --

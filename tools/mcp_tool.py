@@ -4133,6 +4133,7 @@ class MCPServerTask:
                 # that already registered tools once and then dropped would
                 # otherwise be misclassified as never having connected and
                 # re-enter this initial-connect ladder (#94654).
+                # ``_ever_connected`` itself is set once and never cleared.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ever_connected:
                     if failure_class == "permanent":

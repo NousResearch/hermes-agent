@@ -82,6 +82,18 @@ Skills use a token-efficient loading pattern. The agent doesn't load everything 
 
 This means skills don't cost tokens until they're actually used.
 
+:::note Repeat reads
+
+Within a task-scoped conversation, an unchanged skill file is loaded only
+once. Repeating the same `name` and `file_path` returns a short recoverable
+error instead of reading or re-sending the content. The agent should continue
+from the earlier result; distinct linked files remain independently loadable.
+
+If the file changes or context compression removes the original full result,
+the cache is invalidated and the next call loads the content again.
+
+:::
+
 ---
 
 ## Installing from the Hub

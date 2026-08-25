@@ -721,10 +721,8 @@ export const host = {
           : undefined
     )
 
-    // The profile is gone. Drop its persisted tiles NOW: a leftover Bot Mode
-    // tile restores on relaunch and dials the deleted profile's backend, whose
-    // ensure_hermes_home() re-creates the profile directory the delete just
-    // removed (hermes-agent#94235).
+    // The profile is gone. Drop its persisted tiles now — a leftover tile
+    // restores on relaunch and re-creates the deleted profile (hermes-agent#94235).
     dropTilesForProfile(
       route ? route.profile : name,
       route

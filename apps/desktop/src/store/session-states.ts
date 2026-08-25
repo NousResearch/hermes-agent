@@ -56,7 +56,7 @@ import {
   setSessions
 } from './session'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
+import { requestForSessionProfile, type SessionOwnerRoute, type SessionOwnerScope, type SessionProfileRoute } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -1599,6 +1599,16 @@ export function dropTilesForProfile(
   profile: string,
   route?: { connectionId?: string; profile?: string; targetProfile?: string }
 ): void {
+  // A route without profile has no owner side to match: it would silently fall
+  // into the local-delete branch below and require `ownerConnection === 'local'`,
+  // dropping nothing remotely owned while appearing to succeed. Both current
+  // call sites always populate profile, so refuse the malformed shape loudly
+  // instead of letting a future caller misuse the optional route (Enough1122
+  // review of #94426).
+  if (route && !route.profile?.trim()) {
+    throw new Error('dropTilesForProfile: route without profile cannot be scoped')
+  }
+
   const name = normalizeProfileKey(profile)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
@@ -1633,8 +1643,12 @@ export function dropTilesForProfile(
     // Desktop-local delete: also require the tile's owner connection to be the
     // LOCAL connection. A same-named bot on another connection is a different
     // agent — the deleted local profile never owned it, and dropping its tile
-    // would orphan a live conversation (hermes-agent#94235).
-    return (ownerProfile === name || ownerTarget === name) && ownerConnection === 'local'
+    // would orphan a live conversation (hermes-agent#94235). Tiles persisted
+    // before ownerRoute.connectionId existed carry no id; that empty string IS
+    // the local connection (the only source a pre-connectionId tile could have
+    // been opened on), so treat it as 'local' — otherwise those legacy tiles
+    // survive every local delete and resurrect the profile on relaunch.
+    return (ownerProfile === name || ownerTarget === name) && (ownerConnection || 'local') === 'local'
   }
 
   // The profile's own sessions bucket (Bot tiles live in the shared bucket
@@ -1659,7 +1673,13 @@ export function dropTilesForProfile(
   const live = $sessionTiles.get()
 
   const next = live.filter(tile =>
-    tile.workspaceMode === 'bots' ? !ownerMatches(tile.ownerRoute) : profileKey() !== name
+    // Bot tiles map to the shared Bot bucket (keyed by ownerRoute here): drop
+    // the deleted profile's bots, matched by owner.
+    tile.workspaceMode === 'bots'
+      ? !ownerMatches(tile.ownerRoute)
+      : // Session tiles map to the owning profile's own bucket: drop only when
+        // the deleted profile IS the live gateway's profile.
+        profileKey() !== name
   )
 
   if (next.length !== live.length) {

@@ -542,7 +542,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
-            return _sudo_cb() or ""
+            # Blocked on a human typing their password: exclude from tool
+            # deadlines (#85125 2e). Local import avoids any import-layering
+            # surprises; tools.terminal_tool already imports tools.approval.
+            from tools.approval import human_wait_window
+            with human_wait_window():
+                return _sudo_cb() or ""
         except Exception:
             return ""
 
@@ -613,7 +618,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         
         password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
-        password_thread.join(timeout=timeout_seconds)
+        # Blocked on a human typing their password: exclude from tool
+        # deadlines on both executor paths (#85125 2e). Local import avoids
+        # any import-layering surprises.
+        from tools.approval import human_wait_window
+        with human_wait_window():
+            password_thread.join(timeout=timeout_seconds)
         
         if result["done"]:
             password = result["password"] or ""

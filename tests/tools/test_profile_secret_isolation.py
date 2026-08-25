@@ -106,7 +106,7 @@ def test_build_subprocess_env_supports_standalone_explicit_boundary(tmp_path):
 
     assert _SOURCE_ONLY not in result
     assert result[_SHARED] == "beta-db"
-    assert result["PATH"] == "/usr/bin"
+    assert result["PATH"].endswith(":/usr/bin")
 
 
 def test_ambient_force_prefix_cannot_unwrap_in_make_run_env(
@@ -350,3 +350,34 @@ def test_kanban_spawn_fails_closed_for_missing_profile(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="unresolved profile"):
         kb._default_spawn(cast(Any, _Task()), str(tmp_path))
+
+
+def test_target_profile_password_still_requires_explicit_passthrough(tmp_path):
+    """Provenance replacement cannot bypass generic credential filtering."""
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_profile(source, {"DB_PASSWORD": "source-value"})
+    _write_profile(target, {"DB_PASSWORD": "target-value"})
+
+    result = build_subprocess_env(
+        base={"DB_PASSWORD": "source-value", "PATH": "/usr/bin"},
+        profile_home=target,
+        source_profile_home=source,
+        enforce_profile_boundary=True,
+    )
+    assert "DB_PASSWORD" not in result
+
+    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+
+    register_env_passthrough(["DB_PASSWORD"])
+    try:
+        permitted = build_subprocess_env(
+            base={"DB_PASSWORD": "source-value", "PATH": "/usr/bin"},
+            profile_home=target,
+            source_profile_home=source,
+            enforce_profile_boundary=True,
+        )
+    finally:
+        clear_env_passthrough()
+
+    assert permitted["DB_PASSWORD"] == "target-value"

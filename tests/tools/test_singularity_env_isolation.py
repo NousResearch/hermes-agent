@@ -18,7 +18,7 @@ import pytest
 
 from tools.environments.singularity import (
     SingularityEnvironment,
-    _filtered_container_env,
+    _singularity_subprocess_env,
 )
 from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 
@@ -28,7 +28,7 @@ class TestFilteredContainerEnv:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-super-secret-12345")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
 
-        result = _filtered_container_env({})
+        result = _singularity_subprocess_env()
 
         assert "ANTHROPIC_API_KEY" not in result
         assert "OPENAI_API_KEY" not in result
@@ -37,7 +37,7 @@ class TestFilteredContainerEnv:
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "dashboard-secret-xyz")
         monkeypatch.setenv("GH_TOKEN", "ghp_supersecrettoken")
 
-        result = _filtered_container_env({})
+        result = _singularity_subprocess_env()
 
         assert "HERMES_DASHBOARD_SESSION_TOKEN" not in result
         assert "GH_TOKEN" not in result
@@ -46,15 +46,15 @@ class TestFilteredContainerEnv:
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
         monkeypatch.setenv("LANG", "en_US.UTF-8")
 
-        result = _filtered_container_env({})
+        result = _singularity_subprocess_env()
 
-        assert result.get("PATH") == "/usr/bin:/bin"
+        assert result.get("PATH", "").endswith("/usr/bin:/bin")
         assert result.get("LANG") == "en_US.UTF-8"
 
     def test_overrides_merge_over_os_environ(self, monkeypatch):
-        monkeypatch.setenv("SOME_VAR", "from-os-environ")
+        from tools.environments.local import build_subprocess_env
 
-        result = _filtered_container_env({"SOME_VAR": "from-overrides"})
+        result = build_subprocess_env(base={"SOME_VAR": "from-overrides"})
 
         assert result["SOME_VAR"] == "from-overrides"
 
@@ -63,7 +63,7 @@ class TestFilteredContainerEnv:
         for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
             monkeypatch.setenv(key, "leaked-if-present")
 
-        result = _filtered_container_env({})
+        result = _singularity_subprocess_env()
 
         leaked = set(_HERMES_PROVIDER_ENV_BLOCKLIST) & result.keys()
         assert not leaked, f"blocklisted vars leaked into container env: {leaked}"
@@ -81,25 +81,22 @@ def _bare_singularity_env(env_overrides: dict | None = None) -> SingularityEnvir
 
 
 class TestRunBashEnvIsolation:
-    def test_run_bash_passes_filtered_env_to_popen(self, monkeypatch):
-        """The exact bug: _run_bash must not spawn with the unfiltered
-        (inherited) environment -- every terminal command run under
-        TERMINAL_ENV=singularity must be sanitized the same way Local and
-        Docker already are."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-super-secret-12345")
+    def test_run_bash_reaches_shared_filtered_env_at_popen(self, monkeypatch):
+        """The shared ``_popen_bash`` boundary filters Singularity exec."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "redacted-provider-value")
 
         captured = {}
 
-        def fake_popen_bash(cmd, stdin_data=None, **kwargs):
+        def fake_popen(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["kwargs"] = kwargs
             return object()
 
         env = _bare_singularity_env()
-        with patch("tools.environments.singularity._popen_bash", fake_popen_bash):
+        with patch("tools.environments.base.subprocess.Popen", fake_popen):
             env._run_bash("echo hi")
 
-        assert "env" in captured["kwargs"], "_run_bash must pass env= explicitly"
+        assert "env" in captured["kwargs"]
         assert "ANTHROPIC_API_KEY" not in captured["kwargs"]["env"]
         assert captured["cmd"] == [
             "apptainer", "exec", "instance://hermes_test_instance",

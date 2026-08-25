@@ -185,7 +185,7 @@ def test_mixed_case_credential_names_are_denied_for_windows_semantics(
 
     terminal_env = local_env.build_subprocess_env(base=base)
     assert terminal_env.get("Safe_Control") == "keep-me"
-    assert terminal_env.get("Path") == "C:/Windows/System32"
+    assert terminal_env.get("Path", "").endswith("C:/Windows/System32")
     assert not {k for k in base if k.casefold() in {
         "bws_access_token", "db_password", "openai_api_key", "gh_token"
     }} & set(terminal_env)

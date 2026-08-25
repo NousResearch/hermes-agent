@@ -7,14 +7,34 @@ import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
+import type { SessionListDensity } from '@/store/session-list-density'
+
+import { sessionRowEstimate } from '../session-row-details'
 
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
 // Page size when revealing more already-loaded rows within a workspace group.
 export const SIDEBAR_GROUP_PAGE = 5
 
-// Recent sessions previewed under each project in the overview.
+// Recent sessions VISIBLE under each project in the overview. The preview is a
+// glance, not a list — three rows is the height it gets.
 export const PROJECT_PREVIEW_COUNT = 3
+
+// How many rows the preview actually HOLDS. The window still shows
+// PROJECT_PREVIEW_COUNT of them; the rest are reachable by scrolling inside it,
+// so a project with a busy week doesn't force a drill-in to see chat number
+// four. Keep it in step with `PROJECT_TREE_PREVIEW_LIMIT` (store/projects.ts),
+// which is what the backend is asked to send.
+export const PROJECT_PREVIEW_LOADED = 10
+
+// Row heights are density-driven (session-row.tsx), and the preview window is
+// defined in ROWS, not pixels — so it has to be measured, not hardcoded, or
+// `comfortable`/`detailed` crop their third row mid-glyph.
+const PREVIEW_ROW_GAP_PX = 1
+
+export function previewWindowMaxHeight(density: SessionListDensity, rows = PROJECT_PREVIEW_COUNT): string {
+  return `${rows * sessionRowEstimate(density) + Math.max(0, rows - 1) * PREVIEW_ROW_GAP_PX}px`
+}
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4

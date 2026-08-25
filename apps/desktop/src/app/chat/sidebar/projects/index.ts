@@ -3,6 +3,7 @@ export { EnteredProjectContent } from './entered-content'
 export {
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,
+  PROJECT_PREVIEW_LOADED,
   projectTreeCwd,
   sortProjectsForOverview,
   useRepoWorktreeMap

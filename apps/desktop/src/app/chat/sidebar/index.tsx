@@ -157,7 +157,7 @@ import {
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
+  PROJECT_PREVIEW_LOADED,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
@@ -1125,10 +1125,10 @@ export function ChatSidebar({
   // matching the flat Recents list. Keyed by project id for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
     () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
+      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_LOADED, {
         removed: removedSessionIds,
-        // Rank before the trim, so "3 priciest in this project" isn't "3 most
-        // recent, priciest first".
+        // Rank before the trim, so "the priciest in this project" isn't "the
+        // most recent, priciest first".
         rankIds: sortOrderIds
       }),
     [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]

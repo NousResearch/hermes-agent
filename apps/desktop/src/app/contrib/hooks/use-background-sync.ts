@@ -273,6 +273,18 @@ const LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS = 30_000
 // full list refresh is heavier than the active_list snapshot. Trailing-edge
 // scheduled, so the burst's last write always lands.
 const SESSIONS_LIST_TICK_GAP_MS = 10_000
+// A typing burst keeps the composer's contentEditable input handling on the
+// same renderer main thread as the list refresh above (#95033): with a large
+// session store, one refresh pass can block keystroke echo long enough that
+// input visibly stalls. While the keyboard is warm, hold that pass and land it
+// once shortly after the last keypress — mirroring the throttle's own trailing
+// edge. Two guardrails keep this from costing freshness: the deferral never
+// outlives SESSIONS_LIST_TICK_GAP_MS (worst case equals the plain cadence,
+// even for someone typing continuously), and the lighter polls (active_list
+// snapshot, cron, transcript backstops) are untouched — they carry liveness
+// signals, not the heavy list reconciliation.
+const TYPING_BURST_QUIET_MS = 1_500
+const TYPING_DEFER_RECHECK_MS = 300
 
 interface LiveSessionStatusItem {
   id?: string
@@ -290,6 +302,30 @@ interface LiveSessionStatusResponse {
 // served by different gateways and never appear in this profile's active_list,
 // so an unscoped reap would dark out every other profile's running rows.
 const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
+
+// Renderer-wide keyboard warmth, tracked at module scope like the live-runtime
+// bookkeeping above: any keydown anywhere in the window marks activity, and a
+// burst stays warm for TYPING_BURST_QUIET_MS after the last key. IME
+// composition still emits keydown (keyCode 229), so one listener covers both.
+let lastRendererInputAt = 0
+
+/** Record renderer-wide keyboard activity (wired to a capture-phase window
+ *  keydown listener by useBackgroundSync). */
+export function noteRendererKeyboardActivity(nowMs = Date.now()): void {
+  lastRendererInputAt = nowMs
+}
+
+/** True while a typing burst is still warm enough to hold the heavy list
+ *  refresh (see TYPING_BURST_QUIET_MS). */
+export function isTypingBurstActive(nowMs = Date.now()): boolean {
+  return nowMs - lastRendererInputAt < TYPING_BURST_QUIET_MS
+}
+
+/** Forget keyboard history — test isolation only (mirrors
+ *  resetLiveRuntimeTracking). */
+export function resetTypingActivityTracking(): void {
+  lastRendererInputAt = 0
+}
 
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
  * normally own these states, but events emitted while Desktop was disconnected
@@ -647,6 +683,8 @@ export function useBackgroundSync({
 
     let lastRunAt = 0
     let timer: null | number = null
+    let typingDeferTimer: null | number = null
+    let deferStartedAt = 0
 
     const run = () => {
       lastRunAt = Date.now()
@@ -669,15 +707,56 @@ export function useBackgroundSync({
       })
     }
 
+    // Land one coalesced refresh pass — but hold it while a typing burst is
+    // warm (#95033), so the heavy list pass never lands under the user's
+    // keystrokes. A single recheck timer services every caller: ticks that
+    // arrive mid-deferral just find the timer already armed and return.
+    const runWhenKeyboardQuiet = () => {
+      const now = Date.now()
+
+      // Starvation cap: a deferral never outlives one full throttle gap, so
+      // worst-case list freshness equals the plain cadence even if the user
+      // types continuously.
+      if (!isTypingBurstActive(now) || (deferStartedAt > 0 && now - deferStartedAt >= SESSIONS_LIST_TICK_GAP_MS)) {
+        deferStartedAt = 0
+
+        // A tick may hit the terminal branch while a recheck is still pending
+        // (cap reached mid-burst); retire it so it cannot land a second pass.
+        if (typingDeferTimer !== null) {
+          window.clearTimeout(typingDeferTimer)
+          typingDeferTimer = null
+        }
+
+        run()
+
+        return
+      }
+
+      if (typingDeferTimer === null) {
+        if (deferStartedAt === 0) {
+          deferStartedAt = now
+        }
+
+        typingDeferTimer = window.setTimeout(() => {
+          typingDeferTimer = null
+          runWhenKeyboardQuiet()
+        }, TYPING_DEFER_RECHECK_MS)
+      }
+    }
+
     const unsubscribe = $sessionsChangeTick.listen(() => {
       const since = Date.now() - lastRunAt
 
       if (since >= SESSIONS_LIST_TICK_GAP_MS) {
-        run()
-      } else if (timer === null) {
+        runWhenKeyboardQuiet()
+      } else if (typingDeferTimer === null && timer === null) {
+        // Within the gap a pass is already scheduled — either the plain
+        // trailing timer or a typing deferral that will land no later than
+        // this tick's own deadline. Arming another one here would only stack
+        // extra passes behind the promised one.
         timer = window.setTimeout(() => {
           timer = null
-          run()
+          runWhenKeyboardQuiet()
         }, SESSIONS_LIST_TICK_GAP_MS - since)
       }
     })
@@ -688,6 +767,12 @@ export function useBackgroundSync({
       if (timer !== null) {
         window.clearTimeout(timer)
       }
+
+      if (typingDeferTimer !== null) {
+        window.clearTimeout(typingDeferTimer)
+      }
+
+      deferStartedAt = 0
     }
   }, [
     changeEventsAvailable,
@@ -697,6 +782,19 @@ export function useBackgroundSync({
     requestActiveTranscriptRefresh,
     updateSessionState
   ])
+
+  // Keyboard warmth for the deferral above: capture phase on window catches
+  // keydowns targeted at any focused element (composer included) on the way
+  // down. Pure timestamp write — no React state, negligible per-key cost.
+  useEffect(() => {
+    const markInput = (): void => noteRendererKeyboardActivity()
+
+    window.addEventListener('keydown', markInput, true)
+
+    return () => {
+      window.removeEventListener('keydown', markInput, true)
+    }
+  }, [])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
   // the background). cron.changed (jobs.json moved: CRUD or a scheduler tick's

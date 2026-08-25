@@ -6725,7 +6725,9 @@ function isGroupPassText(text) {
  *  substantive (non-pass) assistant answer over a trailing pass — a Codex
  *  intent-ack continuation nudge can land a complete answer and then get a
  *  synthetic "(pass)" to the nudge itself, which must not hide the answer.
- *  Returns null only when no assistant message appears in that range. */
+ *  When only pass text exists in range, returns the newest (last
+ *  chronological) one rather than the oldest. Returns null only when no
+ *  assistant message appears in that range. */
 function pickGroupTurnReply(messages, before) {
   let passText = null
 

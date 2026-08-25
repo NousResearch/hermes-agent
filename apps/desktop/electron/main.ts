@@ -14058,14 +14058,17 @@ async function fetchJsonForBackend(
 
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
-  // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:
-  //   - advertises "native_pkce" in auth_flows → run the system-browser +
-  //     loopback + PKCE flow. No embedded webview, tokens held by the app
-  //     (encrypted keychain), REST/WS authenticated by bearer — no cookies.
-  //   - older gateway without native_pkce → fall back to the legacy embedded
-  //     BrowserWindow cookie flow, preserving compatibility.
-  // This is the "observable ladder + compatibility fallback tied to an
-  // identified older runtime" the desktop guide requires.
+  // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
+  // for supported auth_flows and /api/auth/providers for provider capabilities:
+  //   - all providers support password → always use the embedded login window
+  //     (password providers require the dashboard login form; native PKCE
+  //     can never complete for that provider shape)
+  //   - advertises "native_pkce" AND at least one non-password provider →
+  //     run the system-browser + loopback + PKCE flow
+  //   - older gateway with no provider metadata → fall back to the auth_flows
+  //     check (existing compatibility)
+  //   - a failed native login reports the error rather than auto-falling back
+  //     to the embedded flow — one sign-in action opens at most one window.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   let statusBody: any = null
@@ -14077,7 +14080,10 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
     // own error handling and works against any gated gateway.
   }
 
-  const strategy = resolveLoginStrategy(statusBody)
+  const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
+  const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
+
+  const strategy = resolveLoginStrategy(statusBody, { providers })
 
   if (strategy === 'native') {
     try {
@@ -14097,10 +14103,10 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
       rememberLog(
         `[native-oauth] native login failed (${
           error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
+        })`
       )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
+
+      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
     }
   }
 
@@ -14119,19 +14125,17 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   return { ok: true, baseUrl, connected }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
-  const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
-  await clearOauthSession(baseUrl || undefined)
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  await clearOauthSession(baseUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
-  if (baseUrl) {
-    _clearNativeTokens(baseUrl)
-  }
+  _clearNativeTokens(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
   // behind is reflected as still-connected rather than silently signed-out.
-  const connected = baseUrl ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) : false
+  const connected = (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl)
 
   return { ok: true, connected }
 })

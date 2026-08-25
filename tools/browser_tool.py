@@ -3392,10 +3392,8 @@ def _pid_exists(pid: int) -> bool:
             return psutil.pid_exists(pid)
         except Exception:
             return False
-    # windows-footgun: ok — psutil.pid_exists above handles Windows; this
-    # os.kill(pid, 0) probe only runs when psutil is unavailable.
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — psutil.pid_exists above handles Windows
     except ProcessLookupError:
         return False
     except PermissionError:

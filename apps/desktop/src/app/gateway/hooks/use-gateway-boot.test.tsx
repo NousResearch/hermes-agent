@@ -379,6 +379,63 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
+  it('a stale failed Settings switch cannot disarm the newer switch loading owner', async () => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    const failureA = new Error('switch A failed')
+    const failureB = new Error('switch B failed')
+    let rejectA: (error: Error) => void = () => undefined
+    let rejectB: (error: Error) => void = () => undefined
+
+    desktop.getConnection
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectA = reject
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectB = reject
+          })
+      )
+
+    act(() => connectionApplied?.())
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(true)
+
+    act(() => connectionApplied?.())
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(true)
+
+    await act(async () => {
+      rejectA(failureA)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(notifyError).toHaveBeenCalledWith(failureA, expect.any(String))
+    expect($desktopBoot.get().error).toBe(failureA.message)
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(true)
+
+    await act(async () => {
+      rejectB(failureB)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(notifyError).toHaveBeenCalledWith(failureB, expect.any(String))
+    expect($desktopBoot.get().error).toBe(failureB.message)
+    expect($gatewaySwitching.get()).toBe(false)
+    expect($sessionsLoading.get()).toBe(false)
+  })
+
   it('reports a Settings switch setup failure and does not disarm a newer switch started by recovery UI', async () => {
     const failure = new Error('machine-context reset failed')
     const beforeConnectionSwitch = vi.fn()

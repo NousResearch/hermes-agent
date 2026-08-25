@@ -56,6 +56,11 @@ export type GatewaySwitchToken = number
 
 let latestSwitchToken = 0
 
+/** True only while token owns the latest connection-switch lifecycle. */
+export function isCurrentGatewaySwitch(token: GatewaySwitchToken): boolean {
+  return token === latestSwitchToken
+}
+
 export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle): () => void {
   switchLifecycle = lifecycle
 
@@ -91,7 +96,7 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
   } catch (error) {
     // No caller received this token, so begin owns cleanup. Token-aware teardown
     // preserves a newer recursively-started switch, if lifecycle code began one.
-    const stillOwnsSwitch = token === latestSwitchToken
+    const stillOwnsSwitch = isCurrentGatewaySwitch(token)
 
     endGatewaySwitch(token)
 
@@ -118,7 +123,7 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
  * newer one is still in flight. No token = force down (host teardown).
  */
 export function endGatewaySwitch(token?: GatewaySwitchToken): void {
-  if (token !== undefined && token !== latestSwitchToken) {
+  if (token !== undefined && !isCurrentGatewaySwitch(token)) {
     return
   }
 
@@ -139,7 +144,7 @@ export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitch
   if (!lifecycle) {
     console.debug('[gateway-switch] cannot repaint the active source because no switch lifecycle is registered')
 
-    if (token === latestSwitchToken) {
+    if (isCurrentGatewaySwitch(token)) {
       setSessionsLoading(false)
     }
 
@@ -147,10 +152,10 @@ export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitch
   }
 
   void Promise.resolve()
-    .then(() => (token === latestSwitchToken ? lifecycle.refreshSessions() : undefined))
+    .then(() => (isCurrentGatewaySwitch(token) ? lifecycle.refreshSessions() : undefined))
     .catch(() => undefined)
     .finally(() => {
-      if (token === latestSwitchToken) {
+      if (isCurrentGatewaySwitch(token)) {
         setSessionsLoading(false)
       }
     })

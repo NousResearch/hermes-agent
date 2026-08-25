@@ -36,6 +36,7 @@ import {
   $gatewaySwitching,
   beginGatewaySwitch,
   endGatewaySwitch,
+  isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
@@ -539,10 +540,14 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          // Disarm this failed attempt before notifying: recovery UI may
-          // synchronously begin a newer switch and re-arm loading under its own
-          // token, which this older catch must not lower afterwards.
-          setSessionsLoading(false)
+
+          // Only the current owner may lower loading. A failed begin returns no
+          // token and cleans its own barrier internally; lower loading only when
+          // that cleanup did not preserve a recursively-started newer switch.
+          if (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken)) {
+            setSessionsLoading(false)
+          }
+
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
         }
       } finally {

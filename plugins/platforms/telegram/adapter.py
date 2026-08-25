@@ -501,6 +501,36 @@ _TEXT_SEND_DEADLINE = 30.0
 # period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
+# Local telegram-bot-api (--local) inverts both budgets above. Against the cloud API this process does the
+# uploading, so a slow send shows up as write progress and 60s is only ever the post-upload transcode wait.
+# In local mode the request hands the server a path and then blocks for the WHOLE of the server's own
+# upload to Telegram (2000MB ceiling; 1.3GB measured at ~131s on a domestic link), so 60s read / 300s
+# wall clock fail every large send while the server keeps uploading in the background, unreported. Sized
+# for the ceiling rather than the median: these only decide how long a dead request goes unnoticed. The
+# deadline keeps the same role as above: past the per-phase sum (pool 8 + connect 10 + read 1800 s).
+_LOCAL_MEDIA_SEND_READ_TIMEOUT = 1800.0
+_LOCAL_MEDIA_SEND_DEADLINE = 1900.0
+
+
+def media_read_timeout(local_mode: bool) -> float:
+    """Read timeout for a media send, widened for local Bot API mode (see ``_LOCAL_MEDIA_SEND_READ_TIMEOUT``)."""
+    return _LOCAL_MEDIA_SEND_READ_TIMEOUT if local_mode else _MEDIA_SEND_READ_TIMEOUT
+
+
+@contextlib.contextmanager
+def media_upload_source(path: str, *, local_mode: bool):
+    """Yield ``(value to hand PTB, rewind callback)`` for ``path``. Cloud: an open handle and its
+    ``seek(0)``. Local mode: the path STRING and ``None``: PTB only applies its ``file://``
+    optimization to str/Path, a handle goes to ``InputFile.load_file()`` which ``read()``s the whole
+    file into memory (multi-GB at the 2000MB local cap). Module-level so the standalone
+    ``send_message`` path, which builds its own ``Bot``, cannot drift from the adapter."""
+    if local_mode:
+        yield os.path.abspath(path), None
+        return
+    with open(path, "rb") as handle:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+        yield handle, lambda: handle.seek(0)
+
+
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
 
@@ -1193,7 +1223,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         async with self._chat_send_lock(send_kwargs.get("chat_id")):
             try:
                 return await _await_with_thread_deadline(
-                    send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**send_kwargs), timeout=self._media_send_deadline(), label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
                 if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
@@ -1207,7 +1237,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 retry_kwargs.pop("message_thread_id", None)
                 retry_kwargs.pop("direct_messages_topic_id", None)
                 return await _await_with_thread_deadline(
-                    send_fn(**retry_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**retry_kwargs), timeout=self._media_send_deadline(), label="telegram-media-send", dump_on_blocked_loop=False)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -5157,7 +5187,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             chat_id, self._metadata_thread_id(metadata), metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode)
         return reply_to_id, {
             "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id,
-            "read_timeout": _MEDIA_SEND_READ_TIMEOUT, **thread_kwargs, **self._notification_kwargs(metadata)}
+            "read_timeout": self._media_read_timeout(), **thread_kwargs, **self._notification_kwargs(metadata)}
 
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
@@ -5169,16 +5199,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     @contextlib.contextmanager
     def _media_upload_source(self, path: str):
-        """Yield ``(value to hand PTB, rewind callback)`` for ``path``. Cloud: an open handle and its
-        ``seek(0)``. Local mode: the path STRING and ``None``: PTB only applies its ``file://``
-        optimization to str/Path, a handle goes to ``InputFile.load_file()`` which ``read()``s the whole
-        file into memory (multi-GB at the 2000MB local cap). ``getattr``: adapters built via ``__new__``
-        never run ``__init__``; absent attribute == cloud mode."""
-        if getattr(self, "_local_mode", False):
-            yield os.path.abspath(path), None
-            return
-        with open(path, "rb") as handle:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-            yield handle, lambda: handle.seek(0)
+        """:func:`media_upload_source` for this adapter's mode. ``getattr``: adapters built via
+        ``__new__`` never run ``__init__``; absent attribute == cloud mode."""
+        with media_upload_source(path, local_mode=getattr(self, "_local_mode", False)) as pair:
+            yield pair
+
+    def _media_read_timeout(self) -> float:
+        return media_read_timeout(getattr(self, "_local_mode", False))
+
+    def _media_send_deadline(self) -> float:
+        return _LOCAL_MEDIA_SEND_DEADLINE if getattr(self, "_local_mode", False) else _MEDIA_SEND_DEADLINE
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
@@ -7308,11 +7338,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not token:
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
-    disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+    extra = getattr(pconfig, "extra", None) or {}
     from tools.send_message_tool import _send_telegram
     return await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
-        disable_link_previews=disable_link_previews, force_document=force_document)
+        disable_link_previews=bool(extra.get("disable_link_previews")), force_document=force_document, extra=extra)
 
 
 def interactive_setup() -> None:

@@ -291,3 +291,264 @@ def test_max_file_mb_bounds_the_inbound_cap():
 def test_non_numeric_max_file_mb_keeps_default_cap():
     adapter = _configured_adapter(base_url="http://localhost:8081/bot", max_file_mb="lots")
     assert adapter._max_doc_bytes == 2 * 1024 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Media send read timeout
+#
+# In local mode the sendVideo call blocks for the SERVER's whole upload to
+# Telegram, not just a post-upload transcode. A measured 1.29GB send took
+# ~131s, so the cloud-tuned 60s budget failed every large send while the
+# server kept uploading unobserved in the background.
+# ---------------------------------------------------------------------------
+
+def test_local_mode_media_read_timeout_covers_full_upload():
+    """Local mode must allow far more than the cloud transcode budget."""
+    from plugins.platforms.telegram.adapter import (
+        _MEDIA_SEND_READ_TIMEOUT,
+        media_read_timeout,
+    )
+
+    local = media_read_timeout(True)
+    assert local > _MEDIA_SEND_READ_TIMEOUT
+    # A 1.29GB send measured ~131s; the ceiling is 2000MB, so the budget has
+    # to leave room for a slow link at full size.
+    assert local >= 900
+
+
+def test_cloud_mode_media_read_timeout_unchanged():
+    """Cloud mode keeps the short budget so dead sends are noticed fast."""
+    from plugins.platforms.telegram.adapter import (
+        _MEDIA_SEND_READ_TIMEOUT,
+        media_read_timeout,
+    )
+
+    assert media_read_timeout(False) == _MEDIA_SEND_READ_TIMEOUT
+
+
+def test_adapter_media_read_timeout_follows_local_mode():
+    """The adapter wrapper must track its own _local_mode flag."""
+    from plugins.platforms.telegram.adapter import media_read_timeout
+
+    assert _adapter(local_mode=True)._media_read_timeout() == media_read_timeout(True)
+    assert _adapter(local_mode=False)._media_read_timeout() == media_read_timeout(False)
+
+
+def test_media_read_timeout_missing_attr_falls_back_to_cloud():
+    """An adapter built via __new__ without _local_mode must not raise."""
+    from plugins.platforms.telegram.adapter import (
+        TelegramAdapter,
+        media_read_timeout,
+    )
+
+    a = TelegramAdapter.__new__(TelegramAdapter)
+    assert not hasattr(a, "_local_mode")
+    assert a._media_read_timeout() == media_read_timeout(False)
+
+
+# ---------------------------------------------------------------------------
+# Standalone send path (`hermes send`, cron, scripts)
+#
+# _send_telegram builds its OWN Bot rather than reusing the gateway adapter.
+# It therefore has to apply base_url / local_mode itself: without them a
+# deployment pointed at a self-hosted server silently sent via
+# api.telegram.org: a different server, still capped at 50MB, and after a
+# logOut not even the one holding the bot. It also opened the file, which
+# buffered a multi-GB payload into RAM.
+# ---------------------------------------------------------------------------
+
+def test_shared_upload_source_local_mode_yields_path(tmp_path):
+    """The shared helper backs both the adapter and the standalone path."""
+    from plugins.platforms.telegram.adapter import media_upload_source
+
+    f = tmp_path / "big.mp4"
+    f.write_bytes(b"\x00" * 512)
+
+    with media_upload_source(str(f), local_mode=True) as (src, rewind):
+        assert isinstance(src, str)
+        assert src == os.path.abspath(str(f))
+        assert rewind is None
+
+
+def test_shared_upload_source_cloud_mode_yields_handle(tmp_path):
+    """Cloud mode still yields a rewindable handle for retries."""
+    from plugins.platforms.telegram.adapter import media_upload_source
+
+    f = tmp_path / "small.mp4"
+    f.write_bytes(b"xyz")
+
+    with media_upload_source(str(f), local_mode=False) as (src, rewind):
+        assert src.read() == b"xyz"
+        assert callable(rewind)
+        rewind()
+        assert src.read() == b"xyz", "rewind must make a retry re-readable"
+
+
+def test_shared_upload_source_local_mode_does_not_open_file(tmp_path, monkeypatch):
+    """True zero-copy: local mode must never open the file in-process."""
+    from plugins.platforms.telegram.adapter import media_upload_source
+
+    f = tmp_path / "huge.mp4"
+    f.write_bytes(b"\x00" * 256)
+
+    def _boom(*a, **kw):
+        raise AssertionError("local mode must not open the media file")
+
+    monkeypatch.setattr("builtins.open", _boom)
+    with media_upload_source(str(f), local_mode=True) as (src, _):
+        assert isinstance(src, str)
+
+
+@pytest.mark.parametrize(
+    "extra, expect_base_url, expect_local",
+    [
+        ({}, False, False),
+        ({"base_url": "http://127.0.0.1:8081/bot", "local_mode": True}, True, True),
+        ({"base_url": "http://127.0.0.1:8081/bot"}, True, False),
+    ],
+)
+def test_standalone_send_honours_base_url_and_local_mode(
+    extra, expect_base_url, expect_local, tmp_path, monkeypatch
+):
+    """`hermes send` must reach the configured server, not api.telegram.org."""
+    import asyncio
+
+    import tools.send_message_tool as smt
+
+    captured = {}
+
+    class _FakeMsg:
+        message_id = 7
+
+    class _FakeBot:
+        def __init__(self, token, **kwargs):
+            captured["kwargs"] = kwargs
+
+        async def send_message(self, **kw):
+            return _FakeMsg()
+
+    import telegram
+
+    monkeypatch.setattr(telegram, "Bot", _FakeBot)
+
+    asyncio.run(
+        smt._send_telegram(
+            "123:ABC", "60469177", "hello", media_files=[], extra=extra
+        )
+    )
+
+    kwargs = captured["kwargs"]
+    assert ("base_url" in kwargs) is expect_base_url
+    assert bool(kwargs.get("local_mode")) is expect_local
+    if expect_base_url:
+        assert kwargs["base_url"] == extra["base_url"]
+        # base_file_url must default to the same origin, not the cloud one.
+        assert kwargs["base_file_url"] == extra["base_url"]
+
+
+def test_standalone_send_local_mode_passes_path_not_handle(tmp_path, monkeypatch):
+    """The standalone media path must stream in local mode, not buffer."""
+    import asyncio
+
+    import tools.send_message_tool as smt
+
+    video = tmp_path / "movie.mp4"
+    video.write_bytes(b"\x00" * 2048)
+    captured = {}
+
+    class _FakeMsg:
+        message_id = 9
+
+    class _FakeBot:
+        def __init__(self, token, **kwargs):
+            pass
+
+        async def send_video(self, **kw):
+            captured["video"] = kw["video"]
+            captured["read_timeout"] = kw.get("read_timeout")
+            return _FakeMsg()
+
+    import telegram
+
+    monkeypatch.setattr(telegram, "Bot", _FakeBot)
+
+    asyncio.run(
+        smt._send_telegram(
+            "123:ABC",
+            "60469177",
+            "",
+            media_files=[(str(video), False)],
+            extra={"base_url": "http://127.0.0.1:8081/bot", "local_mode": True},
+        )
+    )
+
+    from plugins.platforms.telegram.adapter import media_read_timeout
+
+    assert isinstance(captured["video"], str), "local mode must hand PTB a path"
+    assert captured["video"] == os.path.abspath(str(video))
+    assert captured["read_timeout"] == media_read_timeout(True)
+
+
+def test_standalone_send_cloud_mode_still_passes_handle(tmp_path, monkeypatch):
+    """No regression: without local_mode the handle upload is unchanged."""
+    import asyncio
+
+    import tools.send_message_tool as smt
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"data")
+    captured = {}
+
+    class _FakeMsg:
+        message_id = 11
+
+    class _FakeBot:
+        def __init__(self, token, **kwargs):
+            pass
+
+        async def send_video(self, **kw):
+            captured["video"] = kw["video"]
+            captured["read_timeout"] = kw.get("read_timeout")
+            return _FakeMsg()
+
+    import telegram
+
+    monkeypatch.setattr(telegram, "Bot", _FakeBot)
+
+    asyncio.run(
+        smt._send_telegram(
+            "123:ABC", "60469177", "", media_files=[(str(video), False)], extra={}
+        )
+    )
+
+    from plugins.platforms.telegram.adapter import media_read_timeout
+
+    assert hasattr(captured["video"], "read"), "cloud mode must keep the handle"
+    assert captured["read_timeout"] == media_read_timeout(False)
+
+
+def test_local_mode_media_send_deadline_outlasts_read_timeout():
+    """The wall-clock cap on one upload must not cut a local-mode send short of its read budget."""
+    from plugins.platforms.telegram.adapter import _MEDIA_SEND_DEADLINE, media_read_timeout
+
+    assert _adapter(local_mode=True)._media_send_deadline() > media_read_timeout(True)
+    assert _adapter(local_mode=False)._media_send_deadline() == _MEDIA_SEND_DEADLINE
+
+
+def test_plugin_standalone_sender_forwards_extra(monkeypatch):
+    """Cron's deliver=telegram path (the plugin's standalone_sender_fn) must forward extra too."""
+    from types import SimpleNamespace
+
+    import tools.send_message_tool as smt
+    from plugins.platforms.telegram.adapter import _standalone_send
+
+    seen = {}
+
+    async def _fake_send(token, chat_id, message, **kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(smt, "_send_telegram", _fake_send)
+    extra = {"base_url": "http://127.0.0.1:8081/bot", "local_mode": True}
+    asyncio.run(_standalone_send(SimpleNamespace(token="123:ABC", extra=extra), "1", "hi"))
+    assert seen["extra"] == extra

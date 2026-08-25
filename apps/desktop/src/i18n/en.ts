@@ -1690,6 +1690,18 @@ export const en: Translations = {
       QQ_ALLOW_ALL_USERS: { label: 'Allow all QQ users' },
       QQBOT_HOME_CHANNEL: { label: 'QQ home channel', help: 'Default channel or group for cron delivery.' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ home channel name' },
+      ONEBOT_ALLOWED_USERS: {
+        label: 'Allowed OneBot user IDs',
+        help: 'Comma-separated QQ numbers allowed to chat (empty denies everyone).',
+      },
+      ONEBOT_ALLOW_ALL_USERS: {
+        label: 'Allow all OneBot users',
+        help: 'Let any QQ user chat instead of only the allow-list.',
+      },
+      ONEBOT_HOME_CHANNEL: {
+        label: 'OneBot home channel',
+        help: 'Default channel or group for cron delivery, e.g. private:123456789.',
+      },
       SLACK_BOT_TOKEN: {
         label: 'Slack bot token',
         help: 'Use the bot token from OAuth & Permissions after installing your Slack app.',

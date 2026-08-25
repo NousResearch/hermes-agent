@@ -112,9 +112,11 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run_turn_runner as run
+        """_deliver_approval_message must assign and use the redacted
+        command and description before any send_exec_approval or send()."""
+        import gateway.run as run
 
-        self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
+        self._assert_redacts_then_uses(run, "_deliver_approval_message", "send_exec_approval")
 
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server_runs

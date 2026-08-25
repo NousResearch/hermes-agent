@@ -487,4 +487,18 @@ describe('requestForSessionProfile', () => {
 
     expect(ambient).toHaveBeenCalledOnce()
   })
+
+  it('preserves ambient request arity as optional controls are supplied', async () => {
+    const ambient = vi.fn(async () => ({ ambient: true }))
+    const params = { session_id: 'rt-3' }
+    const controller = new AbortController()
+
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params)
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params, 1_800_000)
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params, undefined, controller.signal)
+
+    expect(ambient.mock.calls.map(args => args.length)).toEqual([2, 3, 4])
+    expect(ambient).toHaveBeenNthCalledWith(2, 'session.usage', params, 1_800_000)
+    expect(ambient).toHaveBeenNthCalledWith(3, 'session.usage', params, undefined, controller.signal)
+  })
 })

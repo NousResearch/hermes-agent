@@ -1049,3 +1049,21 @@ describe('knownSessionProfile', () => {
     expect(knownSessionProfile([], null)).toBeUndefined()
   })
 })
+
+describe('knownSessionOwner', () => {
+  it('preserves a registry connection on a same-named session row', () => {
+    expect(
+      knownSessionOwner(
+        [session({ connection_id: 'source-b', id: 'shared-session', profile: 'default' })],
+        'shared-session'
+      )
+    ).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  it('preserves a composite owner hint when the row is not listed', () => {
+    const owner = { connectionId: 'source-a', profile: 'default', targetProfile: 'backend-default' }
+    setSessionOwnerHint('hidden-session', owner)
+
+    expect(knownSessionOwner([], 'hidden-session')).toEqual(owner)
+  })
+})

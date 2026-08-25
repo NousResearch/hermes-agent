@@ -27,6 +27,7 @@ import {
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
+  setSessionOwnerHint,
   setSessions,
   setWorkspaceCwdOwner,
   setYoloActive
@@ -1246,13 +1247,16 @@ export function upsertOptimisticSession(
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  ownerRoute?: SessionProfileRoute
 ) {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile the session was just created on (= the live gateway's
-  // profile) so the scoped sidebar shows the new row immediately instead of
-  // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  // Stamp the profile/source the session was just created on so the scoped
+  // sidebar shows the new row immediately instead of filtering it out as
+  // "default" until the aggregator re-fetches. The active gateway is only a
+  // presentation detail: a concurrent source switch can move it before this
+  // optimistic row is inserted.
+  const profileKey = normalizeProfileKey(ownerRoute?.profile ?? $activeGatewayProfile.get())
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -1274,7 +1278,12 @@ export function upsertOptimisticSession(
     source: 'tui',
     started_at: now,
     title,
-    tool_call_count: 0
+    tool_call_count: 0,
+    ...(ownerRoute?.connectionId.trim() ? { connection_id: ownerRoute.connectionId.trim() } : {})
+  }
+
+  if (ownerRoute) {
+    setSessionOwnerHint(id, ownerRoute)
   }
 
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])

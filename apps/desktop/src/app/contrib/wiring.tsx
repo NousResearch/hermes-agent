@@ -320,7 +320,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // profile's own local gateway — never to whatever is "active" (active is
   // presentation only). Resolve the owner from, in order: the tile's persisted
   // route (bot chats carry an exact connectionId+profile), the known session
-  // profile (row or open-time hint), then a cross-profile REST probe that
+  // owner (row or open-time hint), then a cross-profile REST probe that
   // stamps ownership for a hidden/unlisted session. Only a request with NO
   // session at all (a fresh draft, global chrome) falls to the ambient socket.
   // The probe result is cached as an owner hint so the next call is sync.

@@ -43,7 +43,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   clearReadBaseline,
-  knownSessionProfile,
+  knownSessionOwner,
   lineageAliases,
   markSessionRead,
   sessionMatchesStoredId,
@@ -844,7 +844,7 @@ export function openTileGatewayScopes(): Set<string> {
 /**
  * Sync owner resolution for a session id that may be a RUNTIME or a STORED id.
  * Tile route first (exact connectionId+profile, survives relaunch), then the
- * known session profile (row or open-time hint). Returns undefined when no
+ * known session owner (row or open-time hint). Returns undefined when no
  * owner is known — the caller falls back to ambient, never to "active".
  */
 export function knownOwnerForSession(sessionId: null | string | undefined): SessionOwnerScope {
@@ -854,7 +854,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 
   const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
 
-  return sessionTileOwnerRoute(storedSessionId) ?? knownSessionProfile($sessions.get(), storedSessionId)
+  return sessionTileOwnerRoute(storedSessionId) ?? knownSessionOwner($sessions.get(), storedSessionId)
 }
 
 /**

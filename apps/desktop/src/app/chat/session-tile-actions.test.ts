@@ -6,9 +6,9 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
-const { $activeSessionId } = await import('@/store/session')
+const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
 const { $sessionTiles, setSessionTileDelegate } = await import('@/store/session-states')
-const { useSessionTileActions } = await import('./session-tile-actions')
+const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
@@ -25,6 +25,36 @@ function renderTileActions() {
   )
 }
 
+describe('session tile optimistic owner metadata', () => {
+  afterEach(() => {
+    $sessions.set([])
+    $sessionTiles.set([])
+  })
+
+  it('keeps the tile source on its first optimistic sidebar row', () => {
+    const storedSessionId = 'stored-tile-owner-metadata'
+    const ownerRoute = { connectionId: 'source-a', profile: 'default' }
+    $sessionTiles.set([{ ownerRoute, storedSessionId }])
+
+    expect(
+      listTileSessionRow({
+        cwd: '/remote/worktree',
+        model: 'model-a',
+        preview: 'hello from the tile',
+        runtimeId: 'rt-tile-owner-metadata',
+        sessions: [],
+        storedSessionId
+      })
+    ).toBe(true)
+
+    expect($sessions.get()[0]).toMatchObject({
+      connection_id: 'source-a',
+      id: storedSessionId,
+      profile: 'default'
+    })
+  })
+})
+
 // A tile's cancelRun/steerPrompt/reloadFromMessage each build their own
 // requestGateway call directly instead of going through the shared
 // submitPromptText pipeline (which already wraps its call in
@@ -34,6 +64,7 @@ function renderTileActions() {
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
     $activeSessionId.set('foreground-runtime')
+    setSessions([])
     $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
@@ -59,6 +90,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
 
   afterEach(() => {
     $activeSessionId.set(null)
+    setSessions([])
     $sessionTiles.set([])
     requestGatewayMock.mockReset()
     vi.restoreAllMocks()

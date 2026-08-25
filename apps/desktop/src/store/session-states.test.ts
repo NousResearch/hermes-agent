@@ -671,6 +671,12 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     expect(knownOwnerForSession('stored-2')).toBe('loki')
   })
 
+  it('keeps a session row connection owner when profiles share the same name', () => {
+    setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {
     expect(knownOwnerForSession('unknown-session')).toBeUndefined()
     expect(knownOwnerForSession(null)).toBeUndefined()

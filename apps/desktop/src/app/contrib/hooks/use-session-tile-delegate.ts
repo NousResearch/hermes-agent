@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 
 import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
-import { getSessionOwnerHint } from '@/store/session'
+import { $sessions, knownSessionOwner } from '@/store/session'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
@@ -76,8 +76,8 @@ export function useSessionTileDelegate({
 
     const ownerForStoredSession = async (storedSessionId: string): Promise<SessionOwnerScope> => {
       const owner =
-        getSessionOwnerHint(storedSessionId) ??
         sessionTileOwnerRoute(storedSessionId) ??
+        knownSessionOwner($sessions.get(), storedSessionId) ??
         (await resolveSessionProfile(storedSessionId))
 
       return owner

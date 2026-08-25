@@ -19,5 +19,11 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
         "-q", "--quick", action="store_true",
         help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)")
     backup_parser.add_argument(
-        "-l", "--label", help="Label for the snapshot (only used with --quick)")
+        "-l", "--label", help="Label for the snapshot (only used with --quick)"
+    )
+    backup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List files that would be backed up without creating the archive.",
+    )
     backup_parser.set_defaults(func=cmd_backup)

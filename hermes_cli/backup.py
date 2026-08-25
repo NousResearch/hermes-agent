@@ -575,8 +575,7 @@ def _print_capped(header: str, lines: List[str], indent: str) -> None:
 # --- Backup ---
 
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
-    """Turn ``--output`` (file, directory, or None) into a ``.zip`` path whose parent exists;
-    an unwritable path exits with a one-line error, not a traceback."""
+    """Resolve the archive destination without creating output directories."""
     out_path = None
     default_name = f"hermes-backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
@@ -588,7 +587,7 @@ def _resolve_backup_output_path(output: Optional[str]) -> Path:
             out_path = Path.home() / default_name
         if out_path.suffix.lower() != ".zip":
             out_path = out_path.with_suffix(out_path.suffix + ".zip")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Directory creation belongs only to the archive-writing phase.
     except OSError as exc:
         print(f"Error: cannot write backup to {output or out_path}: {exc}")
         raise SystemExit(1) from exc
@@ -622,6 +621,8 @@ def run_backup(args) -> bool:
         print(f"Error: Hermes home directory not found at {hermes_root}")
         sys.exit(1)
 
+    if getattr(args, "dry_run", False):
+        return _run_backup_locked(args, hermes_root)
     try:
         with _backup_operation_lock(hermes_root):
             return _run_backup_locked(args, hermes_root)
@@ -648,6 +649,14 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     file_count = len(files_to_add) + len(external_to_add)
     logger.info("backup phase=scan status=complete duration_ms=%.1f files=%d",
                 (time.monotonic() - scan_started) * 1000, file_count)
+    if getattr(args, "dry_run", False):
+        total_bytes = sum(path.stat().st_size for path, _ in files_to_add + external_to_add)
+        print(f"Dry run: no archive created.\n  Files:       {file_count}\n"
+              f"  Total size:  {_format_size(total_bytes)}")
+        if skipped_dirs:
+            print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+        return True
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
     errors = []

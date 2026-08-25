@@ -62,6 +62,9 @@ Proxy best practices (see the web-dashboard docs for Apache + nginx examples):
     $remote_user``).
   * ``remote_user`` mirrors the app-level trusted-proxy validation used by
     projects such as Keycloak (``--proxy-trusted-addresses=``).
+  * The proxy delivers only a *username*; the provider synthesizes ``email``
+    as ``<user>@proxy.local`` (there is no real mailbox). Any surface that
+    displays ``email`` verbatim will show this synthetic value.
 """
 from __future__ import annotations
 
@@ -86,8 +89,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HEADER = "X-Remote-User"
 _DEFAULT_SECRET_HEADER = "X-Remote-User-Secret"
 _DEFAULT_TTL_SECONDS = 12 * 60 * 60
-
-LAST_SKIP_REASON: str = ""
 
 
 def _parse_ip_list(value: str) -> list[str]:
@@ -174,7 +175,14 @@ class RemoteUserAuthProvider(DashboardAuthProvider):
             return None
         if self._secret:
             presented = str(request.headers.get(self._secret_header, ""))
-            if not hmac.compare_digest(presented, self._secret):
+            # Constant-time compare on BYTES: hmac.compare_digest(str, str)
+            # raises TypeError when either side contains non-ASCII, and the
+            # presented value is attacker-controlled via the header — comparing
+            # the utf-8-encoded bytes keeps an arbitrary header from turning an
+            # authentication attempt into an unhandled 500.
+            if not hmac.compare_digest(
+                presented.encode("utf-8"), self._secret.encode("utf-8")
+            ):
                 return None
         return Session(
             user_id=username,
@@ -232,9 +240,6 @@ def _resolve(key_env: str, cfg_key: str, default: Any = "") -> Any:
 
 def register(ctx) -> None:
     """Plugin entry — registers RemoteUserAuthProvider when configured."""
-    global LAST_SKIP_REASON
-    LAST_SKIP_REASON = ""
-
     proxies_raw = _resolve(
         "HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES", "trusted_proxies", []
     )
@@ -246,13 +251,13 @@ def register(ctx) -> None:
         trusted_proxies = []
 
     if not trusted_proxies:
-        LAST_SKIP_REASON = (
+        reason = (
             "remote-user dashboard auth is not configured: no trusted proxy "
             "allowed. Set dashboard.remote_user.trusted_proxies in config.yaml "
             "(or HERMES_DASHBOARD_REMOTE_USER_TRUSTED_PROXIES in .env) to the "
             "IP/CIDR of the reverse proxy that performs auth, then restart."
         )
-        logger.debug("dashboard-auth-remote-user: %s", LAST_SKIP_REASON)
+        logger.debug("dashboard-auth-remote-user: %s", reason)
         return
 
     try:
@@ -268,8 +273,10 @@ def register(ctx) -> None:
             ) or _DEFAULT_TTL_SECONDS,
         )
     except (ValueError, TypeError) as exc:
-        LAST_SKIP_REASON = f"RemoteUserAuthProvider construction failed: {exc}"
-        logger.warning("dashboard-auth-remote-user: %s", LAST_SKIP_REASON)
+        logger.warning(
+            "dashboard-auth-remote-user: RemoteUserAuthProvider construction failed: %s",
+            exc,
+        )
         return
 
     ctx.register_dashboard_auth_provider(provider)

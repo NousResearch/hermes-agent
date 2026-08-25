@@ -162,6 +162,20 @@ class TestSecretHeader:
         # missing secret
         assert p.verify_request_auth(request=_req("192.168.0.2", {"X-Remote-User": "ryan"})) is None
 
+    def test_non_ascii_secret_values_do_not_crash(self):
+        # Regression: hmac.compare_digest(str, str) raises TypeError when
+        # either side contains non-ASCII, and the presented header is
+        # attacker-controlled — it must not surface as an unhandled 500.
+        p = _prov(secret="sécret—¥")
+        # matching non-ASCII secret -> accepted
+        assert p.verify_request_auth(
+            request=_req("192.168.0.2", {"X-Remote-User": "ryan", "X-Remote-User-Secret": "sécret—¥"})
+        ) is not None
+        # non-ASCII presented value with a wrong secret -> declined, no raise
+        assert p.verify_request_auth(
+            request=_req("192.168.0.2", {"X-Remote-User": "ryan", "X-Remote-User-Secret": "wrøng"})
+        ) is None
+
 
 # ---------------------------------------------------------------------------
 # Username sanitizing
@@ -345,6 +359,28 @@ class TestGateIntegration:
         )
         assert called == []
         assert resp.status_code == 302
+
+    def test_vouch_success_emits_audit_event(self, request_auth_gate, monkeypatch):
+        import hermes_cli.dashboard_auth.middleware as mw
+        from hermes_cli.dashboard_auth.audit import AuditEvent
+
+        calls = []
+        monkeypatch.setattr(
+            mw, "audit_log", lambda event, **k: calls.append((event, k))
+        )
+
+        resp, called = _run_gate(
+            _make_request(
+                **{"X-Remote-User": "ryan", "X-Remote-User-Secret": "sec-no-colon-xxxxxxxx"}
+            )
+        )
+        assert resp.status_code == 200 and called == [1]
+        assert len(calls) == 1
+        event, fields = calls[0]
+        assert event == AuditEvent.REQUEST_AUTH_SUCCESS
+        assert fields["provider"] == "remote-user"
+        assert fields["user_id"] == "ryan"
+        assert fields["peer"] == "192.168.0.2"
 
 
 class TestStackingAndFailClosed:

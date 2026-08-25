@@ -665,11 +665,12 @@ def _claim_active_session_slot(
         )
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
-        return (
-            (None, _SESSION_OWNERSHIP_UNAVAILABLE)
-            if track_liveness
-            else (None, None)
-        )
+        # Fail CLOSED regardless of surface: per-session exclusivity is a
+        # correctness guarantee (see PER_SESSION_EXCLUSIVE_SUBMIT), and a
+        # claim that errors out has NOT proven the session is unowned.
+        # Proceeding without a lease here is the silent double-writer hole
+        # flagged in the #94595 review (blocker 2).
+        return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
@@ -9990,6 +9991,23 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 return
             session["running"] = True
             session["last_active"] = time.time()
+        # Ownership admission BEFORE message.start: the interrupted-turn
+        # marker this continuation is recovering may have been written by a
+        # sibling backend that is still alive and mid-turn (#94778 — two
+        # backends share one HERMES_HOME; B resumes S while A runs it and
+        # sees A's fresh marker). Running the continuation anyway would be
+        # the double-writer this fence exists to prevent. Leave the marker:
+        # once the owner finishes or dies, a later resume retries.
+        if _ensure_active_session_slot(sid, session) is not None:
+            logger.info(
+                "auto-continue for %s refused: session has another live owner",
+                session_key,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                session["_auto_continue_scheduled"] = False
+            return
+        with session["history_lock"]:
             # Hand this turn its own marker inputs (read back by
             # _run_prompt_submit): count the attempt so a crash during the
             # continuation trips the breaker, and re-record the ORIGINAL
@@ -12740,6 +12758,22 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> bool:
+    # Ownership admission at the ONE chokepoint every fresh turn source must
+    # cross. prompt.submit already claims the slot in its RPC handler (so this
+    # is a no-op re-check there), but crash auto-continue, wake-ups and other
+    # synthesized turns call _run_prompt_submit directly — the exact bypass
+    # that let a second backend run a duplicate turn in #94778. When the
+    # session already holds its lease this is a cheap dict check.
+    if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
+        logger.info(
+            "Refusing turn for session %s at _run_prompt_submit: %s",
+            session.get("session_key") or sid,
+            getattr(ownership_refusal, "reason", None) or "refused",
+        )
+        with session["history_lock"]:
+            session["running"] = False
+        _emit("error", sid, {"message": str(ownership_refusal)})
+        return False
     with session["history_lock"]:
         if session.get("_closing"):
             session["running"] = False
@@ -16973,6 +17007,25 @@ def _persist_wake_enabled(enabled: bool) -> bool:
     except Exception as e:
         logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)
         return False
+
+
+@method("gateway.capabilities")
+def _(rid, params: dict) -> dict:
+    """What guarantees THIS BUILD enforces, for a client that must not assume.
+
+    An automated client cannot tell a gateway that fences concurrent writers to
+    one session from one that silently allows them -- both accept the same calls
+    and both answer prompt.submit the same way. It only finds out by corrupting a
+    conversation. So the guarantee is advertised, and a client that does not see
+    it advertised is expected to withhold rather than hope.
+
+    Sourced from the module that performs the enforcement, never from config: a
+    capability an operator can switch on without also having the mechanism is
+    worse than no capability at all, because it is believed.
+    """
+    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
+
+    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
 
 
 @method("ping")

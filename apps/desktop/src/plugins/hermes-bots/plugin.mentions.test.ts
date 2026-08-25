@@ -63,6 +63,7 @@ const { cache, hostMock, live } = vi.hoisted(() => {
   return {
     cache: new Map<string, { key: unknown[]; value: unknown }>(),
     hostMock: {
+      agents: vi.fn(async () => ({ agents: [], sources: [] })),
       notify: vi.fn(),
       request: vi.fn(async () => ({})),
       requestProfile: vi.fn(async () => ({})),
@@ -222,6 +223,35 @@ describe('@-mention completions', () => {
     const { provide } = await contributions({ profiles: [] })
 
     expect(provide('')).toEqual([])
+  })
+
+  it('warms a cold union roster for the next keystroke', async () => {
+    const { provide } = await contributions({ profiles: [] })
+    cache.clear()
+    hostMock.request.mockResolvedValue({ profiles: [{ name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'default',
+          profile: 'default'
+        },
+        {
+          connectionId: 'cloud',
+          connectionKind: 'cloud',
+          connectionLabel: 'Cloud',
+          handle: 'writer',
+          profile: 'writer'
+        }
+      ],
+      primaryConnectionId: 'local',
+      sources: []
+    })
+
+    expect(provide('')).toEqual([])
+    await vi.waitFor(() => expect(provide('').map(item => item.insert)).toContain('@writer'))
   })
 
   it('never offers the bot whose chat you are already in', async () => {

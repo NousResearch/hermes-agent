@@ -14,9 +14,11 @@ grp = pytest.importorskip("grp")
 import hermes_cli.gateway as gateway_cli
 from gateway import status
 from gateway.restart import (
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    resolve_systemd_timeout_stop_sec,
 )
 
 
@@ -184,12 +186,91 @@ class TestRequireServiceInstalled:
         gateway_cli._require_service_installed("start")
 
 
+class TestGetCronDrainTimeout:
+    def test_missing_config_falls_back_to_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
+        assert (
+            gateway_cli._get_cron_drain_timeout() == DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+        )
+
+    def test_zero_in_config_is_opt_out(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"agent": {"cron_drain_timeout": 0}},
+        )
+        assert gateway_cli._get_cron_drain_timeout() == 0.0
+
+    def test_env_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_DRAIN_TIMEOUT", "45")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"agent": {"cron_drain_timeout": 90}},
+        )
+        assert gateway_cli._get_cron_drain_timeout() == 45.0
+
+
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30))
+        timeout = resolve_systemd_timeout_stop_sec(
+            DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+            DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+        )
         return f"TimeoutStopSec={timeout}"
 
+    def test_timeout_stop_sec_covers_default_cron_drain_floor(self, monkeypatch):
+        """#94759: default restart_drain_timeout=0 still leaves a 30s cron
+        floor plus cleanup reserve. The old max(60, drain+30)=60 unit
+        SIGKILLed that in-budget drain."""
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_cron_drain_timeout",
+            lambda: DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+        )
 
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        expected = resolve_systemd_timeout_stop_sec(
+            0.0, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+        )
+        assert f"TimeoutStopSec={expected}" in unit
+        assert expected > 60
+        assert self._expected_timeout_stop_sec() in unit
+
+    def test_timeout_stop_sec_follows_a_raised_cron_drain_timeout(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
+        monkeypatch.setattr(gateway_cli, "_get_cron_drain_timeout", lambda: 60.0)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert f"TimeoutStopSec={resolve_systemd_timeout_stop_sec(0.0, 60.0)}" in unit
+
+    def test_timeout_stop_sec_keeps_the_floor_when_cron_drain_is_opted_out(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0.0)
+        monkeypatch.setattr(gateway_cli, "_get_cron_drain_timeout", lambda: 0.0)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "TimeoutStopSec=60" in unit
+
+    def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
+        drain = gateway_cli._get_restart_drain_timeout()
+        cron = gateway_cli._get_cron_drain_timeout()
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        expected = resolve_systemd_timeout_stop_sec(drain, cron)
+        assert f"TimeoutStopSec={expected}" in unit
+        old_drain_only = int(max(60, int(drain or 0) + 30))
+        if cron > 0 and drain <= 0:
+            assert expected > old_drain_only
 
     def test_user_unit_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Regression for the multi-profile gateway restart-loop flap (#48700):

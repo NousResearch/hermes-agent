@@ -12987,6 +12987,11 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
         assert resp.get("error") is None, f"got error: {resp.get('error')}"
         assert sess["history"] == tip_history[:2]
     finally:
+        # Release the slot the first turn claimed, as _finalize_session does in
+        # production. Popping alone leaks the lease, and the second session below
+        # uses the same session_key -- so without this the test fences itself out
+        # of its own key and never reaches the mismatch it is checking.
+        server._release_active_session_slot(sess)
         server._sessions.pop("lineage-row-sid", None)
 
     # A genuinely stale ordinal (matches neither the tip space nor the
@@ -13013,6 +13018,7 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4030
     finally:
+        server._release_active_session_slot(sess2)
         server._sessions.pop("lineage-row-sid-2", None)
 
 

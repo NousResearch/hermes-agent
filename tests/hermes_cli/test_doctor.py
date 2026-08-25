@@ -1639,9 +1639,9 @@ class TestDoctorMemoryFileReadGuard:
     def _run_doctor_and_capture(self, monkeypatch, tmp_path, *, memory_content=b"some memory", user_content="some user"):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        import yaml
+        import hermes_yaml as yaml
         (home / "config.yaml").write_text(
-            yaml.dump({"memory": {"memory_enabled": True, "user_profile_enabled": True}}),
+            yaml.safe_dump({"memory": {"memory_enabled": True, "user_profile_enabled": True}}),
             encoding="utf-8",
         )
         memories = home / "memories"
@@ -1691,5 +1691,17 @@ class TestDoctorMemoryFileReadGuard:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path)
         assert "MEMORY.md exists but is unreadable" in out
         assert "Permission denied" in out
+        # The loop continued to USER.md after the failed read.
+        assert "USER.md exists" in out
+
+    def test_doctor_warns_on_binary_memory_file(self, monkeypatch, tmp_path):
+        """A corrupt/binary MEMORY.md raises UnicodeDecodeError (a ValueError
+        subclass, not OSError) from read_text(encoding='utf-8'); doctor must
+        warn and continue instead of crashing."""
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, memory_content=b"\xff\xfe\x00binary\x81")
+        assert "MEMORY.md exists but is unreadable" in out
+        # The warning detail must not itself crash on UnicodeDecodeError's
+        # missing .strerror attribute.
+        assert "can't decode" in out or "byte" in out
         # The loop continued to USER.md after the failed read.
         assert "USER.md exists" in out

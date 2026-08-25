@@ -202,13 +202,6 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
-import {
-  classifyStoredSecret,
-  readSecretStoragePolicy,
-  SECRET_STORAGE_POLICY_FILE,
-  type SecretStoragePolicy,
-  writeSecretStoragePolicy
-} from './secret-storage-policy'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -289,6 +282,13 @@ import {
 } from './remote-liveness'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import {
+  classifyStoredSecret,
+  readSecretStoragePolicy,
+  SECRET_STORAGE_POLICY_FILE,
+  type SecretStoragePolicy,
+  writeSecretStoragePolicy
+} from './secret-storage-policy'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -8428,6 +8428,7 @@ function migrateLegacyEncryptedSecretsOnce() {
   }
 
   const needsMigration = (secret: any) => classifyStoredSecret(secret, policy) === 'migrate'
+
   const reencode = (secret: any) => {
     if (!needsMigration(secret)) {
       return secret

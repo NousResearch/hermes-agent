@@ -5301,22 +5301,26 @@ function botBackendProfileScope(route, fallbackProfile = 'default') {
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
  * explicit descriptor, including a registered local source. */
 async function requestForBot(bot, method, params = {}) {
-  try {
-    const route = botConnectionRoute(bot)
+  const route = botConnectionRoute(bot)
 
-    if (route) {
-      if (typeof host.requestProfile !== 'function') {
-        throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
-      }
-
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+  if (route) {
+    if (typeof host.requestProfile !== 'function') {
+      throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
     }
 
+    try {
+      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+    } catch (error) {
+      // React 19 formats query errors with `(error.name || '').trim()`. IPC /
+      // JSON-RPC rejections are often plain objects whose `name` is a number,
+      // which crashes the Routines pane and hides the original failure (#94471).
+      throw asRpcError(error, `Gateway request ${method} failed`)
+    }
+  }
+
+  try {
     return await host.request(method, params)
   } catch (error) {
-    // React 19 formats query errors with `(error.name || '').trim()`. IPC /
-    // JSON-RPC rejections are often plain objects whose `name` is a number,
-    // which crashes the Routines pane and hides the original failure (#94471).
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
 }
@@ -5331,8 +5335,9 @@ async function requestForBot(bot, method, params = {}) {
 function asRpcError(value, fallback) {
   // Duck-type across realms (plugin tests run the source in `vm`, and IPC
   // can deliver Error-like objects whose prototype is not this realm's
-  // Error). React 19 only needs a string `name`; a stack marks a real
-  // exception vs a JSON-RPC payload like `{ name: 32000, message }`.
+  // Error). React 19 only needs a string `name`. Never mutate the rejection:
+  // frozen/sealed objects make `name = 'Error'` a silent no-op in sloppy
+  // mode, so a non-string name always becomes a fresh Error with cause.
   const isObject = value != null && typeof value === 'object'
   const name = isObject ? value.name : undefined
   const message = isObject ? value.message : undefined
@@ -5342,20 +5347,6 @@ function asRpcError(value, fallback) {
 
   if (isObject && hasStringName && (hasStack || hasStringMessage)) {
     return value
-  }
-
-  if (hasStack) {
-    try {
-      value.name = 'Error'
-      if (typeof value.name === 'string') {
-        return value
-      }
-    } catch {
-      void 0
-    }
-    const copy = new Error(hasStringMessage && message ? String(message) : fallback)
-    copy.cause = value
-    return copy
   }
 
   if (isObject) {

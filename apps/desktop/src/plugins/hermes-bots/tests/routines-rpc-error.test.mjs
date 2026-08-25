@@ -81,6 +81,20 @@ test('regression: a frozen non-string Error name is copied, not mutated in place
   assert.match(coerced.message, /down/)
 })
 
+test('regression: a sealed Error with a numeric name is copied, not mutated', () => {
+  const weird = new Error('sealed')
+  Object.defineProperty(weird, 'name', { value: 32000, configurable: true, writable: true })
+  Object.seal(weird)
+  const coerced = load(async () => {}).__routines.asRpcError(weird, 'fallback')
+  assert.notEqual(coerced, weird)
+  assert.equal(typeof coerced.name, 'string')
+  assert.doesNotThrow(() => react19Format(coerced))
+  assert.match(String(coerced.message), /sealed/)
+  // Assignment would have succeeded on a sealed writable property; we still
+  // copy so React 19 never sees a numeric name even if mutation is possible.
+  assert.equal(weird.name, 32000)
+})
+
 test('regression: a real Error passes through unchanged', () => {
   const original = new Error('gateway rejected the pause')
   const coerced = load(async () => {}).__routines.asRpcError(original, 'fallback')

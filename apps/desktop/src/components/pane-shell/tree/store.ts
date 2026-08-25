@@ -76,9 +76,7 @@ function persist(tree: LayoutNode | null) {
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(
-  isSecondaryWindow() || isBrowserWindow() ? null : loadPersisted()
-)
+export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() || isBrowserWindow() ? null : loadPersisted())
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user

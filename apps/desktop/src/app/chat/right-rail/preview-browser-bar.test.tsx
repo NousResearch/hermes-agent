@@ -320,9 +320,8 @@ describe('PreviewBrowserBar', () => {
 
   it('shows Open in browser when only the external handler is provided', () => {
     const onOpenExternal = vi.fn()
-    const rendered = render(
-      <PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />
-    )
+
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />)
 
     expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()

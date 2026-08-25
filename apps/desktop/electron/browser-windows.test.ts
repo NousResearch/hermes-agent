@@ -24,8 +24,14 @@ test('buildBrowserWindowUrl avoids a double slash when the dev server has a trai
 })
 
 test('buildBrowserWindowUrl omits a blank tab', () => {
-  assert.equal(buildBrowserWindowUrl('  ', { devServer: 'http://localhost:5173' }), 'http://localhost:5173/?win=browser#/')
-  assert.equal(buildBrowserWindowUrl(null, { devServer: 'http://localhost:5173' }), 'http://localhost:5173/?win=browser#/')
+  assert.equal(
+    buildBrowserWindowUrl('  ', { devServer: 'http://localhost:5173' }),
+    'http://localhost:5173/?win=browser#/'
+  )
+  assert.equal(
+    buildBrowserWindowUrl(null, { devServer: 'http://localhost:5173' }),
+    'http://localhost:5173/?win=browser#/'
+  )
 })
 
 test('buildBrowserWindowUrl builds a packaged file URL with the flag before the hash', () => {

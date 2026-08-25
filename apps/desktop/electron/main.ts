@@ -8484,13 +8484,15 @@ function applySecretStorageEncryption(on: boolean) {
     const needsEncrypt = (secret: any) => secret?.encoding === 'plain' && Boolean(secret.value)
 
     // Probe FIRST so an unusable keychain fails before any store is touched.
-    if (!(() => {
-      try {
-        return Boolean(safeStorage.isEncryptionAvailable())
-      } catch {
-        return false
-      }
-    })()) {
+    if (
+      !(() => {
+        try {
+          return Boolean(safeStorage.isEncryptionAvailable())
+        } catch {
+          return false
+        }
+      })()
+    ) {
       throw new Error(
         'OS keychain encryption is unavailable on this machine, so stored gateway secrets cannot be encrypted.'
       )

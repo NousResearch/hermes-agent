@@ -114,6 +114,38 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
+# Read-only bridge lookups: dispatch_tool_search / dispatch_tool_describe are
+# stateless catalog reads (the catalog is rebuilt from the current tool-defs
+# list on every call), so a batch of them can run concurrently.
+_PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
+
+
+def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
+    try:
+        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        return underlying, underlying_args
+    except Exception:
+        return tool_name, function_args
+
+
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
@@ -193,14 +225,23 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             _add_sequential(tool_call)
             continue
 
-        if tool_name in _PATH_SCOPED_TOOLS:
+        # Bridge unwrap: admission is decided on the UNDERLYING tool, not on
+        # the literal wrapper name the model emitted. Read-only bridge
+        # lookups (tool_search / tool_describe) are parallel-safe as-is.
+        effective_name, effective_args = _peel_bridge_call(tool_name, function_args)
+
+        if effective_name in _NEVER_PARALLEL_TOOLS:
+            _add_sequential(tool_call)
+            continue
+
+        if effective_name in _PATH_SCOPED_TOOLS:
             scoped_paths = _extract_parallel_scope_paths(
-                tool_name, function_args, execution_cwd=execution_cwd
+                effective_name, effective_args, execution_cwd=execution_cwd
             )
             if not scoped_paths:
                 _add_sequential(tool_call)
                 continue
-            is_writer = tool_name in _PATH_SCOPED_WRITERS
+            is_writer = effective_name in _PATH_SCOPED_WRITERS
             if any(
                 (is_writer or existing_is_writer)
                 and _paths_overlap(scoped_path, existing)
@@ -216,7 +257,11 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             current.append(tool_call)
             continue
 
-        if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+        if (
+            effective_name in _PARALLEL_SAFE_TOOLS
+            or effective_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
+            or _is_mcp_tool_parallel_safe(effective_name)
+        ):
             current.append(tool_call)
             continue
 

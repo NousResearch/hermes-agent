@@ -81,7 +81,7 @@ CHARS_PER_TOKEN = 4.0
 class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
 
-    enabled: str  # "auto" | "on" | "off"
+    enabled: str  # "auto" | "on" | "off" — "auto" is an alias of "on" today
     # Listing budget as a percentage of the model's context window. Under
     # tiered disclosure this no longer gates *activation* (any deferrable
     # tool activates the bridge) — it bounds how much context the embedded
@@ -295,6 +295,13 @@ def should_activate(
     ``"off"`` skips unconditionally. ``"on"`` and ``"auto"`` activate whenever
     at least one deferrable tool exists (there's no point swapping a no-op).
 
+    ``"auto"`` is an ALIAS of ``"on"`` under tiered disclosure — it is kept
+    as the shipped default so that a future budget-gated mode ("inline the
+    schemas when they fit, defer only when they don't") can change ``auto``'s
+    behavior without breaking users who explicitly pinned ``on`` or ``off``.
+    Do not add behavior that distinguishes them without that design; see the
+    config reference for the user-facing statement of this contract.
+
     Tiered-disclosure semantics (July 2026): the presence of ANY MCP/plugin
     tool activates the bridge — schemas always defer. What the threshold now
     controls is the *listing budget* (see :func:`listing_token_budget`), not
@@ -353,22 +360,34 @@ def _tokenize(text: str) -> List[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text)]
 
 
-def _entry_search_text(td: Dict[str, Any]) -> str:
+def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     """Build the search-text blob for a deferrable tool.
 
     Includes the tool name (with underscores broken into words so BM25 can
-    match against query terms), the description, and the names of the
-    top-level parameters. Schema bodies are deliberately excluded —
-    indexing them adds noise without improving recall in our measurement.
+    match against query terms), the source label (the MCP server / plugin
+    toolset the tool belongs to, e.g. ``linear`` for toolset ``mcp-linear``),
+    the description, and the names of the top-level parameters. Schema
+    bodies are deliberately excluded — indexing them adds noise without
+    improving recall in our measurement.
+
+    The ``mcp__`` name prefix is stripped before splitting: ``mcp`` appears
+    in every native MCP tool document, so its IDF collapses to near zero —
+    it is dead weight in every document and useless as a query term.
+    Indexing the source label is what makes a service-name query ("linear")
+    reach a tool whose NAME does not carry the service (a plugin tool named
+    ``create_issue``, or any catalog whose naming omits the vendor).
     """
     fn = td.get("function") or {}
     name = fn.get("name", "")
+    if name.startswith("mcp__"):
+        name = name[len("mcp__"):]
     desc = fn.get("description", "") or ""
     params = ((fn.get("parameters") or {}).get("properties") or {})
     param_names = " ".join(params.keys())
     # Break snake_case and dotted names into words for BM25.
     name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
-    return f"{name_words} {desc} {param_names}"
+    extra = source_label if source_label and source_label not in name_words.split() else ""
+    return f"{name_words} {extra} {desc} {param_names}"
 
 
 def _classify_source(name: str) -> Tuple[str, str]:
@@ -399,13 +418,17 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             continue
         desc = fn.get("description", "") or ""
         source, source_name = _classify_source(name)
+        # Index the human-facing group label ("linear", not "mcp-linear") so
+        # a service-name query matches tools from that source even when the
+        # tool's own name omits the service.
+        source_label = _listing_group_label(source_name) if source_name else ""
         entry = CatalogEntry(
             name=name,
             description=desc,
             schema=td,
             source=source,
             source_name=source_name,
-            _tokens=_tokenize(_entry_search_text(td)),
+            _tokens=_tokenize(_entry_search_text(td, source_label)),
         )
         catalog.append(entry)
     return catalog
@@ -445,11 +468,13 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
 def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
     """Return the top-``limit`` catalog entries for ``query`` by BM25.
 
-    Falls back to a stable name-substring match when BM25 yields no hits
-    above zero. That ensures a query like ``"github"`` against a catalog
-    where every tool is named ``github_*`` still returns results — BM25
-    can underperform when query and document share only one token that
-    appears in every document (zero IDF).
+    Falls back to a stable name-substring match when every query token
+    misses every document — e.g. the query ``"hub"`` against ``github_*``
+    tools ("hub" is a substring of the name but never a token, so BM25
+    scores nothing). The IDF variant used here,
+    ``log(1 + (N - df + 0.5) / (df + 0.5))``, is strictly positive even
+    when a term appears in every document, so the fallback only runs when
+    no query token appears in any document.
     """
     if not catalog or limit <= 0:
         return []
@@ -490,22 +515,24 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
 # ---------------------------------------------------------------------------
 
 
-_SENTENCE_END_RE = re.compile(r"[.!?\n]")
+# A sentence ends at ., !, or ? followed by whitespace or end-of-string, but
+# not at the end of a common dotted abbreviation.
+_SENTENCE_END_RE = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)[.!?](?=\s|$)")
 
 
 def _short_desc(description: str, max_chars: int = 60) -> str:
     """First sentence of a tool description, clipped to ``max_chars``.
 
-    Mirrors the skills-listing convention: one terse line per capability.
-    Whitespace is collapsed; a hard clip never cuts mid-word unless the
-    first word itself exceeds the budget.
+    A terminator must be followed by whitespace or end-of-string; ``e.g.``,
+    ``i.e.``, and ``etc.`` do not end a sentence. Whitespace normalization and
+    the unbounded regex search both remain linear-time on hostile input.
     """
     text = " ".join((description or "").split())
     if not text:
         return ""
     m = _SENTENCE_END_RE.search(text)
     if m:
-        text = text[:m.start() + (1 if text[m.start()] == "." else 0)]
+        text = text[:m.end()]
     if len(text) <= max_chars:
         return text
     clipped = text[:max_chars]

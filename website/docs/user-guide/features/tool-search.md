@@ -85,7 +85,7 @@ tools:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). |
+| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
@@ -148,11 +148,18 @@ to any progressive-disclosure design, not specific to this implementation:
 
 ## Implementation details
 
-- **Retrieval:** BM25 over tokenized tool name + description + parameter
-  names. Falls back to a literal substring match on the tool name when
-  BM25 returns no positive-score hits, which protects against
-  zero-IDF degenerate cases (e.g. searching `"github"` against a
-  catalog where every tool name contains "github").
+- **Retrieval:** BM25 over tokenized tool name, source name (the MCP
+  server or plugin toolset the tool belongs to, so searching `"linear"`
+  finds that server's tools even when a tool's own name doesn't carry
+  the service), description, and parameter names. Falls back to a
+  literal substring match on the tool name when no query token matches
+  any document (e.g. searching `"hub"` where the token is `github`).
+- **Parallel execution unwraps the bridge.** The batch planner decides
+  concurrency on the *underlying* tool of a `tool_call`, not on the
+  literal bridge name — so an MCP server opted in via
+  `supports_parallel_tool_calls: true` keeps its concurrency when its
+  tools are called through the bridge, and `tool_search` /
+  `tool_describe` lookups batch concurrently like any read-only tool.
 - **Catalog is stateless across turns.** It rebuilds from the current
   tool-defs list every assembly — no session-keyed `Map`. This avoids
   the class of bug where a stored catalog drifts out of sync with the

@@ -158,6 +158,12 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if platform == "bluebubbles" and getattr(source, "chat_type", None) == "group":
+        # A normal addressed message in an iMessage group should receive a
+        # top-level group response, not a private-looking inline reply to the
+        # sender. Preserve native threading only when the user explicitly sent
+        # their request as an inline reply to an existing message.
+        return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
 
 

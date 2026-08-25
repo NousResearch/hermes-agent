@@ -39,9 +39,11 @@ from gateway.restart import (
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
+    parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
     resolve_restart_exit_wait_budget,
+    resolve_systemd_timeout_stop_sec,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -3684,12 +3686,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         "/sbin",
         "/bin",
     ]
-    # Preserve 30s for post-drain cleanup before systemd escalates, with a
-    # 60s minimum for installs that use the default immediate drain. Positive
-    # drain values extend the deadline directly instead of inheriting a second
-    # 60s floor, so a configured 45s drain yields 75s rather than 90s.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout + 30)
+    # TimeoutStopSec must cover the full stop budget, not just
+    # restart_drain_timeout. Cron work can legally wait cron_drain_timeout
+    # plus cleanup reserve before interrupt/teardown, and systemd SIGKILLs
+    # if the unit's deadline is shorter (#94759). 30s of post-drain headroom
+    # is preserved on top, with a 60s floor.
+    restart_timeout = resolve_systemd_timeout_stop_sec(
+        _get_restart_drain_timeout(),
+        _get_cron_drain_timeout(),
+    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -4108,6 +4113,18 @@ def _get_restart_drain_timeout() -> float:
             )
         )
     return parse_restart_drain_timeout(raw)
+
+
+def _get_cron_drain_timeout() -> float:
+    """Return the configured cron-only drain floor in seconds (#82161)."""
+    env_raw = os.getenv("HERMES_CRON_DRAIN_TIMEOUT")
+    if env_raw is not None and str(env_raw).strip() != "":
+        return parse_cron_drain_timeout(env_raw)
+    cfg = read_raw_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if isinstance(agent_cfg, dict) and "cron_drain_timeout" in agent_cfg:
+        return parse_cron_drain_timeout(agent_cfg.get("cron_drain_timeout"))
+    return parse_cron_drain_timeout(None)
 
 
 def _get_restart_after_turn_timeout() -> float:

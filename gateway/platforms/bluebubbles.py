@@ -2470,6 +2470,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 preserve_identity=preserve_identity,
             )
 
+    async def _rollback_uncommitted_revision(
+        self,
+        message_key: Optional[_InboundMessageKey],
+        revision_serial: int,
+    ) -> None:
+        """Release a cancelled webhook lease without superseding prior work."""
+        if not message_key:
+            return
+        async with self._inbound_dedup_lock:
+            self._release_attachment_revision_locked(message_key, revision_serial)
+            if self._message_revision_serials.get(message_key) == revision_serial:
+                self._message_revision_serials[message_key] = max(
+                    0, revision_serial - 1
+                )
+
     async def _handle_webhook(
         self,
         request,
@@ -2835,7 +2850,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
         except BaseException:
             if attachment_revision:
-                await self._release_attachment_revision(message_key, revision_serial)
+                await self._rollback_uncommitted_revision(
+                    message_key, revision_serial
+                )
             raise
         if materialized.readiness is AttachmentReadiness.TERMINAL_FAILURE:
             if attachment_revision:
@@ -2962,11 +2979,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_identity = "\0".join((*message_key, revision_hash))
             async with self._inbound_dedup_lock:
                 if message_identity in self._pending_message_identities:
+                    # Identity is computed only after attachment materialization,
+                    # but reserving a revision serial happens before that work so
+                    # an actual newer revision can supersede it. A duplicate must
+                    # not leave that provisional serial behind: doing so makes the
+                    # already-queued owner look stale and suppresses its dispatch.
+                    if self._message_revision_serials.get(message_key) == revision_serial:
+                        self._message_revision_serials[message_key] = max(
+                            0, revision_serial - 1
+                        )
                     if attachment_revision:
                         self._release_attachment_revision_locked(message_key, revision_serial)
                     return web.Response(text="ok")
                 if message_identity in self._seen_message_guids:
                     self._seen_message_guids.move_to_end(message_identity)
+                    if self._message_revision_serials.get(message_key) == revision_serial:
+                        self._message_revision_serials[message_key] = max(
+                            0, revision_serial - 1
+                        )
                     if attachment_revision:
                         self._release_attachment_revision_locked(message_key, revision_serial)
                     return web.Response(text="ok")
@@ -3031,13 +3061,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             ),
         )
         if message_key and self._message_revision_wait_seconds > 0:
-            await self._queue_message_revision(
-                message_key,
-                event,
-                message_identity,
-                revision_serial,
-                attachment_revision=attachment_revision,
-            )
+            try:
+                await self._queue_message_revision(
+                    message_key,
+                    event,
+                    message_identity,
+                    revision_serial,
+                    attachment_revision=attachment_revision,
+                )
+            except BaseException:
+                if attachment_revision:
+                    await self._rollback_uncommitted_revision(
+                        message_key, revision_serial
+                    )
+                elif message_identity:
+                    async with self._inbound_dedup_lock:
+                        self._pending_message_identities.discard(message_identity)
+                        if (
+                            self._message_revision_serials.get(message_key)
+                            == revision_serial
+                        ):
+                            self._message_revision_serials[message_key] = max(
+                                0, revision_serial - 1
+                            )
+                raise
         else:
             if attachment_revision:
                 await self._release_attachment_revision(

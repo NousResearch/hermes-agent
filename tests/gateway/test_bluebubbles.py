@@ -3530,17 +3530,21 @@ class TestBlueBubblesMentionGating:
         assert sorted(event.text for event in handled) == ["one", "two"]
 
     @pytest.mark.asyncio
-    async def test_failed_text_edit_dispatch_releases_richer_revision_for_retry(
+    async def test_transient_text_edit_retry_keeps_merged_media(
         self, monkeypatch
     ):
-        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            message_retry_base_delay_seconds=0,
+        )
         adapter._message_revision_wait_seconds = 0.01
         handled = []
 
         async def flaky_handle_message(event):
             handled.append(event)
             if len(handled) == 1:
-                raise RuntimeError("retry merged revision")
+                raise ConnectionError("retry merged revision")
 
         async def fake_download_attachment(att_guid, att_meta):
             return f"/tmp/{att_guid}"
@@ -3571,8 +3575,6 @@ class TestBlueBubblesMentionGating:
             "data": {**base, "text": "Edited caption"},
         }))
         await asyncio.sleep(0.03)
-        await adapter._handle_webhook(_FakeBlueBubblesRequest(richer_payload))
-        await asyncio.sleep(0.03)
 
         assert len(handled) == 2
         assert handled[0].text == "Edited caption"
@@ -3580,15 +3582,19 @@ class TestBlueBubblesMentionGating:
         assert handled[1].media_urls == ["/tmp/retry-photo"]
 
     @pytest.mark.asyncio
-    async def test_failed_rich_dispatch_sparse_retry_restores_media(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+    async def test_transient_sparse_dispatch_retry_restores_media(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            send_read_receipts=False,
+            message_retry_base_delay_seconds=0,
+        )
         adapter._message_revision_wait_seconds = 0.01
         handled = []
 
         async def flaky_handle_message(event):
             handled.append(event)
             if len(handled) == 1:
-                raise RuntimeError("retry sparse revision")
+                raise ConnectionError("retry sparse revision")
 
         async def fake_download_attachment(att_guid, att_meta):
             return f"/tmp/{att_guid}"
@@ -3617,8 +3623,6 @@ class TestBlueBubblesMentionGating:
                 ],
             },
         }))
-        await adapter._handle_webhook(_FakeBlueBubblesRequest(sparse_payload))
-        await asyncio.sleep(0.03)
         await adapter._handle_webhook(_FakeBlueBubblesRequest(sparse_payload))
         await asyncio.sleep(0.03)
 
@@ -3823,6 +3827,7 @@ class TestBlueBubblesMentionGating:
                 "type": "updated-message",
                 "data": {
                     **base,
+                    "dateEdited": 100,
                     "attachments": [
                         {"guid": "older-photo", "mimeType": "image/png"}
                     ],
@@ -3834,6 +3839,7 @@ class TestBlueBubblesMentionGating:
             "type": "updated-message",
             "data": {
                 **base,
+                "dateEdited": 200,
                 "attachments": [
                     {"guid": "newer-photo", "mimeType": "image/png"}
                 ],
@@ -3845,6 +3851,7 @@ class TestBlueBubblesMentionGating:
             "type": "updated-message",
             "data": {
                 **base,
+                "dateEdited": 100,
                 "attachments": [
                     {"guid": "older-photo", "mimeType": "image/png"}
                 ],
@@ -4099,7 +4106,7 @@ class TestBlueBubblesMentionGating:
         assert handled[0].media_urls == []
 
     @pytest.mark.asyncio
-    async def test_late_revision_does_not_cancel_in_flight_dispatch(self, monkeypatch):
+    async def test_late_revision_cancels_in_flight_dispatch_before_commit(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, send_read_receipts=False)
         adapter._message_revision_wait_seconds = 0.01
         started = asyncio.Event()
@@ -4140,7 +4147,7 @@ class TestBlueBubblesMentionGating:
         release.set()
         await asyncio.sleep(0)
 
-        assert cancelled is False
+        assert cancelled is True
         assert handled == ["first revision", "late revision"]
 
     @pytest.mark.asyncio

@@ -64,10 +64,54 @@ def test_rebind_is_guarded_against_live_turns():
     still streaming/busy — only a dead runtime may be adopted over."""
     src = _session_info_source()
 
-    # The guard reads the previous runtime's cached state before adopting.
-    m = re.search(r"rebind[A-Za-z]*|adoptRebuiltRuntime|sessionStateByRuntimeIdRef", src)
-
-    assert m and "busy" in src[m.start() : m.start() + 2000] or "state?.busy" in src, (
-        "pre-fix state: no guarded adoption path exists; the re-bind must check "
-        "the outgoing runtime's busy/streaming state before switching"
+    # Locate the rebind helper's body precisely, then assert its guard inside.
+    fn = re.search(
+        r"function maybeRebindPaneToRebuiltRuntime\([^)]*\): boolean \{", src
     )
+    assert fn, (
+        "pre-fix state: no maybeRebindPaneToRebuiltRuntime adoption path "
+        "exists; the rebuilt runtime is never adopted into the open pane"
+    )
+
+    body_start = fn.end()
+    next_fn = min(
+        (i for i in (src.find("\nfunction ", body_start), src.find("\nexport function ", body_start)) if i != -1),
+        default=-1,
+    )
+    assert next_fn != -1, "re-anchor needed: rebind helper is no longer followed by another function"
+
+    body = src[body_start:next_fn]
+
+    # The busy/awaiting/streaming guard must appear INSIDE the helper body —
+    # not merely somewhere in the file (fixes the precedence hazard the
+    # #94417 review flagged in the original draft of this assertion).
+    guard = re.search(r"oldState\?\.(busy|awaitingResponse|streamId)", body)
+
+    assert guard, (
+        "the re-bind helper must check the outgoing runtime's busy/streaming "
+        "state before switching; adopting over a live turn would split one "
+        "conversation across two panes"
+    )
+
+
+def test_rebind_requires_stored_session_id_lineage():
+    """The gateway always stamps stored_session_id on session.info (server.py:
+    'stored_session_id': session_key or ''), but an empty string must NOT be
+    adopted as lineage proof — only a real stored id may trigger the re-bind."""
+    src = _session_info_source()
+
+    fn = re.search(r"function maybeRebindPaneToRebuiltRuntime\([^)]*\): boolean \{", src)
+    assert fn, "rebind helper missing"
+    body_start = fn.end()
+    body = src[body_start : min(
+        (i for i in (src.find("\nfunction ", body_start), src.find("\nexport function ", body_start)) if i != -1),
+        default=-1,
+    )]
+
+    # The early return guards on the field being a non-empty usable string via
+    # the typeof check + downstream sessionInfoDescribesSelectedSession('' →
+    # null → wildcard refusal).
+    assert 'typeof payload?.stored_session_id !== "string"' in body or (
+        "typeof payload?.stored_session_id !== 'string'" in body
+    ), "rebind must refuse events without a string stored_session_id"
+

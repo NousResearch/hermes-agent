@@ -69,6 +69,8 @@ interface Secondary {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   reconnecting: boolean
+  /** A material connection edit is waiting for live owners to drain. */
+  pendingConnectionRedial: boolean
   /**
    * True when a foreground/prewarmed consumer owns this entry beyond one RPC.
    * Guards ONLY the dispose-at-refcount-0 paths (request/relay leases), never
@@ -611,6 +613,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectTimer: null,
     reconnectAttempt: 0,
     reconnecting: false,
+    pendingConnectionRedial: false,
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
@@ -840,6 +843,7 @@ export async function requestGatewayForAgent<T>(
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
     if (
+      !drainPendingConnectionRedial(entry) &&
       entry.activeRequests === 0 &&
       !entry.retained &&
       !relayRetained(entry) &&
@@ -888,6 +892,36 @@ function relayRetained(entry: Secondary): boolean {
 }
 
 /**
+ * Finish a material-edit redial once no request, relay, or foreground surface
+ * still owns the old socket. Removal deliberately bypasses this drain: a
+ * deleted source can never become valid again and must fail-stop immediately.
+ */
+function drainPendingConnectionRedial(entry: Secondary): boolean {
+  if (
+    entry.pendingConnectionRedial !== true ||
+    entry.activeRequests > 0 ||
+    relayRetained(entry) ||
+    foregroundPinned(entry) ||
+    g.secondaries.get(entry.scope) !== entry
+  ) {
+    return false
+  }
+
+  entry.pendingConnectionRedial = false
+  const wasActive = g.activeKey === entry.scope
+  disposeSecondary(entry)
+  g.secondaries.delete(entry.scope)
+
+  const reopen = wasActive
+    ? ensureGatewayForAgent(entry.connectionId, entry.profile)
+    : openGatewayForAgent(entry.connectionId, entry.profile)
+
+  void reopen.catch(() => undefined)
+
+  return true
+}
+
+/**
  * Pin the pooled socket for one relay route open across drain ticks. Returns
  * a once-only release. Local routes (null/empty or explicit `local` source)
  * are deliberately EXEMPT and get a no-op release: their Electron-spawned
@@ -926,6 +960,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
     entry.relayRetainCount = Math.max(0, (entry.relayRetainCount || 0) - 1)
 
     if (
+      !drainPendingConnectionRedial(entry) &&
       entry.relayRetainCount === 0 &&
       entry.activeRequests === 0 &&
       !entry.retained &&
@@ -991,6 +1026,10 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
 
     released = true
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+
+    if (drainPendingConnectionRedial(entry)) {
+      return
+    }
 
     if (
       entry.activeRequests === 0 &&
@@ -1471,6 +1510,10 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
   const now = Date.now()
 
   for (const [key, entry] of [...g.secondaries]) {
+    if (drainPendingConnectionRedial(entry)) {
+      continue
+    }
+
     if (
       key === g.activeKey ||
       keep.has(key) ||
@@ -1604,12 +1647,13 @@ export function retireLocalProfileGateways(profile: string): void {
   }
 }
 
-// Registry lifecycle: a connection was removed or materially edited. Dispose
-// every secondary scoped to it (a removed remote/cloud source has no local
-// process to die, so without this its WebSocket stays open streaming ghost
-// events). With `redial` (the edit case) each disposed profile is re-dialed
-// through the normal open path so the fresh socket targets the NEW endpoint;
-// the active scope re-activates so the foreground keeps painting.
+// Registry lifecycle: a connection was removed or materially edited. Removal
+// disposes every scoped secondary immediately (a removed remote/cloud source
+// has no local process to die, so otherwise its WebSocket streams ghost
+// events). A material edit redials each profile through the normal open path so
+// fresh sockets target the NEW endpoint, but request/relay leases and mounted
+// foreground runtimes keep their old socket until they drain; the active scope
+// re-activates when its replacement is safe to publish.
 export function disposeSecondariesForConnection(connectionId: string, opts: { redial?: boolean } = {}): void {
   const id = String(connectionId || '').trim()
   let activeInvalidated = false
@@ -1625,6 +1669,12 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
 
     const wasActive = key === g.activeKey
     activeInvalidated ||= wasActive
+
+    if (opts.redial && (entry.activeRequests > 0 || relayRetained(entry) || foregroundPinned(entry))) {
+      entry.pendingConnectionRedial = true
+
+      continue
+    }
 
     disposeSecondary(entry)
     g.secondaries.delete(key)

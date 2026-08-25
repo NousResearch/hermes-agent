@@ -162,6 +162,61 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     expect($connection.get()?.profile).toBe('research')
   })
 
+  it('serializes every profile waiter after three overlapping activations wake together', async () => {
+    const firstGate = deferred()
+    const secondGate = deferred()
+    const thirdGate = deferred()
+    const order: string[] = []
+
+    ensureGatewayForProfile.mockImplementation(async (profile: string) => {
+      order.push(`start:${profile}`)
+
+      if (profile === 'worker') {
+        await firstGate.promise
+      } else if (profile === 'research') {
+        await secondGate.promise
+      } else if (profile === 'writer') {
+        await thirdGate.promise
+      }
+
+      order.push(`finish:${profile}`)
+    })
+    getConnection.mockImplementation(async profile => localConn({ profile: profile || 'default' }))
+
+    const first = ensureGatewayProfile('worker')
+    await Promise.resolve()
+    const second = ensureGatewayProfile('research')
+    const third = ensureGatewayProfile('writer')
+    await Promise.resolve()
+
+    expect(order).toEqual(['start:worker'])
+
+    firstGate.resolve()
+    await first
+    await vi.waitFor(() => expect(order).toContain('start:research'))
+
+    // The third activation was requested last, but it must not enter while the
+    // second waiter owns the switch mutex after both woke behind `worker`.
+    expect(order).not.toContain('start:writer')
+
+    secondGate.resolve()
+    await second
+    await vi.waitFor(() => expect(order).toContain('start:writer'))
+    thirdGate.resolve()
+    await third
+
+    expect(order).toEqual([
+      'start:worker',
+      'finish:worker',
+      'start:research',
+      'finish:research',
+      'start:writer',
+      'finish:writer'
+    ])
+    expect($activeGatewayProfile.get()).toBe('writer')
+    expect($connection.get()?.profile).toBe('writer')
+  })
+
   it('serializes a profile switch behind an in-flight agent activation', async () => {
     const agentGate = deferred()
     const order: string[] = []

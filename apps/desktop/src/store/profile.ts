@@ -470,14 +470,16 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     return
   }
 
-  // Serialize concurrent activations so two rapid session switches don't race
-  // the active pointer.
-  if (gatewaySwitch) {
+  // Serialize concurrent activations so rapid session switches cannot race the
+  // active pointer. Re-acquire after every wake: multiple waiters can observe
+  // the same settled switch, and the first one starts the next switch before
+  // the others resume.
+  while (gatewaySwitch) {
     await gatewaySwitch.catch(() => undefined)
+  }
 
-    if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
-      return
-    }
+  if (normalizeProfileKey($activeGatewayProfile.get()) === target && $gateway.get()) {
+    return
   }
 
   $gatewaySwapTarget.set(target)

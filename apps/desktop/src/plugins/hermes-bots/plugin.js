@@ -7258,12 +7258,24 @@ function groupChatEntryId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
+/** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
+ *  a FAILURE marker, never bot text. Mirror gateway/run.py's user-friendly
+ *  substitution so the room log never shows the raw sentinel. */
+const GROUP_EMPTY_SENTINEL = '(empty)'
+const GROUP_EMPTY_FRIENDLY =
+  '⚠️ The model returned no response after processing tool results. ' +
+  'This can happen with some models — try again or rephrase your question.'
+function normalizeGroupChatText(text) {
+  const trimmed = String(text || '').trim()
+  return trimmed === GROUP_EMPTY_SENTINEL ? GROUP_EMPTY_FRIENDLY : trimmed
+}
+
 function appendGroupChatEntry(group, from, text, thread, images) {
   const entry = {
     id: groupChatEntryId(),
     at: Date.now(),
     from,
-    text: String(text).trim(),
+    text: normalizeGroupChatText(text),
     thread: thread || 'legacy'
   }
 

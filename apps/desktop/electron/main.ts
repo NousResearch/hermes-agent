@@ -202,6 +202,13 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import {
+  classifyStoredSecret,
+  readSecretStoragePolicy,
+  SECRET_STORAGE_POLICY_FILE,
+  type SecretStoragePolicy,
+  writeSecretStoragePolicy
+} from './secret-storage-policy'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -8285,7 +8292,245 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
   return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in keychain encryption (secret-storage-policy.ts owns the decision).
+// Default OFF: no safeStorage call is ever made, so a broken/locked macOS
+// login keychain can never throw its password dialog on launch. Settings →
+// Gateway exposes the toggle; flipping it re-encrypts (or decrypts) the
+// stored secrets in place.
+// ---------------------------------------------------------------------------
+const SECRET_STORAGE_POLICY_PATH = path.join(app.getPath('userData'), SECRET_STORAGE_POLICY_FILE)
+
+const _secretStoragePolicyIo = {
+  readText: () => fs.readFileSync(SECRET_STORAGE_POLICY_PATH, 'utf8'),
+  writeText: (text: string) => writeSecretFileAtomic(SECRET_STORAGE_POLICY_PATH, text, { encoding: 'utf8' })
+}
+
+let _secretStoragePolicy: SecretStoragePolicy | null = null
+
+function secretStoragePolicy(): SecretStoragePolicy {
+  if (!_secretStoragePolicy) {
+    _secretStoragePolicy = readSecretStoragePolicy(_secretStoragePolicyIo)
+  }
+
+  return _secretStoragePolicy
+}
+
+function setSecretStoragePolicy(next: SecretStoragePolicy) {
+  _secretStoragePolicy = { on: next.on === true, migrated: next.migrated === true }
+  writeSecretStoragePolicy(_secretStoragePolicy, _secretStoragePolicyIo)
+}
+
+/**
+ * Keychain availability as the renderer should see it. With encryption
+ * opted out this must NOT probe safeStorage — isEncryptionAvailable() is
+ * itself a keychain touch that raises the macOS dialog this feature exists
+ * to avoid. We report `true` so no plain-text warning banners fire: storing
+ * plaintext is the user's chosen (default) mode, not a degraded state.
+ */
+function probeSecureTokenStorage(): boolean {
+  if (!secretStoragePolicy().on) {
+    return true
+  }
+
+  try {
+    return Boolean(safeStorage.isEncryptionAvailable())
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Rewrite every stored desktop secret (v1 connection.json token/headers +
+ * per-profile overrides, v2 registry connections, native OAuth token store)
+ * through `reencode`. Returns true when any store was rewritten. Shared by
+ * the one-shot legacy migration and the Settings encryption toggle.
+ */
+function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reencode: (secret: any) => any): boolean {
+  let touched = false
+
+  const rewriteBlock = (block: any) => {
+    if (!block || typeof block !== 'object') {
+      return block
+    }
+
+    const next = { ...block, ...(block.token ? { token: reencode(block.token) } : {}) }
+
+    if (block.headers && typeof block.headers === 'object') {
+      next.headers = Object.fromEntries(Object.entries(block.headers).map(([k, v]) => [k, reencode(v)]))
+    }
+
+    return next
+  }
+
+  const blockNeedsRewrite = (o: any) =>
+    shouldRewrite(o?.token) ||
+    Object.values(o?.headers && typeof o.headers === 'object' ? o.headers : {}).some(shouldRewrite)
+
+  // v1 connection.json.
+  const config = readDesktopConnectionConfig()
+
+  if (blockNeedsRewrite(config.remote) || Object.values(config.profiles || {}).some(blockNeedsRewrite)) {
+    touched = true
+    writeDesktopConnectionConfig({
+      ...config,
+      remote: rewriteBlock(config.remote),
+      profiles: Object.fromEntries(Object.entries(config.profiles || {}).map(([k, v]) => [k, rewriteBlock(v)]))
+    })
+  }
+
+  // v2 connections.json registry.
+  const registry = readDesktopConnectionsRegistry()
+
+  if (registry.connections?.some(blockNeedsRewrite)) {
+    touched = true
+    writeDesktopConnectionsRegistry({ ...registry, connections: registry.connections.map(rewriteBlock) })
+  }
+
+  // Native OAuth token store: baseUrl → blob.
+  const io = _nativeTokenStoreIo()
+
+  try {
+    const store = JSON.parse(io.readStoreText())
+
+    if (store && typeof store === 'object' && !Array.isArray(store)) {
+      const entries = Object.entries(store)
+
+      if (entries.some(([, v]) => shouldRewrite(v))) {
+        touched = true
+        io.writeStoreText(JSON.stringify(Object.fromEntries(entries.map(([k, v]) => [k, reencode(v)]))))
+      }
+    }
+  } catch {
+    // Missing/corrupt native token store: nothing to rewrite.
+  }
+
+  return touched
+}
+
+/**
+ * One-shot legacy migration: builds before the opt-in policy wrote every
+ * secret as a safeStorage blob. With encryption now defaulting OFF, decrypt
+ * each stored blob once and rewrite it as plain so no future launch touches
+ * the keychain. Marked `migrated` whether or not every blob decrypts — a
+ * broken keychain costs at most ONE prompt (this pass), never one per
+ * launch; blobs that would not decrypt are left in place and simply read as
+ * absent from then on (classifyStoredSecret → 'drop'), so opting encryption
+ * back ON later can still recover them on a healthy keychain.
+ *
+ * Runs before createWindow() so every later read sees the final encodings.
+ */
+function migrateLegacyEncryptedSecretsOnce() {
+  const policy = secretStoragePolicy()
+
+  if (policy.on || policy.migrated) {
+    return
+  }
+
+  const needsMigration = (secret: any) => classifyStoredSecret(secret, policy) === 'migrate'
+  const reencode = (secret: any) => {
+    if (!needsMigration(secret)) {
+      return secret
+    }
+
+    const plaintext = decryptDesktopSecret(secret)
+
+    // Undecryptable now (locked/absent keychain): keep the blob for a
+    // potential future opt-in, but post-migration reads treat it as unset.
+    return plaintext ? { encoding: 'plain', value: plaintext } : secret
+  }
+
+  let touchedKeychain = false
+
+  try {
+    touchedKeychain = rewriteAllStoredSecrets(needsMigration, reencode)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+
+    rememberLog(`[secret-storage] legacy migration pass failed: ${detail}`)
+  }
+
+  setSecretStoragePolicy({ on: false, migrated: true })
+
+  if (touchedKeychain) {
+    rememberLog('[secret-storage] migrated legacy keychain-encrypted secrets to opt-out storage (one-shot pass)')
+  }
+}
+
+/**
+ * Settings → Gateway toggle: flip keychain-backed encryption and re-encode
+ * every stored secret to match. Turning ON encrypts plain blobs through
+ * strict safeStorage (throws loudly when the keychain is unusable — the
+ * toggle stays off and the renderer shows the error). Turning OFF decrypts
+ * back to plain; this is user-initiated, so a keychain prompt here is
+ * expected and acceptable.
+ */
+function applySecretStorageEncryption(on: boolean) {
+  const enable = on === true
+
+  if (secretStoragePolicy().on === enable) {
+    return { on: enable }
+  }
+
+  if (enable) {
+    const needsEncrypt = (secret: any) => secret?.encoding === 'plain' && Boolean(secret.value)
+
+    // Probe FIRST so an unusable keychain fails before any store is touched.
+    if (!(() => {
+      try {
+        return Boolean(safeStorage.isEncryptionAvailable())
+      } catch {
+        return false
+      }
+    })()) {
+      throw new Error(
+        'OS keychain encryption is unavailable on this machine, so stored gateway secrets cannot be encrypted.'
+      )
+    }
+
+    setSecretStoragePolicy({ on: true, migrated: true })
+
+    try {
+      rewriteAllStoredSecrets(needsEncrypt, secret =>
+        needsEncrypt(secret) ? encryptDesktopSecretStrict(String(secret.value), safeStorage) : secret
+      )
+    } catch (error) {
+      // Encryption failed midway: revert the policy so reads keep working
+      // against whatever encodings are on disk (mixed stores read fine —
+      // decryptDesktopSecret handles both encodings under either policy).
+      setSecretStoragePolicy({ on: false, migrated: true })
+      throw error
+    }
+
+    return { on: true }
+  }
+
+  // Turning OFF: decrypt everything back to plain while the keychain is
+  // still readable, then flip the policy.
+  const needsDecrypt = (secret: any) => secret?.encoding === SAFE_STORAGE_ENCODING
+
+  rewriteAllStoredSecrets(needsDecrypt, (secret: any) => {
+    if (!needsDecrypt(secret)) {
+      return secret
+    }
+
+    const plaintext = decryptDesktopSecret(secret)
+
+    return plaintext ? { encoding: 'plain', value: plaintext } : secret
+  })
+
+  setSecretStoragePolicy({ on: false, migrated: true })
+
+  return { on: false }
+}
+
 function encryptDesktopSecret(value, options = {}) {
+  if (!secretStoragePolicy().on) {
+    const raw = String(value || '')
+
+    return raw ? { encoding: 'plain', value: raw } : null
+  }
+
   return encryptDesktopSecretStrict(value, safeStorage, options)
 }
 
@@ -8301,6 +8546,14 @@ function decryptDesktopSecret(secret) {
   }
 
   if (secret.encoding === SAFE_STORAGE_ENCODING) {
+    // Legacy blob under an opted-out policy: once the one-shot migration pass
+    // has run, never touch safeStorage again — a dead keychain would otherwise
+    // prompt on every read. Before that pass, decryption is allowed so the
+    // migration itself (and this launch's reads) can recover the value.
+    if (classifyStoredSecret(secret, secretStoragePolicy()) === 'drop') {
+      return ''
+    }
+
     try {
       return safeStorage.decryptString(Buffer.from(value, 'base64'))
     } catch {
@@ -8728,15 +8981,10 @@ function sanitizeRegistryConnection(entry) {
 }
 
 function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()) {
-  // Same keyring probe the v1 sanitize exposes: lets the Connections panel
+  // Same keyring signal the v1 sanitize exposes: lets the Connections panel
   // offer the plain-text opt-in on keyring-less Linux instead of failing.
-  let secureTokenStorage = false
-
-  try {
-    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
-  } catch {
-    secureTokenStorage = false
-  }
+  // Policy-aware: never touches safeStorage while encryption is opted out.
+  const secureTokenStorage = probeSecureTokenStorage()
 
   return {
     version: registry.version,
@@ -8860,15 +9108,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   // Whether the OS keyring (safeStorage) can encrypt the saved token. When
   // false the renderer knows to offer the plain-text opt-in in Settings →
-  // Gateway. safeStorage.isEncryptionAvailable can throw on some platforms, so
-  // treat any failure as "not available".
-  let secureTokenStorage = false
-
-  try {
-    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
-  } catch {
-    secureTokenStorage = false
-  }
+  // Gateway. With keychain encryption opted out (the default) this reports
+  // true WITHOUT touching safeStorage — probing is itself a keychain touch
+  // that raises the macOS password dialog (see probeSecureTokenStorage).
+  const secureTokenStorage = probeSecureTokenStorage()
 
   // Whether the currently saved token is stored in plain text (the keyring-less
   // opt-in path). The env override supplies its token from the environment, not
@@ -12949,6 +13192,12 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
 })
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 
+// ── Opt-in keychain encryption for stored secrets ───────────────────────────
+// get returns the current policy without touching safeStorage; set flips it
+// and re-encodes every stored secret (see applySecretStorageEncryption).
+ipcMain.handle('hermes:secret-storage:get', async () => ({ on: secretStoragePolicy().on }))
+ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) => applySecretStorageEncryption(on === true))
+
 // ── v2 connection registry IPC (multi-source) ───────────────────────────────
 // Storage-level CRUD for named agent sources. Routing/pooling consumption of
 // the registry lands separately; these handlers only manage the persisted
@@ -15468,6 +15717,13 @@ app.whenReady().then(() => {
     passwordStoreSwitch: app.commandLine.getSwitchValue('password-store'),
     safeStorageApi: safeStorage
   })
+
+  // Keychain encryption is opt-in (default OFF). One-shot: rewrite any
+  // legacy safeStorage-encrypted secrets as plain so no later launch ever
+  // touches the OS keychain unless the user turns encryption on in
+  // Settings → Gateway. Must run before createWindow() and the first
+  // connection resolution.
+  migrateLegacyEncryptedSecretsOnce()
 
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())

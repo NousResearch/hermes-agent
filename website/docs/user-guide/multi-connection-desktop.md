@@ -247,16 +247,18 @@ the desktop app itself last. See
 
 ## Security notes
 
-- **Where tokens live.** Remote-gateway session tokens are encrypted at rest
-  with Electron's `safeStorage` (the OS keychain — Keychain on macOS, DPAPI
-  on Windows, the session keyring backend on Linux) and stay in the Electron
-  main process; the renderer and plugins never see token bytes. OAuth tokens
-  for native sign-in are stored the same way, keyed by gateway base URL, and
-  refreshed automatically before expiry.
-- **Keyring-less Linux.** On a Linux session without a usable keychain the
-  app cannot encrypt the token; saving one raises an explicit opt-in dialog
-  before it will store the
-  token in plain text.
+- **Where tokens live.** Remote-gateway session tokens (and native sign-in
+  OAuth tokens, keyed by gateway base URL) are stored in the app's user-data
+  directory as owner-only (0600) files, in the Electron main process; the
+  renderer and plugins never see token bytes.
+- **Optional keychain encryption.** By default the tokens are **not** run
+  through the OS keychain — on macOS in particular, Electron's `safeStorage`
+  parks a per-app key in the login keychain, and a locked or broken keychain
+  turns that into a password prompt on every launch. If you want at-rest
+  encryption on top of the file permissions, turn on **Settings → Gateway →
+  "Encrypt saved secrets with the OS keychain"**; existing stored secrets are
+  re-encrypted in place (Keychain on macOS, DPAPI on Windows, the session
+  keyring backend on Linux). Turning it back off decrypts them again.
 - **The registry file** (`connections.json` under the app's user-data
   directory) holds labels, URLs, and hosts — secrets only ever appear inside
   encrypted envelopes.

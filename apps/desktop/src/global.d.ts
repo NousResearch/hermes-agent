@@ -145,6 +145,11 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      // Opt-in OS-keychain encryption for stored gateway secrets (default
+      // off). `get` never touches the OS keychain; `set` re-encodes stored
+      // secrets and can throw when the keychain is unusable.
+      getSecretStorageEncryption: () => Promise<{ on: boolean }>
+      setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {

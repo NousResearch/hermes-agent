@@ -887,6 +887,10 @@ export const en: Translations = {
       plainTextStoredTitle: 'Token stored in plain text',
       plainTextStoredDesc:
         'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable GNOME Keyring or KWallet to encrypt it.',
+      keychainEncryptionTitle: 'Encrypt saved secrets with the OS keychain',
+      keychainEncryptionDesc:
+        'Off by default. When on, gateway tokens and sign-in credentials are encrypted with your system keychain (Keychain Access, GNOME Keyring, or Windows DPAPI) — your system may ask for permission or a password. When off, they are stored as plain files readable only by your user account.',
+      keychainEncryptionFailed: 'Could not change secret encryption',
       testRemote: 'Test remote',
       saveForRestart: 'Save for next restart',
       saveAndReconnect: 'Save and reconnect',

@@ -28,7 +28,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
-import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
@@ -157,6 +157,46 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const cloudConnectSeq = useRef(0)
   const contextSeq = useRef(0)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
+
+  // Opt-in OS-keychain encryption for stored gateway secrets. Read lazily via
+  // IPC (never touches the keychain); flipping it re-encodes stored secrets
+  // in the main process and can legitimately prompt for keychain access.
+  const [keychainEncryption, setKeychainEncryptionState] = useState(false)
+  const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getSecretStorageEncryption?.()
+      .then(res => {
+        if (!cancelled && res) {
+          setKeychainEncryptionState(res.on === true)
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const setKeychainEncryption = async (on: boolean) => {
+    setKeychainEncryptionBusy(true)
+    // Optimistic paint; the IPC result (or a failure rollback) gets the last word.
+    setKeychainEncryptionState(on)
+
+    try {
+      const res = await window.hermesDesktop.setSecretStorageEncryption(on)
+
+      setKeychainEncryptionState(res?.on === true)
+    } catch (err) {
+      setKeychainEncryptionState(!on)
+      notifyError(err, g.keychainEncryptionFailed)
+    } finally {
+      setKeychainEncryptionBusy(false)
+    }
+  }
 
   const acceptSavedConfig = (config: GatewaySettingsState) => {
     setState(config)
@@ -1483,6 +1523,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       {embedded ? null : (
         <div className="mt-6 grid gap-1">
+          <ToggleRow
+            checked={keychainEncryption}
+            description={g.keychainEncryptionDesc}
+            disabled={keychainEncryptionBusy}
+            label={g.keychainEncryptionTitle}
+            onChange={on => void setKeychainEncryption(on)}
+          />
           <ListRow
             action={
               <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">

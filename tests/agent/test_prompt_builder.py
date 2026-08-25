@@ -820,6 +820,96 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
+        """THE BUG: the probe leaked a second, permanently idle sandbox.
+
+        ``_probe_remote_backend`` spins up an environment with
+        ``task_id="prompt-backend-probe"`` purely to run one ``uname``. Container
+        backends default to ``container_persistent`` /
+        ``docker_persist_across_processes``, so that throwaway sandbox stayed up
+        for the whole process lifetime *next to* the agent's own ``default``
+        sandbox — one wasted idle container per profile, forever. The probe owns
+        that environment, so it must tear it down.
+        """
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+            def cleanup(self, *, force_remove=False):
+                cleaned["force_remove"] = force_remove
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
+
+        assert _pb._probe_remote_backend("docker") is not None
+        # force_remove=True: persist mode would otherwise leave it running.
+        assert cleaned == {"force_remove": True}
+
+    def test_probe_remote_backend_tears_down_sandbox_on_failure(self, monkeypatch):
+        """Teardown must also run when the probe command blows up — a flaky
+        backend would otherwise leak the container the probe just created."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = []
+
+        class _ExplodingEnv:
+            def execute(self, cmd, timeout=None):
+                raise RuntimeError("backend went away")
+
+            def cleanup(self, *, force_remove=False):
+                cleaned.append(force_remove)
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
+
+        assert _pb._probe_remote_backend("docker") is None
+        assert cleaned == [True]
+
+    def test_probe_remote_backend_tolerates_kwargless_cleanup(self, monkeypatch):
+        """Backends that inherit the base ``cleanup(self)`` take no kwargs; the
+        probe must fall back to the bare call instead of dying on TypeError."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _LegacyEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("bare")
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
+
+        assert _pb._probe_remote_backend("ssh") is not None
+        assert calls == ["bare"]
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""

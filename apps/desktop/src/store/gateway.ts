@@ -100,6 +100,8 @@ const ACTIVATION_LEASE_MS = 30_000
 interface GatewayRegistryState {
   config: RegistryConfig | null
   primaryGateway: HermesGateway | null
+  /** Registry source currently served by primaryGateway, when known. */
+  primaryConnectionId: null | string
   primaryProfile: string
   activeKey: string
   activationEpoch: number
@@ -114,6 +116,7 @@ function createRegistryState(): GatewayRegistryState {
   return {
     config: null,
     primaryGateway: null,
+    primaryConnectionId: null,
     primaryProfile: 'default',
     activeKey: 'default',
     activationEpoch: 0,
@@ -186,8 +189,17 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+  if (g.primaryGateway !== gateway) {
+    g.primaryConnectionId = null
+  }
+
   g.primaryGateway = gateway
   g.primaryProfile = normKey(profile)
+}
+
+/** Publish the registry source owned by the window primary socket. */
+export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId'> | null): void {
+  g.primaryConnectionId = connection?.connectionId?.trim() || null
 }
 
 export function isActivePrimary(): boolean {
@@ -665,6 +677,22 @@ export async function requestGatewayForAgent<T>(
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+  }
+
+  // A primary remote selected from the connection registry carries its source
+  // id in the active connection descriptor. Requests for that exact
+  // (connection, profile) already have an owning socket: the window primary.
+  // Dialing a registry secondary here can resolve the same public endpoint to a
+  // different backend/profile route, so durable session.resume reports
+  // "session not found" while REST history from the primary remains visible.
+  // Require both owner identities to agree before collapsing the route; a
+  // different source or profile must retain its isolated secondary.
+  if (
+    key === g.primaryProfile &&
+    Boolean(g.primaryConnectionId) &&
+    g.primaryConnectionId === String(connectionId).trim()
+  ) {
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
   }
 

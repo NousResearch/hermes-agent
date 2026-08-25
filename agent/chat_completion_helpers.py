@@ -1957,6 +1957,42 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
 
+    # xAI's chat-completions endpoint reserves the function name
+    # ``tool_search`` for its native server-side tool and rejects the whole
+    # request when the client Tool Search bridge declares it (HTTP 400
+    # "The function name tool_search is reserved for the tool_search tool",
+    # #95003) — same reserved-name class the codex_responses branch above
+    # already sanitizes tools for (#27197). Rename the bridge's wire
+    # declaration to an alias; normalize_response maps model calls back.
+    # Deep-copy first (the #27907 in-place-mutation lesson): tools_for_api
+    # aliases agent.tools, and renaming in place would corrupt the shared
+    # per-agent tool registry for every later non-xAI request.
+    _is_xai_chat = (
+        agent.provider in {"xai", "xai-oauth"}
+        or agent._base_url_hostname == "api.x.ai"
+    )
+    if _is_xai_chat and tools_for_api:
+        try:
+            import copy as _copy_xai
+
+            from agent.transports.chat_completions import (
+                _rename_tool_search_bridge_for_xai,
+            )
+
+            _has_bridge = any(
+                (t.get("function") or {}).get("name") == "tool_search"
+                for t in tools_for_api
+                if isinstance(t, dict)
+            )
+            if _has_bridge:
+                tools_for_api = _copy_xai.deepcopy(tools_for_api)
+                tools_for_api = _rename_tool_search_bridge_for_xai(tools_for_api)
+        except Exception as exc:
+            logger.warning(
+                "%s⚠️ Failed to alias tool_search bridge for xAI: %s",
+                getattr(agent, "log_prefix", ""), exc,
+            )
+
     # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()

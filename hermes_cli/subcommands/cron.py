@@ -284,6 +284,26 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
 
+    # cron incidents — durable failure incidents (list/ack)
+    cron_incidents = cron_subparsers.add_parser(
+        "incidents", help="List or acknowledge durable cron failure incidents"
+    )
+    cron_incidents.add_argument(
+        "--state",
+        choices=["detected", "alerted", "closed"],
+        help="Filter incidents by lifecycle state",
+    )
+    cron_incidents.add_argument(
+        "incident_action",
+        nargs="?",
+        default="list",
+        choices=["list", "ack"],
+        help="Action (default: list)",
+    )
+    cron_incidents.add_argument(
+        "incident_id", nargs="?", help="Incident ID to acknowledge (ack)"
+    )
+
     # cron notepad — per-job durable KV scratchpad (injected into the job
     # prompt each run; the running agent writes it via this CLI).
     cron_notepad = cron_subparsers.add_parser(

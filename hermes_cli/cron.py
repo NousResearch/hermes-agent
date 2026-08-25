@@ -6,6 +6,7 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -256,6 +257,104 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
         )
         if record.get("error"):
             print(f"    {record['error']}")
+
+
+_INCIDENT_STATE_COLORS = {
+    "detected": Colors.RED,
+    "alerted": Colors.YELLOW,
+    "closed": Colors.GREEN,
+}
+
+
+def cron_incidents(args) -> int:
+    """List or acknowledge durable cron failure incidents.
+
+    ``hermes cron incidents [--state <s>]`` lists incidents (the stored error
+    is redacted and truncated at write time, safe for terminal display);
+    ``hermes cron incidents ack <id>`` closes one so its failure ping stays
+    silent until the error signature changes.
+    """
+    from cron.incidents import ack_incident, list_incidents
+
+    action = getattr(args, "incident_action", "list")
+    if action == "ack":
+        incident_id = getattr(args, "incident_id", None)
+        if not incident_id:
+            print(
+                color(
+                    "✗ Incident ID required: hermes cron incidents ack <incident_id>",
+                    Colors.RED,
+                )
+            )
+            return 1
+        if ack_incident(incident_id):
+            print(
+                color(
+                    f"✓ Incident {incident_id} acknowledged (closed).",
+                    Colors.GREEN,
+                )
+            )
+        else:
+            print(
+                color(
+                    f"Incident {incident_id} not found or already closed.",
+                    Colors.YELLOW,
+                )
+            )
+        return 0
+
+    state = getattr(args, "state", None)
+    incidents = list_incidents(state=state)
+    if not incidents:
+        print(color("No cron failure incidents recorded.", Colors.DIM))
+        if state:
+            print(color(f"  (filtered by state '{state}')", Colors.DIM))
+        return 0
+
+    print()
+    print(
+        color(
+            "┌─────────────────────────────────────────────────────────────────────────┐",
+            Colors.CYAN,
+        )
+    )
+    print(
+        color(
+            "│                         Cron Failure Incidents                          │",
+            Colors.CYAN,
+        )
+    )
+    print(
+        color(
+            "└─────────────────────────────────────────────────────────────────────────┘",
+            Colors.CYAN,
+        )
+    )
+    print()
+    for inc in incidents:
+        state_display = color(
+            inc["state"], _INCIDENT_STATE_COLORS.get(inc["state"], Colors.DIM)
+        )
+        print(f"  {color(inc['id'], Colors.YELLOW)}  {state_display}")
+        print(f"    Job:        {inc['job_id']}")
+        print(f"    Type:       {inc.get('failure_type', 'unknown')}")
+        print(f"    First seen: {inc.get('first_seen_at', '?')}")
+        print(f"    Last seen:  {inc.get('last_seen_at', '?')}")
+        error_text = re.sub(r"\s+", " ", inc.get("error") or "").strip()
+        if len(error_text) > 160:
+            error_text = error_text[:157].rstrip() + "..."
+        print(f"    Error:      {error_text}")
+        if inc.get("output_file"):
+            print(f"    Output:     {inc['output_file']}")
+        print()
+    print(
+        color(
+            f"  {len(incidents)} incident(s)  |  ack one with: "
+            "hermes cron incidents ack <id>",
+            Colors.DIM,
+        )
+    )
+    return 0
 
 
 def cron_status():
@@ -679,6 +778,9 @@ def cron_command(args):
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
         return 0
+
+    if subcmd == "incidents":
+        return cron_incidents(args)
 
     if subcmd == "notepad":
         return cron_notepad(args)

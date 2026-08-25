@@ -561,7 +561,11 @@ Or do it manually:
 1. Keychain Access → Certificate Assistant → **Create a Certificate…**
 2. Name: `Hermes Local Signing`, Identity Type: *Self-Signed Root*,
    Certificate Type: **Code Signing**.
-3. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
+3. In Keychain Access, double-click the new certificate → **Trust** → set
+   **Code Signing** to *Always Trust* (an imported self-signed certificate is
+   not a valid signing identity until it is trusted for code signing —
+   `security find-identity -v -p codesigning` should list it afterwards).
+4. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
 
 Use `--identity <name>` with the command to create/use a differently named
 certificate (default: `Hermes Local Signing`). The command is idempotent —

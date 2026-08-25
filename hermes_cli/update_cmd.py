@@ -8685,14 +8685,43 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # a moment to rewrite gateway_state.json with their new identity.
             # Skipped when the restart phase touched nothing (no gateways
             # were running) — nothing to settle.
+            #
+            # On Windows the resume path relaunches the gateway DETACHED, and
+            # that process must boot before it stamps gateway_state.json or
+            # answers the control socket (a Telegram gateway reconnects its
+            # polling loop — ~10s).  A single 2s sleep therefore races the
+            # gateway's own startup and reports "no rows" (exit 1) for a
+            # healthy resume, which then triggers a full retry that re-kills
+            # the gateway the first attempt just started.  Poll a bounded
+            # window for the resumed gateway to publish its identity instead.
+            _fleet_snapshot = []
             if _fleet_rows_expected:
-                _time.sleep(2.0)
-            # Pass the pre-restart PID snapshot so a gateway the restart
-            # phase stopped WITHOUT a verified replacement shows as a DOWN
-            # row (exit 1) instead of silently producing no row at all.
-            _fleet_snapshot = collect_fleet_versions(
-                pre_restart_pids=_pre_restart_gateway_pids
-            )
+                _fleet_deadline = _time.monotonic() + 30.0
+                while True:
+                    _time.sleep(2.0)
+                    # Pass the pre-restart PID snapshot so a gateway the
+                    # restart phase stopped WITHOUT a verified replacement
+                    # shows as a DOWN row (exit 1) instead of silently
+                    # producing no row at all.
+                    _fleet_snapshot = collect_fleet_versions(
+                        pre_restart_pids=_pre_restart_gateway_pids
+                    )
+                    # A "down" row here is the stale pre-restart record of a
+                    # gateway whose detached replacement is still booting —
+                    # not a confirmed failure.  Keep polling until every
+                    # resumed gateway has published (no "down" rows remain)
+                    # or the deadline passes, so a slow second gateway can't
+                    # be misread as down and re-trigger the retry loop.
+                    if _fleet_snapshot and not any(
+                        row.get("state") == "down" for row in _fleet_snapshot
+                    ):
+                        break
+                    if _time.monotonic() >= _fleet_deadline:
+                        break
+            else:
+                _fleet_snapshot = collect_fleet_versions(
+                    pre_restart_pids=_pre_restart_gateway_pids
+                )
             if print_fleet_version_matrix(_fleet_snapshot):
                 gateway_fleet_restart_incomplete = True
             elif not _fleet_snapshot and _fleet_rows_expected:

@@ -107,8 +107,17 @@ export function endGatewaySwitch(token?: GatewaySwitchToken): void {
  * always disarms.
  */
 export function recoverActiveSourceAfterFailedGatewaySwitch(): void {
+  const lifecycle = switchLifecycle
+
+  if (!lifecycle) {
+    console.debug('[gateway-switch] cannot repaint the active source because no switch lifecycle is registered')
+    setSessionsLoading(false)
+
+    return
+  }
+
   void Promise.resolve()
-    .then(() => switchLifecycle?.refreshSessions())
+    .then(() => lifecycle.refreshSessions())
     .catch(() => undefined)
     .finally(() => setSessionsLoading(false))
 }

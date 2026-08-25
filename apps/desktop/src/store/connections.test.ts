@@ -23,6 +23,7 @@ const $gatewaySwitching = atom(false)
 
 interface ActivationOptions {
   beforeActivate?: () => boolean
+  signal?: AbortSignal
 }
 
 const ensureGatewayAgent = vi.fn(
@@ -112,7 +113,7 @@ beforeEach(() => {
   ensureGatewayAgent.mockReset()
   // Mirrors the real door: the commit hook runs right before the activation
   // publishes, and a declined hook publishes nothing.
-  ensureGatewayAgent.mockImplementation(async (connectionId, _profile, options) => {
+  ensureGatewayAgent.mockImplementation(async (connectionId, profile, options) => {
     if (options?.beforeActivate && !options.beforeActivate()) {
       return
     }
@@ -120,7 +121,7 @@ beforeEach(() => {
     $connection.set({
       connectionId: connectionId ?? undefined,
       mode: connectionId === 'local' ? 'local' : 'remote',
-      profile: 'default',
+      profile,
       registryScoped: true
     })
   })
@@ -445,6 +446,48 @@ describe('selectConnection', () => {
     expect($pendingConnectionId.get()).toBeNull()
   })
 
+  it('does not spend the activation timeout while waiting for the serialized commit turn', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const mutex = deferred()
+
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      ensureGatewayAgent.mockImplementationOnce(async (connectionId, _profile, options) => {
+        await mutex.promise
+
+        if (options?.beforeActivate && !options.beforeActivate()) {
+          return
+        }
+
+        $connection.set({
+          connectionId: connectionId ?? undefined,
+          mode: 'remote',
+          profile: 'default',
+          registryScoped: true
+        })
+      })
+
+      const attempt = selectConnection('homelab')
+      await vi.waitFor(() => expect(ensureGatewayAgent).toHaveBeenCalledTimes(1))
+
+      // Queue ownership belongs to the shared mutex, not the actual activation
+      // attempt, so waiting here must not consume its 20-second commit budget.
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(beginGatewaySwitch).not.toHaveBeenCalled()
+
+      mutex.resolve()
+      await attempt
+
+      expect($connection.get()?.connectionId).toBe('homelab')
+      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
+      expect($gatewaySwitching.get()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a dial that never answers times out: nothing severed, the click fails visibly, and the source can be retried', async () => {
     vi.useFakeTimers()
 
@@ -540,6 +583,56 @@ describe('selectConnection', () => {
       expect(requestFreshSession).toHaveBeenCalledTimes(1)
       expect(setLastUsed).not.toHaveBeenCalled()
       expect($connection.get()?.connectionId).toBe('local')
+      expect($pendingConnectionId.get()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a timed-out activation cannot publish the target after it eventually settles', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const activation = deferred()
+
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      ensureGatewayAgent.mockImplementationOnce(async (connectionId, _profile, options) => {
+        options?.beforeActivate?.()
+        await activation.promise
+
+        // Mirrors the real activation door: cancellation ownership is checked
+        // immediately before publishing after the async activation work.
+        if (options?.signal?.aborted) {
+          return
+        }
+
+        $connection.set({
+          connectionId: connectionId ?? undefined,
+          mode: 'remote',
+          profile: 'default',
+          registryScoped: true
+        })
+      })
+
+      const outcome = selectConnection('homelab').then(
+        () => 'resolved',
+        (error: Error) => error.message
+      )
+
+      await vi.advanceTimersByTimeAsync(20_000)
+
+      expect(await outcome).toMatch(/Timed out activating "Homelab"/)
+      expect($connection.get()?.connectionId).toBe('local')
+      expect($gatewaySwitching.get()).toBe(false)
+
+      activation.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect($connection.get()?.connectionId).toBe('local')
+      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
+      expect(endGatewaySwitch).toHaveBeenCalledTimes(1)
+      expect($gatewaySwitching.get()).toBe(false)
       expect($pendingConnectionId.get()).toBeNull()
     } finally {
       vi.useRealTimers()

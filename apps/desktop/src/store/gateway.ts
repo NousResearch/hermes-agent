@@ -912,13 +912,21 @@ export async function openGatewayForAgent(
   }
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+export async function ensureGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
+    if (signal?.aborted) {
+      return false
+    }
+
     await ensureGatewayForProfile(profile)
 
-    return true
+    return !signal?.aborted
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -954,6 +962,12 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
   // The activation is settling either way — release the prune lease.
   entry.activationLeaseUntil = 0
+
+  // A timed-out owner may leave the dial running, but it no longer has the
+  // right to move the foreground route when that work eventually settles.
+  if (signal?.aborted) {
+    return false
+  }
 
   // A source edit/remove may dispose this entry while its dial is still in
   // flight. Only the still-registered, still-owned activation may publish.

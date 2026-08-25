@@ -274,4 +274,38 @@ describe('ensureGatewayAgent commit hook (beforeActivate) — the Sessions switc
       vi.useRealTimers()
     }
   })
+
+  it('an aborted activation releases the mutex and cannot publish when its work settles later', async () => {
+    const activationGate = deferred()
+    const controller = new AbortController()
+
+    ensureGatewayForAgent.mockImplementationOnce(async () => {
+      await activationGate.promise
+
+      return true
+    })
+    getConnectionFor.mockImplementation(async ({ profile }) => agentConn({ profile: profile ?? 'default' }))
+
+    const abandoned = ensureGatewayAgent('homelab', 'research', { signal: controller.signal })
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    controller.abort()
+
+    try {
+      const winner = ensureGatewayAgent('homelab', 'writer')
+      await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledTimes(2))
+      await winner
+
+      expect($activeGatewayProfile.get()).toBe('writer')
+      expect($connection.get()?.profile).toBe('writer')
+    } finally {
+      activationGate.resolve()
+      await abandoned
+    }
+
+    // The detached activation completed after cancellation but did not regain
+    // ownership and overwrite the newer source/profile publication.
+    expect($activeGatewayProfile.get()).toBe('writer')
+    expect($connection.get()?.profile).toBe('writer')
+  })
 })

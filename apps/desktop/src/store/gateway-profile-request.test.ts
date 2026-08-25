@@ -370,6 +370,39 @@ describe('requestGatewayForAgent', () => {
     expect(onActiveConnectionChanged).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
   })
+
+  it('does not activate or publish a source whose activation owner aborted while dialing', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+    const controller = new AbortController()
+
+    setPrimaryGateway(primary as never, 'default')
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async profile => ({ port: 4242, profile })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const abandoned = ensureGatewayForAgent('source-b', 'default', { signal: controller.signal })
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+
+    controller.abort()
+    releaseConnect()
+
+    expect(await abandoned).toBe(false)
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(primary)
+  })
 })
 
 describe('retainGatewayForAgent (#93602)', () => {

@@ -148,6 +148,31 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     expect($gatewaySwitching.get()).toBe(false)
   })
 
+  it('repeated overlapping commits safely re-run the lifecycle and wipe without losing barrier ownership', () => {
+    const beforeConnectionSwitch = vi.fn()
+
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch,
+      refreshSessions: async () => undefined
+    })
+
+    const older = beginGatewaySwitch()
+    // Simulate stale gateway-bound state racing back before the newer commit.
+    setSessions([{ id: 'late', title: 'late old-source row', profile: 'default' } as never])
+    setActiveSessionId('late-runtime')
+    const newer = beginGatewaySwitch()
+
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(2)
+    expect($sessions.get()).toEqual([])
+    expect($activeSessionId.get()).toBeNull()
+
+    endGatewaySwitch(older)
+    expect($gatewaySwitching.get()).toBe(true)
+    endGatewaySwitch(newer)
+    expect($gatewaySwitching.get()).toBe(false)
+    off()
+  })
+
   it('still severs the bindings when no lifecycle is registered (windows that never mount the boot hook)', () => {
     beginGatewaySwitch()
 
@@ -217,7 +242,14 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     off()
 
     setSessionsLoading(true)
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+
     recoverActiveSourceAfterFailedGatewaySwitch()
     await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
+
+    expect(debug).toHaveBeenCalledWith(
+      '[gateway-switch] cannot repaint the active source because no switch lifecycle is registered'
+    )
+    debug.mockRestore()
   })
 })

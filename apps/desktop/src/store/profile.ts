@@ -470,12 +470,42 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
 // null-connectionId profile fallthrough.
 export interface EnsureGatewayAgentOptions {
   beforeActivate?: () => boolean
+  /** Revokes this caller's right to activate or publish after async work. */
+  signal?: AbortSignal
+}
+
+function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return promise
+  }
+
+  if (signal.aborted) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }
+
+    const settle = (callback: () => void) => {
+      signal.removeEventListener('abort', onAbort)
+      callback()
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      () => settle(resolve),
+      error => settle(() => reject(error))
+    )
+  })
 }
 
 export async function ensureGatewayAgent(
   connectionId: null | string,
   profile: string,
-  { beforeActivate }: EnsureGatewayAgentOptions = {}
+  { beforeActivate, signal }: EnsureGatewayAgentOptions = {}
 ): Promise<void> {
   const target = normalizeProfileKey(profile)
   const connection = (connectionId ?? '').trim() || null
@@ -492,18 +522,32 @@ export async function ensureGatewayAgent(
     await gatewaySwitch.catch(() => undefined)
   }
 
+  if (signal?.aborted) {
+    return
+  }
+
   $gatewaySwapTarget.set(target)
-  gatewaySwitch = (async () => {
+
+  const activationWork = (async () => {
+    if (signal?.aborted) {
+      return
+    }
+
     if (beforeActivate && !beforeActivate()) {
       return
     }
 
     // Descriptor resolves concurrently with the dial, same as the profile
     // path, so no await sits between the activation and the publication.
-    const [descriptor, activated] = await Promise.all([
-      resolveConnectionForAgent(connection, target),
-      ensureGatewayForAgent(connection, target)
-    ])
+    const activation = signal
+      ? ensureGatewayForAgent(connection, target, { signal })
+      : ensureGatewayForAgent(connection, target)
+
+    const [descriptor, activated] = await Promise.all([resolveConnectionForAgent(connection, target), activation])
+
+    if (signal?.aborted) {
+      return
+    }
 
     if (!activated) {
       // The target stopped existing mid-dial (source edited/removed). Keep
@@ -526,6 +570,10 @@ export async function ensureGatewayAgent(
       }
     })
   })()
+
+  // Cancellation releases the mutex immediately; activationWork remains
+  // observed and is ownership-guarded at both gateway and publication seams.
+  gatewaySwitch = releaseWhenAborted(activationWork, signal)
 
   try {
     await gatewaySwitch

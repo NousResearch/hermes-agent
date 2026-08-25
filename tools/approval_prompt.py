@@ -294,3 +294,64 @@ def request_elicitation_consent(message: str, description: str, *,
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"
     return _consent(choice, "cancel")  # timeout mirrors the gateway's unresolved outcome
+
+
+def request_one_time_consent(
+    message: str,
+    description: str,
+    *,
+    timeout_seconds: int | None = None,
+    surface: str = "one-time-action",
+) -> str:
+    """Request non-persistent consent for one exact external side effect."""
+    from tools import approval as _a
+
+    try:
+        session_key = _ctx.get_current_session_key()
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning("One-time consent: session lookup failed: %s", exc)
+        return "decline"
+
+    if _ctx._is_gateway_approval_context():
+        notify_cb = _a._gateway_notify_cb(session_key)
+        if notify_cb is None:
+            logger.warning(
+                "One-time consent requested in gateway session %s without a notify callback — failing closed",
+                session_key,
+            )
+            return "decline"
+        approval_data = {
+            "command": message,
+            "description": description,
+            "pattern_key": surface,
+            "pattern_keys": [surface],
+            "allow_permanent": False,
+            "choices": ["once", "deny"],
+        }
+        try:
+            decision = _gw._await_gateway_decision(
+                session_key, notify_cb, approval_data, surface=surface
+            )
+        except Exception as exc:
+            logger.error("One-time consent dispatch failed: %s", exc, exc_info=True)
+            return "decline"
+        if decision.get("notify_failed"):
+            return "decline"
+        if not decision.get("resolved"):
+            return "cancel"
+        return "accept" if decision.get("choice") == "once" else "decline"
+
+    try:
+        choice = prompt_dangerous_approval(
+            message,
+            description,
+            timeout_seconds=timeout_seconds,
+            allow_permanent=False,
+            allow_session=False,
+        )
+    except Exception as exc:
+        logger.error("One-time consent prompt failed: %s", exc, exc_info=True)
+        return "decline"
+    if choice == "once":
+        return "accept"
+    return "cancel" if choice == "timeout" else "decline"

@@ -5,11 +5,19 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from functools import partial
 
 from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
+
+# Exact live-adapter operations double as pending-click and transport-retry
+# idempotency keys. They are process-local because reactions have no standalone
+# sender path.
+_reaction_operations: dict[tuple[str, str, str, str, bool], dict] = {}
+_reaction_operations_lock = threading.Lock()
+_REACTION_OPERATION_LIMIT = 2048
 
 from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
 from tools.send_message_senders import (
@@ -65,9 +73,12 @@ def _handle_react(args, remove=False):
     standalone fallback because reacting needs the adapter's live message-id state."""
     target, emoji = args.get("target", ""), (args.get("emoji") or "").strip()
     message_id = (args.get("message_id") or "").strip() or None
-    if not target or (not remove and not emoji):
-        return tool_error("'target' is required when action='unreact'" if remove
-                          else "Both 'target' and 'emoji' are required when action='react'")
+    if not target or not emoji or not message_id:
+        return json.dumps({
+            "success": False,
+            "status": "failed",
+            "error": "'target', 'emoji', and exact 'message_id' are required for reactions",
+        })
 
     # Platform-native ids (e.g. photon GUIDs) match no parser/directory entry; the adapter validates.
     platform_name, chat_id, _thread_id, resolution_error = _resolve_tool_target(target, pass_unresolved_references=True)
@@ -90,12 +101,72 @@ def _handle_react(args, remove=False):
     react_fn = getattr(adapter, "remove_reaction" if remove else "add_reaction", None)
     if not callable(react_fn):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
+
+    operation_key = (platform_name, str(chat_id), message_id, emoji, bool(remove))
+    with _reaction_operations_lock:
+        prior = _reaction_operations.get(operation_key)
+        if prior and prior.get("status") in {"pending", "processing", "applied", "rejected"}:
+            return json.dumps({**prior, "duplicate": True})
+        _reaction_operations[operation_key] = {
+            "success": False,
+            "status": "pending",
+            "platform": platform_name,
+            "chat_id": str(chat_id),
+            "message_id": message_id,
+            "emoji": emoji,
+            "action": "remove" if remove else "add",
+        }
+        while len(_reaction_operations) > _REACTION_OPERATION_LIMIT:
+            _reaction_operations.pop(next(iter(_reaction_operations)))
+
+    verb = "Remove" if remove else "Add"
+    prompt = (
+        f"{verb} Tapback {emoji}\n"
+        f"Destination: {platform_name}:{chat_id}\n"
+        f"Message: {message_id}"
+    )
+    from tools.approval_prompt import request_one_time_consent
+
+    consent = request_one_time_consent(
+        prompt,
+        "Explicit approval is required before sending this outbound reaction.",
+        surface="outbound-tapback",
+    )
+    if consent != "accept":
+        status = "rejected" if consent == "decline" else "failed"
+        result = {
+            **_reaction_operations[operation_key],
+            "status": status,
+            "error": (
+                "Tapback rejected; nothing was sent."
+                if status == "rejected"
+                else "Tapback approval expired; nothing was sent."
+            ),
+        }
+        with _reaction_operations_lock:
+            _reaction_operations[operation_key] = result
+        return json.dumps(result)
+
+    with _reaction_operations_lock:
+        _reaction_operations[operation_key] = {
+            **_reaction_operations[operation_key],
+            "status": "processing",
+        }
     try:
         from model_tools import _run_async
-        result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
+        result = _run_async(react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id))
     except Exception as e:
-        return json.dumps(_error(f"Reaction failed: {e}"))
-    return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
+        result = {"success": False, "error": f"Reaction failed: {e}"}
+    provider_result = result if isinstance(result, dict) else {"success": bool(result)}
+    applied = bool(provider_result.get("success"))
+    final = {
+        **_reaction_operations[operation_key],
+        **provider_result,
+        "status": "applied" if applied else "failed",
+    }
+    with _reaction_operations_lock:
+        _reaction_operations[operation_key] = final
+    return json.dumps(final)
 
 
 def _handle_send(args):
@@ -562,11 +633,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "emoji": {
                 "type": "string",
-                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
+                "description": "For action='react'/'unreact': the exact emoji identity (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
             },
             "message_id": {
                 "type": "string",
-                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+                "description": "For action='react'/'unreact': exact id of the message to react to. Required; reactions never fall back to a recent message or another chat."
             }
         },
         "required": []

@@ -1275,8 +1275,15 @@ class PhotonAdapter(BasePlatformAdapter):
             return {"success": False, "error": "reaction failed (see gateway debug log)"}
         return {"success": True, "message_id": target}
 
-    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> Dict[str, Any]:
-        """Retract our tapback from a message (best-effort)."""
+    async def remove_reaction(
+        self, chat_id: str, emoji: Optional[str] = None, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract our exact tapback slot from an explicitly named message.
+
+        Spectrum stores one reaction handle per sender/message, so ``emoji`` is
+        identity/audit context while the provider removal primitive addresses
+        that single slot by message id.
+        """
         target = message_id or self._last_inbound_by_chat.get(self._normalize_chat_key(chat_id))
         if not target:
             return {"success": False, "error": "no message to unreact — pass message_id"}

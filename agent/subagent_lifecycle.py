@@ -310,13 +310,25 @@ class SubagentLifecycleService:
             agent = record.agent
             record.state = SubagentState.CANCEL_REQUESTED
             record.updated_at = time.time()
-        accepted = False
-        if agent is not None:
-            with contextlib.suppress(Exception):
-                accepted = request_hard_interrupt(
-                    agent, f"Lifecycle cancellation requested: {reason[:500]}", tool_reason="subagent cancellation requested",
-                )
-        return SubagentCancelResult(bool(accepted), unsupported=not accepted, state=SubagentState.CANCEL_REQUESTED)
+        if agent is None:
+            return SubagentCancelResult(
+                False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
+            )
+        try:
+            accepted = request_hard_interrupt(
+                agent,
+                f"Lifecycle cancellation requested: {reason[:500]}",
+                tool_reason="subagent cancellation requested",
+            )
+        except Exception:
+            return SubagentCancelResult(
+                False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
+            )
+        if not accepted:
+            return SubagentCancelResult(
+                False, unsupported=True, state=SubagentState.CANCEL_REQUESTED
+            )
+        return SubagentCancelResult(True, state=SubagentState.CANCEL_REQUESTED)
 
     def result(self, handle: SubagentHandle) -> SubagentResult:
         record = self._record(handle)

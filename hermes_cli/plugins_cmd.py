@@ -1,6 +1,7 @@
 """``hermes plugins`` CLI subcommand — install, update, remove, and list plugins."""
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import functools
 import json
@@ -373,7 +374,10 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
         if url:
             console.print(f"  [dim]Get yours at: {url}[/dim]")
         try:
-            value = (masked_secret_prompt if spec.get("secret", False) else line_input)(f"  {name}: ").strip()
+            if secret:
+                value = masked_secret_prompt(f"  {name}: ").strip()
+            else:
+                value = line_input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
             return
@@ -975,11 +979,28 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     resolved = _resolve_plugin_key_and_source(name)
     return resolved[0] if resolved else None
 
+    Accepts either the bare manifest name (``langfuse``), the directory
+    name, or the full path-derived key (``observability/langfuse``) and
+    returns the canonical key the loader gates on (``manifest.key`` or, for a
+    flat plugin, the bare name). Returns ``None`` when no plugin matches.
 
-def _find_plugin_entry(name: str) -> Optional[tuple]:
-    """First discovered ``(name, version, description, source, dir_path, key)`` entry whose
-    manifest name or canonical key equals *name*."""
-    return next((entry for entry in _discover_all_plugins() if name in (entry[0], entry[5])), None)
+    This is the single normalization point so ``hermes plugins enable`` /
+    ``disable`` write the same key that ``PluginManager`` matches against —
+    nested category plugins (e.g. ``observability/langfuse``) included.
+    """
+    entries = _discover_all_plugins()
+    # 1. Exact match on canonical key or manifest name — always unambiguous.
+    for entry in entries:
+        # entry = (name, version, description, source, dir_path, key)
+        if name == entry[5] or name == entry[0]:
+            return entry[5]
+    # 2. Fall back to a bare leaf-name match (e.g. "langfuse" ->
+    #    "observability/langfuse"), but only when it resolves to exactly one
+    #    plugin so we never silently pick the wrong same-named nested plugin.
+    leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
+    if len(leaf_matches) == 1:
+        return leaf_matches[0]
+    return None
 
 
 def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
@@ -1009,21 +1030,34 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
     tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
     """
-    from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
-    console = _console()
+    from rich.console import Console
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_PLUGIN_KEYS,
+        RELAY_PLUGINS_CONFIG_ENV,
+    )
 
-    def _refuse_legacy_relay(plugin: str) -> None:
-        if plugin in LEGACY_RELAY_PLUGIN_KEYS:
-            _fail(console, (
-                f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
+    console = Console()
+    if name in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{name}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
 
-    _refuse_legacy_relay(name)
+    # Discover the plugin — check installed (user) AND bundled, including
+    # nested category plugins — and normalize to its canonical registry key.
     resolved = _resolve_plugin_key_and_source(name)
     if resolved is None:
         _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
+
+    if key in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{key}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()

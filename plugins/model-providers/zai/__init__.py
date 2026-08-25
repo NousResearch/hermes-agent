@@ -28,17 +28,76 @@ def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
     return any(token in m for token in tokens)
 
 
-def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
-    """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
-    efforts clamp to the floor; disabled/unset leaves the server default."""
-    effort = re_.requested_effort(reasoning_config)
-    if effort is None or effort == "none":
+def _is_glm_5_2(model: str | None) -> bool:
+    """Detect GLM-5.2/5.3 (reasoning_effort-capable) across alias spellings.
+
+    Covers the canonical ``glm-5.2``/``glm-5.3`` plus the ``glm-5-2`` /
+    ``glm-5p2`` variants seen on relays (Fireworks ``glm-5p2``, etc.) and any
+    vendor-prefixed form (``z-ai/glm-5.2``, ``zai-org-glm-5-2``).  GLM-5.3
+    uses the same base model as 5.2 (post-training gains only) and exposes
+    the same ``reasoning_effort`` knob (verified live 2026-08-14: the
+    coding-plan endpoint accepts ``reasoning_effort: high`` for glm-5.3).
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(
+        token in m
+        for token in ("glm-5.2", "glm-5-2", "glm-5p2", "glm-5.3", "glm-5-3", "glm-5p3")
+    )
+
+
+def _is_glm_5_3(model: str | None) -> bool:
+    """Detect GLM-5.3 specifically — it has a wider effort vocabulary.
+
+    5.2 accepts only ``high``/``max``; 5.3 accepts a graded
+    ``low``/``medium``/``high``/``max`` scale (verified live, issue #91789),
+    so effort mapping must pick the vocabulary per model.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
+def _glm_5_2_reasoning_effort(
+    reasoning_config: dict | None, *, model: str | None = None
+) -> str | None:
+    """Map Hermes reasoning effort onto GLM's native vocabulary.
+
+    GLM-5.2 supports two enabled effort levels (``high``/``max``);
+    GLM-5.3 supports the graded ``low``/``medium``/``high``/``max`` scale.
+    ``xhigh``/``max``/``ultra`` request the top tier; anything below the
+    model's floor clamps to that floor. When reasoning is explicitly
+    disabled, or no effort preference is supplied, the server default is
+    left untouched.
+    """
+    if not isinstance(reasoning_config, dict):
         return None
-    if _has_token(model, _GLM_5_3_TOKENS):
-        efforts, overrides, floor = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
+    if reasoning_config.get("enabled") is False:
+        return None
+
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    if not effort or effort == "none":
+        return None
+
+    # Per-model vocabulary declared in agent.reasoning_effort; xhigh rounds
+    # up to max on both. 5.2 cannot think less than high; 5.3 accepts a
+    # graded scale down to low (issue #91789).
+    from agent.reasoning_effort import (
+        GLM52_EFFORTS,
+        GLM52_OVERRIDES,
+        GLM53_EFFORTS,
+        GLM53_OVERRIDES,
+        clamp_effort,
+    )
+
+    if _is_glm_5_3(model):
+        efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
     else:
-        efforts, overrides, floor = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"
-    clamped = re_.clamp_effort(effort, efforts, overrides)
+        efforts, overrides, floor = GLM52_EFFORTS, GLM52_OVERRIDES, "high"
+
+    clamped = clamp_effort(effort, efforts, overrides)
     return clamped if clamped in efforts else floor
 
 
@@ -57,7 +116,8 @@ class ZaiProfile(ProviderProfile):
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
             extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
-        if is_5_2:
+
+        if _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
             if effort is not None:
                 top_level["reasoning_effort"] = effort

@@ -25,13 +25,62 @@ _registry.export(globals())
 
 
 def get_active_provider() -> Optional[ImageGenProvider]:
-    """Resolve the currently-active provider. Availability semantics (mirrors
-    :mod:`agent.web_search_registry`): an explicitly configured provider is returned
-    even if ``is_available()`` is False, so the dispatcher surfaces a precise
-    "X_API_KEY is not set" error instead of silently switching backends; only the
-    unconfigured fallback path is filtered by availability."""
-    configured = configured_provider_name("image_gen", logger)
-    snapshot = _registry.merged()
+    """Resolve the currently-active provider.
+
+    Reads ``image_gen.provider`` from config.yaml; falls back per the
+    module docstring.
+
+    **Availability semantics** (mirrors :mod:`agent.web_search_registry`):
+
+    - When ``image_gen.provider`` is explicitly set, the configured
+      provider is returned even if :meth:`ImageGenProvider.is_available`
+      reports False — the dispatcher surfaces a precise "X_API_KEY is not
+      set" error rather than silently switching backends.
+    - When ``image_gen.provider`` is unset, the fallback path (single-
+      provider shortcut and the FAL legacy preference) is filtered by
+      ``is_available()`` so we don't pick a provider the user has no
+      credentials for.
+    """
+    configured: Optional[str] = None
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            raw = section.get("provider")
+            if isinstance(raw, str) and raw.strip():
+                configured = raw.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.provider from config: %s", exc)
+
+    # The managed "Nous Subscription" selection is serviced by the FAL
+    # plugin through the managed fal-queue gateway (the legacy FAL pipeline
+    # routes managed when the stored selection is "nous").
+    if configured:
+        try:
+            from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+            if configured.lower() == NOUS_MANAGED_PROVIDER:
+                configured = "fal"
+        except Exception:  # pragma: no cover — helpers are in-repo
+            pass
+
+    with _lock:
+        snapshot = dict(_providers)
+        snapshot.update(_scoped_providers.get(hermes_home_key(), {}))
+
+    def _is_available_safe(p: ImageGenProvider) -> bool:
+        """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("image_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
+    # 1. Explicit config wins — return regardless of is_available() so the
+    #    user gets a precise downstream error message rather than a silent
+    #    backend switch.
     if configured:
         if snapshot.get(configured) is not None:
             return snapshot[configured]

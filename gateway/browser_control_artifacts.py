@@ -1,13 +1,55 @@
-"""One-shot artifact transport for browser control (Gateway side); :mod:`gateway.platforms.api_server`
-authenticates and rate-limits, then hands bytes here. Controller frames carry only server-minted
-``[0-9a-f]{32}`` ids (client filenames are metadata, never paths); bytes live under a controlled root
-for a short TTL. Size/MIME caps apply before any write; SHA-256 is re-verified on read; ``load`` needs
-the exact scope key and consumes atomically. The index is lock-guarded and files are temp-written then
-renamed so readers never see partials."""
+"""One-shot artifact transport for browser control (Gateway side).
+
+Phase 8 Task 29: authenticated one-shot HTTPS upload/download of bounded
+browser-control artifacts (screenshots, PDFs, uploads) with SHA-256
+validation, exact MIME/size caps, a controlled artifact root, and TTL
+cleanup.  This module is the transport-neutral store core: it knows nothing
+about aiohttp or the API server — the routes in
+:mod:`gateway.platforms.api_server` authenticate callers and enforce rate
+limits, then hand bytes to this store.
+
+Why a store at all: the controller WebSocket is a command channel, not a
+file pipe.  A controller action that needs bytes (a screenshot upload, a
+downloaded PDF) references an artifact by its server-minted id; the agent
+side later retrieves it over HTTPS.  Base64 screenshots or files in
+controller WebSocket frames are therefore structurally impossible: the
+frame carries only ``artifact_id`` strings, and the bytes live on disk
+under a controlled root for a short TTL.
+
+Contract (exercised by tests/gateway/test_browser_control_artifacts.py):
+
+- **Server-minted ids, no traversal.** ``store`` assigns a fresh random hex
+  id; ``_artifact_path`` accepts only ``[0-9a-f]{N}`` ids and resolves them
+  strictly inside the root.  Client-supplied filenames are metadata only
+  and never become filesystem paths.
+
+- **Exact size and MIME caps.** ``store`` rejects bytes above
+  ``max_bytes`` and any content type outside the configured allowlist
+  before anything touches the disk.
+
+- **SHA-256 provenance.** Every artifact is stored with its ``sha256``,
+  returned in the receipt, and re-verified by ``load``/``validate`` so a
+  corrupted or tampered file can never be handed to a caller.
+
+- **One-shot, scope-bound downloads.** ``load`` requires the exact scope
+  key the artifact was stored under and deletes the artifact atomically on
+  success.  ``validate`` (used by the broker for "approved artifact id
+  only" gating) checks existence, TTL, and scope without consuming.
+
+- **No overwrite.** Ids are random and ``store`` refuses to overwrite an
+  existing id (a collision is retried with a fresh id).
+
+- **TTL cleanup.** ``prune_expired`` removes expired entries; the API
+  server sweeps on demand.  Nothing in the store is allowed to outlive its
+  TTL by more than the sweep interval.
+
+Thread-safety: the in-memory index is guarded by a lock; files are written
+to a temp name and atomically renamed into place so a concurrent ``load``
+never observes a partially written artifact.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import logging
 import os
@@ -21,12 +63,25 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+#: Default lifetime of a stored artifact, in clock seconds.
 DEFAULT_ARTIFACT_TTL_SECONDS = 300.0
+#: Default per-artifact byte cap (10 MiB).
 DEFAULT_MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
-#: Exact allowlist — parameterized/unknown variants are rejected.
-DEFAULT_ALLOWED_MIME_TYPES = frozenset({
-    "application/json", "application/pdf", "image/gif", "image/jpeg", "image/png", "image/webp", "text/plain",
-})
+#: Default exact MIME allowlist.  Unknown or parameterized variants are
+#: rejected; clients must send the canonical registered type.
+DEFAULT_ALLOWED_MIME_TYPES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/plain",
+    }
+)
+#: Length in hex chars of a minted artifact id.
+_ARTIFACT_ID_HEX = 32
 _ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _TEMP_SUFFIX = ".tmp"
 
@@ -63,9 +118,14 @@ class ArtifactTraversal(ArtifactError):
     """A caller-supplied id is not a valid minted artifact id."""
 
 
+class ArtifactOverwrite(ArtifactError):
+    """An artifact id already exists and the store refuses to overwrite it."""
+
+
 @dataclass(frozen=True)
 class ArtifactReceipt:
     """Provenance record returned to the caller of ``store``."""
+
     artifact_id: str
     sha256: str
     size_bytes: int
@@ -78,31 +138,55 @@ class ArtifactReceipt:
 
     def to_dict(self, *, download_path: str = "") -> dict[str, Any]:
         """Serialize to the wire receipt (never contains file paths)."""
-        return {
-            "artifact_id": self.artifact_id, "sha256": self.sha256, "size_bytes": self.size_bytes,
-            "content_type": self.content_type, "filename": self.filename, "created_at": self.created_at,
-            "expires_at": self.expires_at, "ttl_seconds": self.ttl_seconds, "one_shot": True,
-            **({"download_path": download_path} if download_path else {}),
+        receipt = {
+            "artifact_id": self.artifact_id,
+            "sha256": self.sha256,
+            "size_bytes": self.size_bytes,
+            "content_type": self.content_type,
+            "filename": self.filename,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "ttl_seconds": self.ttl_seconds,
+            "one_shot": True,
         }
+        if download_path:
+            receipt["download_path"] = download_path
+        return receipt
 
 
 def artifact_scope_key(scope: Any) -> str:
     """Derive the stable scope key an artifact is bound to.
 
-    Only principal (mandatory) + transport family participate. ``session_id`` is deliberately EXCLUDED: HTTP
-    artifact routes authenticate by API key and can't resolve a session while broker dispatch always carries
-    one, so hashing it would make upload and dispatch never compose (ids are unguessable and downloads
-    one-shot). Capabilities/optional ids are excluded so a reconnect keeps its artifacts."""
-    principal = family = ""
+    Only server-derived identity fields participate: principal (mandatory)
+    plus transport family. ``session_id`` is deliberately EXCLUDED: the HTTP
+    artifact routes authenticate by API key and can never resolve a server
+    session, while broker dispatch always carries a session-bearing
+    ControllerScope — including the session would make the two halves of the
+    intended journey (HTTP upload → broker artifact dispatch) hash to
+    different keys and never compose. Artifacts are therefore
+    principal/transport-family owned; ids are unguessable server-minted
+    32-hex and downloads are one-shot, so cross-session reuse within one
+    authenticated principal is by design. Capabilities and optional ids are
+    likewise excluded so a reconnect that refreshes the same controller
+    keeps its artifacts.
+    """
+    principal = ""
+    family = ""
     try:
         principal = str(getattr(scope, "principal_id", "") or "")
         family = str(getattr(scope, "transport_family", "") or "")
     except Exception:
         pass
     if not principal:
-        # Fail closed: only an authenticated principal may mint artifacts.
+        # Fail closed: an artifact can only be minted for an authenticated
+        # principal.
         raise ArtifactError("artifact scope must carry a resolved principal")
-    return hashlib.sha256(f"{principal}\x00{family}".encode("utf-8")).hexdigest()
+    material = f"{principal}\x00{family}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 @dataclass
@@ -113,8 +197,16 @@ class _ArtifactEntry:
 
 class ArtifactStore:
     """Thread-safe, TTL-bounded, scope-bound one-shot artifact store."""
-    def __init__(self, root: Path, *, ttl_seconds: float = DEFAULT_ARTIFACT_TTL_SECONDS, max_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
-                 allowed_mime_types: frozenset = DEFAULT_ALLOWED_MIME_TYPES, clock: Optional[Callable[[], float]] = None) -> None:
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        ttl_seconds: float = DEFAULT_ARTIFACT_TTL_SECONDS,
+        max_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+        allowed_mime_types: frozenset = DEFAULT_ALLOWED_MIME_TYPES,
+        clock: Optional[Callable[[], float]] = None,
+    ) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._ttl_seconds = max(1.0, float(ttl_seconds))
@@ -123,13 +215,22 @@ class ArtifactStore:
         self._clock = clock if clock is not None else time.time
         self._lock = threading.RLock()
         self._entries: dict[str, _ArtifactEntry] = {}
-        # Receipts live only in memory, so files left by a previous process
-        # are unreachable orphans past their TTL by definition — sweep them.
+        # Restart-safe retention: receipts live only in memory, so files
+        # left behind by a previous process are unreachable but would
+        # otherwise persist forever. Sweep every artifact-id-shaped file
+        # (plus stale temps) that has no index entry — at construction the
+        # index is empty, so anything on disk is an orphan from a dead
+        # process and past its advertised TTL by definition.
         self._sweep_orphan_files()
 
     def _sweep_orphan_files(self) -> int:
-        """Delete on-disk files with no live index entry; only minted-id-shaped and ``*.tmp`` names are
-        touched. Returns the number removed."""
+        """Delete on-disk artifact files with no live index entry.
+
+        Called at construction (empty index ⇒ everything on disk is an
+        orphan from a previous process). Only files whose names match the
+        server-minted 32-hex id shape or the ``*.tmp`` staging suffix are
+        touched; anything else in the directory is left alone.
+        """
         removed = 0
         try:
             candidates = list(self._root.iterdir())
@@ -138,17 +239,33 @@ class ArtifactStore:
         with self._lock:
             live = set(self._entries)
         for path in candidates:
-            orphan = path.name.endswith(_TEMP_SUFFIX) or (_ARTIFACT_ID_RE.fullmatch(path.name) and path.name not in live)
-            if path.is_file() and orphan:
-                with contextlib.suppress(OSError):
-                    path.unlink(missing_ok=True)
-                    removed += 1
+            if not path.is_file():
+                continue
+            name = path.name
+            is_temp = name.endswith(".tmp")
+            if not is_temp and not _ARTIFACT_ID_RE.fullmatch(name):
+                continue
+            if not is_temp and name in live:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                continue
         return removed
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     @property
     def root(self) -> Path:
         """Controlled artifact root (never exposed to callers by default)."""
         return self._root
+
+    @property
+    def ttl_seconds(self) -> float:
+        return self._ttl_seconds
 
     @property
     def max_bytes(self) -> int:
@@ -158,30 +275,59 @@ class ArtifactStore:
     def allowed_mime_types(self) -> frozenset:
         return self._allowed_mime_types
 
-    def store(self, data: bytes, *, filename: str, content_type: str, scope: Any) -> ArtifactReceipt:
-        """Validate and store one artifact, returning its receipt; size/MIME rejections fire before any disk write."""
+    def store(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        content_type: str,
+        scope: Any,
+    ) -> ArtifactReceipt:
+        """Validate and store one artifact, returning its provenance receipt.
+
+        Raises :class:`ArtifactTooLarge` / :class:`ArtifactMimeRejected`
+        before any disk write; :class:`ArtifactError` if the scope is not a
+        fully resolved browser-control scope.
+        """
         size = len(data)
         if size > self._max_bytes:
-            raise ArtifactTooLarge(f"artifact is {size} bytes; cap is {self._max_bytes}")
+            raise ArtifactTooLarge(
+                f"artifact is {size} bytes; cap is {self._max_bytes}"
+            )
         normalized_type = _normalize_content_type(content_type)
         if normalized_type not in self._allowed_mime_types:
-            raise ArtifactMimeRejected(f"content type {content_type!r} is outside the exact allowlist")
+            raise ArtifactMimeRejected(
+                f"content type {content_type!r} is outside the exact allowlist"
+            )
         scope_key = artifact_scope_key(scope)
         now = self._clock()
+
         # Mint a fresh id; retry on an astronomically unlikely collision.
         while True:
-            artifact_id = secrets.token_hex(16)
+            artifact_id = secrets.token_hex(_ARTIFACT_ID_HEX // 2)
             target = self._artifact_path(artifact_id)
             with self._lock:
-                if artifact_id not in self._entries and not target.exists():
-                    receipt = ArtifactReceipt(
-                        artifact_id=artifact_id, sha256=hashlib.sha256(data).hexdigest(), size_bytes=size,
-                        content_type=normalized_type, filename=_bounded_filename(filename), created_at=now,
-                        expires_at=now + self._ttl_seconds, ttl_seconds=self._ttl_seconds, scope_key=scope_key,
-                    )
-                    self._entries[artifact_id] = _ArtifactEntry(receipt=receipt, path=target)
-                    break
-        # Temp + atomic rename so readers never observe a partial artifact.
+                if artifact_id in self._entries:
+                    continue
+                if target.exists():
+                    continue
+                receipt = ArtifactReceipt(
+                    artifact_id=artifact_id,
+                    sha256=_sha256(data),
+                    size_bytes=size,
+                    content_type=normalized_type,
+                    filename=_bounded_filename(filename),
+                    created_at=now,
+                    expires_at=now + self._ttl_seconds,
+                    ttl_seconds=self._ttl_seconds,
+                    scope_key=scope_key,
+                )
+                entry = _ArtifactEntry(receipt=receipt, path=target)
+                self._entries[artifact_id] = entry
+                break
+
+        # Write via temp + atomic rename so readers never observe a
+        # partially written artifact.
         temp = target.with_name(f"{target.name}{_TEMP_SUFFIX}")
         try:
             with open(temp, "wb") as handle:
@@ -192,45 +338,76 @@ class ArtifactStore:
         except Exception:
             with self._lock:
                 self._entries.pop(artifact_id, None)
-            with contextlib.suppress(Exception):
+            try:
                 temp.unlink(missing_ok=True)
+            except Exception:
+                pass
             raise
         return receipt
 
     def validate(self, artifact_id: str, *, scope: Any) -> ArtifactReceipt:
-        """Receipt when the artifact is live for ``scope`` (existence, TTL, scope), without consuming."""
+        """Return the receipt when the artifact is live for ``scope``.
+
+        Used by the broker's "approved artifact id only" gate: checks
+        existence, TTL, and scope without consuming the artifact.  Raises
+        the appropriate :class:`ArtifactError` subclass otherwise.
+        """
         return self._entry_for(artifact_id, scope=scope).receipt
 
     def load(self, artifact_id: str, *, scope: Any) -> tuple[bytes, ArtifactReceipt]:
-        """One-shot download: verify, read, checksum, then consume (a checksum mismatch does not consume)."""
+        """One-shot download: verify, read, checksum, then consume.
+
+        Returns ``(bytes, receipt)`` and atomically deletes the artifact so
+        a second ``load`` raises :class:`ArtifactNotFound`.  Raises
+        :class:`ArtifactChecksumMismatch` (without consuming) if the file
+        on disk does not match the recorded SHA-256.
+        """
         with self._lock:
             entry = self._entry_for(artifact_id, scope=scope)
-            if not entry.path.exists():
+            path = entry.path
+            if not path.exists():
                 self._entries.pop(artifact_id, None)
                 raise ArtifactNotFound(f"artifact {artifact_id!r} is gone")
             try:
-                data = entry.path.read_bytes()
+                data = path.read_bytes()
             except OSError as exc:
                 raise ArtifactError(f"artifact read failed: {exc}") from exc
-            if hashlib.sha256(data).hexdigest() != entry.receipt.sha256:
-                raise ArtifactChecksumMismatch(f"artifact {artifact_id!r} failed SHA-256 validation")
-            # Drop the index entry first so a concurrent load fails closed.
+            if _sha256(data) != entry.receipt.sha256:
+                raise ArtifactChecksumMismatch(
+                    f"artifact {artifact_id!r} failed SHA-256 validation"
+                )
+            # Consume atomically: remove the index entry first so a
+            # concurrent load fails closed, then delete the file.
             self._entries.pop(artifact_id, None)
         try:
-            entry.path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             logger.warning("artifact %s: file removal failed; TTL sweep will retry", artifact_id)
         return data, entry.receipt
 
     def prune_expired(self, now: Optional[float] = None) -> int:
-        """Delete every artifact past its TTL (and stale temp files); return the count removed."""
+        """Delete every artifact past its TTL; return the count removed.
+
+        Also removes orphaned temp files older than one sweep.  Idempotent
+        and safe to call on any request or a periodic sweep.
+        """
         now = self._clock() if now is None else float(now)
+        removed = 0
         with self._lock:
-            removed = self._prune_expired_locked(now)
+            for artifact_id, entry in list(self._entries.items()):
+                if entry.receipt.expires_at <= now:
+                    self._entries.pop(artifact_id, None)
+                    try:
+                        entry.path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    removed += 1
             for temp in self._root.glob(f"*{_TEMP_SUFFIX}"):
-                with contextlib.suppress(OSError):
+                try:
                     if temp.stat().st_mtime <= now - self._ttl_seconds:
                         temp.unlink(missing_ok=True)
+                except OSError:
+                    continue
         return removed
 
     def count(self) -> int:
@@ -238,11 +415,9 @@ class ArtifactStore:
         with self._lock:
             return len(self._entries)
 
-    def _discard_locked(self, artifact_id: str, path: Path) -> None:
-        """Drop the index entry and best-effort unlink its file."""
-        self._entries.pop(artifact_id, None)
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
     def _entry_for(self, artifact_id: str, *, scope: Any) -> _ArtifactEntry:
         path = self._artifact_path(artifact_id)
@@ -250,25 +425,35 @@ class ArtifactStore:
         now = self._clock()
         with self._lock:
             entry = self._entries.get(artifact_id)
-            # Check the target's own expiry BEFORE sweeping so an expired
-            # artifact surfaces as ArtifactExpired, not ArtifactNotFound.
+            # Check the target's own expiry BEFORE sweeping other entries so
+            # an expired artifact surfaces as ArtifactExpired rather than
+            # silently vanishing into the sweep.
             if entry is None:
                 self._prune_expired_locked(now)
                 entry = self._entries.get(artifact_id)
             if entry is None:
                 raise ArtifactNotFound(f"unknown artifact {artifact_id!r}")
             if entry.receipt.expires_at <= now:
-                self._discard_locked(artifact_id, path)
+                self._entries.pop(artifact_id, None)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 raise ArtifactExpired(f"artifact {artifact_id!r} expired")
             if entry.receipt.scope_key != scope_key:
-                raise ArtifactScopeMismatch(f"artifact {artifact_id!r} is bound to a different scope")
+                raise ArtifactScopeMismatch(
+                    f"artifact {artifact_id!r} is bound to a different scope"
+                )
             return entry
 
-    def _prune_expired_locked(self, now: float) -> int:
-        expired = [(aid, e.path) for aid, e in self._entries.items() if e.receipt.expires_at <= now]
-        for artifact_id, path in expired:
-            self._discard_locked(artifact_id, path)
-        return len(expired)
+    def _prune_expired_locked(self, now: float) -> None:
+        for artifact_id, entry in list(self._entries.items()):
+            if entry.receipt.expires_at <= now:
+                self._entries.pop(artifact_id, None)
+                try:
+                    entry.path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _artifact_path(self, artifact_id: str) -> Path:
         """Resolve a minted id strictly inside the controlled root."""
@@ -286,18 +471,39 @@ class ArtifactStore:
 
 def _normalize_content_type(value: str) -> str:
     """Return the canonical MIME type, or ``""`` for malformed input."""
-    return value.strip().split(";", 1)[0].strip().lower() if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip().split(";", 1)[0].strip().lower()
 
 
 def _bounded_filename(value: str, limit: int = 160) -> str:
     """Sanitize a display-only filename; never used as a filesystem path."""
-    cleaned = value.strip().replace("\\", "_").replace("/", "_") if isinstance(value, str) else ""
-    return "".join(character for character in cleaned if ord(character) >= 32)[:limit]
+    if not isinstance(value, str):
+        return ""
+    cleaned = value.strip().replace("\\", "_").replace("/", "_")
+    cleaned = "".join(character for character in cleaned if ord(character) >= 32)
+    return cleaned[:limit]
+
+
+# ----------------------------------------------------------------------
+# Rate limiting (route-level, per principal)
+# ----------------------------------------------------------------------
 
 
 class ArtifactRateLimiter:
-    """Sliding-window per-key limiter; the API server keys it by principal."""
-    def __init__(self, *, window_seconds: float = 60.0, max_requests: int = 30, clock: Optional[Callable[[], float]] = None) -> None:
+    """Sliding-window per-key limiter for artifact routes.
+
+    The API server keys this by the authenticated principal so a single
+    key cannot flood the store.  Injected clock makes tests deterministic.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_seconds: float = 60.0,
+        max_requests: int = 30,
+        clock: Optional[Callable[[], float]] = None,
+    ) -> None:
         self._window_seconds = max(1.0, float(window_seconds))
         self._max_requests = max(1, int(max_requests))
         self._clock = clock if clock is not None else time.time
@@ -309,25 +515,17 @@ class ArtifactRateLimiter:
         if not isinstance(key, str) or not key:
             return False
         now = self._clock()
+        window_start = now - self._window_seconds
         with self._lock:
-            hits = [hit for hit in self._hits.get(key, []) if hit > now - self._window_seconds]
-            allowed = len(hits) < self._max_requests
-            if allowed:
-                hits.append(now)
+            hits = [hit for hit in self._hits.get(key, []) if hit > window_start]
+            if len(hits) >= self._max_requests:
+                self._hits[key] = hits
+                return False
+            hits.append(now)
             self._hits[key] = hits
-            return allowed
+            return True
 
     def reset(self, key: str) -> None:
         """Drop the recorded hits for ``key`` (tests/diagnostics)."""
         with self._lock:
             self._hits.pop(key, None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-class ArtifactOverwrite(ArtifactError):
-    """An artifact id already exists and the store refuses to overwrite it."""
-# ---- END PLUGIN-COMPAT ----

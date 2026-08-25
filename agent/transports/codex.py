@@ -34,6 +34,16 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     match = _CRON_SESSION_ID_RE.match(sid)
     return match.group(1) if match else sid
 
+from agent.reasoning_effort import (
+    ACTUAL_RELAY_EFFORTS,
+    XAI_GROK46_EFFORTS,
+    XAI_LEGACY_EFFORTS,
+    clamp_effort,
+    codex_supported_efforts,
+)
+from agent.transports.base import ProviderTransport
+from agent.transports.types import NormalizedResponse, ToolCall
+
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     """Return a provider-safe (<=64 char) cache key without changing session identity."""
@@ -65,28 +75,29 @@ def _merge_extra_headers(kwargs: dict[str, Any], **headers: str) -> None:
 # (incomplete hang / HTTP 400); it goes on the wire under this alias.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
-# OpenCode /v1/responses rejects client tools using these names (HTTP 400
-# "custom function name 'X' is reserved"); xAI reserves ``tool_search`` for
-# Grok's native Tool Search. Aliased as hermes_<name>.
-# OpenCode's /v1/responses endpoints (Zen and Go, including custom providers pointing at opencode.ai)
-# reserve certain function names server-side and reject client tools that use them with HTTP 400 ("custom
-# function name 'X' is reserved"). Same treatment as the xAI web_search collision: rename on the wire
-# (hermes_<name>), map back in normalize_response so Hermes dispatch is unaffected. See #85589.
+# OpenCode's /v1/responses endpoints (Zen and Go, including custom providers
+# pointing at opencode.ai) reserve certain function names server-side and
+# reject client tools that use them with HTTP 400 ("custom function name
+# 'X' is reserved"). Reported for grok-4.5 on Go with `search_files` and
+# `web_search` (#85589). Same treatment as the xAI web_search collision:
+# rename on the wire (hermes_<name>), map back in normalize_response so
+# Hermes dispatch is unaffected.
 _OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
-_XAI_RESERVED_TOOL_NAMES = ("tool_search",)
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
-
-# Reverse map used ONLY when normalize_response runs on a transport that never
-# built a request; real requests carry request-local ``_last_wire_aliases``.
-_LEGACY_ALIAS_FALLBACK = {
+_RESERVED_ALIAS_TO_NAME = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
+    for name in _OPENCODE_RESERVED_TOOL_NAMES
 }
-_LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
 
-def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
-    """True for opencode-zen/go providers, ``opencode-*`` families, or opencode.ai hosts."""
+def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
+    """True when this Responses request targets an OpenCode endpoint.
+
+    Matches the built-in opencode-zen/go providers, custom ``opencode-go-*`` /
+    ``opencode-zen-*`` family providers, and any base_url hosted on
+    opencode.ai (covers custom providers with arbitrary names pointing at
+    the OpenCode gateway).
+    """
     try:
         from hermes_cli.models import opencode_provider_family
 
@@ -102,32 +113,17 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
         return False
 
 
-def _alias_reserved_tools(
-    response_tools: list[dict[str, Any]], reserved_names: tuple[str, ...],
-    name_of: Callable[[dict], Any] = lambda t: t.get("name"),
-    rename: Callable[[dict, str], dict] = lambda t, alias: {**t, "name": alias},
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Alias provider-reserved function names on the wire; returns ``(tools, {alias: original_name})``.
-
-    An alias already taken by a real tool gets a ``_2``/``_3`` suffix. ``name_of``/``rename``
-    adapt the tool shape (Responses ``{name}`` by default; chat_completions passes ``function.name``).
-    """
-    rewritten: list[dict[str, Any]] = []
-    alias_map: dict[str, str] = {}
-    taken = {name_of(tool) for tool in response_tools if isinstance(tool, dict) and name_of(tool)}
+def _rename_reserved_tools_for_opencode(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Alias OpenCode-reserved client function names on the wire."""
+    rewritten: List[Dict[str, Any]] = []
     for tool in response_tools:
-        name = name_of(tool) if isinstance(tool, dict) else None
-        if name not in reserved_names:
+        if isinstance(tool, dict) and tool.get("name") in _OPENCODE_RESERVED_TOOL_NAMES:
+            aliased = dict(tool)
+            aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            rewritten.append(aliased)
+        else:
             rewritten.append(tool)
-            continue
-        base = alias = f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}"
-        suffix = 2
-        while alias in taken:
-            alias, suffix = f"{base}_{suffix}", suffix + 1
-        taken.add(alias)
-        alias_map[alias] = name
-        rewritten.append(rename(tool, alias))
-    return rewritten, alias_map
+    return rewritten
 
 
 def _xai_prefers_native_web_search() -> bool:
@@ -581,14 +577,105 @@ class ResponsesApiTransport(ProviderTransport):
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
 
-        # Lazy: provider plugins import this transport during model_metadata init.
-        from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
-        request_overrides = params.get("request_overrides") or {}
-        # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
-        wire_model = _strip_ctx_variant(request_overrides.get("model", model))
+        # Resolve reasoning effort
+        reasoning_effort = "medium"
+        reasoning_enabled = True
+        reasoning_config = params.get("reasoning_config")
+        if reasoning_config and isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                reasoning_enabled = False
+            elif reasoning_config.get("effort"):
+                reasoning_effort = reasoning_config["effort"]
+
+        # Wire vocabularies are declared in agent.reasoning_effort; the shared
+        # clamp policy (nearest weaker supported level, never escalate,
+        # never invert the ladder) replaces the per-backend hand maps that
+        # repeatedly leaked internal levels like "ultra" to the wire
+        # (#89503 class) or clamped one rung below a model's real ceiling
+        # (#87279).
+        if params.get("is_xai_responses", False):
+            from agent.model_metadata import is_grok_46_family
+
+            # Grok 4.6 accepts xhigh as a wire value; older Grok tops out
+            # at high.
+            _supported = (
+                XAI_GROK46_EFFORTS if is_grok_46_family(model)
+                else XAI_LEGACY_EFFORTS
+            )
+        elif (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends:
+            # none/low/medium/high/max.
+            _supported = ACTUAL_RELAY_EFFORTS
+        else:
+            # OpenAI/Codex Responses backend — per-model vocabulary
+            # (live-verified: "max" is gpt-5.6-only, "minimal" always
+            # rejected). #68365 premise confirmed.
+            _supported = codex_supported_efforts(model)
+        reasoning_effort = clamp_effort(reasoning_effort, _supported)
+
+        response_tools = _responses_tools(tools)
+
+        # xAI server-side web search vs Hermes web providers.
+        #
+        # grok models on xAI's /v1/responses surface have a *native*,
+        # server-executed web search.  A client-side function literally named
+        # ``web_search`` collides with that engine: declared as a plain
+        # ``function`` rather than ``{"type": "web_search"}``, the search
+        # dispatches but never reconciles → incomplete turn + 3 retries.
+        # Verified live against grok-composer-2.5-fast (2026-06); see #48108.
+        #
+        # Two modes, chosen by the user's web-search backend config:
+        #
+        # 1. **Native** (active/configured backend is ``xai``, or resolution
+        #    fails): drop the client ``web_search`` function and declare
+        #    xAI's built-in instead. 1:1 swap only when client ``web_search``
+        #    was already present — never an additive grant.
+        # 2. **Client** (Firecrawl / Tavily / Exa / … configured or resolved):
+        #    keep Hermes dispatch so ``web.backend`` / ``web.search_backend``
+        #    is honored, but rename the wire tool to
+        #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
+        #    is mapped back to ``web_search`` in ``normalize_response``.
+        if is_xai_responses and response_tools:
+            has_client_web_search = any(
+                isinstance(t, dict) and t.get("name") == "web_search"
+                for t in response_tools
+            )
+            if has_client_web_search:
+                if _xai_prefers_native_web_search():
+                    filtered = [
+                        t for t in response_tools
+                        if not (isinstance(t, dict) and t.get("name") == "web_search")
+                    ]
+                    filtered.append({"type": "web_search"})
+                    response_tools = filtered
+                else:
+                    response_tools = _rename_client_web_search_for_xai(response_tools)
+
+        # OpenCode Responses backends reserve web_search / search_files as
+        # function names (HTTP 400 "custom function name 'X' is reserved",
+        # #85589). Alias them on the wire; normalize_response maps them back.
+        if response_tools and _is_opencode_responses_backend(params):
+            response_tools = _rename_reserved_tools_for_opencode(response_tools)
+
+        # ``tools`` MUST be omitted entirely when there are no functions to
+        # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
+        # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``
+        # without a None guard, so passing ``tools=None`` raises
+        # ``TypeError: 'NoneType' object is not iterable`` before any HTTP
+        # request is issued (openai==2.24.0).  Reported for the
+        # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
+        # (#32892) when the agent runs without external tools registered.
+        # Function-level import: agent.model_metadata is imported lazily
+        # because provider plugins import this transport during
+        # model_metadata's own module init (circular otherwise).
+        from agent.model_metadata import (
+            strip_codex_context_variant_suffix as _strip_ctx_variant,
+        )
         kwargs = {
-            # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
-            "model": wire_model,
+            # ``-900k`` large-context picker variants are Hermes-side aliases
+            # (gpt-5.6-sol-900k etc.) — the Codex/OpenAI backend only knows
+            # the base slug, so strip the suffix before it hits the wire.
+            "model": _strip_ctx_variant(model),
             "instructions": instructions,
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
@@ -693,16 +780,20 @@ class ResponsesApiTransport(ProviderTransport):
             tool_calls = []
             alias_map = self._last_wire_aliases
             for tc in msg.tool_calls:
-                provider_data = {
-                    key: getattr(tc, key) for key in ("call_id", "response_item_id") if getattr(tc, key, None)
-                }
-                has_fn = hasattr(tc, "function")
-                name = tc.function.name if has_fn else getattr(tc, "name", "")
-                # Undo only aliases THIS request emitted; the legacy map is for normalize-only call sites.
-                if alias_map is None:
-                    name = _LEGACY_ALIAS_FALLBACK.get(name, name)
-                elif name in alias_map:
-                    name = alias_map[name]
+                provider_data = {}
+                if hasattr(tc, "call_id") and tc.call_id:
+                    provider_data["call_id"] = tc.call_id
+                if hasattr(tc, "response_item_id") and tc.response_item_id:
+                    provider_data["response_item_id"] = tc.response_item_id
+                name = tc.function.name if hasattr(tc, "function") else getattr(tc, "name", "")
+                # Undo the xAI client-path wire alias so Hermes dispatches
+                # the real ``web_search`` tool (Firecrawl / etc.).
+                if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
+                    name = "web_search"
+                # Undo the OpenCode reserved-name wire aliases the same way
+                # (hermes_web_search / hermes_search_files, #85589).
+                elif name in _RESERVED_ALIAS_TO_NAME:
+                    name = _RESERVED_ALIAS_TO_NAME[name]
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None), name=name,
                     arguments=tc.function.arguments if has_fn else getattr(tc, "arguments", "{}"),

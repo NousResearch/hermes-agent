@@ -329,15 +329,21 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
                 completed_in_batch.append(prompt_index)
-                # Tombstone row (#93527): resume filters by scanning batch_*.jsonl
-                # rows for prompt content, so a discarded sample without a row would
-                # be re-run at full cost on every restart. The merge step excludes
-                # tombstones from trajectories.jsonl.
-                _append_jsonl(batch_output_file, {
+                # Tombstone row (#93527): resume filters exclusively by
+                # scanning batch_*.jsonl rows for prompt content, so a
+                # discarded sample without a row is invisible to --resume
+                # and gets re-run at full cost on every restart. The
+                # tombstone carries just enough for the scan; the merge
+                # step excludes it from trajectories.jsonl.
+                tombstone = {
                     "prompt_index": prompt_index,
                     "discarded": "no_reasoning",
                     "prompt": _entry_prompt_text(prompt_data),
-                })
+                }
+                with open(batch_output_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(tombstone, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
                 continue
 
             # Normalize for a consistent schema across all entries.
@@ -381,9 +387,13 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
 
 
 def _entry_prompt_text(entry: Dict) -> str:
-    """Human prompt text from a dataset/trajectory entry: flat ``prompt``, ShareGPT
-    ``conversations`` (from/value), chat ``conversations``/``messages`` (role/content),
-    or a no-reasoning discard tombstone."""
+    """Extract the human prompt text from a dataset or trajectory entry.
+
+    Handles the shapes that appear across batch_runner: a flat
+    ``entry["prompt"]``, ShareGPT-style ``conversations`` (``from``/``value``),
+    chat-style ``conversations``/``messages`` (``role``/``content``), and the
+    discard tombstones written by the no-reasoning discard path.
+    """
     if not isinstance(entry, dict):
         return ""
     text = str(entry.get("prompt") or "").strip()
@@ -399,17 +409,6 @@ def _entry_prompt_text(entry: Dict) -> str:
                 if text:
                     return text
     return ""
-
-
-def _banner(title: str) -> None:
-    print("\n" + "=" * 70)
-    print(title)
-    print("=" * 70)
-
-
-def _chunk(entries: List[Tuple[int, Dict[str, Any]]], size: int) -> List[List[Tuple[int, Dict[str, Any]]]]:
-    """Split ``(index, entry)`` tuples into batches of *size*, preserving original indices."""
-    return [entries[i:i + size] for i in range(0, len(entries), size)]
 
 
 class BatchRunner:
@@ -552,8 +551,14 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
+
+                            # Skip failed entries - we want to retry these
                             if entry.get("failed", False):
                                 continue
+
+                            # Discard tombstones count as completed — the
+                            # prompt was processed and deliberately dropped
+                            # (#93527); re-running it would just re-discard.
                             prompt_text = _entry_prompt_text(entry)
                             if prompt_text:
                                 completed_prompts.add(prompt_text)
@@ -722,9 +727,13 @@ class BatchRunner:
                         try:
                             data = json.loads(line)
 
+                            # Discard tombstones are resume bookkeeping, not
+                            # training data (#93527) — never enter the merged
+                            # trajectories file.
                             if data.get("discarded"):
                                 tombstone_entries += 1
                                 continue
+
                             tool_stats = data.get('tool_stats', {})
                             invalid_tools = [k for k in tool_stats if k not in ALL_POSSIBLE_TOOLS]
 
@@ -740,14 +749,34 @@ class BatchRunner:
 
         if filtered_entries > 0:
             print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        kept = total_entries - filtered_entries - tombstone_entries
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({kept} entries)")
-        return kept, batch_files_found
-
-    def _print_summary(self, results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time) -> None:
-        _banner("📊 BATCH PROCESSING COMPLETE")
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries - tombstone_entries} entries)")
+        
+        # Save final statistics
+        final_stats = {
+            "run_name": self.run_name,
+            "distribution": self.distribution,
+            "total_prompts": len(self.dataset),
+            "total_batches": len(self.batches),
+            "batch_size": self.batch_size,
+            "model": self.model,
+            "completed_at": datetime.now().isoformat(),
+            "duration_seconds": round(time.time() - start_time, 2),
+            "tool_statistics": total_tool_stats,
+            "reasoning_statistics": total_reasoning_stats,
+            "discarded_no_reasoning": sum(
+                r.get("discarded_no_reasoning", 0) for r in results
+            ),
+        }
+        
+        with open(self.stats_file, 'w', encoding='utf-8') as f:
+            json.dump(final_stats, f, indent=2, ensure_ascii=False)
+        
+        # Print summary
+        print("\n" + "=" * 70)
+        print("📊 BATCH PROCESSING COMPLETE")
+        print("=" * 70)
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
-        print(f"✅ Total trajectories in merged file: {kept}")
+        print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries - tombstone_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
         print("\n📈 Tool Usage Statistics:")

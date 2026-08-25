@@ -137,42 +137,160 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
     except Exception:
         return False
 
+    def _canonical_session_row(profile_path):
+        """Summary of the profile's canonical "Bot Chat" registry row, or None.
 
-def _canonical_session_row(db, profile_path):
-    """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
-    Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
-    worker sources count as absent. ``id`` is the registry row, ``resolved_id`` the live tip.
+        The canonical chat's identity is the NAME: the session titled exactly
+        "Bot Chat" on this profile (core UNIQUE(title) makes it a registry of
+        at most one row). Complements ``last_session``: that field answers
+        "what is the newest conversation", this answers "where is the
+        forever-chat" — so a roster row's preview and its click target
+        describe the same session (hermes-agent#88200) with no client-side
+        pointer involved.
 
-    The canonical chat's identity is the NAME: the session titled exactly "Bot Chat" on this profile (core
-    UNIQUE(title) makes it a registry of at most one row). Complements ``last_session``: that field answers
-    "what is the newest conversation", this answers "where is the forever-chat" — so a roster row's preview
-    and its click target describe the same session (hermes-agent#88200) with no client-side pointer
-    involved.
-    """
-    try:
-        row = db.get_session_by_title("Bot Chat")
-        session_id = str((row or {}).get("id") or "").strip()
-        if not session_id or _denied_source(row):
+        Exact-lookup semantics, deliberately different from the listing:
+        hidden rows still resolve (canonical chats are always hidden),
+        compression lineages resolve to the live tip with the same resolver
+        ``session.resume`` uses, and denied internal sources (tool/kanban)
+        count as absent. The reported ``id`` stays the durable registry row
+        while ``resolved_id`` names the live tip. Best-effort: any failure
+        degrades to None rather than failing the whole profiles.list call.
+        """
+        try:
+            from pathlib import Path
+
+            db_path = Path(profile_path) / "state.db"
+            if not db_path.exists():
+                return None
+            from hermes_state import SessionDB
+
+            deny = frozenset({"kanban", "tool"})
+            db = SessionDB(db_path=db_path)
+            try:
+                row = db.get_session_by_title("Bot Chat")
+                if not row:
+                    return None
+                session_id = str(row.get("id") or "").strip()
+                if not session_id:
+                    return None
+                if (row.get("source") or "").strip().lower() in deny:
+                    return None
+                if row.get("archived"):
+                    # An archived canonical row usually means the user
+                    # deliberately retired it — report absent. But the
+                    # ws-orphan reaper / older agent cleanup can archive it
+                    # by accident (end_reason ws_orphan_reap / agent_close):
+                    # the canonical chat is identity-scoped (the bot's
+                    # forever conversation), so an accidental archive is
+                    # user-visible amnesia. Resurrect those — un-archive and
+                    # keep resolving — reusing the same recoverable-reason
+                    # set as gateway stale-route recovery (#92687).
+                    if not db.unarchive_recoverable_session(session_id):
+                        return None
+                try:
+                    tip = db.resolve_resume_session_id(session_id) or session_id
+                except Exception:
+                    tip = session_id
+                tip_row = db.get_session(tip) or row
+                preview = ""
+                try:
+                    preview = _latest_message_preview(db, tip)
+                except Exception:
+                    pass
+                return {
+                    "id": session_id,
+                    "resolved_id": tip,
+                    "root_title": row.get("title") or "",
+                    "title": tip_row.get("title") or "",
+                    "preview": preview,
+                    "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
+                    "last_active": (
+                        tip_row.get("last_activity_at")
+                        or tip_row.get("started_at")
+                        or row.get("started_at")
+                        or 0
+                    ),
+                    "message_count": tip_row.get("message_count") or 0,
+                }
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        except Exception:
             return None
-        # Archived = retired (absent), except accidental reaper archives: resurrect those.
-        # An archived canonical row usually means the user deliberately retired it — report absent. But the
-        # ws-orphan reaper / older agent cleanup can archive it by accident (#92687): resurrect those. Judge
-        # recoverability READ-ONLY first so the writable open (20s write-lock patience, the very stall this
-        # refactor removes from the 5s poll) is paid only in the rare accidental-archive case, then run the
-        # real predicate through unarchive_recoverable_session on a short-lived writable handle.
-        if row.get("archived") and not _resurrect_recoverable_canonical(db, profile_path, session_id):
-            return None
-        tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
-        tip_row = db.get_session(tip) or row
-        started = row.get("started_at") or 0
-        return {
-            "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
-            "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
-            "started_at": tip_row.get("started_at") or started,
-            "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0}
-    except Exception:
-        return None
+
+    def _latest_profile_session_rows(profile_path):
+        """(newest human-facing session, newest worker session) for a profile.
+
+        First element mirrors session.list's deny-list (drops ``tool``
+        sub-agent rows and ``kanban`` dispatcher workers). Second element is
+        the newest DENIED row — the freshest kanban/tool worker — so roster
+        UIs can show that a profile is actively working even though worker
+        sessions never surface in conversation lists (hermes-agent#90268).
+        Workers heartbeat ``last_activity_at`` every ≤60s while running
+        (#72016), so a live worker's ``last_active`` stays fresh and the
+        client can apply its own liveness window. Best-effort: any failure
+        (missing state.db, locked db, older schema) degrades to (None, None)
+        rather than failing the whole profiles.list call.
+        """
+        try:
+            from pathlib import Path
+
+            db_path = Path(profile_path) / "state.db"
+            if not db_path.exists():
+                return None, None
+            from hermes_state import SessionDB
+
+            deny = frozenset({"kanban", "tool"})
+            db = SessionDB(db_path=db_path)
+            try:
+                human = None
+                worker = None
+                for s in db.list_sessions_rich(
+                    source=None, limit=20, order_by_last_active=True, compact_rows=True
+                ):
+                    src = (s.get("source") or "").strip().lower()
+                    if src in deny:
+                        if worker is None:
+                            worker = {
+                                "id": s["id"],
+                                "source": src,
+                                "title": s.get("title") or "",
+                                "last_active": s.get("last_active") or s.get("started_at") or 0,
+                            }
+                        continue
+                    if human is not None:
+                        continue
+                    row = {
+                        "id": s["id"],
+                        "title": s.get("title") or "",
+                        "preview": s.get("preview") or "",
+                        "started_at": s.get("started_at") or 0,
+                        "last_active": s.get("last_active") or s.get("started_at") or 0,
+                        "message_count": s.get("message_count") or 0,
+                    }
+                    # Roster surfaces want "where the conversation IS", not
+                    # where it began: override the shared first-message
+                    # preview with the newest user/assistant text. Best-
+                    # effort — any failure keeps the first-message preview.
+                    try:
+                        latest = _latest_message_preview(db, s["id"])
+                        if latest:
+                            row["preview"] = latest
+                    except Exception:
+                        pass
+                    human = row
+                    if worker is not None:
+                        break
+                return human, worker
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        except Exception:
+            return None, None
 
 
 def _latest_profile_session_rows(db):
@@ -206,6 +324,30 @@ def _latest_profile_session_rows(db):
     except Exception:
         return None, None
 
+        include_sessions = is_truthy_value(params.get("include_sessions", True))
+        out = []
+        for p in list_profiles():
+            row = {
+                "name": p.name,
+                "path": str(p.path),
+                "is_default": bool(p.is_default),
+                "model": p.model,
+                "provider": p.provider,
+                "description": getattr(p, "description", "") or "",
+                "display_name": getattr(p, "display_name", "") or "",
+                "skill_count": getattr(p, "skill_count", 0) or 0,
+            }
+            if include_sessions:
+                last_row, worker_row = _latest_profile_session_rows(p.path)
+                row["last_session"] = last_row
+                # Freshest kanban/tool worker (or None) — lets rosters count
+                # a profile as active while its worker runs (#90268). Older
+                # clients ignore the extra field.
+                row["worker_session"] = worker_row
+                # The profile's canonical "Bot Chat" registry row (or None) —
+                # identity is the NAME, resolved server-side on every listing
+                # so no client ever needs to carry a session pointer.
+                row["canonical_session"] = _canonical_session_row(p.path)
 
 def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
@@ -223,6 +365,25 @@ def _profile_session_fields(row, profile_path):
         if db is not None:
             _best_effort(db.close)
 
+                meta_path = _Path(str(p.path)) / "profile.yaml"
+                # Presence of this field feature-detects gateway-owned CAS,
+                # including a brand-new profile whose revision map is empty.
+                row["ui_meta_revisions"] = {}
+                if meta_path.is_file():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        raw_meta = _yaml.safe_load(f) or {}
+                    ui_meta = raw_meta.get("ui_meta")
+                    if isinstance(ui_meta, dict) and ui_meta:
+                        row["ui_meta"] = ui_meta
+                    revisions = raw_meta.get("_ui_meta_revisions")
+                    if isinstance(revisions, dict) and revisions:
+                        row["ui_meta_revisions"] = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
+            except Exception:
+                pass
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     """Attach ``ui_meta`` / ``ui_meta_revisions`` / ``has_avatar`` from profile.yaml + assets.
@@ -449,30 +610,203 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
     whole write; revisions survive deletion so a stale client cannot recreate a removed key."""
     applied["ui_meta"] = False
     try:
-        incoming = params["ui_meta"]
-        if len(json.dumps(incoming)) > 65536:
-            return
-        expected = params.get("ui_meta_expected_revisions")
-        if expected is not None and not isinstance(expected, dict):
-            raise ValueError("ui_meta_expected_revisions must be an object")
-        with _profile_ui_meta_lock:
-            existing = _read_profile_yaml(profile_dir)
-            raw_revisions = existing.get("_ui_meta_revisions")
-            revisions = _clean_revisions(raw_revisions if isinstance(raw_revisions, dict) else {})
-            conflicts = {}
-            for key in incoming if isinstance(expected, dict) else ():
-                wanted, actual = expected.get(key), revisions.get(key, 0)
-                if not isinstance(wanted, int) or isinstance(wanted, bool) or wanted < 0 or wanted != actual:
-                    conflicts[key] = {"expected": wanted, "actual": actual}
-            if conflicts:
-                applied["ui_meta_conflicts"] = conflicts
-                applied["ui_meta_revisions"] = {key: revisions.get(key, 0) for key in incoming}
-                return
-            current = existing.get("ui_meta")
-            current = current if isinstance(current, dict) else {}
-            for key, value in incoming.items():
-                if value is None:
-                    current.pop(key, None)
+        from pathlib import Path
+
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_dir = Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.skills_config import get_disabled_skills
+
+            cfg = load_config() or {}
+            disabled = {s.lower() for s in get_disabled_skills(cfg)}
+
+            installed = []
+            skills_root = profile_dir / "skills"
+            if skills_root.is_dir():
+                for md in sorted(skills_root.rglob("SKILL.md")):
+                    skill_name = md.parent.name
+                    installed.append(
+                        {"name": skill_name, "enabled": skill_name.lower() not in disabled}
+                    )
+
+            # Toolsets: the same filtered universe the `hermes tools`
+            # checklist offers — configurable toolsets (built-in + plugin),
+            # minus platform-restricted ones that don't apply here — with
+            # enablement resolved the way the runtime actually resolves it.
+            # The raw registry (get_all_toolsets) leaks internal platform
+            # composites (hermes-discord, feishu_drive, ...) and reports
+            # everything "enabled" whenever the profile has no pin, which a
+            # capabilities UI then faithfully mis-renders (tester report).
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_allowed_for_platform,
+            )
+            from toolsets import resolve_toolset
+
+            tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+            pinned = tools_cfg.get("enabled_toolsets")
+            pinned_set = (
+                {str(t).strip() for t in pinned if str(t).strip()}
+                if isinstance(pinned, list)
+                else None
+            )
+            try:
+                platform_enabled = set(
+                    _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+                )
+            except Exception:
+                platform_enabled = set()
+            try:
+                from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+            except Exception:
+                _DEFAULT_OFF_TOOLSETS = set()
+            toolsets_out = []
+            for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
+                if not _toolset_allowed_for_platform(ts_name, "cli"):
+                    continue
+                enabled = (
+                    ts_name in pinned_set
+                    if pinned_set is not None
+                    else ts_name in platform_enabled
+                )
+                # Default-off integrations (a2a, yuanbao, spotify, ...) are
+                # opt-ins; when the profile hasn't opted in they're noise in
+                # a per-profile editor — `hermes tools` / Settings is where
+                # you turn them on globally first. Enabled ones still show.
+                # yuanbao rides the same rule: a region-specific integration
+                # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.
+                if (ts_name in _DEFAULT_OFF_TOOLSETS or ts_name == "yuanbao") and not enabled:
+                    continue
+                try:
+                    tool_count = len(set(resolve_toolset(ts_name)))
+                except Exception:
+                    tool_count = 0
+                toolsets_out.append(
+                    {
+                        "name": ts_name,
+                        "label": ts_label,
+                        "description": ts_desc or "",
+                        "tool_count": tool_count,
+                        "enabled": enabled,
+                    }
+                )
+
+            soul_path = profile_dir / "SOUL.md"
+            soul = ""
+            try:
+                if soul_path.is_file():
+                    soul = soul_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+            # MCP servers configured for this profile (config.yaml
+            # mcp_servers). Report name + enabled + a transport hint so a
+            # capabilities UI can list and toggle them without parsing the
+            # raw config shape.
+            mcp_out = []
+            try:
+                mcp_cfg = cfg.get("mcp_servers")
+                if isinstance(mcp_cfg, dict):
+                    for srv_name in sorted(mcp_cfg.keys()):
+                        entry = mcp_cfg.get(srv_name)
+                        if not isinstance(entry, dict):
+                            continue
+                        transport = "stdio"
+                        if entry.get("url"):
+                            transport = str(entry.get("transport") or "http")
+                        mcp_out.append(
+                            {
+                                "name": str(srv_name),
+                                "enabled": not is_truthy_value(entry.get("disabled", False)),
+                                "transport": transport,
+                            }
+                        )
+            except Exception:
+                pass
+
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+            description = ""
+            try:
+                from hermes_cli.profiles import read_profile_meta
+
+                description = str(read_profile_meta(profile_dir).get("description") or "")
+            except Exception:
+                pass
+
+            return _ok(
+                rid,
+                {
+                    "name": name,
+                    "description": description,
+                    "soul": soul,
+                    "model": {
+                        "provider": str(model_cfg.get("provider") or ""),
+                        "default": str(model_cfg.get("default") or ""),
+                    },
+                    "skills": installed,
+                    "toolsets": toolsets_out,
+                    "toolsets_pinned": pinned_set is not None,
+                    "mcp_servers": mcp_out,
+                },
+            )
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as e:
+        return _err(rid, 5063, str(e))
+
+
+@method("profiles.configure")
+def _(rid, params: dict) -> dict:
+    """Apply configuration changes to a profile (editor Save).
+
+    Params: ``name`` (required) plus any of:
+    ``description`` (str), ``soul`` (str, full SOUL.md replacement),
+    ``model`` + ``provider`` (both required together),
+    ``disabled_skills`` (list[str], replace semantics),
+    ``enabled_toolsets`` (list[str], replace semantics; empty list clears
+    the pin so every toolset is enabled again), and
+    ``ui_meta_expected_revisions`` (dict[str, int], optional compare-and-swap
+    preconditions for keys supplied in ``ui_meta``).
+
+    Each section is applied independently and best-effort; the result
+    reports per-section success so a UI can surface partial failures.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    try:
+        from pathlib import Path
+
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_dir = Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        applied = {}
+
+        if isinstance(params.get("ui_meta"), dict):
+            # Client-agnostic UI metadata (avatar/pet/etc.), merged key-wise
+            # into profile.yaml's ui_meta block. A key set to None deletes it.
+            # Size-capped: this rides profiles.list on every roster paint, so
+            # large blobs (e.g. raw base64 images) are rejected — persist big
+            # assets elsewhere and store a reference.
+            try:
+                import json as _json
+
+                incoming = params["ui_meta"]
+                if len(_json.dumps(incoming)) > 65536:
+                    applied["ui_meta"] = False
                 else:
                     current[key] = value
                 revisions[key] = revisions.get(key, 0) + 1
@@ -488,27 +822,75 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
     except Exception:
         applied["ui_meta"] = False
 
+                    expected = params.get("ui_meta_expected_revisions")
+                    if expected is not None and not isinstance(expected, dict):
+                        raise ValueError("ui_meta_expected_revisions must be an object")
 
-def _configure_model(profile_dir, params, applied):
-    """Apply a ``model`` + ``provider`` pin, or return a confirm message and write NOTHING (client
-    resends with ``confirm_expensive_model``). A failing guard = no warning (as _apply_model_switch)."""
-    model, provider = _model_provider_params(params)
-    if not (model and provider):
-        return None
-    confirm_message = None
-    # #95293 remainder: this is the Bots editor's model-switch path, and it used to write guarded
-    # (data-policy / expensive) models silently — the ONE surface that bypassed the selection guard every
-    # other switch path enforces. Same handshake contract as ``config.set model``: without
-    # ``confirm_expensive_model`` a guarded pick answers ``confirm_required`` + ``confirm_message`` and
-    # writes NOTHING; the client resends with ``confirm_expensive_model: true`` once the user confirms. A
-    # misbehaving guard must never break the save (treated as "no warning"), matching
-    # ``_apply_model_switch``.
-    if not is_truthy_value(params.get("confirm_expensive_model", False)):
-        warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
-        confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
-    if confirm_message is None:
-        applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))
-    return confirm_message
+                    meta_path = profile_dir / "profile.yaml"
+                    with _profile_ui_meta_lock:
+                        existing = {}
+                        if meta_path.is_file():
+                            try:
+                                with open(meta_path, "r", encoding="utf-8") as f:
+                                    loaded = _yaml.safe_load(f) or {}
+                                if isinstance(loaded, dict):
+                                    existing = loaded
+                            except Exception:
+                                existing = {}
+
+                        raw_revisions = existing.get("_ui_meta_revisions")
+                        revisions = dict(raw_revisions) if isinstance(raw_revisions, dict) else {}
+                        revisions = {
+                            str(key): max(0, int(value))
+                            for key, value in revisions.items()
+                            if isinstance(value, int) and not isinstance(value, bool)
+                        }
+                        conflicts = {}
+                        if isinstance(expected, dict):
+                            for key in incoming:
+                                wanted = expected.get(key)
+                                actual = revisions.get(key, 0)
+                                if (
+                                    not isinstance(wanted, int)
+                                    or isinstance(wanted, bool)
+                                    or wanted < 0
+                                    or wanted != actual
+                                ):
+                                    conflicts[key] = {"expected": wanted, "actual": actual}
+
+                        if conflicts:
+                            applied["ui_meta"] = False
+                            applied["ui_meta_conflicts"] = conflicts
+                            applied["ui_meta_revisions"] = {
+                                key: revisions.get(key, 0) for key in incoming
+                            }
+                        else:
+                            current = existing.get("ui_meta")
+                            if not isinstance(current, dict):
+                                current = {}
+                            for key, value in incoming.items():
+                                if value is None:
+                                    current.pop(key, None)
+                                else:
+                                    current[key] = value
+                                revisions[key] = revisions.get(key, 0) + 1
+                            if current:
+                                existing["ui_meta"] = current
+                            else:
+                                existing.pop("ui_meta", None)
+                            # Revisions intentionally survive deletion: a
+                            # stale client must not recreate a removed key by
+                            # presenting the initial revision again.
+                            existing["_ui_meta_revisions"] = revisions
+                            from utils import atomic_yaml_write
+
+                            atomic_yaml_write(meta_path, existing, sort_keys=False)
+                            applied["ui_meta"] = True
+                            applied["ui_meta_revisions"] = {
+                                key: revisions[key] for key in incoming
+                            }
+            except Exception:
+                applied["ui_meta"] = False
 
 
 def _clean_names(values) -> set:

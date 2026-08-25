@@ -2,17 +2,24 @@
 the mixin modules can import it without a cycle."""
 
 import contextlib
-import errno
-import json
 import logging
 import os
 import sys
 import time
 from typing import Any
 
-from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
-from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
-    _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
+from agent.skill_commands import (
+    SKILL_EXCERPT_JOINT,
+    SKILL_SCAFFOLD_SQL_LIKE,
+    describe_skill_invocation,
+)
+from agent.context_compressor import (
+    LEGACY_SUMMARY_PREFIX,
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
@@ -58,14 +65,7 @@ def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def _sql_json_extract(expression: str, path: str) -> str:
-    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
-
-    safe_json = (
-        f"(CASE WHEN json_valid({expression}) "
-        f"THEN {expression} ELSE json_object() END)"
-    )
-    return f"json_extract({safe_json}, {_sql_literal(path)})"
+_SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 
 def _sql_ltrim_whitespace(expression: str) -> str:
@@ -78,46 +78,76 @@ def _sql_trim_whitespace(expression: str) -> str:
 
 def _sql_starts_with(expression: str, prefixes: tuple[str, ...]) -> str:
     trimmed = _sql_ltrim_whitespace(expression)
-    return "(" + " OR ".join(f"SUBSTR({trimmed}, 1, {len(p)}) = {_sql_literal(p)}" for p in prefixes) + ")"
+    checks = [
+        f"SUBSTR({trimmed}, 1, {len(prefix)}) = {_sql_literal(prefix)}"
+        for prefix in prefixes
+    ]
+    return "(" + " OR ".join(checks) + ")"
 
 
-def _sql_after_marker(marker: str) -> str:
-    """``m.content`` after the first occurrence of *marker*."""
-    return f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(marker)}) + {len(marker)})"
-
-
-# Match the whole introduction shared by current and legacy prefixes, so a message that merely starts with the
-# bracketed label is not a compaction carrier.
+# Current and historical long-form prefixes share this complete introduction;
+# their stale-item guidance diverges only after it. Matching the whole intro
+# avoids treating an ordinary user message that merely starts with the short
+# bracketed label as a compaction carrier.
 _PREVIEW_LONG_FORM_PREFIX = SUMMARY_PREFIX.split("Do NOT answer", 1)[0]
-_PREVIEW_SUMMARY_PREFIXES = (_PREVIEW_LONG_FORM_PREFIX, LEGACY_SUMMARY_PREFIX)
-_PREVIEW_STANDALONE_SUMMARY_SQL = _sql_starts_with("m.content", _PREVIEW_SUMMARY_PREFIXES)
-_PREVIEW_MERGED_AFTER_SQL = _sql_after_marker(_MERGED_SUMMARY_DELIMITER)
-_PREVIEW_MERGED_SUMMARY_SQL = (f"(INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
-    f" AND {_sql_starts_with(_PREVIEW_MERGED_AFTER_SQL, _PREVIEW_SUMMARY_PREFIXES)})")
+_PREVIEW_SUMMARY_PREFIXES = (
+    _PREVIEW_LONG_FORM_PREFIX,
+    LEGACY_SUMMARY_PREFIX,
+)
+_PREVIEW_STANDALONE_SUMMARY_SQL = _sql_starts_with(
+    "m.content", _PREVIEW_SUMMARY_PREFIXES
+)
+_PREVIEW_MERGED_AFTER_SQL = (
+    f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)})"
+    f" + {len(_MERGED_SUMMARY_DELIMITER)})"
+)
+_PREVIEW_MERGED_SUMMARY_SQL = (
+    f"(INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
+    f" AND {_sql_starts_with(_PREVIEW_MERGED_AFTER_SQL, _PREVIEW_SUMMARY_PREFIXES)})"
+)
 _PREVIEW_MERGED_PRIOR_SQL = _sql_trim_whitespace(
-    f"SUBSTR(m.content, 1, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) - 1)")
-_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL = _sql_ltrim_whitespace(_PREVIEW_MERGED_PRIOR_SQL)
-_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, 1,"
+    f"SUBSTR(m.content, 1, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) - 1)"
+)
+_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL = _sql_ltrim_whitespace(
+    _PREVIEW_MERGED_PRIOR_SQL
+)
+_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (
+    f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, 1,"
     f" {len(_MERGED_PRIOR_CONTEXT_HEADER)}) = {_sql_literal(_MERGED_PRIOR_CONTEXT_HEADER)}"
     f" THEN {_sql_ltrim_whitespace(f'SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, {len(_MERGED_PRIOR_CONTEXT_HEADER) + 1})')}"
-    f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END")
-_PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
+    f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END"
+)
+_PREVIEW_FORCE_USER_REMAINDER_SQL = (
+    f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)})"
+    f" + {len(_SUMMARY_END_MARKER)})"
+)
 
-# Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
-# A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
-_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
-    f" AND ((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
-    f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL} AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
+# Session preview subqueries select their first eligible user-authored content.
+# Pure compaction rows are ineligible; force-user-leading and merged carriers
+# remain eligible only when authentic content survives the wire boundary.
+_PREVIEW_ELIGIBLE_SQL = (
+    f"((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
+    f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL}"
+    f" AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
     f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
-    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0)))")
+    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))"
+)
 
-# ``_preview_raw`` SELECT for every listing query (scaffolded rows: head + tail around SKILL_EXCERPT_JOINT).
+
+# The shared ``_preview_raw`` SELECT expression, interpolated by every listing
+# query. A scaffolded row gets a wider excerpt: the whole message while it fits
+# the budget, else head + tail (where the typed instruction lands) spliced
+# around SKILL_EXCERPT_JOINT.
 _PREVIEW_RAW_SELECT = (
-    f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL} THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
-    f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL} THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
-    f" WHEN {_PREVIEW_SCAFFOLDED_SQL} AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
-    f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
+    f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL}"
+    f" THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
+    f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL}"
+    f" THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
+    f" WHEN {_PREVIEW_SCAFFOLDED_SQL}"
+    f" AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
+    f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW})"
+    f" || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW * 2})"
     f" ELSE SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_HEAD_CHARS}) END")
@@ -183,6 +213,25 @@ def is_automatic_end_reason(reason) -> bool:
     this instead of re-implementing the reason taxonomy (#88197, never-patch-predicates).
     """
     return isinstance(reason, str) and reason in _AUTOMATIC_END_REASONS
+
+# Accidental end reasons that recovery treats as resumable (see
+# docs/session-lifecycle.md "recoverable accidental reasons"). Interpolated
+# into the recovery SQL below AND exposed as SessionDB.RECOVERABLE_END_REASONS
+# so the tuple is the single source of truth — literals cannot drift.
+_RECOVERABLE_END_REASONS = (
+    "agent_close",
+    "ws_orphan_reap",
+    # A stale sentinel-parked runtime quietly superseded by a fresh
+    # session.resume of the same stored session (no reclaimed broadcast);
+    # the stored session stays resumable like any accidental end.
+    "superseded_by_resume",
+    # Startup sweep of rows orphaned by a dead gateway process (#65194):
+    # the in-process ws-orphan grace timer died with the process, so the
+    # row was closed at the next boot instead. Same accident class as
+    # ws_orphan_reap — kept distinct for forensics — and equally resumable.
+    "startup_orphan_reap",
+)
+_RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
 
 
 def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
@@ -946,273 +995,115 @@ AFTER UPDATE OF content, tool_name, tool_calls, role ON messages BEGIN
 END;
 """
 
-# Cross-process full-FTS-rebuild admission (single authority).  Several processes share one state.db and a
-# structural rebuild (FTS5 'rebuild' or `_recover_stale_fts`'s drop/recreate) must run in ONE at a time —
-# concurrent rebuilds corrupted state.db in production.  Gates `rebuild_fts()`, `_rebuild_fts_indexes()`,
-# `_recover_stale_fts()`; the chunked backfill (`fts_rebuild_step`) is deliberately NOT routed through it (it
-# claims progress under SQLite transaction authority).  Mirrors `hermes_state_repair._cross_process_repair_lock`:
-# portable (msvcrt/flock), bounded wait, FAIL CLOSED; orphaned-fd holders (see `_acquire_db_flock`) are broken
-# only when provably dead, indeterminate liveness defers.  `<db>.fts_rebuild.lock` is distinct from
-# `<db>.repair.lock` (offline schema surgery, minutes in VACUUM).  Lives here: mixins cannot import hermes_state.
 
-# ── Cross-process full-FTS-rebuild admission (single authority) ────────────── Several independent Hermes
-# processes routinely share one state.db (gateway service, the Desktop app's `hermes serve` backend,
-# interactive CLI sessions, the TUI slash worker). A full structural FTS rebuild — the FTS5 'rebuild'
-# command or the drop/recreate script in `_recover_stale_fts` — must only ever run in ONE of them at a time:
-# two concurrent rebuilds collide on write and have structurally corrupted state.db in production (PR
-# #93200; the 2026-08-15 / 2026-08-23 incidents and issues #89293 / #90950). This is the single admission
-# authority for every full structural rebuild entry point: `SessionSearchMixin.rebuild_fts()`,
+# ── Cross-process full-FTS-rebuild admission (single authority) ──────────────
+#
+# Several independent Hermes processes routinely share one state.db (gateway
+# service, the Desktop app's `hermes serve` backend, interactive CLI sessions,
+# the TUI slash worker). A full structural FTS rebuild — the FTS5 'rebuild'
+# command or the drop/recreate script in `_recover_stale_fts` — must only ever
+# run in ONE of them at a time: two concurrent rebuilds collide on write and
+# have structurally corrupted state.db in production (PR #93200; the
+# 2026-08-15 / 2026-08-23 incidents and issues #89293 / #90950).
+#
+# This is the single admission authority for every full structural rebuild
+# entry point: `SessionSearchMixin.rebuild_fts()`,
 # `SessionSchemaMixin._rebuild_fts_indexes()` (via `_init_schema`), and
-# `SessionSchemaMixin._recover_stale_fts()`. The chunked deferred backfill (`fts_rebuild_step`) is
-# deliberately NOT routed through it — it claims progress under `_execute_write`'s SQLite transaction
-# authority and is intentionally multi-process. Semantics mirror `hermes_state_repair._cross_process_repair_lock`
-# (the schema- surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded wait, and FAIL
-# CLOSED — a caller that cannot acquire the lock must NOT rebuild. The kernel drops both lock types when the
-# holder dies — UNLESS a forked child inherited the lock fd (flock rides the open file description, which
-# fork() duplicates), in which case the orphaned descriptor holds the lock forever (issue #100108).
-# `_acquire_db_flock` therefore records the holder's pid + start time under the lock and, when the recorded
-# holder is provably dead, breaks the orphaned lock by unlinking and retaking it on a fresh inode;
-# indeterminate liveness still defers. It lives here (not hermes_state) because the search/schema mixins
-# cannot import hermes_state (cycle). The lock file is `<db>.fts_rebuild.lock`, distinct from
-# `<db>.repair.lock`: schema surgery runs on an EXCLUSIVE offline connection and can legitimately take
-# minutes in VACUUM, while runtime rebuilds run on live connections. The timeout is sized for a full
-# 'rebuild' of both indexes on a large DB.
+# `SessionSchemaMixin._recover_stale_fts()`. The chunked deferred backfill
+# (`fts_rebuild_step`) is deliberately NOT routed through it — it claims
+# progress under `_execute_write`'s SQLite transaction authority and is
+# intentionally multi-process.
+#
+# Semantics mirror `hermes_state._cross_process_repair_lock` (the schema-
+# surgery authority): portable (msvcrt on Windows, flock elsewhere), bounded
+# wait, and FAIL CLOSED — a caller that cannot acquire the lock must NOT
+# rebuild. The kernel drops both lock types when the holder dies, so a crashed
+# rebuilder cannot wedge future rebuilds. It lives here (not hermes_state)
+# because the search/schema mixins cannot import hermes_state (cycle).
+#
+# The lock file is `<db>.fts_rebuild.lock`, distinct from `<db>.repair.lock`:
+# schema surgery runs on an EXCLUSIVE offline connection and can legitimately
+# take minutes in VACUUM, while runtime rebuilds run on live connections. The
+# timeout is sized for a full 'rebuild' of both indexes on a large DB.
+
 logger = logging.getLogger("hermes_state")
 
 _FTS_REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
 _FTS_REBUILD_LOCK_POLL_SECONDS = 0.1
 _IS_WINDOWS = sys.platform == "win32"
-# Post-break re-acquire budget: the fresh inode is contended only by live processes — never the full timeout.
-_LOCK_BREAK_REACQUIRE_SECONDS = 5.0
-
-# "Another process holds the lock": flock → EWOULDBLOCK/EAGAIN, msvcrt.locking → EACCES (EDEADLK when its retry
-# gives up).  Anything else (ESTALE, ENOTSUP, ENOLCK, EIO) is a persistent failure polling cannot fix.
-_LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.EDEADLK}
-
-
-def is_advisory_lock_contention(exc: BaseException) -> bool:
-    """True when *exc* means another process holds the lock; on any other ``OSError`` fail closed at once."""
-    return isinstance(exc, BlockingIOError) or (isinstance(exc, OSError) and exc.errno in _LOCK_CONTENTION_ERRNOS)
-
-
-def _proc_start_ticks(pid: int):
-    """Kernel start time of *pid* (field 22 of ``/proc/<pid>/stat``; with the PID it identifies a process
-    uniquely).  None off Linux or on any failure — callers must treat None as unknowable and FAIL CLOSED."""
-    try:
-        # comm (field 2) may contain spaces/parens; split after the LAST ')'.
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            return int(fh.read().rsplit(b")", 1)[1].split()[19])
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def _read_lock_holder_record(handle):
-    """Best-effort parse of the holder metadata JSON in a lock file."""
-    try:
-        handle.seek(0)
-        raw = handle.read(4096)
-        record = json.loads(raw.decode("utf-8", "replace")) if raw else None
-    except (OSError, ValueError, UnicodeDecodeError):
-        return None
-    return record if isinstance(record, dict) else None
-
-
-def _rewrite_lock_file(handle, payload: bytes) -> None:
-    """Best-effort truncate-and-write of *payload* at offset 0."""
-    with contextlib.suppress(OSError, ValueError):
-        handle.seek(0)
-        handle.truncate()
-        if payload:
-            handle.write(payload)
-        handle.flush()
-
-
-def _write_lock_holder_record(handle) -> None:
-    """Record this process as holder (best effort) so timed-out contenders can tell an orphaned-fd holder
-    from a live wedged one.
-
-    Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
-    """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
-    _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
-
-
-def _clear_lock_holder_record(handle) -> None:
-    """Erase holder metadata before a normal release: a surviving record means ABNORMAL exit (break allowed)."""
-    _rewrite_lock_file(handle, b"")
-
-
-def _lock_holder_provably_dead(record) -> bool:
-    """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
-    try:
-        pid = int(record["pid"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False  # PermissionError et al.: PID exists (or unknowable) — closed
-    recorded_ticks = record.get("start_ticks")
-    if recorded_ticks is None:
-        return False
-    current_ticks = _proc_start_ticks(pid)
-    return current_ticks is not None and current_ticks != recorded_ticks  # different start time: PID recycled
-
-
-def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, description):
-    """Bounded POSIX flock acquire with orphaned-holder break.  Returns ``(acquired, handle)``; *handle* may
-    have been re-opened and the caller closes whichever comes back.  *acquired*: True, False (a holder kept
-    the lock past the deadline) or None (non-contention ``OSError``, already logged: treat as not acquired
-    without the held-by-another-process warning).  ``flock`` rides the open file DESCRIPTION, which ``fork()``
-    duplicates, so a holder that forks then dies leaves the lock held forever; when the acquirer is provably
-    dead the file is unlinked and retaken on a fresh inode (the orphan's flock excludes nobody).  Every
-    acquire verifies its inode still names *lock_path*, so a racer on a dead inode retries.
-
-    A holder that forks (multiprocessing worker, daemonized helper) and then dies leaves the flock held by a
-    child that will never release it — the kernel's holder-death release never triggers, and every contender
-    defers forever. Indeterminate liveness always defers (fail closed). See #100108.
-    """
-    import fcntl
-    deadline = time.monotonic() + timeout_seconds
-    broke_lock = False
-    while True:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError) as exc:
-            if not is_advisory_lock_contention(exc):
-                logger.warning("Could not acquire %s %s (%s) — deferring rather than "
-                               "waiting out the %.0fs holder timeout on a non-contention error.",
-                               description, lock_path, exc, timeout_seconds)
-                return None, handle
-            if time.monotonic() < deadline:
-                time.sleep(poll_seconds)
-                continue
-            if broke_lock:
-                return False, handle
-            record = _read_lock_holder_record(handle)
-            if not _lock_holder_provably_dead(record):
-                return False, handle
-            logger.warning("%s %s is held by an orphaned file descriptor (recorded holder pid %s is dead — a "
-                           "forked child inherited the lock fd); breaking the stale lock and retaking it on a "
-                           "fresh file.", description, lock_path, (record or {}).get("pid"))
-            try:
-                os.unlink(lock_path)
-                handle.close()
-                handle = open(lock_path, "a+b")
-            except OSError as exc:
-                logger.warning("Could not break stale %s %s (%s) — deferring.", description, lock_path, exc)
-                return False, handle
-            broke_lock = True
-            deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
-            continue
-        # A breaker may have replaced the file while we waited; a lock on a dead inode excludes nobody.
-        try:
-            fd_stat, path_stat = os.fstat(handle.fileno()), os.stat(lock_path)
-            same_file = fd_stat.st_dev == path_stat.st_dev and fd_stat.st_ino == path_stat.st_ino
-        except OSError:
-            same_file = False
-        if same_file:
-            _write_lock_holder_record(handle)
-            return True, handle
-        try:
-            handle.close()
-            handle = open(lock_path, "a+b")
-        except OSError:
-            return False, handle
-        if time.monotonic() >= deadline:
-            return False, handle
-
-
-def _describe_lock_holder(record) -> str:
-    """Human-readable holder identity for deferral warnings."""
-    if not isinstance(record, dict) or "pid" not in record:
-        return "unknown (no holder record; pre-fix writer or non-Hermes)"
-    age = ""
-    with contextlib.suppress(TypeError, ValueError):
-        if record.get("acquired_at") is not None:
-            age = f", acquired {time.time() - float(record['acquired_at']):.0f}s ago"
-    return f"pid {record.get('pid')}{age}"
-
-
-def _acquire_msvcrt_lock(lock_path, handle, timeout):
-    """Windows counterpart of ``_acquire_db_flock`` (no orphan break); same True / False / None contract."""
-    import msvcrt
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            return True
-        except (BlockingIOError, OSError) as exc:
-            if not is_advisory_lock_contention(exc):
-                logger.warning("Could not acquire FTS rebuild lock %s (%s) — deferring on a non-contention error.",
-                               lock_path, exc)
-                return None
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
 
 
 @contextlib.contextmanager
-def fts_rebuild_admission(db_path, *, timeout_seconds=None):
-    """Serialize full structural FTS rebuilds on *db_path* across processes.  Yields True when this process
-    holds the authority, False when the bounded acquire timed out or the lock file could not be opened: the
-    caller must NOT rebuild (fail closed; the stale breadcrumb guarantees a retry).  ``db_path`` None
-    (in-memory) yields True.  In-process retries pass ``timeout_seconds=0`` so a live holder never stalls a
-    long-lived writer; the orphan break still applies."""
+def fts_rebuild_admission(db_path):
+    """Serialize full structural FTS rebuilds on *db_path* across processes.
+
+    Yields True when this process holds the rebuild authority, False when the
+    bounded acquire timed out. A caller that gets False must NOT perform a
+    full rebuild — proceeding is exactly the concurrent-rebuild interleaving
+    this lock exists to prevent (fail closed). The deferred/stale breadcrumb
+    machinery already guarantees a skipped rebuild is retried later.
+
+    ``db_path`` may be a str or Path; None (in-memory DB / tests without a
+    file path) yields True — a private in-memory DB has no cross-process
+    surface.
+    """
     if db_path is None:
         yield True
         return
-    timeout = _FTS_REBUILD_LOCK_TIMEOUT_SECONDS if timeout_seconds is None else max(float(timeout_seconds), 0.0)
     lock_path = f"{db_path}.fts_rebuild.lock"
     try:
         handle = open(lock_path, "a+b")
     except OSError as exc:
-        # Fail closed like a timed-out acquire: an unopenable lock file means the FS is out of
-        # space/inodes/descriptors and a sibling that opened earlier may still be rebuilding — yielding True
-        # gave every process on a full disk a concurrent rebuild.  Deferring is free: the breadcrumb retries.
-        logger.warning("Could not open FTS rebuild lock %s (%s) — deferring this rebuild "
-                       "rather than running it without cross-process authority.", lock_path, exc)
-        yield False
+        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
+        # pre-lock behaviour rather than refusing a rebuild we could run.
+        logger.warning(
+            "Could not open FTS rebuild lock %s (%s) — proceeding with "
+            "in-process serialisation only.", lock_path, exc,
+        )
+        yield True
         return
+
     acquired = False
     try:
-        if _IS_WINDOWS:
-            acquired = _acquire_msvcrt_lock(lock_path, handle, timeout)
-        else:
-            acquired, handle = _acquire_db_flock(
-                lock_path, handle, timeout, _FTS_REBUILD_LOCK_POLL_SECONDS, "FTS rebuild lock")
-        if acquired is None:
-            # Already logged with the real errno; "held by another process" would be a lie.
-            acquired = False
-        elif not acquired:
-            record = None if _IS_WINDOWS else _read_lock_holder_record(handle)
-            if timeout <= 0:
-                # Non-blocking probe from an in-process retry: keep it quiet.
-                logger.info("FTS rebuild lock %s is busy — deferring this retry "
-                            "(the stale-FTS breadcrumb keeps it retryable). Recorded holder: %s.",
-                            lock_path, _describe_lock_holder(record))
-            else:
-                logger.warning("FTS rebuild lock %s held by another process for more than %.0fs — deferring "
-                               "this rebuild to avoid racing the holder (the stale-FTS breadcrumb keeps it "
-                               "retryable). Recorded holder: %s.", lock_path, timeout, _describe_lock_holder(record))
+        deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_FTS_REBUILD_LOCK_POLL_SECONDS)
+        if not acquired:
+            logger.warning(
+                "FTS rebuild lock %s held by another process for more than "
+                "%.0fs — deferring this rebuild to avoid racing the holder "
+                "(the stale-FTS breadcrumb keeps it retryable).",
+                lock_path, _FTS_REBUILD_LOCK_TIMEOUT_SECONDS,
+            )
         yield acquired
     finally:
         try:
-            with contextlib.suppress(OSError):  # best-effort release
-                if acquired and _IS_WINDOWS:
+            if acquired:
+                if _IS_WINDOWS:
                     import msvcrt
+
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                elif acquired:
+                else:
                     import fcntl
-                    _clear_lock_holder_record(handle)
+
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - best effort release
+            pass
         finally:
             handle.close()

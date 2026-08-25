@@ -170,7 +170,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     """Make run_job raise, and capture what the escape handler delivers."""
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
     monkeypatch.setattr(
         s,
         "run_job",
@@ -239,9 +239,7 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
     )
 
     assert ok is False
-    assert len(delivered) == 1
-    assert delivered[0].startswith("⚠️ Cron 'scout' failed: provider failed")
-    assert "hermes cron runs j6" in delivered[0]
+    assert delivered == ["⚠️ Cron 'scout' failed: provider failed"]
 
 
 def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):

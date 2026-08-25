@@ -6,6 +6,8 @@ import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 
 import { deferred } from '../../../test/deferred'
 
+import { deferred } from '../../../test/deferred'
+
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({

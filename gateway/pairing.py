@@ -36,11 +36,37 @@ MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 DECLINE_DEDUPE_SECONDS = 24 * 3600  # One polite decline per (platform, sender) per window (#88028)
 
-# Default pairing directory override. Deliberately ``None``: an eagerly computed
-# path would freeze the HERMES_HOME/profile context at gateway boot, ignoring later
-# context-local overrides, so the gateway and ``hermes pairing`` CLI wrote different
-# directories. ``_default_pairing_dir()`` resolves fresh per call; tests patch this.
+# Default (non-profile-scoped) pairing directory. Left unresolved (``None``)
+# here rather than computed eagerly: this module is imported once by the
+# long-lived gateway process at container/process boot, and computing the
+# path eagerly freezes it to whatever HERMES_HOME/profile context existed
+# at that exact import moment for the rest of the process's lifetime --
+# even if a context-local override (see hermes_constants.set_hermes_home_override)
+# is established afterward. A freshly-started, short-lived process (e.g. the
+# ``hermes pairing`` CLI) re-imports this module later with the final
+# environment already in place, so it never observes the stale value -- the
+# resulting asymmetry is what made pending pairing codes issued by the
+# gateway unrecoverable while CLI-side writes to the same directory kept
+# working (NousResearch/hermes-agent#93449).
+#
+# ``_default_pairing_dir()`` below resolves this fresh on every call in
+# production. Tests patch this attribute directly to a concrete path for
+# isolation (e.g. ``patch("gateway.pairing.PAIRING_DIR", tmp_path)``); that
+# continues to work unchanged, since a patched (non-``None``) value takes
+# precedence over recomputing.
 PAIRING_DIR = None
+
+
+def _default_pairing_dir() -> Path:
+    """Resolve the default (non-profile-scoped) pairing directory.
+
+    Recomputed on every call rather than cached at import time -- see the
+    ``PAIRING_DIR`` comment above for why. Honors ``PAIRING_DIR`` when a
+    caller (typically a test) has explicitly set it to a concrete path.
+    """
+    if PAIRING_DIR is not None:
+        return PAIRING_DIR
+    return get_hermes_dir("platforms/pairing", "pairing")
 
 
 # Default (non-profile-scoped) pairing directory. Left unresolved (``None``) here rather than computed
@@ -290,19 +316,10 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
     """
     home = home or get_hermes_home()
     old_dir = home / "pairing"
+    new_dir = home / "platforms" / "pairing"
     active = active if active is not None else _default_pairing_dir()
-    alternate = home / "platforms" / "pairing" if active.resolve() == old_dir.resolve() else old_dir
-    if not alternate.exists() or active.resolve() == alternate.resolve():
-        return
-    active.mkdir(parents=True, exist_ok=True)
-    for src in alternate.glob("*.json"):
-        merged = _load_json_file(src) if src.is_file() else {}
-        if not merged:
-            continue
-        current = _load_json_file(active / src.name)
-        merged.update(current)
-        if merged != current:
-            _save_json_file(active / src.name, merged)
+    alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
+    _merge_pairing_dir(active, alternate)
 
 
 def _is_hashed_entry(entry) -> bool:
@@ -328,8 +345,18 @@ class PairingStore:
         profile_home = None
         if profile:
             root = get_default_hermes_root()
-            profile_home = root if profile == "default" else root / "profiles" / profile
-        self._dir = get_hermes_dir("platforms/pairing", "pairing", home=profile_home) if profile else _default_pairing_dir()
+            profile_home = (
+                root
+                if profile == "default"
+                else root / "profiles" / profile
+            )
+            self._dir = get_hermes_dir(
+                "platforms/pairing",
+                "pairing",
+                home=profile_home,
+            )
+        else:
+            self._dir = _default_pairing_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
         # Merge the alternate old/new layout so upgrades cannot split approvals.
         _migrate_split_pairing_dirs(home=profile_home, active=self._dir)

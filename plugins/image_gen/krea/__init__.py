@@ -102,20 +102,31 @@ def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]
 
 
 def _resolve_managed_krea_gateway():
-    """Managed gateway config on the managed path, else ``None``. Managed when the stored
-    ``image_gen`` selection is ``nous`` (or legacy ``use_gateway: true``), or never-configured with
-    no ``KREA_API_KEY``; an explicit vendor selection pins direct. Never raises (discovery scans)."""
+    """Return managed Krea gateway config when the user is on the managed path.
+
+    Strict selection model: the managed Krea gateway is used when the stored
+    ``image_gen`` selection is ``nous`` (or legacy ``use_gateway: true``), or
+    on a never-configured install when no direct ``KREA_API_KEY`` exists.
+    An explicit vendor selection (``krea``, ``fal``, ...) pins the direct
+    path. Returns ``None`` (direct/BYO path) otherwise, and never raises —
+    plugin discovery and availability scans must stay robust.
+    """
     try:
         from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        from tools.tool_backend_helpers import (
+            NOUS_MANAGED_PROVIDER,
+            read_selection,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
+
     try:
         selected = read_selection("image_gen")
     except Exception:  # noqa: BLE001
         selected = None
     if selected is not None and selected != NOUS_MANAGED_PROVIDER:
+        # Explicit vendor selection: direct credentials only.
         return None
     if selected is None and get_secret("KREA_API_KEY"):
         return None

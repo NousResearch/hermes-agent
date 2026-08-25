@@ -57,12 +57,7 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(
-  child,
-  timeoutMs = resolvePortAnnounceTimeoutMs(),
-  describeOutputTail = () => '',
-  bufferedOutput: () => string = () => ''
-) {
+function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(), describeOutputTail = () => '') {
   return new Promise((resolve, reject) => {
     // Seed the line buffer with any output the spawn-time tail already
     // consumed (#60323): main.ts attaches its output tail at spawn, then
@@ -222,14 +217,6 @@ function waitForDashboardReadyFile(
 function waitForDashboardPortAnnouncement(
   child,
   options: {
-    /**
-     * Returns the child's output buffered since SPAWN (the output tail's
-     * accumulated text, #60323). Scanned for an already-emitted READY
-     * sentinel so attaching this wait AFTER other awaits (backend claim,
-     * boot-progress IPC) can never lose the announcement: flowing-mode
-     * stdout never replays chunks to late listeners.
-     */
-    bufferedOutput?: () => string
     /** Returns a formatted stdout/stderr tail suffix for exit errors (#93608). */
     describeOutputTail?: () => string
     readyFile?: fs.PathOrFileDescriptor | null
@@ -243,7 +230,7 @@ function waitForDashboardPortAnnouncement(
     return waitForDashboardReadyFile(options.readyFile, child, timeoutMs, describeOutputTail)
   }
 
-  return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.bufferedOutput ?? (() => ''))
+  return waitForDashboardPort(child, timeoutMs, describeOutputTail)
 }
 
 export {

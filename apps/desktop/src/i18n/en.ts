@@ -117,8 +117,8 @@ export const en: Translations = {
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open containing folder',
     revealInSidebar: 'Reveal in filetree',
-    copyPath: 'Copy path',
-    copyRelativePath: 'Copy relative path',
+    copyPath: 'Copy Path',
+    copyRelativePath: 'Copy Relative Path',
     download: 'Download',
     downloadSaved: 'Saved',
     downloadFailed: 'Download failed',
@@ -143,31 +143,15 @@ export const en: Translations = {
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
     errors: {
-      backgroundExited: 'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
-      backgroundExitedDuringStartup: 'Hermes stopped right after it started.',
-      backendStopped: 'Hermes stopped working in the background',
-      restartHermes: 'Restart Hermes',
-      openLogs: 'Open logs',
-      desktopBootFailed: "Hermes couldn't start",
-      gatewayConnectionLost: 'Hermes lost its connection',
+      backgroundExited: 'Hermes background process exited.',
+      backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
+      backendStopped: 'Backend stopped',
+      desktopBootFailed: 'Desktop boot failed',
+      gatewayConnectionLost: 'Lost connection to the gateway',
       gatewayConnectionLostDetail:
-        'Still trying to reconnect. You can keep reading and drafting. If this keeps up, reconnect now or check your connection settings.',
-      reconnectNow: 'Reconnect now',
-      connectionSettings: 'Connection settings',
-      gatewaySignInRequired: 'Your remote Hermes signed you out',
-      gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
-      signInAgain: 'Sign in again',
-      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
-    },
-    // Plain causes for a local backend boot failure (`classifyBootFailure`);
-    // the raw output stays behind "Show recent logs".
-    causes: {
-      exitedEarly: "Hermes' background service stopped right after starting.",
-      timedOut: "Hermes' background service didn't answer in time.",
-      permission: "Hermes couldn't write to its data folder (permission problem).",
-      diskFull: 'The disk is full, so Hermes could not start.',
-      portInUse: 'Another program is using the network port Hermes needs.',
-      installMissing: "Part of Hermes' installation is missing. Choose Repair install to put it back."
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
+      gatewaySignInRequired: 'Gateway sign-in required',
+      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
     failure: {
       title: "Hermes couldn't start",
@@ -628,25 +612,49 @@ export const en: Translations = {
       sources: {
         title: 'Password managers',
         blurb:
-          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
-        toggleFailed: 'Could not update password manager',
-        notInstalled: name =>
-          `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
-        disabledDesc: 'Detected but turned off for Hermes.',
-        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
-        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
-        statusLocked: 'Locked',
-        statusNotDetected: 'Not detected',
-        statusOff: 'Off',
-        statusUnlocked: 'Unlocked',
-        unlock: 'Unlock',
-        unlocking: 'Unlocking…',
-        lock: 'Lock',
-        unlocked: name => `${name} unlocked for this session.`,
-        unlockTitle: name => `Unlock ${name}`,
-        unlockDescription:
-          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
-        masterPasswordPlaceholder: 'Master password'
+          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
+        appliesTo: 'Applies to:',
+        empty: 'No agent plugins installed yet.',
+        loadFailed: 'Could not load agent plugins',
+        portable: 'portable',
+        search: 'Search plugins…',
+        noMatches: 'No plugins match your search.',
+        toggleFailed: (name: string) => `Could not toggle ${name}`,
+        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
+        sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
+      },
+      installModal: {
+        title: 'Install plugin',
+        description: 'Review what this repository contains before installing anything.',
+        repoLabel: 'Repository',
+        includesHeading: 'This package includes',
+        agentLabel: 'Agent plugin',
+        desktopLabel: 'Desktop UI',
+        agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
+        agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
+        desktopTarget: "Installs into this app's local desktop-plugins folder",
+        desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
+        insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
+        securityHeading: 'Before you install',
+        securityIntro:
+          'Install only from sources you trust — review the repository below if you want to see what will be added.',
+        sourceHeading: 'Source code',
+        viewRepository: 'View repository',
+        viewPluginFiles: 'View plugin files',
+        gitCloneLabel: 'Git clone URL',
+        enableAgent: 'Enable agent plugin after install',
+        forceReinstall: 'Force reinstall (replace if already installed)',
+        install: 'Install',
+        installing: 'Installing…',
+        probing: 'Inspecting repository…',
+        probeUnavailable: 'Plugin inspection is unavailable in this environment.',
+        desktopUnavailable: 'Desktop plugin install is unavailable in this environment.',
+        selectComponent: 'Select at least one component to install.',
+        agentSuccess: name => `Agent plugin ${name} installed`,
+        desktopSuccess: name => `Desktop plugin ${name} installed`,
+        agentFailed: 'Agent plugin install failed',
+        desktopFailed: 'Desktop plugin install failed',
+        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
       }
     },
     notifications: {
@@ -739,10 +747,6 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
-      appActionsTitle: 'App Actions',
-      appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
-      appActionsLeft: 'Left',
-      appActionsRight: 'Right',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -778,8 +782,6 @@ export const en: Translations = {
       },
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
-      userBubbleTitle: 'Message Bubble',
-      userBubbleDesc: 'How see-through your own messages are. Solid at 0; only the outline remains at 100.',
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',
@@ -1075,7 +1077,7 @@ export const en: Translations = {
       envOverride: 'env override',
       intro:
         'Local by default. Use remote when this app should drive a Hermes backend elsewhere. Gateway connections are machine-level; profiles are discovered from the gateways you connect.',
-      envOverrideTitle: 'This connection was fixed by the way Hermes was launched.',
+      envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'A startup setting outside the app chose this connection, so the options below are read-only. Restart Hermes without that setting — or ask whoever set it up — to change it here.',
       modeTitle: 'Connection mode',
@@ -1352,9 +1354,6 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         review: { label: 'Review', hint: '/review reviewer subagent' },
-        triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
-        kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
-        profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
     },
@@ -2354,14 +2353,6 @@ export const en: Translations = {
     switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Manage gateways…',
-    fleet: {
-      allOnGateway: 'All profiles on this gateway',
-      gateway: gateway => `Profiles on ${gateway}`,
-      gatewayUnreachable: gateway => `${gateway} · unreachable`,
-      onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
-      deleteOn: gateway => ` on ${gateway}`
-    },
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
@@ -2894,13 +2885,6 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
-    voiceEngine: 'Voice chat engine',
-    voiceEngineChained: 'Speech-to-text + Hermes voice',
-    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
-    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
-    voiceEngineChangeFailed: 'Could not change the voice chat engine',
-    voiceEngineChainedShort: 'speech-to-text',
-    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -3915,145 +3899,18 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       errorLayers: {
-        auth: 'Sign-in problem',
+        auth: 'Authentication error',
         billing: 'Out of credits',
         disk: 'Disk full',
-        endpoint: "Can't reach your model server",
-        gateway: 'Hermes hit a problem',
-        generic: "Hermes couldn't finish this reply",
-        provider: 'The AI service returned an error',
-        runtime: 'Hermes hit a problem',
-        streaming: 'The reply was cut off'
+        endpoint: 'Custom endpoint error',
+        gateway: 'Gateway error',
+        generic: 'Turn failed',
+        provider: 'Provider error',
+        runtime: 'Local runtime error',
+        streaming: 'Streaming connection error'
       },
-      errorLayerBodies: {
-        auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
-        billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
-        disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
-        endpoint: "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
-        gateway: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
-        provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
-        runtime: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        streaming: 'The connection dropped before the reply finished. Retry to send it again.'
-      },
-      errorCodes: {
-        auth: {
-          title: provider => `${provider} rejected your sign-in`,
-          body: provider => `The credentials saved for ${provider} were not accepted. Fix them in Settings or switch provider, then send your message again.`
-        },
-        auth_permanent: {
-          title: provider => `${provider} rejected your sign-in`,
-          body: provider =>
-            `The credentials saved for ${provider} are invalid or were revoked. Update them or switch provider, then send your message again.`
-        },
-        billing: {
-          title: 'Out of credits',
-          body: provider => `Your ${provider} account has no credits left. Top up or switch provider, then send again.`
-        },
-        rate_limit: {
-          title: 'The AI service is busy',
-          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
-        },
-        upstream_rate_limit: {
-          title: 'The AI service is busy',
-          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
-        },
-        overloaded: {
-          title: 'The AI service is overloaded',
-          body: provider => `${provider} is having problems right now. Retry in a moment or switch provider.`
-        },
-        server_error: {
-          title: 'The AI service had a problem',
-          body: provider => `${provider} returned a server error. Retry in a moment or switch provider.`
-        },
-        timeout: {
-          title: 'The reply timed out',
-          body: provider => `${provider} did not answer in time. Retry to send it again.`
-        },
-        stream_drop: {
-          title: 'The reply was cut off',
-          body: 'The connection dropped before the reply finished. Retry to send it again.'
-        },
-        ssl_cert_verification: {
-          title: 'Secure connection failed',
-          body: provider =>
-            `Hermes could not verify the secure connection to ${provider}. Check your network or proxy settings, or switch provider, then send your message again.`
-        },
-        context_overflow: {
-          title: 'This conversation is too long',
-          body: 'The conversation no longer fits the model. Compress it or start a new chat, then send again.'
-        },
-        payload_too_large: {
-          title: 'This message is too large',
-          body: 'The request was too big for the model. Compress the conversation or start a new chat, then send again.'
-        },
-        model_not_found: {
-          title: 'This model is not available',
-          body: provider => `${provider} does not offer this model on your account. Choose another model, then send your message again.`
-        },
-        provider_policy_blocked: {
-          title: 'This model is blocked by your account settings',
-          body: provider =>
-            `${provider} would not route this request under your account's data or privacy settings. Choose another model or switch provider.`
-        },
-        content_policy_blocked: {
-          title: 'The AI service declined this request',
-          body: provider => `${provider} would not answer this message. Edit it and send again.`
-        },
-        format_error: {
-          title: 'The AI service rejected the request',
-          body: provider =>
-            `${provider} did not accept how this request was built. Switch provider or send diagnostics so we can look into it.`
-        },
-        truncated: {
-          title: 'The reply was cut short',
-          body: 'The model stopped before finishing. Retry to get a complete reply.'
-        },
-        invalid_response: {
-          title: 'The AI service sent an unreadable reply',
-          body: provider => `${provider} returned something Hermes could not read. Retry in a moment.`
-        },
-        empty_response: {
-          title: 'The AI service sent an empty reply',
-          body: provider => `${provider} returned nothing for this message. Retry in a moment.`
-        },
-        loop_error: {
-          title: 'Hermes got stuck in a loop',
-          body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
-        },
-        SESSION_NOT_OWNED: {
-          title: 'This chat is open somewhere else',
-          body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
-        },
-        disk_full: {
-          title: 'Disk full',
-          body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
-        }
-      },
-      errorAuthKinds: {
-        api_key: {
-          title: provider => `${provider} rejected your API key`,
-          body: provider => `The key saved for ${provider} is invalid or was revoked. Update it, then retry.`
-        },
-        oauth: {
-          title: provider => `Your ${provider} sign-in expired`
-        }
-      },
-      errorDetails: 'Details',
-      errorGenericProvider: 'The AI service',
-      errorToastTitle: "Hermes couldn't finish the reply",
       errorRetry: 'Retry',
-      errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
-      errorChooseModel: 'Choose a model',
-      errorCompressConversation: 'Compress conversation',
-      errorCompressFailed: 'Could not compress the conversation',
-      errorOpenHermesFolder: 'Open Hermes folder',
-      errorOpenHermesFolderFailed: 'Could not open the Hermes folder',
-      errorUpdateApiKey: 'Update API key',
-      errorSignInAgain: provider => `Sign in to ${provider} again`,
-      errorOauthExpired: provider =>
-        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',

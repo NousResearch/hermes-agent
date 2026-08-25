@@ -94,6 +94,32 @@ def test_roster_lines_carry_roles(tmp_path):
     assert "Deep research and literature review" in section
 
 
+def test_roster_lines_carry_roles(tmp_path):
+    """Bots must know WHO to message: the roster carries title/description."""
+    import textwrap as _tw
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = home / "profiles" / "researcher"
+    d.mkdir(parents=True)
+    (d / "profile.yaml").write_text(
+        _tw.dedent(
+            """\
+            description: Deep research and literature review
+            ui_meta:
+              hermes-bots:
+                title: Research Buddy
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert "Research Buddy" in section
+    assert "Deep research and literature review" in section
+
+
 def test_soul_legacy_protocol_no_longer_suppresses_live_section(tmp_path):
     """Plugin-era SOUL append is stripped at load time; the live roster is the only copy."""
     home = tmp_path / ".hermes"

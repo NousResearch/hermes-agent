@@ -1656,117 +1656,21 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().sudo).toBeNull()
   })
 
-  it('tells the user a timed-out password prompt was withdrawn and the step skipped', () => {
-    const ctx = buildCtx([])
-    const onEvent = createGatewayEventHandler(ctx)
-
-    serverRequest('sudo', {}, 'sudo-1')
-    onEvent({ payload: { id: 'sudo-1', method: 'sudo', reason: 'timeout' }, type: 'request.cancel' } as any)
-
-    expect(getOverlayState().sudo).toBeNull()
-    const lines = (ctx.system.sys as any).mock.calls.map((c: unknown[]) => String(c[0]))
-    expect(lines.some((l: string) => /prompt closed/i.test(l) && /skipped/.test(l))).toBe(true)
-
-    // An interrupted prompt is the user's own doing — no notice.
-    serverRequest('sudo', {}, 'sudo-2')
-    onEvent({ payload: { id: 'sudo-2', method: 'sudo', reason: 'interrupted' }, type: 'request.cancel' } as any)
-    expect((ctx.system.sys as any).mock.calls.length).toBe(lines.length)
-  })
-
-  it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
-    const appended: Msg[] = []
-    const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const raw = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
-
-    onEvent({
-      payload: {
-        error: raw,
-        error_surface: { code: 'auth', layer: 'auth', provider: 'openai', retryable: false },
-        recoverable: true,
-        status: 'error',
-        text: `Error: ${raw}`
-      },
-      type: 'message.complete'
-    } as any)
-
-    const assistant = appended.filter(m => m.role === 'assistant')
-    expect(assistant).toHaveLength(1)
-    const [title, details] = assistant[0]!.text.split('\n')
-    expect(title).not.toMatch(/^Error(?: code)?:/)
-    expect(title).toMatch(/API key/)
-    expect(details).toMatch(/^Details: .*Incorrect API key provided/)
-    expect(assistant[0]!.text).toContain('/model')
-    expect(assistant[0]!.text).toContain('/retry')
-  })
-
-  it('keeps interim assistant segments on a failed turn and replaces only the bare error slot', () => {
-    const appended: Msg[] = []
-    const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-    onEvent({ payload: { text: 'Let me look that up first.' }, type: 'message.interim' } as any)
-    onEvent({
-      payload: {
-        error: 'boom',
-        error_surface: { code: 'server_error', layer: 'provider', retryable: true },
-        recoverable: true,
-        status: 'error',
-        text: 'Error: boom'
-      },
-      type: 'message.complete'
-    } as any)
-
-    const assistant = appended.filter(m => m.role === 'assistant')
-    expect(assistant.some(m => m.text === 'Let me look that up first.')).toBe(true)
-    expect(assistant.some(m => /^Error: boom/.test(m.text))).toBe(false)
-    expect(assistant.at(-1)!.text).toMatch(/internal error/)
-    expect(assistant.at(-1)!.text).toContain('/retry')
-  })
-
-  it('keeps streamed partial text on a failed turn (only the empty-reply case is rewritten)', () => {
-    const appended: Msg[] = []
-    const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-    onEvent({
-      payload: { error: 'stream dropped', partial: true, status: 'error', text: 'Here is the first half' },
-      type: 'message.complete'
-    } as any)
-
-    expect(appended.some(m => m.role === 'assistant' && m.text === 'Here is the first half')).toBe(true)
-  })
-
-  it('shows the reconnect countdown from gateway.reconnecting in the status bar', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({ payload: { attempt: 2, delay_ms: 4000 }, type: 'gateway.reconnecting' } as any)
-
-    expect(getUiState().status).toMatch(/retrying in 4s/)
-    expect(getUiState().status).toMatch(/attempt 2/)
-  })
-
-  it('glosses a version-skew error event as an /update pointer', () => {
-    const ctx = buildCtx([])
-    const onEvent = createGatewayEventHandler(ctx)
-
-    onEvent({ payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' }, type: 'error' } as any)
-
-    const line = String((ctx.system.sys as any).mock.calls.at(-1)?.[0])
-    expect(line).toContain('/update')
-    expect(line).not.toContain('turn_author')
-  })
-
   // ── Batch (multi-question) clarify ─────────────────────────────────
 
-  it('parses a batch clarify request into a questions overlay', () => {
-    serverRequest(
-      'clarify',
-      {
+  it('parses a batch clarify.request into a questions overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
         questions: [
           { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
-        ]
+        ],
+        request_id: 'req-batch'
       },
-      'req-batch'
-    )
+      type: 'clarify.request'
+    } as any)
 
     const clarify = getOverlayState().clarify
     expect(clarify?.requestId).toBe('req-batch')
@@ -1776,35 +1680,39 @@ describe('createGatewayEventHandler', () => {
     expect(clarify?.answers).toEqual({})
   })
 
-  it('seeds locked answers from a reconnect-replayed batch clarify request', () => {
-    serverRequest(
-      'clarify',
-      {
+  it('seeds locked answers from a reconnect-replay batch clarify.request', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
         answers: { q0: 'a' },
         questions: [
           { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
-        ]
+        ],
+        request_id: 'req-replay'
       },
-      'req-replay'
-    )
+      type: 'clarify.request'
+    } as any)
 
     expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
   })
 
   it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
-    serverRequest(
-      'clarify',
-      {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
         choices: ['x', 'y'],
         question: 'Fallback?',
         questions: [
           { qid: '', question: 'no qid' },
           { qid: 'q1', question: '   ' }
-        ]
+        ],
+        request_id: 'req-bad'
       },
-      'req-bad'
-    )
+      type: 'clarify.request'
+    } as any)
 
     const clarify = getOverlayState().clarify
     expect(clarify?.questions).toBeUndefined()

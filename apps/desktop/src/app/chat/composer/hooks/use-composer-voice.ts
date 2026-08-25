@@ -4,9 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
-import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
-import { toLiveHistory } from '@/lib/voice-live'
+import { markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -67,9 +65,6 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
-  // Engine selection is latched at conversation START (a Settings change
-  // applies to the next conversation, never mid-call).
-  const [liveEngineActive, setLiveEngineActive] = useState(false)
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)

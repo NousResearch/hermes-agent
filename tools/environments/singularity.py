@@ -14,10 +14,13 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
-from tools.environments.base_output import _popen_bash
-from tools.environments.path_utils import sanitize_task_id_for_path
-from tools.environments.remote_common import bash_argv, run_capture
+from tools.environments.base import (
+    BaseEnvironment,
+    _load_json_store,
+    _popen_bash,
+    _save_json_store,
+    sanitize_task_id_for_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +161,13 @@ class SingularityEnvironment(BaseEnvironment):
         self._memory = memory
 
         if self._persistent:
-            # A raw session-key task_id carries colons etc. unsafe in host path components;
-            # the shared sanitizer keeps all backends agreeing on the mapping.
-            self._overlay_dir = (
-                _get_scratch_dir() / "hermes-overlays" / f"overlay-{sanitize_task_id_for_path(task_id)}")
+            overlay_base = _get_scratch_dir() / "hermes-overlays"
+            overlay_base.mkdir(parents=True, exist_ok=True)
+            # A raw session-key task_id carries colons and other characters
+            # that are unsafe in host path components (same class of bug as
+            # the docker -v mount failure); route it through the shared
+            # sanitizer so all backends agree on the mapping.
+            self._overlay_dir = overlay_base / f"overlay-{sanitize_task_id_for_path(task_id)}"
             self._overlay_dir.mkdir(parents=True, exist_ok=True)
 
         self._start_instance()

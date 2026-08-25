@@ -221,20 +221,38 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
-    """(meta, bundle, source) from ONE adapter — mixing skills.sh metadata with a ClawHub zip of
-    a same-named skill once showed the wrong SKILL.md. Falls back to the first meta-only hit.
+    """Resolve metadata and bundle from a single source adapter.
+
+    Meta and bundle must come from the same adapter. Keeping catalog
+    metadata from skills.sh while taking a ClawHub zip of a same-named
+    skill is how ``hermes skills inspect owner/repo/skills/foo`` showed
+    the requested identifier and the wrong SKILL.md.
     """
     first_meta = None
     first_meta_source = None
+
     for src in sources:
-        meta = _try(src.inspect, identifier)
-        bundle = _try(src.fetch, identifier)
+        meta = None
+        bundle = None
+        try:
+            meta = src.inspect(identifier)
+        except Exception:
+            meta = None
+        try:
+            bundle = src.fetch(identifier)
+        except Exception:
+            bundle = None
         if bundle:
             if meta is None:
-                meta = _try(src.inspect, identifier)
+                try:
+                    meta = src.inspect(identifier)
+                except Exception:
+                    meta = None
             return meta, bundle, src
         if first_meta is None and meta:
-            first_meta, first_meta_source = meta, src
+            first_meta = meta
+            first_meta_source = src
+
     return first_meta, None, first_meta_source
 
 
@@ -281,12 +299,21 @@ def _line_input(prompt: str) -> Optional[str]:
 def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:
     """Prompt interactively for a skill name. Returns None on cancel/EOF."""
     c.print()
-    c.print(f"[yellow]The SKILL.md at {url} doesn't declare a `name:` in its frontmatter,[/]\n"
-            "[yellow]and the URL path doesn't produce a valid identifier either.[/]")
-    c.print(f"[bold]Enter a skill name{f' [{default}]' if default else ''}:[/] "
-            "[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]")
-    answer = _line_input("Name: ")
-    if answer is None:
+    c.print(
+        f"[yellow]The SKILL.md at {url} doesn't declare a `name:` in its "
+        f"frontmatter,[/]\n[yellow]and the URL path doesn't produce a valid "
+        f"identifier either.[/]"
+    )
+    default_hint = f" [{default}]" if default else ""
+    c.print(
+        f"[bold]Enter a skill name{default_hint}:[/] "
+        f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
+    )
+    from hermes_cli.cli_output import line_input
+
+    try:
+        answer = line_input("Name: ").strip()
+    except (EOFError, KeyboardInterrupt):
         return None
     answer = answer or default
     if not _is_valid_installed_skill_name(answer):
@@ -303,10 +330,18 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
                 "[dim](reuse an existing bucket, type a new one, or press Enter to install flat)[/]")
         c.print(f"[dim]Existing: {', '.join(existing)}[/]")
     else:
-        c.print("[bold]Category[/] "
-                f"[dim](optional — press Enter to install flat at {display_hermes_home()}/skills/<name>/)[/]")
-    answer = _line_input("Category: ")
-    if answer and not _VALID_CATEGORY_RE.match(answer):
+        c.print(
+            "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
+        )
+    from hermes_cli.cli_output import line_input
+
+    try:
+        answer = line_input("Category: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+    if not _VALID_CATEGORY_RE.match(answer):
         c.print(f"[dim]Invalid category {answer!r} — installing flat.[/]")
         return ""
     return answer or ""
@@ -1364,8 +1399,71 @@ _CLI_ACTIONS = {
 
 def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
-    handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
-    if handler is None:
+    action = getattr(args, "skills_action", None)
+
+    if action == "browse":
+        do_browse(page=args.page, page_size=args.size, source=args.source)
+    elif action == "search":
+        do_search(args.query, source=args.source, limit=args.limit,
+                  as_json=getattr(args, "json", False))
+    elif action == "install":
+        do_install(args.identifier, category=args.category, force=args.force,
+                   skip_confirm=getattr(args, "yes", False),
+                   name_override=getattr(args, "name", "") or "")
+    elif action == "inspect":
+        do_inspect(args.identifier)
+    elif action == "list":
+        do_list(
+            source_filter=args.source,
+            enabled_only=getattr(args, "enabled_only", False),
+        )
+    elif action == "check":
+        do_check(name=getattr(args, "name", None))
+    elif action == "update":
+        do_update(name=getattr(args, "name", None),
+                  force=getattr(args, "force", False))
+    elif action == "audit":
+        do_audit(name=getattr(args, "name", None),
+                 deep=getattr(args, "deep", False))
+    elif action == "uninstall":
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
+    elif action == "reset":
+        do_reset(args.name, restore=getattr(args, "restore", False),
+                 skip_confirm=getattr(args, "yes", False))
+    elif action == "list-modified":
+        do_list_modified(as_json=getattr(args, "json", False))
+    elif action == "diff":
+        do_diff(args.name)
+    elif action == "opt-out":
+        do_opt_out(remove=getattr(args, "remove", False),
+                   skip_confirm=getattr(args, "yes", False))
+    elif action == "opt-in":
+        do_opt_in(sync=getattr(args, "sync", False))
+    elif action == "repair-official":
+        do_repair_official(args.name, restore=getattr(args, "restore", False),
+                           skip_confirm=getattr(args, "yes", False))
+    elif action == "publish":
+        do_publish(
+            args.skill_path,
+            target=getattr(args, "to", "github"),
+            repo=getattr(args, "repo", ""),
+        )
+    elif action == "snapshot":
+        snap_action = getattr(args, "snapshot_action", None)
+        if snap_action == "export":
+            do_snapshot_export(args.output)
+        elif snap_action == "import":
+            do_snapshot_import(args.input, force=getattr(args, "force", False))
+        else:
+            _console.print("Usage: hermes skills snapshot [export|import]\n")
+    elif action == "tap":
+        tap_action = getattr(args, "tap_action", None)
+        repo = getattr(args, "repo", "") or getattr(args, "name", "")
+        if not tap_action:
+            _console.print("Usage: hermes skills tap [list|add|remove]\n")
+            return
+        do_tap(tap_action, repo=repo)
+    else:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return

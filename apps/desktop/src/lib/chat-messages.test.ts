@@ -1394,6 +1394,40 @@ describe('stripPendingClarifyProjectionForCache', () => {
   })
 })
 
+describe('stripPendingClarifyProjectionForCache', () => {
+  const clarifyPart = (toolCallId: string): ChatMessagePart => ({
+    type: 'tool-call',
+    toolCallId,
+    toolName: 'clarify',
+    args: { choices: ['a'], question: 'Pick' },
+    argsText: '{"question":"Pick","choices":["a"]}'
+  })
+
+  it('drops a synthetic request-id-only clarify row from the durable cache', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'choose' }] },
+      { id: 'synthetic', role: 'assistant', parts: [clarifyPart('req-1')], pending: true }
+    ]
+
+    expect(stripPendingClarifyProjectionForCache(messages, 'req-1')).toEqual([messages[0]])
+  })
+
+  it('keeps a provider-authored clarify in position but strips its local running bit', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Choose.' }, clarifyPart('call-provider')],
+        pending: true
+      }
+    ]
+
+    const [cached] = stripPendingClarifyProjectionForCache(messages, 'req-1')
+    expect(cached.pending).toBe(false)
+    expect(cached.parts.map(part => part.type)).toEqual(['text', 'tool-call'])
+  })
+})
+
 describe('sealOpenToolParts', () => {
   const toolPart = (over: Partial<ChatMessagePart> = {}): ChatMessagePart =>
     ({

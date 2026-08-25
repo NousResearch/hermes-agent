@@ -29,7 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
-import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
+import { assertBootstrapNotSuperseded } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
@@ -648,12 +648,6 @@ async function pidIsOurDashboard(
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
-  // Defense in depth (#95532): a skew sentinel is foreign/corrupt state, not
-  // an ownership record — never reap or remove anything based on it.
-  if (isLockfileSkew(lock)) {
-    return
-  }
-
   if (
     pidAlive &&
     lock &&
@@ -1411,7 +1405,7 @@ async function connect(deps) {
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 
   assertBootstrapNotSuperseded(signal)
-  const platform = deps.platform ?? (await probeRemotePlatform(ssh))
+  const platform = await probeRemotePlatform(ssh)
   log(`remote platform ${platform.os}/${platform.arch}`)
   const hermesHome = await probeRemoteHermesHome(ssh)
   await assertRemoteInstallUpdateClear(ssh, hermesHome)
@@ -1472,15 +1466,7 @@ async function connect(deps) {
       lock.hermesHome === hermesHome
 
     if (reusable) {
-      const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))
-
-      if (creationTime && !lock.creationTime) {
-        await writeLockfile(ssh, ownershipId, { ...lock, creationTime })
-        lock.creationTime = creationTime
-      }
-
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -1543,13 +1529,11 @@ async function connect(deps) {
       }
     } else {
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertRemoteInstallUpdateClear(ssh, hermesHome)
   const spawnToken = mintToken()
 
   const spawned = await spawnRemoteDashboard(ssh, {

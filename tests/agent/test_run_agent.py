@@ -213,6 +213,37 @@ def test_malformed_memory_config_still_builds_default_store():
     assert agent._memory_store.user_profile_enabled is True
 
 
+def test_malformed_memory_config_still_builds_default_store():
+    """A non-mapping memory section must not leave an advertised dead tool."""
+    malformed = {"memory": "not-a-mapping"}
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value=malformed,
+        ),
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=["memory"],
+        )
+
+    assert agent._memory_enabled is True
+    assert agent._user_profile_enabled is True
+    assert agent._memory_store is not None
+    assert agent._memory_store.memory_enabled is True
+    assert agent._memory_store.user_profile_enabled is True
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
@@ -896,13 +927,47 @@ class TestBuildSystemPrompt:
         """
         from agent.prompt_builder import MEMORY_GUIDANCE
 
-        agent_with_memory_tool._memory_enabled = False
-        agent_with_memory_tool._user_profile_enabled = True
+        agent_with_memory_tool._memory_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
         assert "memory tool (target='user')" in prompt
         assert "never target='memory'" in prompt
         assert "(skill_manage)" not in prompt
+
+    def test_no_memory_guidance_when_both_builtin_stores_disabled(
+        self, agent_with_memory_tool
+    ):
+        """Guidance must follow the stores, not just the tool's presence.
+
+        With both built-in stores off, ``agent_init`` never builds a
+        ``MemoryStore``, so every memory call returns "Memory is not
+        available" — telling the model to save facts there is a dead
+        instruction paid for on every API call.
+        """
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = False
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert USER_PROFILE_GUIDANCE not in prompt
+
+    def test_profile_guidance_when_only_user_profile_enabled(
+        self, agent_with_memory_tool
+    ):
+        """USER.md alone gets the narrower profile-only guidance.
+
+        The full MEMORY_GUIDANCE block instructs the model to save notes to a
+        MEMORY.md store that does not exist in this configuration, so the
+        profile-specific block is injected instead.
+        """
+        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+
+        agent_with_memory_tool._memory_enabled = False
+        agent_with_memory_tool._user_profile_enabled = True
+        prompt = agent_with_memory_tool._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert USER_PROFILE_GUIDANCE in prompt
 
 
 
@@ -1088,11 +1153,11 @@ class TestExecutionGuidanceConfig:
             agent_cfg["execution_guidance"] = execution_guidance
         with (
             patch(
-                "model_tools.get_tool_definitions",
+                "run_agent.get_tool_definitions",
                 return_value=_make_tool_defs("terminal", "web_search"),
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"agent": agent_cfg},
@@ -2485,13 +2550,13 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
-        ("desktop_preview", {"action": "read"}),
+        ("read_preview", {}),
         ("drive_preview", {"action": "elements"}),
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
         ("manage_connections", {"action": "install", "connectors": [{"name": "linear", "mcp": True}]}),
         ("setup_mcp", {"server": "linear", "action": "install"}),
-        ("gui_tour", {"action": "stop"}),
+        ("tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -3763,7 +3828,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = _create
         monkeypatch.setattr(agent, "_build_api_kwargs", _build_api_kwargs)
         monkeypatch.setattr(
-            "agent.retry_utils.jittered_backoff",
+            "agent.conversation_loop.jittered_backoff",
             lambda *args, **kwargs: 0.0,
         )
 

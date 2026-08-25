@@ -9,7 +9,6 @@
 
 import type * as React from 'react'
 
-import type { MenuKit } from '@/components/ui/actions-menu'
 import type { Contribution } from '@/contrib/types'
 
 import type { GroupNode, LayoutNode } from '../model'

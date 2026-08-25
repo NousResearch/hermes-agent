@@ -12,7 +12,6 @@ from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -266,27 +265,110 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
     try:
-        _compressor = getattr(agent, "context_compressor", None)
-        # Strict `is True` + callable gates: plugin context engines and MagicMock
-        # compressors pass duck checks and would wipe the transcript. Never run while
-        # compression.checkpoint_required is armed (no checkpoint hook here), nor for
-        # persistence-isolated agents (background review fork): that burns an aux-LLM
-        # call on a throwaway transcript and could compact the CANONICAL session rows.
-        if (
-            _compressor
-            and getattr(_compressor, '_micro_compact_enabled', False) is True
-            and callable(getattr(_compressor, '_micro_compact', None))
-            and final_response
-            and getattr(agent, "compression_checkpoint_required", False) is not True
-            and not getattr(agent, "_persist_disabled", False)
-        ):
-            _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
-            # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
-            # the compressor flags us to invalidate the flush-scan cursor, else the
-            # rewritten row is identity-skipped (stale).
-            if getattr(_compressor, "_flush_scan_cursor_invalidated", False):
-                _compressor._flush_scan_cursor_invalidated = False
+        agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+    except Exception as _save_err:
+        _cleanup_errors.append(f"save_trajectory: {_save_err}")
+        logger.error("finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True)
+
+    # Clean up VM and browser for this task after conversation completes
+    try:
+        agent._cleanup_task_resources(effective_task_id)
+    except Exception as _cleanup_err:
+        _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
+        logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
+
+    # Persist session to both JSON log and SQLite only after private retry
+    # scaffolding has been removed. Otherwise a later user "continue" turn
+    # can replay assistant("(empty)") / recovery nudges and fall into the
+    # same empty-response loop again.
+    try:
+        agent._drop_trailing_empty_response_scaffolding(messages)
+
+        # Drop verification-continuation nudges (synthetic user messages)
+        # from the live history before the tail-assistant check — only the
+        # nudges need stripping; the assistant candidate persists in
+        # state.db. (#65919 §7)
+        _drop_verification_continuation_scaffolding(messages)
+
+        # When the turn was interrupted and the last message is a tool
+        # result, append a synthetic assistant message to close the
+        # tool-call sequence. Without this, the session persists a
+        # ``tool → user`` alternation that strict providers (Gemini,
+        # Claude) reject, causing them to hallucinate a continuation of
+        # the user's message on the next turn (#48879).
+        #
+        # ``_drop_trailing_empty_response_scaffolding`` only rewinds the
+        # tool tail when an empty-response scaffolding flag is present; a
+        # clean ``/stop`` interrupt after a successful tool sets no such
+        # flag, so the tool result survives as the tail and we close it
+        # here instead. On an interrupt ``final_response`` is typically
+        # empty, so fall back to an explicit placeholder rather than
+        # persisting an empty-content assistant turn.
+        if interrupted:
+            from agent.message_sanitization import close_interrupted_tool_sequence
+            close_interrupted_tool_sequence(messages, final_response)
+
+        # Some recovery/fallback paths return a real final_response without
+        # adding a closing assistant message to the transcript (e.g. the
+        # partial-stream and prior-turn-content recovery ``break`` sites in
+        # ``conversation_loop``). If persisted as-is, the durable session can
+        # end at a tool/user message even though the caller — and the gateway
+        # platform — already saw a completed assistant response. The next turn
+        # then replays a user-only backlog and the model re-answers every
+        # "unanswered" message. Close the durable turn at the source, at the
+        # single chokepoint every recovery ``break`` flows through, so the
+        # invariant "delivered final_response ⇒ assistant row in transcript"
+        # holds regardless of which path produced it. (#43849 / #44100)
+        #
+        # Compare content (not just role) so a verification candidate that
+        # matches the final response is not duplicated at budget
+        # exhaustion. (#65919 §7)
+        if final_response and not interrupted:
+            try:
+                _tail = messages[-1] if messages else None
+            except Exception:
+                _tail = None
+            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
+            if _tail_role != "assistant":
+                # Tail is not an assistant row — append the final response
+                # so the durable turn closes with the answer (#43849/#44100).
+                append_message(
+                    messages,
+                    {"role": "assistant", "content": final_response},
+                )
+            elif isinstance(_tail, dict) and _tail.get("content") != final_response and _is_pure_tool_call_tail(_tail):
+                # The tail IS an assistant row, but a *pure tool-call turn*:
+                # tool_calls with no text of its own. The role check alone
+                # leaves the #43849/#44100 invariant unmet — the user saw a
+                # response that never reached the transcript, and the next turn
+                # replays the user backlog and re-answers it (the very symptom
+                # this block was added for). Fill that row's empty content
+                # instead of appending, so the durable turn ends with the answer
+                # without disturbing the tool-call structure or creating an
+                # assistant→assistant pair.
+                #
+                # The ``content != final_response`` guard prevents filling when
+                # the tail already carries the final response text (verification
+                # candidate collapse — the provisional answer was persisted and
+                # reused as the terminal response, #65919 §7).
+                _tail["content"] = final_response
+                # The normal assistant builder already stamps this row. Cover
+                # legacy/exceptional pure-tool tails before they become a
+                # delivered final response.
+                stamp_message_timestamp(_tail)
+                # The row may have already been flushed to SQLite by the
+                # incremental tool-call persist (conversation_loop.py:4990),
+                # which stamps ``_DB_PERSISTED_MARKER`` so subsequent flushes
+                # skip it. Pop the marker so the next ``_persist_session``
+                # re-writes the filled content to the durable store —
+                # otherwise ``/resume`` reloads ``content=""`` and the bug
+                # resurfaces cross-session.
+                _tail.pop(_DB_PERSISTED_MARKER, None)
+                # The bounded flush-scan cursor (run_agent.py) skips the
+                # identity-matched prefix of its previous snapshot on the
+                # assumption that no live dict loses the marker in place —
+                # this pop is the one place that does. Invalidate it so the
+                # filled row is re-examined instead of skipped.
                 agent._db_flush_scan_prefix = None
             if isinstance(_compacted, list) and _compacted:
                 messages[:] = _compacted
@@ -296,9 +378,82 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
         logger.info("Micro-compaction failed: %s", _mc_err)
 
 
-def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
-    """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
-    message is a tool result (the "just stops" scenario)."""
+        # ── Post-turn micro-compaction ────────────────────────────
+        # After the assistant response is finalized but before the session is
+        # persisted, run micro-compaction to absorb the oldest uncompacted
+        # exchange into the rolling summary.  This amortizes compression
+        # across turns rather than batching it into one big pause.
+        if not interrupted and not failed:
+            try:
+                _compressor = getattr(agent, "context_compressor", None)
+                # Strict `is True` + isinstance gates: plugin context engines
+                # (and MagicMock compressors in tests) satisfy getattr/duck
+                # checks with truthy auto-attributes — a bare truthiness check
+                # here called _micro_compact on a mock and spliced its (empty-
+                # iterating) return value over the transcript, wiping it.
+                if (
+                    _compressor
+                    and getattr(_compressor, '_micro_compact_enabled', False) is True
+                    and callable(getattr(_compressor, '_micro_compact', None))
+                    and final_response
+                    # compression.checkpoint_required: agent init already
+                    # forces _micro_compact_enabled off, but the compressor
+                    # attribute is plain state a future path could flip on a
+                    # live agent. Micro-compaction has no checkpoint hook in
+                    # its path, so it must never run while the gate is armed.
+                    and getattr(
+                        agent, "compression_checkpoint_required", False
+                    ) is not True
+                    # Persistence-isolated agents (background review fork)
+                    # must not micro-compact: the pass burns a real aux-LLM
+                    # call on a throwaway replay transcript, and if the
+                    # compressor ever holds a session_db binding it would
+                    # archive_and_compact the CANONICAL session rows — the
+                    # exact write class _persist_disabled exists to stop.
+                    and not getattr(agent, "_persist_disabled", False)
+                ):
+                    _before = len(messages)
+                    _compacted = _compressor._micro_compact(messages)
+                    # Micro-compaction defrag rewrites the newest MICRO
+                    # marker's content and pops _db_persisted from the live
+                    # dict in place — the sibling of the pop site above. The
+                    # compressor has no agent reference, so it raises a flag
+                    # for us to invalidate the bounded flush-scan cursor;
+                    # otherwise the rewritten marker row is identity-skipped
+                    # and the stale summary persists to state.db.
+                    if getattr(
+                        _compressor, "_flush_scan_cursor_invalidated", False
+                    ):
+                        _compressor._flush_scan_cursor_invalidated = False
+                        agent._db_flush_scan_prefix = None
+                    if isinstance(_compacted, list) and _compacted:
+                        messages[:] = _compacted
+                    _after = len(messages)
+                    if _before != _after:
+                        logger.info(
+                            "Micro-compaction: %d -> %d messages",
+                            _before, _after,
+                        )
+            except Exception as _mc_err:
+                logger.info("Micro-compaction failed: %s", _mc_err)
+
+        agent._persist_session(messages, conversation_history)
+    except Exception as _persist_err:
+        _cleanup_errors.append(f"persist_session: {_persist_err}")
+        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+
+    # The gateway owns a separate in-memory history snapshot. Keep it current
+    # even when finalization reports a cleanup error: a later prompt must not be
+    # sent with the pre-turn snapshot while the durable DB already has this turn.
+    try:
+        agent._session_messages = messages
+    except Exception:
+        pass
+
+    # ── Turn-exit diagnostic log ─────────────────────────────────────
+    # Always logged at INFO so agent.log captures WHY every turn ended.
+    # When the last message is a tool result (agent was mid-work), log
+    # at WARNING — this is the "just stops" scenario users report.
     _last_msg_role = messages[-1].get("role") if messages else None
     _last_tool_name = None
     if _last_msg_role == "tool":

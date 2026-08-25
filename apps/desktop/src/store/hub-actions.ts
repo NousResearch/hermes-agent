@@ -4,11 +4,9 @@ import {
   getActionStatus,
   installSkillFromHub,
   type ProfileScope,
-  scanSkillHub,
   uninstallSkillFromHub,
   updateSkillsFromHub
 } from '@/hermes'
-import { translateNow } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -137,14 +135,7 @@ async function runHubAction(
     // the unchanged skills list as "install did nothing" (Aug 2026 report).
     // The last log lines carry the subprocess's actual error.
     if (exitCode !== null && exitCode !== 0) {
-      const lines = $hubActions.get()[key]?.lines ?? []
-      const blocked = parseInstallBlocked(lines)
-
-      if (blocked) {
-        throw new HubInstallBlockedError(key, blocked.findings, blocked.unverified, lines.slice(-3).join('\n').trim())
-      }
-
-      const detail = lines.slice(-3).join('\n').trim()
+      const detail = ($hubActions.get()[key]?.lines ?? []).slice(-3).join('\n').trim()
 
       throw new Error(detail || `Action exited with code ${exitCode}`)
     }

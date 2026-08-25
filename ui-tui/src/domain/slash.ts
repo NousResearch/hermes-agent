@@ -45,6 +45,12 @@ export const inlineSlashTrigger = (text: string): { query: string; start: number
   return { query, start: text.length - query.length - 1 }
 }
 
+export const parseSlashCommand = (cmd: string) => {
+  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
+
+  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
+}
+
 /**
  * Apply a completion row to the current input, mirroring the editor's
  * replace semantics: replace from `compReplace` with the row text, dropping

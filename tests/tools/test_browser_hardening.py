@@ -243,7 +243,7 @@ class TestTruncateSnapshot:
         """
         import hashlib
         from pathlib import Path
-        from tools.browser_tool_snapshot import _store_full_snapshot
+        from tools.browser_tool import _store_full_snapshot
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         snapshot = "\n".join(f"- line {i}" for i in range(50))
@@ -266,7 +266,7 @@ class TestTruncateSnapshot:
 
     def test_truncated_snapshot_appends_stored_pointer(self):
         """Truncated snapshots point at the stored full text for read_file paging."""
-        from tools.browser_tool_snapshot import _truncate_snapshot
+        from tools.browser_tool import _truncate_snapshot
 
         snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
         result = _truncate_snapshot(snapshot, max_chars=500)

@@ -38,23 +38,60 @@ def summarize_manual_compression(
     before_count = len(before_messages)
     after_count = len(after_messages)
     noop = list(after_messages) == list(before_messages)
-
-    def flag(name: str) -> bool:
-        return getattr(compression_state, name, False) is True
-
-    aborted = flag("_last_compress_aborted")
-    refused_would_grow = flag("_last_compress_refused_would_grow")
-    fallback_used = flag("_last_summary_fallback_used")
-    failure_reason = getattr(compression_state, "_last_summary_error", None)
+    aborted = (
+        compression_state is not None
+        and getattr(compression_state, "_last_compress_aborted", False) is True
+    )
+    refused_would_grow = (
+        compression_state is not None
+        and getattr(compression_state, "_last_compress_refused_would_grow", False)
+        is True
+    )
+    fallback_used = (
+        compression_state is not None
+        and getattr(compression_state, "_last_summary_fallback_used", False) is True
+    )
+    failure_reason = (
+        getattr(compression_state, "_last_summary_error", None)
+        if compression_state is not None
+        else None
+    )
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         failure_reason = None
 
-    note = None
     if refused_would_grow:
-        headline = f"Compression refused (summary would grow the conversation): {before_count} messages preserved"
-        note = "The generated summary was larger than what it would replace; no messages were removed."
+        headline = (
+            f"Compression refused (summary would grow the conversation): "
+            f"{before_count} messages preserved"
+        )
     elif aborted:
         headline = f"Compression aborted: {before_count} messages preserved"
+    elif fallback_used:
+        headline = (
+            f"Compressed with fallback: {before_count} → {after_count} messages"
+        )
+    elif noop:
+        headline = f"No changes from compression: {before_count} messages"
+    else:
+        headline = f"Compressed: {before_count} → {after_count} messages"
+
+    if noop and after_tokens == before_tokens:
+        token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
+    elif refused_would_grow:
+        token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
+    else:
+        token_line = (
+            f"Approx request size: ~{before_tokens:,} → "
+            f"~{after_tokens:,} tokens"
+        )
+
+    note = None
+    if refused_would_grow:
+        note = (
+            "The generated summary was larger than what it would replace; "
+            "no messages were removed."
+        )
+    elif aborted:
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
         headline = f"Compressed with fallback: {before_count} → {after_count} messages"

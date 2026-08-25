@@ -47,10 +47,21 @@ class CustomProfile(ProviderProfile):
             if effort == "none" or reasoning_config.get("enabled", True) is False:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"
-                if _looks_like_ollama_endpoint(ctx.get("base_url")):
-                    extra_body["think"] = False
-            elif effort:
-                top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                extra_body["think"] = False
+            elif _effort:
+                # Clamp the internal ladder onto the widest OpenAI-compatible
+                # wire vocabulary (shared policy in agent.reasoning_effort) —
+                # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding
+                # "ultra" verbatim is a guaranteed 400 (#89503).
+                from agent.reasoning_effort import (
+                    OPENAI_COMPAT_WIRE_EFFORTS,
+                    clamp_effort,
+                )
+
+                top_level["reasoning_effort"] = clamp_effort(
+                    _effort, OPENAI_COMPAT_WIRE_EFFORTS
+                )
+
         return extra_body, top_level
 
     def fetch_models(

@@ -204,19 +204,29 @@ class _PluginOverridePolicy:
         self.allowed = bool(allowed)
 
 
-_OVERRIDE_DENIED_MSG = (
-    "Plugin module {owner!r} cannot override built-in tool {name!r} "
-    "without operator opt-in (allow_tool_override).")
-
-
-# ---- check_fn TTL cache ----------------------------------------------------
-# check_fns probe external state (Docker, Modal SDK, playwright) that changes on human
-# timescales, so results are cached ~30 s: env-var flips via ``hermes tools`` still land
-# within a turn or two. Transient-failure suppression: a flapping probe (``docker version``
-# timing out under load) would silently strip a whole toolset from the agent being built —
-# most visibly a subagent reporting "Tool read_file does not exist" — so a failure within a
-# short grace window of the last success serves the last-good True WITHOUT caching it; a
-# failure persisting past the window is honored so a dead backend stops advertising tools.
+# ---------------------------------------------------------------------------
+# check_fn TTL cache
+#
+# external state (Docker daemon, Modal SDK install, playwright binary
+# availability). For a long-lived CLI or gateway process, calling them on
+# every get_definitions() is pure waste — external state changes on human
+# timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
+# or live credential file changes propagate within a turn or two without
+# requiring any explicit invalidation.
+#
+#
+# Transient-failure suppression (issue #21658 / #5304): these probes can flap.
+# A single ``subprocess.run([docker, "version"], timeout=5)`` that times out
+# under load returns False for one call, which would silently strip the entire
+# terminal+file toolset from whatever agent is being built at that instant —
+# most visibly a delegate_task subagent, which then reports "Tool read_file
+# does not exist". To absorb such flakes WITHOUT pinning a permanently-stale
+# "available" verdict, we remember the last time each check returned True and,
+# when a fresh probe fails within a short grace window of that last success,
+# we serve the last-good True instead of caching the failure. A failure that
+# persists past the grace window is honored normally, so a backend that really
+# went down stops advertising its tools.
+# ---------------------------------------------------------------------------
 
 _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
@@ -228,20 +238,12 @@ _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
-_BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
-
-
-def _fn_label(fn: Callable) -> object:
-    return getattr(fn, "__qualname__", fn)
 
 
 def _prune_check_fn_caches(now: float) -> None:
@@ -257,15 +259,41 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped. Browser-controller
-    availability is request-bound (changes on every attach/detach), so a fully bound
-    browser-control request bypasses this cache AND model_tools' outer definition cache (same
-    sentinel) — one Browser session's live tools must not leak into another. Single-profile
-    processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
-    per profile turn, so the canonical profile key is the boundary."""
+    """Return the active profile key when availability is profile-scoped.
+
+    Browser-controller availability is request-bound and can change on every
+    attach/detach. A fully bound browser-control request therefore bypasses both
+    this check cache and model_tools' outer definition cache; the same sentinel
+    is consumed by both layers. This prevents one Browser session's live tools
+    from leaking into any unrelated session.
+
+    Single-profile processes intentionally keep the historical process-wide
+    cache. A multiplex gateway installs a Hermes-home override for every
+    profile turn, so the canonical profile key is the stable isolation
+    boundary across repeated turns for that profile.
+    """
     try:
         from gateway.session_context import get_session_env
-        if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
+
+        browser_identity = (
+            get_session_env("HERMES_SESSION_ID", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""),
+        )
+        if all(str(value or "").strip() for value in browser_identity):
+            return CHECK_FN_CACHE_BYPASS
+    except Exception:
+        pass
+
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if not is_multiplex_active():
+            return None
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+        if not override:
             return CHECK_FN_CACHE_BYPASS
     except Exception:
         pass
@@ -282,35 +310,19 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
-def _run_check_fn_uncached(fn: Callable) -> bool:
+def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
     """Run an availability check without cache/grace handling."""
-    from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
         return bool(fn())
-    except UnscopedSecretError:
-        # The verdict comes from the LIVE scope at the catch site, not from which registry branch
-        # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
-        # branch-derived hint misreported every boot-time uncached probe as a lost scope (#110635).
-        if current_secret_scope() is None:
-            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before any
-            # profile secret scope exists, so get_secret raises by design. No traceback, so this
-            # cannot be mistaken for a crashed check_fn (#100697).
-            logger.debug(
-                "check_fn %s hit the multiplex fail-closed path with no "
-                "profile secret scope active; dependent tools re-probe on the first scoped turn",
-                _fn_label(fn))
-        else:
-            # The caller IS scoped but the read still failed closed: the probe dropped the scope on
-            # the way to get_secret (a bare thread/executor hop) — a spawn-site bug, kept loud.
-            logger.warning(
-                "check_fn %s raised UnscopedSecretError while the profile cache "
-                "scope was resolved; dependent tools will be unavailable this turn",
-                _fn_label(fn), exc_info=True)
     except Exception:
+        detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(
-            "check_fn %s raised; dependent tools will be unavailable this turn",
-            _fn_label(fn), exc_info=True)
-    return False
+            "check_fn %s raised%s; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            detail,
+            exc_info=True,
+        )
+        return False
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -320,7 +332,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        return _run_check_fn_uncached(fn)
+        return _run_check_fn_uncached(fn, unresolved_scope=True)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL

@@ -9,7 +9,7 @@ import {
 import type { ConnectionRegistry } from './connection-registry'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
 
-type RouteSource = 'env' | 'profile' | 'registry' | 'settings'
+type RouteSource = 'env' | 'profile' | 'settings'
 
 interface SshRouteConfig {
   host: string
@@ -49,22 +49,6 @@ export interface DesktopRemoteRouteInput {
 
 function withConnectionId<T extends object>(route: T, connectionId?: string): T & { connectionId?: string } {
   return connectionId ? { ...route, connectionId } : route
-}
-
-/**
- * Pool key used by v1 settings/profile SSH (`sshConnections`).
- *
- * Bootstrap stores the tunnel under sshScopeKey(profile or null).
- * resolveDesktopRemoteRoute may also stamp a registry connectionId when
- * the host matches a v2 row. That id is identity, not the pool key.
- * Looking up backendScopeKey(connectionId, profile) misses the live tunnel.
- */
-export function v1SshTerminalPoolKey(route: { source: string }, profile?: null | string): string {
-  if (route.source === 'profile') {
-    return connectionScopeKey(profile) || ''
-  }
-
-  return ''
 }
 
 /**
@@ -149,14 +133,7 @@ export function resolveDesktopRemoteRoute({
   }
 
   if (!modeIsRemoteLike(config.mode)) {
-    // Registry-primary fallback (#91564/#90316): "Make primary" on a
-    // registered remote/cloud/ssh gateway only rewrites connections.json —
-    // the v1 config.mode stays 'local'. Without this rung the primary boot
-    // resolves local and spawns a loopback `hermes serve` the desktop never
-    // uses (it dials the registry primary separately): duplicated MCP sets,
-    // port squat, and a respawn on every poll. A 'local' registry primary
-    // still resolves null, so genuinely-local desktops are untouched.
-    return resolveRegistryPrimaryRoute(registry)
+    return null
   }
 
   const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
@@ -175,54 +152,4 @@ export function resolveDesktopRemoteRoute({
     },
     matchingConnectionId(registry, route, 'primary')
   )
-}
-
-/**
- * Lowest-precedence rung: the v2 registry PRIMARY's own transport. Returns
- * null unless the primary names a remote/cloud/ssh entry — i.e. only when the
- * user explicitly made a non-local registered gateway their primary.
- */
-function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
-  const primaryId = String(registry?.primary || '').trim()
-
-  if (!primaryId) {
-    return null
-  }
-
-  const entry = (registry.connections || []).find(connection => connection.id === primaryId)
-
-  if (!entry) {
-    return null
-  }
-
-  if (entry.kind === 'ssh') {
-    const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
-
-    if (!ssh) {
-      return null
-    }
-
-    return { connectionId: entry.id, kind: 'ssh', source: 'registry', ssh, token: entry.token }
-  }
-
-  if (entry.kind !== 'remote' && entry.kind !== 'cloud') {
-    return null
-  }
-
-  const url = String(entry.url || '').trim()
-
-  if (!url) {
-    return null
-  }
-
-  return {
-    authMode: normAuthMode(entry.authMode),
-    connectionId: entry.id,
-    headers: entry.headers,
-    kind: entry.kind,
-    org: entry.kind === 'cloud' ? String(entry.org || '').trim() || undefined : undefined,
-    source: 'registry',
-    token: entry.token,
-    url
-  }
 }

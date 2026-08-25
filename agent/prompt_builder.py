@@ -149,61 +149,57 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "before configuring, modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
 )
 
-# Variant for sessions without the skills toolset (e.g. Blank Slate): naming skill_view() there would dangle.
+# Variant injected when the skill tools are not in the session's toolset
+# (e.g. a Blank Slate install with the skills toolset disabled). Pointing the
+# model at skill_view() there would be a dangling reference — the docs URL is
+# the only actionable pointer.
 HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with Hermes itself — configuring, "
-    "setting up, using, extending, or troubleshooting it — or when you need to understand your own features, "
-    "tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is the "
-    "authoritative reference and always holds the latest, most up-to-date information. Point the user there "
-    "(or read it yourself if you have a way to fetch web content)."
+    "You run on Hermes Agent (by Nous Research). When the user needs help with "
+    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+    "it — or when you need to understand your own features, tools, or capabilities, "
+    "the documentation at https://hermes-agent.nousresearch.com/docs is the "
+    "authoritative reference and always holds the latest, most up-to-date "
+    "information. Point the user there (or read it yourself if you have a way to "
+    "fetch web content)."
 )
 
+MEMORY_GUIDANCE = (
+    "You have persistent memory across sessions. Save durable facts using the memory "
+    "tool: user preferences, environment details, tool quirks, and stable conventions. "
+    "Memory is injected into every turn, so keep it compact and focused on facts that "
+    "will still matter later.\n"
+    "Prioritize what reduces future user steering — the most valuable memory is one "
+    "that prevents the user from having to correct or remind you again. "
+    "User preferences and recurring corrections matter more than procedural task details.\n"
+    "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
+    "state to memory; use session_search to recall those from past transcripts. "
+    "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
+    "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
+    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
+    "If you've discovered a new way to do something, solved a problem that could be "
+    "necessary later, save it as a skill with the skill tool.\n"
+    "Write memories as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request. Procedures and "
+    "workflows belong in skills, not memory."
+)
 
-# Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
-def build_memory_guidance(
-    memory_enabled: bool = True, profile_enabled: bool = True, *, skill_manage_available: bool = True,
-) -> str:
-    """Adapt store and skill-write guidance without widening what belongs in memory."""
-    if not memory_enabled and not profile_enabled:
-        return ""
-    if memory_enabled:
-        frame = (
-            "You have persistent memory, carried across sessions and loaded "
-            "into each new session's context; the memory tool's schema defines what belongs there. "
-        )
-    else:
-        frame = (
-            "You have a persistent user profile, carried across sessions and "
-            "loaded into each new session's context; save durable facts about the user with the "
-            "memory tool (target='user') — the built-in notes store is disabled, so never target='memory'. "
-        )
-    skill_routing = (
-        "Skills come first: when you learn something while doing a task — a "
-        "procedure, a pitfall, and the user's preferences and corrections "
-        "for that kind of work — record it in the skill you used or built "
-        "for the task (skill_manage), where it loads only when relevant. "
-        if skill_manage_available else
-        "Task-specific knowledge — procedures, pitfalls, and the user's preferences "
-        "and corrections for that kind of work — belongs in skills, not in memory, "
-        "even when skill writing is unavailable. "
-    )
-    return frame + skill_routing + (
-        "Memory is the narrow exception for facts that apply to EVERY "
-        "session regardless of task (who the user is, environment facts, "
-        "standing conventions with no task home); it has a hard character "
-        "budget, so when it fills, replace or consolidate stale entries "
-        "rather than skipping the save. Write entries as declarative facts, "
-        "not instructions to yourself: 'User prefers concise responses' ✓ — "
-        "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
-        "a directive in later sessions and can override the user's current "
-        "request). A fact stale within a week belongs in session history; "
-        "procedures and workflows belong in skills."
-    )
-
-
-# Legacy aliases still imported by call sites and tests.
-MEMORY_GUIDANCE = build_memory_guidance(True, True)
-USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
+USER_PROFILE_GUIDANCE = (
+    "You have a persistent user profile across sessions. Save durable facts about "
+    "the user with the memory tool (target='user'): name, role, preferences, "
+    "corrections, and communication style. The profile is injected into every turn, "
+    "so keep it compact and focused on facts that will still matter later.\n"
+    "The built-in memory notes store is disabled — write only to the user profile "
+    "(target='user'), never target='memory'.\n"
+    "Prioritize what reduces future user steering — the most valuable entry is one "
+    "that prevents the user from having to correct or remind you again.\n"
+    "Write entries as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request."
+)
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect relevant cross-session "
@@ -330,25 +326,41 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # finish_reason=stop (#96550).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
-# Models that receive OPENAI_MODEL_EXECUTION_GUIDANCE when agent.execution_guidance is "auto" (agentic-eval
-# traces showed the same failure modes; Muse Spark stops after a chat-only turn on defaults). Gemini/Gemma get
-# GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead; Claude does not exhibit these modes. Any model can opt in via
-# config.yaml (`true` or a substring list).
-# Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE (execution discipline: tool
-# persistence, mandatory tool use for arithmetic, external-write read-back, count reconciliation, literal
-# preservation, verification-gated completion) when agent.execution_guidance is "auto". gpt/codex/grok are
-# the historical set; deepseek/kimi/qwen/glm/minimax/ mimo/mistral were added after Composio agentic-eval
-# traces showed the same failure modes on those families (financial math in prose, no read-back after
-# external writes, identifier "repair", completeness claims despite count mismatches). GLM's
-# tool-calls-as-plain-text stall (#53847) and MiMo (#41874) are covered here too. Gemini/Gemma are excluded
-# — they get the more specific GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead.
+# Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE
+# (execution discipline: tool persistence, mandatory tool use for arithmetic,
+# external-write read-back, count reconciliation, literal preservation,
+# verification-gated completion) when agent.execution_guidance is "auto".
+#
+# gpt/codex/grok are the historical set; deepseek/kimi/qwen/glm/minimax/
+# mimo/mistral were added after Composio agentic-eval traces showed the same
+# failure modes on those families (financial math in prose, no read-back after
+# external writes, identifier "repair", completeness claims despite count
+# mismatches). GLM's tool-calls-as-plain-text stall (#53847) and MiMo (#41874)
+# are covered here too. Gemini/Gemma are excluded — they get the more specific
+# GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead. Claude is excluded because
+# it does not exhibit these failure modes; users can opt any model in via
+# config.yaml `agent.execution_guidance: true` or a substring list.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
-    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
+    "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral",
 )
 
-# Universal "finish the job" guidance (ALL models): don't stop after a stub, never
-# fabricate output when the real path is blocked. Ships in every cached prompt — keep tight.
+# Universal "finish the job" guidance — applied to ALL models, not gated
+# by model family.  Addresses two cross-model failure modes:
+#   1. Stopping after a stub: writing a tiny file or running one command
+#      and then ending the turn with a description of the plan instead
+#      of the finished artifact.  (Observed on Opus during a real
+#      Sarasota real-estate build task: 3 API calls, 85-byte file,
+#      one terminal command, finish_reason=stop.)
+#   2. Fabricating output when a real path is blocked.  When `pip` or a
+#      tool fails, some models will synthesize plausible-looking results
+#      (fake addresses, fake JSON, fake numbers) instead of reporting
+#      the blocker.  (Observed on DeepSeek v4-flash on the same task:
+#      pushed through PEP-668 wall, then returned fabricated listings.)
+#
+# Short on purpose.  This block is shipped to every user, every session,
+# in the cached system prompt — token cost is paid once at install and
+# then amortised across all sessions via prefix caching.  Keep it tight.
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
     "When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real "
@@ -387,27 +399,34 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "read a file before you can patch it). When in doubt and the calls are independent, batch them."
 )
 
-# Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer
-# from memory, or declare "done" unverified. Body is family-agnostic (OPENAI_ prefix reflects origin).
-# Injection gate: system_prompt.py via config.yaml ``agent.execution_guidance`` (auto/true/false/list).
-# OpenAI GPT/Codex-specific execution guidance. Addresses known failure modes where GPT models abandon work
-# on partial results, skip prerequisite lookups, hallucinate instead of using tools, and declare "done"
-# without verification. Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
-# Also applied to xAI Grok — same failure modes in practice (claims completion without tool calls, suggests
-# workarounds instead of using existing tools, replies with plans/suggestions instead of executing). As of
-# the Composio agentic-eval follow-up, the block is no longer fenced to gpt/codex/grok: eval traces showed
-# DeepSeek/Kimi doing financial math in prose, skipping read-back verification after external writes,
-# "repairing" malformed identifiers, and claiming completeness despite count mismatches — exactly the
-# failure modes this block targets.
+# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# where GPT models abandon work on partial results, skip prerequisite lookups,
+# hallucinate instead of using tools, and declare "done" without verification.
+# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+# Also applied to xAI Grok — same failure modes in practice (claims completion
+# without tool calls, suggests workarounds instead of using existing tools,
+# replies with plans/suggestions instead of executing). The body is
+# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
+#
+# As of the Composio agentic-eval follow-up, the block is no longer fenced to
+# gpt/codex/grok: eval traces showed DeepSeek/Kimi doing financial math in
+# prose, skipping read-back verification after external writes, "repairing"
+# malformed identifiers, and claiming completeness despite count mismatches —
+# exactly the failure modes this block targets. The injection gate lives in
+# agent/system_prompt.py and is controlled by config.yaml
+# ``agent.execution_guidance`` (auto/true/false/list); "auto" matches the
+# EXECUTION_GUIDANCE_MODELS substring tuple below.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
     "- Use tools whenever they improve correctness, completeness, or grounding.\n"
     "- Do not stop early when another tool call would materially improve the result.\n"
-    "- If a tool returns empty, partial, or suspiciously narrow results, retry with a broader or different query or "
-    "strategy before concluding.\n"
-    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified the result.\n"
-    "</tool_persistence>\n\n"
+    "- If a tool returns empty, partial, or suspiciously narrow results, retry "
+    "with a broader or different query or strategy before concluding.\n"
+    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
+    "the result.\n"
+    "</tool_persistence>\n"
+    "\n"
     "<mandatory_tool_use>\n"
     "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
     "- Arithmetic, math, calculations → use terminal or execute_code\n"
@@ -438,24 +457,32 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Correctness: does the output satisfy every stated requirement?\n"
     "- Grounding: are factual claims backed by tool outputs or provided context?\n"
     "- Formatting: does the output match the requested format or schema?\n"
-    "- Safety: if the next step has side effects (file writes, commands, API calls), confirm scope before executing.\n"
-    "- Completion: 'done' means every named acceptance criterion is verified — never a plausible subset. Completing "
-    "your plan is not itself the answer; the requested output must appear in your response.\n"
-    "</verification>\n\n"
+    "- Safety: if the next step has side effects (file writes, commands, API calls), "
+    "confirm scope before executing.\n"
+    "- Completion: 'done' means every named acceptance criterion is verified — "
+    "never a plausible subset. Completing your plan is not itself the answer; "
+    "the requested output must appear in your response.\n"
+    "</verification>\n"
+    "\n"
     "<external_state_verification>\n"
-    "- After any state-changing write to an external system (API call, message post, record update), verify the effect "
-    "by reading back the exact target before claiming success — a successful tool call is not a successful task. Do "
-    "NOT re-verify internal file edits a tool already confirmed.\n"
-    "- Declared totals in responses (total, reply_count, has_more, '...N more') are hard assertions. If your "
-    "enumerated count disagrees, re-fetch or parse programmatically — never finalize on 'go with what I have'.\n"
-    "- When building write payloads, set fields explicitly rather than relying on provider defaults that could "
-    "contradict intent.\n"
-    "</external_state_verification>\n\n"
+    "- After any state-changing write to an external system (API call, message "
+    "post, record update), verify the effect by reading back the exact target "
+    "before claiming success — a successful tool call is not a successful task. "
+    "Do NOT re-verify internal file edits a tool already confirmed.\n"
+    "- Declared totals in responses (total, reply_count, has_more, '...N more') "
+    "are hard assertions. If your enumerated count disagrees, re-fetch or parse "
+    "programmatically — never finalize on 'go with what I have'.\n"
+    "- When building write payloads, set fields explicitly rather than relying "
+    "on provider defaults that could contradict intent.\n"
+    "</external_state_verification>\n"
+    "\n"
     "<literal_preservation>\n"
-    "- Preserve identifiers, commands, and values exactly as given — never 'repair' or normalize a token that fails a "
-    "stated format. A successful lookup does not validate a malformed source token; validate format first, then look "
-    "up.\n"
-    "</literal_preservation>\n\n"
+    "- Preserve identifiers, commands, and values exactly as given — never "
+    "'repair' or normalize a token that fails a stated format. A successful "
+    "lookup does not validate a malformed source token; validate format first, "
+    "then look up.\n"
+    "</literal_preservation>\n"
+    "\n"
     "<missing_context>\n"
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
     "- Use the appropriate permitted lookup tool when missing information is retrievable (search_files, read_file, "
@@ -466,14 +493,24 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
-def execution_guidance_text() -> str:
-    """OPENAI_MODEL_EXECUTION_GUIDANCE as injected into the system prompt.
+def execution_guidance_text(valid_tool_names=None) -> str:
+    """Render OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset.
 
-    The guidance names no web tool (#39797: a hard "use web_search" overrode SOUL.md and dangled in Blank Slate),
-    so the text is toolset-neutral and needs no per-session filtering.
+    The block names ``web_search`` as the lookup tool for current facts; on
+    sessions without web tools (e.g. Blank Slate) that's a dangling
+    reference, so the web_search lines are dropped/adjusted. Deterministic
+    per-session (toolset is fixed at construction), so cache-safe.
     """
-    return OPENAI_MODEL_EXECUTION_GUIDANCE
-
+    text = OPENAI_MODEL_EXECUTION_GUIDANCE
+    if valid_tool_names is not None and "web_search" not in valid_tool_names:
+        text = text.replace(
+            "- Current facts (weather, news, versions) → use web_search\n", ""
+        )
+        text = text.replace(
+            "(search_files, web_search, read_file, etc.)",
+            "(search_files, read_file, etc.)",
+        )
+    return text
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
@@ -787,7 +824,40 @@ WSL_ENVIRONMENT_HINT = (
 # would mislead, so the agent only sees the machine it can touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
 
-# Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
+
+# Per-backend fallback descriptions — used when the live probe fails.
+# Only states what we know from the backend choice itself (container type,
+# likely OS family). Does NOT invent cwd, user, or $HOME — the agent is
+# told to probe those directly if it needs them.
+def _plugin_backend_is_remote(backend: str) -> bool:
+    """Whether a plugin-registered terminal backend runs commands remotely.
+
+    Fail-soft: unknown names return False (treated as local, matching the
+    historical behavior for unrecognized TERMINAL_ENV values).
+    """
+    if not backend or backend in _REMOTE_TERMINAL_BACKENDS or backend == "local":
+        return False
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(backend, "is_remote", False))
+    except Exception:
+        return False
+
+
+def _plugin_backend_description(backend: str) -> str | None:
+    """Prompt fallback description declared by a plugin backend, if any."""
+    try:
+        from agent.terminal_env_registry import get_provider
+
+        provider = get_provider(backend)
+        if provider is not None:
+            return provider.env_description
+    except Exception:
+        pass
+    return None
+
+
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "docker": "a Docker container (Linux)",
     "singularity": "a Singularity container (Linux)",
@@ -930,12 +1000,97 @@ def _probe_remote_backend(env_type: str) -> str | None:
         except Exception as e:
             logger.debug("Backend probe unavailable (import failed): %s", e)
         else:
-            try:
-                formatted = _format_backend_probe(_run_backend_probe(env_type, terminal_tool))
-            except Exception as e:
-                logger.debug("Backend probe failed: %s", e)
-        _BACKEND_PROBE_CACHE[cache_key] = formatted
-    return formatted or None
+            image = ""
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        container_config = None
+        from tools.terminal_tool import _is_container_backend as _is_container
+
+        if _is_container(env_type):
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_extra_args": config.get("docker_extra_args", []),
+                "docker_shm_size": config.get("docker_shm_size", "1g"),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_shared_container_key": config.get("docker_shared_container_key", ""),
+                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+            }
+
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=config.get("cwd", ""),
+            timeout=config.get("timeout", 180),
+            ssh_config=ssh_config,
+            container_config=container_config,
+            task_id="prompt-backend-probe",
+            host_cwd=config.get("host_cwd"),
+        )
+        # Single-line POSIX probe — works on any Unixy backend. Wrapped in
+        # `2>/dev/null` so a missing binary doesn't pollute the output.
+        probe_cmd = (
+            "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' "
+            "\"$(uname -s 2>/dev/null || echo unknown)\" "
+            "\"$(uname -r 2>/dev/null || echo unknown)\" "
+            "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+        )
+        result = env.execute(probe_cmd, timeout=4)
+        if result.get("returncode") != 0:
+            logger.debug("Backend probe returned non-zero: %r", result)
+            _BACKEND_PROBE_CACHE[cache_key] = ""
+            return None
+        output = (result.get("output") or "").strip()
+        if not output:
+            _BACKEND_PROBE_CACHE[cache_key] = ""
+            return None
+    except Exception as e:
+        logger.debug("Backend probe failed: %s", e)
+        _BACKEND_PROBE_CACHE[cache_key] = ""
+        return None
+
+    # Parse key=value lines back into a tidy summary.
+    parsed: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            parsed[k.strip()] = v.strip()
+
+    pieces = []
+    os_bits = " ".join(x for x in (parsed.get("os"), parsed.get("kernel")) if x and x != "unknown")
+    if os_bits:
+        pieces.append(f"OS: {os_bits}")
+    if parsed.get("user") and parsed["user"] != "unknown":
+        pieces.append(f"User: {parsed['user']}")
+    if parsed.get("home"):
+        pieces.append(f"Home: {parsed['home']}")
+    if parsed.get("cwd"):
+        pieces.append(f"Working directory: {parsed['cwd']}")
+
+    if not pieces:
+        _BACKEND_PROBE_CACHE[cache_key] = ""
+        return None
+
+    formatted = "\n".join(f"  {p}" for p in pieces)
+    _BACKEND_PROBE_CACHE[cache_key] = formatted
+    return formatted
 
 
 def _clear_backend_probe_cache() -> None:
@@ -967,6 +1122,8 @@ def _local_host_hints() -> list[str]:
     # Windows-local terminal runs bash, not PowerShell — without this the model issues PowerShell syntax.
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
 
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
@@ -999,6 +1156,38 @@ def _config_readonly(what: str) -> dict:
         logger.debug("Could not read %s from config: %s", what, e)
         return {}
 
+        # Windows-local terminal runs bash, not PowerShell — the model must
+        # know this or it will issue PowerShell syntax and fail.
+        if sys.platform == "win32" and not is_wsl():
+            hints.append(_WINDOWS_BASH_SHELL_HINT)
+    else:
+        # --- Remote backend block (host info suppressed) ---
+        probe = _probe_remote_backend(backend)
+        if probe:
+            hints.append(
+                f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
+                f"`write_file`, `patch`, and `search_files` tools all operate "
+                f"inside this {backend} environment — NOT on the machine "
+                f"where Hermes itself is running. The host OS, home, and cwd "
+                f"of the Hermes process are irrelevant; only the following "
+                f"backend state matters:\n{probe}"
+            )
+        else:
+            description = _BACKEND_FALLBACK_DESCRIPTIONS.get(
+                backend,
+            ) or _plugin_backend_description(backend) or (
+                f"a {backend} environment (likely Linux)"
+            )
+            hints.append(
+                f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
+                f"`write_file`, `patch`, and `search_files` tools all operate "
+                f"inside {description} — NOT on the machine where Hermes "
+                f"itself runs. The backend probe didn't respond at "
+                f"prompt-build time, so the sandbox's current user, $HOME, "
+                f"and working directory are unknown from here. If you need "
+                f"them, probe directly with a terminal call like "
+                f"`uname -a && whoami && pwd`."
+            )
 
 def _embedder_environment_hint() -> str:
     """Embedder-supplied environment description: HERMES_ENVIRONMENT_HINT (container ENV)
@@ -1411,7 +1600,202 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    if project_names:
+        # Drop profile-local entries shadowed by a project skill BEFORE the
+        # org-labeling pass so collision flags don't fire on intentional
+        # project-over-local overrides.
+        visible_entries = [
+            e
+            for e in visible_entries
+            if (e.get("frontmatter_name") or e.get("skill_name") or "")
+            not in project_names
+        ]
+
+    # ── M2 org labeling + FAIL-LOUD collisions ─────────────────────────
+    # An org skill lists with an explicit provenance tag. When a personal and
+    # an org skill share a name, NEITHER silently wins: both list qualified
+    # (personal keeps the bare name is the wrong default — silent divergence
+    # from the org set; org winning silently shadows the user's own work) —
+    # so both entries carry a [name collision] flag and skill_view refuses
+    # the ambiguous bare name (its existing multi-candidate guard).
+    name_owners: dict[str, set[str]] = {}
+    for entry in visible_entries:
+        fm = entry.get("frontmatter_name") or entry.get("skill_name") or ""
+        kind = "org" if entry.get("org_id") else "personal"
+        name_owners.setdefault(fm, set()).add(kind)
+    for entry in visible_entries:
+        fm = entry.get("frontmatter_name") or entry.get("skill_name") or ""
+        desc = entry.get("description", "")
+        org_id = entry.get("org_id")
+        collided = len(name_owners.get(fm, set())) > 1
+        if org_id:
+            author = entry.get("org_author") or ""
+            tag = f"[org-shared{': by ' + author if author else ''}]"
+            desc = f"{tag} {desc}".strip()
+            category = f"org:{org_id}"
+        else:
+            category = entry.get("category") or "general"
+        if collided:
+            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
+        skills_by_category.setdefault(category, []).append((fm, desc))
+
+    if snapshot is None:
+        # (continuation of the cold path below: category descriptions + write)
+        # Read category-level DESCRIPTION.md files
+        for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
+            try:
+                content = desc_file.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(content)
+                cat_desc = fm.get("description")
+                if not cat_desc:
+                    continue
+                rel = desc_file.relative_to(skills_dir)
+                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
+            except Exception as e:
+                logger.debug("Could not read skill description %s: %s", desc_file, e)
+
+        _write_skills_snapshot(
+            skills_dir,
+            _build_skills_manifest(skills_dir),
+            skill_entries,
+            category_descriptions,
+        )
+
+    # ── External skill directories ─────────────────────────────────────
+    # Scan external dirs directly (no snapshot caching — they're read-only
+    # and typically small).  Local skills already in skills_by_category take
+    # precedence: we track seen names and skip duplicates from external dirs.
+    seen_skill_names: set[str] = set()
+    for cat_skills in skills_by_category.values():
+        for name, _desc in cat_skills:
+            seen_skill_names.add(name)
+
+    for ext_dir in external_dirs:
+        if not ext_dir.exists():
+            continue
+        for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
+            try:
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                if not is_compatible:
+                    continue
+                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                skill_name = entry["skill_name"]
+                frontmatter_name = entry["frontmatter_name"]
+                if frontmatter_name in seen_skill_names:
+                    continue
+                if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                seen_skill_names.add(frontmatter_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (frontmatter_name, entry["description"])
+                )
+            except Exception as e:
+                logger.debug("Error reading external skill %s: %s", skill_file, e)
+
+        # External category descriptions
+        for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
+            try:
+                content = desc_file.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(content)
+                cat_desc = fm.get("description")
+                if not cat_desc:
+                    continue
+                rel = desc_file.relative_to(ext_dir)
+                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+            except Exception as e:
+                logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # Posture-driven category demotion (e.g. non-coding skills while pairing
+    # on code). Demoted categories stay in the index as a single names-only
+    # line — descriptions are dropped to cut noise, but every skill name
+    # remains visible so memory-anchored recall ("load <name>") keeps working.
+    # NEVER remove entries entirely: agent-created skills are the model's
+    # project memory, and models don't reach for skills_list to rediscover
+    # what the index stops showing them. Match on the top-level category
+    # segment so nested categories ("social-media/twitter") are demoted with
+    # their parent.
+    demoted = frozenset(
+        cat for cat in skills_by_category
+        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+    )
+
+    hidden_note = ""
+    if demoted:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+
+    if not skills_by_category:
+        result = ""
+    else:
+        # "basic tools like web_search or terminal" — don't name web_search
+        # when the session has no web tools (dangling reference otherwise).
+        _basic_tools = "web_search or terminal"
+        if available_tools is not None and "web_search" not in available_tools:
+            _basic_tools = "terminal"
+        index_lines = []
+        for category in sorted(skills_by_category.keys()):
+            # Deduplicate and sort skills within each category
+            seen = set()
+            if category in demoted:
+                names = sorted({name for name, _ in skills_by_category[category]})
+                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                continue
+            cat_desc = category_descriptions.get(category, "")
+            if cat_desc:
+                index_lines.append(f"  {category}: {cat_desc}")
+            else:
+                index_lines.append(f"  {category}:")
+            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                if name in seen:
+                    continue
+                seen.add(name)
+                if desc:
+                    index_lines.append(f"    - {name}: {desc}")
+                else:
+                    index_lines.append(f"    - {name}")
+
+        result = (
+            "## Skills (mandatory)\n"
+            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "Err on the side of loading — it is always better to have context you don't need "
+            "than to miss critical steps, pitfalls, or established workflows. "
+            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+            "and proven workflows that outperform general-purpose approaches. Load the skill "
+            f"even if you think you could handle the task with basic tools like {_basic_tools}. "
+            "Skills also encode the user's preferred approach, conventions, and quality standards "
+            "for tasks like code review, planning, and testing — load them even for tasks you "
+            "already know how to do, because the skill defines how it should be done here.\n"
+            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "After difficult/iterative tasks, offer to save as a skill. "
+            "If a skill you loaded was missing steps, had wrong commands, or needed "
+            "pitfalls you discovered, update it before finishing.\n"
+            "\n"
+            "<available_skills>\n"
+            + "\n".join(index_lines) + "\n"
+            "</available_skills>\n"
+            "\n"
+            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + hidden_note
+        )
+
+    # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

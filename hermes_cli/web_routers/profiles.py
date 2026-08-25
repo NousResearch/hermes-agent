@@ -817,12 +817,33 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     # For the default profile the rename lands as a presentation-only display_name; the
     # canonical id ("default") is always returned so callers keying on `name` stay correct.
     try:
+        path = profiles_mod.rename_profile(name, body.new_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("PATCH /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    # For the default profile the rename lands as a presentation-only
+    # display_name; the canonical id ("default") is unchanged. Always
+    # return the canonical id so callers keying on `name` stay correct.
+    try:
         is_default = profiles_mod.normalize_profile_name(name) == "default"
     except ValueError:
         is_default = False
     if is_default:
-        return {"ok": True, "name": "default", "display_name": body.new_name.strip(), "path": str(path)}
-    return {"ok": True, "name": profiles_mod.normalize_profile_name(body.new_name), "path": str(path)}
+        return {
+            "ok": True,
+            "name": "default",
+            "display_name": body.new_name.strip(),
+            "path": str(path),
+        }
+    return {
+        "ok": True,
+        "name": profiles_mod.normalize_profile_name(body.new_name),
+        "path": str(path),
+    }
 
 
 @router.delete("/api/profiles/{name}")

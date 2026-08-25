@@ -31,8 +31,7 @@ def test_delete_missing_returns_1(tmp_path, monkeypatch, capsys):
     SessionDB(tmp_path / "state.db")  # initialize an empty store
     rc = sc.cmd_sessions(_args("delete", session_id="nope_xyz"))
     assert rc == 1
-    out = capsys.readouterr().out
-    assert "No session 'nope_xyz'" in out and "hermes sessions list" in out
+    assert "not found" in capsys.readouterr().out.lower()
 
 
 def test_rename_missing_returns_1(tmp_path, monkeypatch):

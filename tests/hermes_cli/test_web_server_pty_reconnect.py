@@ -95,11 +95,11 @@ def test_active_session_fallback_sends_resume_control_message(pty_client, monkey
     """
     ws, client, token = pty_client
     channel = "implicit-resume-chan"
-    active_file = _web_server_chat._active_session_file_for_channel(ws.app, channel)
+    active_file = ws._active_session_file_for_channel(ws.app, channel)
     active_file.write_text(json.dumps({"session_id": "sess-old"}), encoding="utf-8")
 
     monkeypatch.setattr(
-        _web_server_chat, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+        ws, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
     )
 
     with client.websocket_connect(_url(token, channel=channel)) as conn:
@@ -113,7 +113,7 @@ def test_explicit_resume_sends_no_control_message(pty_client, monkeypatch):
     channel = "explicit-resume-chan"
 
     monkeypatch.setattr(
-        _web_server_chat, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+        ws, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
     )
 
     with client.websocket_connect(

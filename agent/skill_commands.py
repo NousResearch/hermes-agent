@@ -18,12 +18,11 @@ _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
 # Guards the (map, platform-tag, home-tag) triple so publication and the
-# freshness lookup always see a consistent snapshot. Scanning stays outside.
+# freshness lookup always see a consistent snapshot. Scanning itself stays
+# outside this lock.
 _publish_lock = threading.Lock()
-# ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
-# instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
-# applied by hermes_cli/commands_platforms.py, not here.
-_SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
+# Patterns for sanitizing skill names into clean hyphen-separated slugs.
+_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
@@ -281,11 +280,22 @@ def _build_skill_message(
     return message
 
 
-def _render_skill_block(
-    loaded: tuple[dict[str, Any], Path | None, str], activation_note: str, task_id: str | None, **message_kwargs: str,
-) -> str:
-    """Bump Curator usage tracking (never fatal) and build the message block for one loaded skill."""
-    loaded_skill, skill_dir, skill_name = loaded
+def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
+
+    Returns:
+        Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
+    """
+    global _skill_commands, _skill_commands_platform, _skill_commands_home
+    platform = _resolve_skill_commands_platform()
+    home = _resolve_skill_commands_home()
+    # Build into a local map and publish once, at the end. Writing straight
+    # into the global made a scan's partial results visible to everything
+    # else in the process: a second, overlapping scan deduped against its own
+    # (empty) ``seen_names`` but collided against the first scan's already-
+    # published slugs, logging one bogus "already claimed" warning per skill —
+    # each naming the same skill as its own incumbent (#74574).
+    commands: Dict[str, Dict[str, Any]] = {}
     try:
         # Track active usage for Curator lifecycle management (#17782)
         # Track active usage for Curator lifecycle management (#17782)
@@ -396,20 +406,80 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         for _iter in iters:
             for skill_md in _iter:
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands, resolve_command)
+                    content = skill_md.read_text(encoding='utf-8')
+                    frontmatter, body = _parse_frontmatter(content)
+                    # Skip skills incompatible with the current OS platform
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    # Skip skills not relevant to the current runtime env
+                    # (kanban/docker/s6). Offer-time only; explicit load bypasses.
+                    if not skill_matches_environment(frontmatter):
+                        continue
+                    name = frontmatter.get('name', skill_md.parent.name)
+                    if name in seen_names:
+                        continue
+                    # Respect user's disabled skills config
+                    if name in disabled:
+                        continue
+                    description = frontmatter.get('description', '')
+                    if not description:
+                        for line in body.strip().split('\n'):
+                            line = line.strip()
+                            if line and not line.startswith('#'):
+                                description = line[:80]
+                                break
+                    seen_names.add(name)
+                    # Normalize to hyphen-separated slug, stripping
+                    # non-alnum chars (e.g. +, /) to avoid invalid
+                    # Telegram command names downstream.
+                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    if not cmd_name:
+                        continue
+                    # Skip if this skill's auto-generated /command collides
+                    # with a core Hermes slash command (name or alias). The
+                    # skill remains fully loadable via /skill <name>.
+                    # Uses resolve_command() so aliases and case variants are
+                    # covered without maintaining a separate cache.
+                    if resolve_command(cmd_name) is not None:
+                        logger.warning(
+                            "Skill %r generates slash command '/%s' which "
+                            "collides with a core Hermes command; skipping "
+                            "auto-registration. Use '/skill %s' instead.",
+                            name, cmd_name, name,
+                        )
+                        continue
+                    # Dedup on the resolved slug, not just the raw name: two
+                    # distinct frontmatter names can normalize to the same
+                    # slug (e.g. "git_helper" vs "git-helper"). First-wins
+                    # preserves local-before-external precedence.
+                    cmd_key = f"/{cmd_name}"
+                    if cmd_key in commands:
+                        logger.warning(
+                            "Skill %r maps to slash command %s already claimed "
+                            "by %r; keeping the first and skipping this one.",
+                            name, cmd_key, commands[cmd_key]["name"],
+                        )
+                        continue
+                    commands[cmd_key] = {
+                        "name": name,
+                        "description": description or f"Invoke the {name} skill",
+                        "skill_md_path": str(skill_md),
+                        "skill_dir": str(skill_md.parent),
+                    }
                 except Exception:
                     continue
     except Exception:
         pass
-    # Publish map + tags as ONE step: a reader landing between bare assignments
-    # could accept the new map under a stale platform tag and serve another
-    # platform's disabled-skill view.
+    # Publish the finished map and the platform/home it was scanned for as
+    # ONE step. Bare assignments are not atomic together: a reader landing
+    # between them sees the NEW map still carrying the OLD platform tag, and
+    # if that stale tag happens to match its own platform it accepts the map
+    # without rescanning — serving another platform's disabled-skill view,
+    # exactly the leak #14536 closed. Only the publish/lookup pair is locked;
+    # the scan above (file I/O, deferred imports) stays outside it.
     with _publish_lock:
-        # Bare assignments are not atomic together: a reader landing between them sees the NEW map still
-        # carrying the OLD platform tag, and if that stale tag happens to match its own platform it accepts
-        # the map without rescanning — serving another platform's disabled-skill view, exactly the leak
-        # #14536 closed. Only the publish/lookup pair is locked; the scan above (file I/O, deferred imports)
-        # stays outside it.
         _skill_commands = commands
         _skill_commands_platform = platform
         _skill_commands_home = home
@@ -426,12 +496,20 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """
     current_platform = _resolve_skill_commands_platform()
     current_home = _resolve_skill_commands_home()
+    # Read the map and its tags under the same lock that publishes them, so
+    # the freshness decision is made against a consistent snapshot.
     with _publish_lock:
         commands = _skill_commands
-        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
-    # Scan outside the lock — file I/O and deferred imports; concurrent scans
-    # are safe since each builds its own map.
-    return commands if is_fresh else scan_skill_commands()
+        is_fresh = (
+            bool(commands)
+            and _skill_commands_platform == current_platform
+            and _skill_commands_home == current_home
+        )
+    if is_fresh:
+        return commands
+    # Scan outside the lock — it does file I/O and deferred imports, and
+    # concurrent scans are already safe (each builds its own map).
+    return scan_skill_commands()
 
 
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:

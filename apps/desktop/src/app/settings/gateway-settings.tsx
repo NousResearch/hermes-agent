@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -667,7 +666,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setSigningIn(true)
 
     try {
-      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl)
+      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
       const refreshed = await window.hermesDesktop.getConnectionConfig(null)
 
       if (seq !== signingSeq.current) {

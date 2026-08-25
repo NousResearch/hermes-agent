@@ -116,44 +116,22 @@ def _resume(**params):
     )
 
 
-def test_resume_closes_profile_db_when_session_not_found(profile_dbs, tmp_path):
+def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
     """The 'session not found' early return must not leak the handle.
 
     The stranded-session adoption fallback (#93296 follow-up) may lazily
     construct the SHARED launch handle via ``_get_db()`` while probing the
-    default store for a donor row; that handle is never closed by design (see
-    module docstring). Only the dedicated profile-scoped open is the caller's
-    to close, so the leak assertion filters to the profile store path.
+    default store for a donor row; that handle carries ``db_path=None`` and
+    is never closed by design (see module docstring). Only the dedicated
+    profile-scoped open (``db_path=<profile>/state.db``) is the caller's to
+    close, so the leak assertion filters to path-scoped opens.
     """
-    profile_store = tmp_path / "work" / "state.db"
     resp = _resume(session_id="missing", profile="work")
 
     assert resp["error"]["code"] == 4007
-    scoped = [db for db in profile_dbs if db.db_path == profile_store]
+    scoped = [db for db in profile_dbs if db.db_path is not None]
     assert len(scoped) == 1
     assert scoped[0].closed == 1
-
-
-def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
-    profile_dbs, monkeypatch, tmp_path
-):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    def _factory(db_path=None, **kwargs):
-        db = _RecordingDB(db_path=db_path, **kwargs)
-        db.rows["s1"] = {"id": "s1", "cwd": str(workspace)}
-        profile_dbs.append(db)
-        return db
-
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
-
-    resp = _resume(session_id="s1", profile="work", source="desktop")
-    session = server._sessions[resp["result"]["session_id"]]
-
-    assert session["cwd"] == str(workspace)
-    assert session["explicit_cwd"] is True
-    assert server._context_cwd_is_launch_artifact(session) is False
 
 
 def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
@@ -191,14 +169,14 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("hermes_state.SessionDB", _factory)
     live_session = {}
     with server._sessions_lock:
         server._sessions["live-sid"] = live_session
     monkeypatch.setattr(
         server,
         "_find_live_session_by_key",
-        lambda _key, *_a: ("live-sid", live_session),
+        lambda _key: ("live-sid", live_session),
     )
     monkeypatch.setattr(
         server,

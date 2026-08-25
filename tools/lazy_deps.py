@@ -732,9 +732,11 @@ def ensure_and_bind(feature: str, importer: Callable[[], dict[str, Any]], target
         logger.warning("Failed to ensure feature %r: %s", feature, exc)
         return False
     try:
-        target_globals.update(importer())
+        bindings = importer()
     except ImportError as exc:
-        logger.warning("Failed to import feature %r after install: %s", feature, exc)
+        logger.warning(
+            "Failed to import feature %r after install: %s", feature, exc
+        )
         return False
     return True
 

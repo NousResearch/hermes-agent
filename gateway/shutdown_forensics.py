@@ -228,16 +228,23 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
         for line in result.stdout.splitlines() if result.returncode == 0 else ():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+                # Try numeric microseconds first
+                if value.isdigit():
+                    timeout_us = int(value)
+                else:
+                    timeout_us = parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
                     return timeout_us
     return None
 
 
 def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
-    """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds. Covers us, ms, s, min,
-    h, d, w, month, y; a bare number is seconds. None on anything unexpected; never raises. Public: also consumed by
-    hermes_cli.gateway's restart-wait sizing.
+    """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds.
+
+    systemd accepts a wide grammar; we cover the common cases (s, ms, min,
+    h) and return None on anything unexpected.  Never raises.
+
+    Public: also consumed by hermes_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None
@@ -270,3 +277,6 @@ def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
             return None
     return total_us if total_us > 0 else None
 
+
+# Backward-compat private alias (pre-promotion name).
+_parse_systemd_duration_to_us = parse_systemd_duration_to_us

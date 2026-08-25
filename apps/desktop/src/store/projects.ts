@@ -279,7 +279,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
-export function projectProfile(): null | string {
+function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
@@ -319,8 +319,10 @@ function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
   return activeGateway() === context.gateway && projectProfile() === context.profile
 }
 
-async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
-  if (!profile || profile === ALL_PROFILES) {
+async function activeProjectsContext(): Promise<ActiveProjectsContext> {
+  const profile = projectProfile()
+
+  if (!profile) {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
 
@@ -330,7 +332,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== normalizeProfileKey($activeGatewayProfile.get())) {
+  if (!gateway || gateway !== activeGateway() || profile !== projectProfile()) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
@@ -417,29 +419,11 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
   }
 
   try {
-    let res: ProjectTreePayload
-
-    try {
-      res = await gatewayRequestOn<ProjectTreePayload>(
-        gateway,
-        'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
-      )
-    } catch (error) {
-      // A remote source switch can leave the first read RPC on a newly-opened
-      // socket without a response even though the gateway remains healthy.
-      // Retry once only while this exact gateway/profile is still foreground;
-      // missing-method and other authoritative failures stay visible as-is.
-      if (!isRetryableProjectTreeReadError(error) || !stillOnProjectsContext(context)) {
-        throw error
-      }
-
-      res = await gatewayRequestOn<ProjectTreePayload>(
-        gateway,
-        'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
-      )
-    }
+    const res = await gatewayRequestOn<ProjectTreePayload>(
+      gateway,
+      'projects.tree',
+      projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+    )
 
     if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
       return
@@ -485,7 +469,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 
   try {
     const res = await hermesApi<ProjectTreePayload>({
-      path: `/api/profiles/projects/tree?preview_limit=${projectTreePreviewLimit()}`,
+      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
@@ -513,16 +497,9 @@ let projectSessionsRefreshGeneration = 0
 
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
-  const profile = projectProfile()
-
-  if (!profile) {
-    return null
-  }
-
-  let context: ActiveProjectsContext | undefined
 
   try {
-    context = await activeProjectsContext()
+    const context = await activeProjectsContext()
 
     const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
       context.gateway,
@@ -878,27 +855,19 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   let res: { project: ProjectInfo | null }
 
   try {
-    // All profiles filters the sidebar, not the owner of a new project.
-    // Capture the live route so reconnecting cannot retarget the write.
-    const context = await activeProjectsContext(normalizeProfileKey($activeGatewayProfile.get()))
-
-    res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
-      context.gateway,
+    res = await gatewayRequest<{ project: ProjectInfo | null }>(
       'projects.create',
-      projectParams(
-        {
-          name: input.name,
-          folders: input.folders ?? [],
-          primary_path: input.primaryPath,
-          slug: input.slug,
-          description: input.description,
-          icon: input.icon,
-          color: input.color,
-          board_slug: input.boardSlug,
-          use: input.use ?? false
-        },
-        context.profile
-      )
+      projectParams({
+        name: input.name,
+        folders: input.folders ?? [],
+        primary_path: input.primaryPath,
+        slug: input.slug,
+        description: input.description,
+        icon: input.icon,
+        color: input.color,
+        board_slug: input.boardSlug,
+        use: input.use ?? false
+      })
     )
   } catch (err) {
     if (isMissingRpcMethod(err)) {

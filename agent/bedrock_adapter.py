@@ -47,6 +47,25 @@ _AWS_SCOPED_CREDENTIAL_VARS: Tuple[Tuple[str, str], ...] = (
     ("aws_session_token", "AWS_SESSION_TOKEN"), ("profile_name", "AWS_PROFILE"),
 )
 
+# Bedrock-hosted OpenAI GPT-5.5 is not exposed through the native Converse
+# runtime. AWS serves it from the Bedrock Mantle OpenAI-compatible Responses
+# endpoint instead (https://bedrock-mantle.<region>.api.aws/openai/v1).
+# Keep the allowlist intentionally narrow so OpenAI GPT-OSS models that are
+# Converse-capable continue to use the native Bedrock path.
+BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
+    "openai.gpt-5.5",
+    # GPT-5.6 family (GA on Bedrock 2026-07-13): Sol (frontier), Terra
+    # (balanced), Luna (fast/affordable). All are Mantle-only — the model
+    # cards list bedrock-runtime/Converse as unsupported.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna",
+)
+_BEDROCK_OPENAI_HOST_RE = re.compile(
+    r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE
+)
+
 
 def scoped_aws_session_kwargs() -> Dict[str, str]:
     """``boto3.session.Session`` kwargs from the routed profile's secret scope, ``{}`` when unscoped.
@@ -137,6 +156,161 @@ def invalidate_runtime_client(region: str) -> bool:
     return _bedrock_runtime_client_cache.pop(region, None) is not None
 
 
+# ---------------------------------------------------------------------------
+# Bedrock Mantle / OpenAI Responses support
+# ---------------------------------------------------------------------------
+
+
+def is_openai_bedrock_model(model_id: str) -> bool:
+    """Return True for Bedrock-hosted OpenAI models that require Mantle.
+
+    Bedrock's GPT-OSS models are Converse-capable and intentionally do not
+    match this helper. The allowlist tracks models served by the OpenAI
+    Responses-compatible ``bedrock-mantle`` route.
+    """
+    normalized = str(model_id or "").strip().lower()
+    return normalized in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+
+
+def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
+    """Append Bedrock OpenAI Responses models to a discovered Bedrock list.
+
+    The Bedrock control plane's ListFoundationModels/ListInferenceProfiles
+    discovery covers Converse models but does not enumerate Mantle-only
+    OpenAI Responses models. The picker needs both surfaces under AWS Bedrock.
+    """
+    merged = list(model_ids or [])
+    seen = {str(m).lower() for m in merged}
+    for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+        if model_id.lower() not in seen:
+            merged.append(model_id)
+            seen.add(model_id.lower())
+    return merged
+
+
+def bedrock_openai_base_url(region: str) -> str:
+    """Return Bedrock Mantle's OpenAI-compatible base URL for *region*."""
+    resolved = (region or "").strip() or resolve_bedrock_runtime_region()
+    return f"https://bedrock-mantle.{resolved}.api.aws/openai/v1"
+
+
+def bedrock_openai_region_from_base_url(base_url: str) -> Optional[str]:
+    """Extract the AWS region from a Bedrock Mantle OpenAI base URL."""
+    host = urlparse(str(base_url or "")).hostname or ""
+    match = _BEDROCK_OPENAI_HOST_RE.match(host)
+    return match.group(1) if match else None
+
+
+def is_bedrock_openai_base_url(base_url: str) -> bool:
+    """Return True for Bedrock Mantle OpenAI-compatible endpoints."""
+    parsed = urlparse(str(base_url or ""))
+    host = parsed.hostname or ""
+    if not _BEDROCK_OPENAI_HOST_RE.match(host):
+        return False
+    # The OpenAI GPT-5.5 Bedrock route lives under /openai/v1. Accept a bare
+    # host too so callers can normalize before appending the path.
+    path = (parsed.path or "").rstrip("/").lower()
+    return path in {"", "/openai", "/openai/v1"}
+
+
+def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
+    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
+    env = env if env is not None else os.environ
+    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+
+
+class BedrockOpenAISigV4Auth(httpx.Auth):
+    """httpx auth hook that SigV4-signs Bedrock Mantle OpenAI requests."""
+
+    requires_request_body = True
+
+    def __init__(self, region: str, service: str = "bedrock"):
+        self.region = (region or "").strip() or resolve_bedrock_runtime_region()
+        self.service = service
+
+    def auth_flow(self, request):  # pragma: no cover - exercised by live call
+        import botocore.session
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        credentials = botocore.session.get_session().get_credentials()
+        if credentials is None:
+            raise RuntimeError(
+                "No AWS credentials available for Bedrock OpenAI Responses. "
+                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, "
+                "SSO, or an instance/task role."
+            )
+        frozen = credentials.get_frozen_credentials()
+        # Drop the OpenAI SDK's placeholder bearer header before signing; SigV4
+        # must own Authorization. Keep all other SDK headers so AWS receives
+        # content-type, accept, request IDs, etc.
+        headers = {
+            str(k): str(v)
+            for k, v in request.headers.items()
+            if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}
+        }
+        aws_request = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content or b"",
+            headers=headers,
+        )
+        SigV4Auth(frozen, self.service, self.region).add_auth(aws_request)
+        request.headers.update(dict(aws_request.headers.items()))
+        yield request
+
+
+def build_bedrock_openai_http_client(region: str, *, timeout: Optional[float] = None):
+    """Build an httpx client that SigV4-signs Bedrock OpenAI requests."""
+    import httpx
+
+    kwargs: Dict[str, Any] = {"auth": BedrockOpenAISigV4Auth(region)}
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        kwargs["timeout"] = timeout
+    return httpx.Client(**kwargs)
+
+
+def configure_bedrock_openai_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Install SigV4 auth on OpenAI SDK kwargs for Bedrock Mantle.
+
+    ``AWS_BEARER_TOKEN_BEDROCK``/explicit Bedrock API keys continue to use the
+    SDK's normal bearer auth. The special ``aws-sdk`` placeholder means IAM
+    credential-chain auth, so we attach a per-request SigV4 httpx client.
+    """
+    base_url = str(client_kwargs.get("base_url") or "")
+    if not is_bedrock_openai_base_url(base_url):
+        return client_kwargs
+    api_key = client_kwargs.get("api_key")
+    if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
+        return client_kwargs
+    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_runtime_region()
+    client_kwargs["api_key"] = "aws-sdk"
+    client_kwargs["http_client"] = build_bedrock_openai_http_client(region, timeout=timeout)
+    return client_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Stale-connection detection
+# ---------------------------------------------------------------------------
+#
+# boto3 caches its HTTPS connection pool inside the client object. When a
+# pooled connection is killed out from under us (NAT timeout, VPN flap,
+# server-side TCP RST, proxy idle cull, etc.), the next use surfaces as
+# one of a handful of low-level exceptions — most commonly
+# ``botocore.exceptions.ConnectionClosedError`` or
+# ``urllib3.exceptions.ProtocolError``. urllib3 also trips an internal
+# ``assert`` in a couple of paths (connection pool state checks, chunked
+# response readers) which bubbles up as a bare ``AssertionError`` with an
+# empty ``str(exc)``.
+#
+# In all of these cases the client is the problem, not the request: retrying
+# with the same cached client reproduces the failure until the process
+# restarts. The fix is to evict the region's cached client so the next
+# attempt builds a new one.
 
 # --- Bedrock Mantle / OpenAI Responses support ---
 
@@ -330,92 +504,52 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
 
 
 def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> str:
-    """``bedrock.region`` from config.yaml, else :func:`resolve_bedrock_region`. Every non-runtime Bedrock
-    endpoint must use this so auxiliary calls never leave the primary runtime's region. *config* skips disk."""
+    """Resolve the Bedrock region with the same priority as the main runtime.
+
+    Priority (matches the runtime provider resolver in
+    ``hermes_cli/runtime_provider.py``):
+      1. ``bedrock.region`` in config.yaml
+      2. ``resolve_bedrock_region()`` (AWS_REGION / AWS_DEFAULT_REGION /
+         botocore profile / us-east-1)
+
+    Callers that already hold a loaded config dict should pass it to avoid a
+    disk read; when *config* is None the config is loaded read-only. Every
+    non-runtime call site that constructs a Bedrock endpoint (auxiliary
+    client resolution, model discovery for the picker) must use this helper —
+    using bare ``resolve_bedrock_region()`` there lets auxiliary calls leave
+    the primary runtime's configured region when ``bedrock.region`` and the
+    ambient AWS env/profile disagree.
+    """
     if config is None:
-        with suppress(Exception):
+        try:
             from hermes_cli.config import load_config_readonly
             config = load_config_readonly()
-    cfg_region = str(((config or {}).get("bedrock") or {}).get("region") or "").strip()
-    return cfg_region or resolve_bedrock_region()
-
-
-def bedrock_region_from_runtime_url(base_url: str) -> str:
-    """AWS region from a ``bedrock-runtime.<region>.amazonaws.com`` URL (default us-east-1)."""
-    m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-    return m.group(1) if m else "us-east-1"
-
-
-def bedrock_guardrail_config(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Converse ``guardrailConfig`` from ``bedrock.guardrail`` in config.yaml (None when unset)."""
-    if config is None:
-        config = {}
-        with suppress(Exception):
-            from hermes_cli.config import load_config_readonly
-            config = load_config_readonly()
-    gr = ((config or {}).get("bedrock") or {}).get("guardrail") or {}
-    if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
-        return None
-    out = {"guardrailIdentifier": gr["guardrail_identifier"], "guardrailVersion": gr["guardrail_version"]}
-    for src, dst in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
-        if gr.get(src):
-            out[dst] = gr[src]
-    return out
-
-
-def bedrock_guardrail_headers(config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """InvokeModel/Messages-wire form of the configured guardrail. The AnthropicBedrock SDK speaks
-    InvokeModel, which has no ``guardrailConfig`` body field; Bedrock reads the guardrail from these
-    headers instead (same enforcement, keeps prompt caching / thinking / 1M context)."""
-    gr = bedrock_guardrail_config(config)
-    if not gr:
-        return {}
-    headers = {
-        "X-Amzn-Bedrock-GuardrailIdentifier": str(gr["guardrailIdentifier"]),
-        "X-Amzn-Bedrock-GuardrailVersion": str(gr["guardrailVersion"]),
-    }
-    if str(gr.get("trace", "")).lower() in {"enabled", "enabled_full", "true"}:
-        headers["X-Amzn-Bedrock-Trace"] = "ENABLED"
-    return headers
-
-
-GUARDRAIL_ACTION_FIELD = "amazon-bedrock-guardrailAction"
-
-
-def anthropic_response_guardrail_intervened(response: Any) -> bool:
-    """True when Bedrock substituted the InvokeModel reply with guardrail messaging. Unlike Converse
-    (``stopReason=guardrail_intervened``), InvokeModel keeps ``stop_reason=end_turn`` and signals the
-    block only via an unmodelled body field the Anthropic SDK keeps in ``model_extra``."""
-    extra = getattr(response, "model_extra", None) or {}
-    return str(extra.get(GUARDRAIL_ACTION_FIELD, "")).upper() == "INTERVENED"
-
-
-def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
-    """Point *agent* at a non-Mantle Bedrock wire: ``bedrock_converse`` (boto3 direct, no SDK client) or
-    ``anthropic_messages`` (AnthropicBedrock SDK, SigV4 via the boto3 chain). ``aws-sdk`` is a sentinel,
-    never a credential, so the generic Anthropic/OpenAI client builders must not see it. Startup and every
-    later rebuild (/model switch, fallback restore, fallback-to-Bedrock) share this so region and guardrail
-    state never lag the active endpoint."""
-    agent._bedrock_region = bedrock_region_from_runtime_url(base_url)
-    agent._bedrock_guardrail_config = bedrock_guardrail_config()
-    agent.client = None
-    agent._client_kwargs = {}
-    agent.api_key = agent._anthropic_api_key = "aws-sdk"
-    agent._anthropic_base_url = base_url
-    agent._is_anthropic_oauth = False
-    if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
-        agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)
-    else:
-        agent._anthropic_client = None
+        except Exception:
+            config = {}
+    bedrock_cfg = (config or {}).get("bedrock") or {}
+    cfg_region = str(bedrock_cfg.get("region") or "").strip()
+    if cfg_region:
+        return cfg_region
+    return resolve_bedrock_region()
 
 
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
-    """Live-discover Bedrock model IDs; None on failure/empty so callers use the static list."""
-    with suppress(Exception):
+    """Live-discover Bedrock model IDs for the active region.
+
+    Returns a list of model ID strings if discovery succeeds and yields
+    at least one model, or ``None`` on failure / empty result.  Callers
+    should fall back to the static curated list when ``None`` is returned.
+
+    This helper consolidates the discover → extract-ids → fallback
+    pattern that was previously duplicated across ``provider_model_ids``,
+    ``list_authenticated_providers`` section 2, and section 3.
+    """
+    try:
         discovered = discover_bedrock_models(resolve_bedrock_runtime_region())
         if discovered:
             return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
+    except Exception:
+        pass
     return None
 
 
@@ -1220,4 +1354,191 @@ def classify_bedrock_error(error_message: str) -> str:
     if any(p.search(error_message) for p in OVERLOAD_PATTERNS):
         return "overloaded"
     return "unknown"
-# ---- END PLUGIN-COMPAT ----
+
+
+# ---------------------------------------------------------------------------
+# Bedrock model context lengths
+# ---------------------------------------------------------------------------
+# Static fallback table for models where the Bedrock API doesn't expose
+# context window sizes.  Used by agent/model_metadata.py when dynamic
+# detection is unavailable.
+
+BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
+    # Anthropic Claude models on Bedrock.
+    # Context windows per Anthropic's official models comparison
+    # (https://platform.claude.com/docs/en/about-claude/models/overview).
+    # Fable / Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
+    # available (no beta header required as of April 2026). Sonnet 4.5 and
+    # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
+    # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
+    # These 1M entries must match agent/model_metadata.py
+    # DEFAULT_CONTEXT_LENGTHS or the agent compresses context prematurely.
+    # Keys are matched by longest-substring, so the versioned 4-6/4-7/4-8
+    # entries win over the generic "anthropic.claude-opus-4" fallback.
+    "anthropic.claude-fable-5":      1_000_000,
+    "anthropic.claude-fable":        1_000_000,
+    "anthropic.claude-sonnet-5":     1_000_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
+    "anthropic.claude-sonnet-4-5":   200_000,
+    "anthropic.claude-haiku-4-5":    200_000,
+    "anthropic.claude-opus-4":       200_000,
+    "anthropic.claude-sonnet-4":     200_000,
+    "anthropic.claude-3-5-sonnet":   200_000,
+    "anthropic.claude-3-5-haiku":    200_000,
+    "anthropic.claude-3-opus":       200_000,
+    "anthropic.claude-3-sonnet":     200_000,
+    "anthropic.claude-3-haiku":      200_000,
+    # Amazon Nova
+    "amazon.nova-pro":               300_000,
+    "amazon.nova-lite":              300_000,
+    "amazon.nova-micro":             128_000,
+    # Meta Llama
+    "meta.llama4-maverick":          128_000,
+    "meta.llama4-scout":             128_000,
+    "meta.llama3-3-70b-instruct":    128_000,
+    # Mistral
+    "mistral.mistral-large":         128_000,
+    # DeepSeek
+    "deepseek.v3":                   128_000,
+    # OpenAI on Bedrock (Mantle/Responses route)
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.5":                272_000,
+    "openai.gpt-5.6-sol":            272_000,
+    "openai.gpt-5.6-terra":          272_000,
+    "openai.gpt-5.6-luna":           272_000,
+}
+
+# Default for unknown Bedrock models
+BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
+
+# Probe tiers (in tokens).  We send a request padded just past each tier and
+# read the real window from Bedrock's length-validation error.  Two reasons
+# this is tiered rather than one giant request:
+#   1. A wildly oversized payload (e.g. 5M tokens) makes Bedrock return an
+#      opaque InternalServerException after retries instead of a clean
+#      ValidationException — so we must stay within a sane overage.
+#   2. Stepping up lets us discover larger windows (2M+) without over-padding
+#      smaller ones.
+# Each tier value is the *padding target*; the error reports the true maximum,
+# which is what we actually return.
+_BEDROCK_PROBE_TIERS = (1_300_000, 2_200_000)
+_WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tier
+
+
+def _static_bedrock_context_length(model_id: str) -> int:
+    """Longest-substring-match lookup against the static fallback table.
+
+    Uses substring matching so versioned IDs like
+    ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
+    """
+    model_lower = model_id.lower()
+    best_key = ""
+    best_val = BEDROCK_DEFAULT_CONTEXT_LENGTH
+    for key, val in BEDROCK_CONTEXT_LENGTHS.items():
+        if key in model_lower and len(key) > len(best_key):
+            best_key = key
+            best_val = val
+    return best_val
+
+
+def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
+    """Discover a Bedrock model's real context window by provoking a length error.
+
+    Bedrock does not expose the context window via any metadata API
+    (``get-foundation-model`` omits it, ``Converse`` metrics omit it,
+    ``CountTokens`` is unsupported on several models).  The only authoritative
+    source is the ``ValidationException`` raised when a prompt exceeds the
+    window:
+
+        "The model returned the following errors: prompt is too long:
+         1300032 tokens > 1000000 maximum"
+
+    Length validation happens *before* inference, so an oversized request is
+    rejected immediately and cheaply — no tokens are generated and no input is
+    actually processed.  We pad a request just past each tier in
+    ``_BEDROCK_PROBE_TIERS`` and parse the reported ``maximum``.  Tiers exist
+    because (a) a *wildly* oversized payload makes Bedrock fail with an opaque
+    InternalServerException instead of a clean length error, and (b) stepping
+    up discovers larger windows without over-padding smaller ones.
+
+    Returns the detected window, or ``None`` if the probe could not run
+    (missing credentials, network error, or no parseable limit) so the caller
+    can fall back to the static table.
+    """
+    try:
+        from agent.model_metadata import parse_context_limit_from_error
+    except ImportError:  # pragma: no cover — same package
+        return None
+
+    try:
+        client = _get_bedrock_runtime_client(region)
+    except Exception as exc:  # boto3 missing / credential resolution failure
+        logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
+        return None
+
+    last_error = ""
+    for tier_tokens in _BEDROCK_PROBE_TIERS:
+        pad_words = int(tier_tokens / _WORDS_PER_TOKEN)
+        oversized = "data " * pad_words
+        try:
+            client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": oversized}]}],
+                inferenceConfig={"maxTokens": 8},
+            )
+            # Accepted a prompt this large → the window is at least this tier.
+            # Returning the tier as a lower bound is safe and avoids inventing
+            # a number we can't confirm.
+            logger.debug(
+                "Bedrock context probe for %s accepted ~%s-token prompt; "
+                "window is at least that", model_id, f"{tier_tokens:,}",
+            )
+            return tier_tokens
+        except Exception as exc:
+            msg = str(exc)
+            last_error = msg
+            limit = parse_context_limit_from_error(msg)
+            if limit and limit >= 1024:
+                logger.info(
+                    "Probed Bedrock context window for %s: %s tokens",
+                    model_id, f"{limit:,}",
+                )
+                return limit
+            # No parseable limit at this tier (opaque server error, auth,
+            # throttle).  Try the next, smaller-overage strategy is N/A here —
+            # tiers ascend — so just continue; if all fail we return None.
+            continue
+
+    logger.debug(
+        "Bedrock context probe for %s returned no parseable limit: %s",
+        model_id, last_error[:200],
+    )
+    return None
+
+
+def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
+    """Resolve the context window for a Bedrock model.
+
+    Resolution order:
+      1. Live probe against Bedrock (authoritative; cached by the caller).
+      2. Static fallback table (longest-substring match).
+      3. Conservative default.
+
+    The static table is intentionally a *fallback*, not the primary source:
+    AWS ships new model versions (opus-4-7, opus-4-8, ...) faster than the
+    table can track, and a stale entry silently caps the window (e.g. a
+    1M-token Opus pinned to 200K via an ``opus-4`` substring match).  The
+    probe asks Bedrock directly so every model — current or future — gets its
+    real window with no table maintenance.
+
+    ``probe=False`` (or an empty ``region``) skips the network call and uses
+    the static table only — used by pure-offline/display code paths.
+    """
+    if probe and region:
+        probed = probe_bedrock_context_length(model_id, region)
+        if probed:
+            return probed
+    return _static_bedrock_context_length(model_id)

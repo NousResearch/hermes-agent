@@ -427,17 +427,26 @@ class WebSocketRelayTransport:
         # event-loop stalls; 60s tolerates them while detecting a dead link ~90s.
         kwargs: Dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60}
         headers = self._upgrade_headers()
+        # WAN-friendly keepalive: customer gateways cross WAN paths to the
+        # connector; the websockets library default (ping_interval=20,
+        # ping_timeout=20) gives the peer only a 20s pong deadline, which
+        # produces spurious `1011 keepalive ping timeout` closes under
+        # transient latency / event-loop stalls (Coatue incident 2026-08-18).
+        # ping_timeout=60 tolerates such stalls while still detecting a dead
+        # link within ~90s worst case (30s interval + 60s pong deadline).
         if headers:
-            kwargs["additional_headers"] = headers
-        self._ws = await websockets.connect(self._url, **kwargs)  # type: ignore[union-attr]
-        if self._auth_retry_pending:
-            # The upgrade was ACCEPTED, so this connection's freshly minted token
-            # reached an auth outcome: it is the fresh-token retry generation. A
-            # 4401 on it (after the descriptor) is the second strike. Stamped
-            # here, not before connect(), so a non-auth connect failure (network,
-            # timeout) leaves the marker for the dial that actually gets judged.
-            self._auth_retry_generation = self._dial_generation
-            self._auth_retry_pending = False
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                additional_headers=headers,
+                ping_interval=30,
+                ping_timeout=60,
+            )
+        else:
+            self._ws = await websockets.connect(  # type: ignore[union-attr]
+                self._url,
+                ping_interval=30,
+                ping_timeout=60,
+            )
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # One hello PER fronted identity; the connector accumulates them (first
         # sets the session default). The FIRST descriptor resolves handshake().
@@ -662,18 +671,37 @@ class WebSocketRelayTransport:
             frame_sent = True
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
-            # AMBIGUOUS by contract: the frame reached the wire and only the ack is
-            # missing — the connector may have applied it. The fail-fast paths
-            # above never sent anything (definite non-delivery) and stay unmarked.
-            return {"success": False, "error": "relay outbound timed out", "ambiguous": True}
+            # AMBIGUOUS by contract (PR 85796 review): the frame reached the
+            # wire — only the acknowledgement is missing. The connector may
+            # well have applied it (draft frame appended, stream sealed).
+            # Consumers that need to distinguish "connector rejected this"
+            # from "outcome unknown" key on this flag; the fail-fast paths
+            # above (closing / not connected) never sent anything and are
+            # definite non-delivery, so they stay unmarked.
+            return {
+                "success": False,
+                "error": "relay outbound timed out",
+                "ambiguous": True,
+            }
         except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
-            # The socket can die between the liveness guard and the write, so _send
-            # may raise into callers whose contract is a result dict. A raise from
-            # the WRITE = frame never sent (no flag); a failure surfaced by the
-            # FUTURE (disconnect failing pending mid-flight) = frame sent, outcome
-            # unknown -> ambiguous. CancelledError still propagates (BaseException).
-            logger.debug("relay outbound send failed", exc_info=True)
-            result: Dict[str, Any] = {"success": False, "error": f"relay send failed: {exc}"}
+            # No `is None` check can close the window where the socket dies
+            # BETWEEN the liveness guard above and the actual write — the
+            # reader's finally hasn't cleared _ws yet, so _send raises
+            # ConnectionClosed straight into callers whose contract is a
+            # result dict (RelayAdapter.send consumes it with no try).
+            # Report it like every other failed send. CancelledError is a
+            # BaseException, so cancellation still propagates.
+            #
+            # Ambiguity contract (PR 85796): a raise from the WRITE means the
+            # frame never reached the wire — definite non-delivery, no flag.
+            # A failure surfaced by the FUTURE (e.g. disconnect() failing
+            # pending mid-flight) means the frame WAS sent and only the
+            # outcome is unknown — mark it ambiguous like the timeout above.
+            logger.debug("relay %s send failed", frame_type, exc_info=True)
+            result: Dict[str, Any] = {
+                "success": False,
+                "error": f"relay send failed: {exc}",
+            }
             if frame_sent:
                 result["ambiguous"] = True
             return result
@@ -687,8 +715,9 @@ class WebSocketRelayTransport:
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:
-        # Bind the socket this reader serves: the finally must only clear _ws if
-        # it still points at THIS socket (a re-dial may have installed a fresh one).
+        # Bind the socket this reader serves: the finally below must only
+        # clear _ws if it still points at THIS socket (a supervisor re-dial
+        # may have already installed a fresh one by the time we unwind).
         ws = self._ws
         buf = ""
         generation = self._dial_generation
@@ -697,80 +726,84 @@ class WebSocketRelayTransport:
         auth_retry_scheduled = False
         try:
             if ws is None:
-                # Lifecycle bug, not a normal path. Fall through to the finally so
-                # pending waiters are still settled (an assert here stranded them).
+                # Scheduled without a socket (a lifecycle bug, not a normal
+                # path). The old `assert` here escaped BEFORE the finally
+                # existed to fail pending futures — the one exit that could
+                # still strand waiters for the full outbound timeout. Fall
+                # through to the finally instead; it settles them all.
                 logger.error("relay ws read loop started with no socket")
                 return
             try:
-                async for chunk in ws:
+                async for chunk in self._ws:
                     buf += chunk if isinstance(chunk, str) else chunk.decode("utf-8")
                     # Newline-delimited frames; keep any trailing partial line.
                     *lines, buf = buf.split("\n")
                     for line in lines:
                         if line.strip():
                             await self._handle_frame(line)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
-                # A post-handshake 4401 is a revocation ONLY if it also hits a fresh
-                # token: an EXPIRED token gets the same 4401 (a scale-to-zero suspend
-                # mid-dial makes that routine), so the first one is provisional —
-                # re-dial once, now, with a fresh token. Reason "expired" is never a
-                # revocation.
+                # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
+                # successful handshake this is a REVOCATION (opt-out / deprovision) —
+                # the per-gateway secret is gone, so reconnecting is futile. Latch a
+                # terminal "auth revoked" state and DON'T re-dial. Before any
+                # successful handshake a 4401 stays retryable (cold-start race).
                 if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
-                    reason = self._close_reason_of(exc)
-                    if reason == _RELAY_EXPIRED_CLOSE_REASON:
-                        if not self._closing:
-                            logger.warning(
-                                "relay ws closed 4401 with reason 'expired' — upgrade token "
-                                "expired, not revoked; reconnecting normally"
-                            )
-                    elif generation == self._auth_retry_generation:
-                        self._auth_revoked = True
-                        if not self._closing:
-                            logger.warning(
-                                "relay ws closed 4401 (unauthorized) again on a re-dial with a "
-                                "freshly minted token — treating as a revoked relay credential "
-                                "(opt-out); not reconnecting"
-                            )
-                    elif not self._closing:
-                        auth_retry_scheduled = True
-                        self._auth_retry_pending = True
+                    self._auth_revoked = True
+                    if not self._closing:
                         logger.warning(
                             "relay ws closed 4401 (unauthorized) after a successful handshake — "
-                            "re-dialing once with a fresh upgrade token before treating it as "
-                            "a revoked credential (the token may simply have expired)"
+                            "treating as a revoked relay credential (opt-out); not reconnecting"
                         )
                 elif not self._closing:
                     logger.warning("relay ws read loop ended: %s", exc)
-            # Socket closed. Exactly ONE dialer may be live at a time: the reader
-            # that dies while a dialer is already mid-dial (socket installed,
-            # hello still in flight) must NOT start a second one — that dialer's
-            # own failure handling re-dials, and the pending flag above makes
-            # that re-dial the fresh-token retry. A provisional 4401 with no
-            # dialer live takes the immediate fresh-token re-dial (no backoff);
-            # any other close arms the backoff supervisor unless this was a
-            # deliberate disconnect() or a terminal revocation.
-            if self._closing or self._dialer_running():
-                pass
-            elif auth_retry_scheduled:
-                self._auth_retry = asyncio.create_task(
-                    self._redial_with_fresh_token(), name="relay-ws-auth-retry"
+            # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
+            # NOT a deliberate disconnect(), kick the reconnect supervisor so the
+            # gateway re-dials + re-handshakes (which triggers the connector's
+            # buffered-flip drain on the new handshake). Self-scheduling: the reader
+            # ends here, the supervisor re-dials and starts a fresh reader.
+            # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
+            # we deliberately do NOT reconnect — the secret is dead until the
+            # instance is recreated, so spinning would just reproduce the failure.
+            if (
+                self._reconnect
+                and not self._closing
+                and not self._auth_revoked
+                and (self._supervisor is None or self._supervisor.done())
+            ):
+                self._supervisor = asyncio.create_task(
+                    self._reconnect_loop(), name="relay-ws-reconnect"
                 )
-            elif self._reconnect and not self._auth_revoked:
-                self._supervisor = asyncio.create_task(self._reconnect_loop(), name="relay-ws-reconnect")
         finally:
-            # Drop the dead handle (identity-guarded) so every `_ws is None`
-            # liveness check reports "not connected" for the whole outage — on
-            # exits that arm NO supervisor (terminal 4401, reconnect=False) a send
-            # would otherwise register a future nothing can resolve. disconnect()
-            # owns the handle during deliberate teardown.
+            # The socket this reader served is dead. Drop the handle (identity-
+            # guarded: a re-dial that already installed a FRESH socket must not
+            # be clobbered) so every `self._ws is None` liveness check — send,
+            # _request_response, go_idle, go_dormant — reports "not connected"
+            # for the whole outage. Without this, _ws kept pointing at the dead
+            # socket on every reader exit that arms NO supervisor (terminal
+            # 4401 revocation, reconnect=False transports), and a send there
+            # registered a future nothing could resolve: a full
+            # _outbound_timeout_s (~30s) wedge — including the revocation
+            # path's own fatal-error notification. disconnect() owns the
+            # handle during deliberate teardown, so leave it alone then.
             if self._ws is ws and not self._closing:
                 self._ws = None
-            # The reader is the ONLY thing that resolves pending futures; once it
-            # exits every waiter would block the full outbound timeout. Fail them
-            # NOW with the dict shape callers expect (never an exception).
-            self._fail_pending(
-                lambda fut: fut.set_result({"success": False, "error": "relay transport connection lost"})
-            )
+            # The reader is the ONLY thing that can resolve a pending
+            # outbound_result future — once it exits (socket dropped, error,
+            # or cancellation cleanup) every in-flight _request_response waiter
+            # is unresolvable and would otherwise block the full
+            # _outbound_timeout_s (~30s) on a dead socket (Coatue incident
+            # 2026-08-18: stuck sends after a 1011 keepalive close). Fail them
+            # NOW with the dict shape callers expect (never an exception on
+            # the outbound path). list() snapshot: set_result wakes waiters
+            # whose finally-pop would otherwise mutate the dict mid-iteration.
+            for _rid, fut in list(self._pending.items()):
+                if not fut.done():
+                    fut.set_result(
+                        {"success": False, "error": "relay transport connection lost"}
+                    )
+            self._pending.clear()
 
     def _dialer_running(self) -> bool:
         """True while the backoff supervisor or the fresh-token retry is live."""

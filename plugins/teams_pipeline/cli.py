@@ -21,10 +21,66 @@ from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraph
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="teams_pipeline_action")
-    for name, aliases, help_text, options, _handler in _SUBCOMMANDS:
-        parser = subs.add_parser(name, aliases=aliases, help=help_text)
-        for flag, kwargs in options:
-            parser.add_argument(flag, **kwargs)
+
+    list_p = subs.add_parser("list", aliases=["ls"], help="List recent Teams pipeline jobs")
+    list_p.add_argument("--limit", type=int, default=20)
+    list_p.add_argument("--status", default="")
+    list_p.add_argument("--store-path", default="")
+
+    show_p = subs.add_parser("show", help="Show a stored Teams pipeline job")
+    show_p.add_argument("job_id")
+    show_p.add_argument("--store-path", default="")
+
+    run_p = subs.add_parser("run", aliases=["replay"], help="Replay a stored Teams pipeline job")
+    run_p.add_argument("job_id")
+    run_p.add_argument("--store-path", default="")
+
+    fetch_p = subs.add_parser("fetch", aliases=["test"], help="Dry-run meeting artifact resolution")
+    fetch_p.add_argument("--meeting-id", default="")
+    fetch_p.add_argument("--join-web-url", default="")
+    fetch_p.add_argument(
+        "--organizer-user-id",
+        default="",
+        help="Microsoft Entra user ID for organizer-scoped online meeting lookup",
+    )
+    fetch_p.add_argument("--tenant-id", default="")
+    fetch_p.add_argument("--call-record-id", default="")
+
+    subs_p = subs.add_parser("subscriptions", aliases=["subs"], help="List Graph subscriptions")
+    subs_p.add_argument("--store-path", default="")
+
+    sub_p = subs.add_parser("subscribe", help="Create a Microsoft Graph subscription")
+    sub_p.add_argument("--resource", required=True)
+    sub_p.add_argument("--notification-url", required=True)
+    sub_p.add_argument("--change-type", default="")
+    sub_p.add_argument("--expiration", default="")
+    sub_p.add_argument("--client-state", default="")
+    sub_p.add_argument("--lifecycle-notification-url", default="")
+    sub_p.add_argument("--latest-supported-tls-version", default="v1_2")
+    sub_p.add_argument("--store-path", default="")
+
+    renew_p = subs.add_parser("renew-subscription", help="Renew a Microsoft Graph subscription")
+    renew_p.add_argument("subscription_id")
+    renew_p.add_argument("--expiration", required=True)
+    renew_p.add_argument("--store-path", default="")
+
+    delete_p = subs.add_parser("delete-subscription", help="Delete a Microsoft Graph subscription")
+    delete_p.add_argument("subscription_id")
+    delete_p.add_argument("--store-path", default="")
+
+    maintain_p = subs.add_parser("maintain-subscriptions", help="Renew near-expiry managed subscriptions")
+    maintain_p.add_argument("--renew-within-hours", type=int, default=24)
+    maintain_p.add_argument("--extend-hours", type=int, default=24)
+    maintain_p.add_argument("--dry-run", action="store_true")
+    maintain_p.add_argument("--store-path", default="")
+    maintain_p.add_argument("--client-state", default="")
+
+    token_p = subs.add_parser("token-health", aliases=["token"], help="Inspect Graph token health")
+    token_p.add_argument("--force-refresh", action="store_true")
+
+    validate_p = subs.add_parser("validate", help="Validate Teams pipeline configuration snapshot")
+    validate_p.add_argument("--store-path", default="")
+
     subparser.set_defaults(func=teams_pipeline_command)
 
 
@@ -178,26 +234,44 @@ def _cmd_run(args) -> None:
 
 
 def _cmd_fetch(args) -> None:
-    meeting_id = _text(args, "meeting_id") or None
-    join_web_url = _text(args, "join_web_url") or None
+    meeting_id = str(getattr(args, "meeting_id", "") or "").strip() or None
+    join_web_url = str(getattr(args, "join_web_url", "") or "").strip() or None
+    organizer_user_id = str(getattr(args, "organizer_user_id", "") or "").strip() or None
+    tenant_id = str(getattr(args, "tenant_id", "") or "").strip() or None
+    call_record_id = str(getattr(args, "call_record_id", "") or "").strip() or None
     if not meeting_id and not join_web_url:
         print("meeting_id or join_web_url is required")
         return
     client = build_graph_client()
-    meeting_ref = asyncio.run(resolve_meeting_reference(
-        client, meeting_id=meeting_id, join_web_url=join_web_url,
-        tenant_id=_text(args, "tenant_id") or None, organizer_user_id=_text(args, "organizer_user_id") or None))
-    transcript_artifact, transcript_text = asyncio.run(fetch_preferred_transcript_text(client, meeting_ref))
-    recordings = asyncio.run(list_recording_artifacts(client, meeting_ref))
-    call_record = asyncio.run(enrich_meeting_with_call_record(client, meeting_ref, call_record_id=_text(args, "call_record_id") or None))
-    _print_json({
-        "meeting_ref": meeting_ref.to_dict(),
-        "transcript_available": bool(transcript_artifact and transcript_text),
-        "transcript_artifact": transcript_artifact.to_dict() if transcript_artifact else None,
-        "transcript_preview": (transcript_text or "")[:240] or None,
-        "recording_count": len(recordings),
-        "recordings": [recording.to_dict() for recording in recordings[:5]],
-        "call_record": call_record.to_dict() if call_record else None})
+    meeting_ref = _run_async(
+        resolve_meeting_reference(
+            client,
+            meeting_id=meeting_id,
+            join_web_url=join_web_url,
+            tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
+        )
+    )
+    transcript_artifact, transcript_text = _run_async(fetch_preferred_transcript_text(client, meeting_ref))
+    recordings = _run_async(list_recording_artifacts(client, meeting_ref))
+    call_record = _run_async(
+        enrich_meeting_with_call_record(client, meeting_ref, call_record_id=call_record_id)
+    )
+    print(
+        json.dumps(
+            {
+                "meeting_ref": meeting_ref.to_dict(),
+                "transcript_available": bool(transcript_artifact and transcript_text),
+                "transcript_artifact": transcript_artifact.to_dict() if transcript_artifact else None,
+                "transcript_preview": (transcript_text or "")[:240] or None,
+                "recording_count": len(recordings),
+                "recordings": [recording.to_dict() for recording in recordings[:5]],
+                "call_record": call_record.to_dict() if call_record else None,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def _cmd_subscriptions(args) -> None:

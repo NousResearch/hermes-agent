@@ -1109,7 +1109,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """A view in one tool worker authorizes a patch in the next worker."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from tools.skill_manager_tool import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1134,7 +1134,7 @@ class TestCuratorConsolidationDeleteGuard:
     ):
         """Copied tool contexts share only their own review's read marks."""
         from tools.skills_tool import skill_view
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from tools.skill_manager_tool import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):

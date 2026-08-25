@@ -833,12 +833,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_cli.main._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
@@ -860,12 +860,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_cli.main._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = _web_server_chat._resolve_chat_argv()
+        _argv, _cwd, env = web_server._resolve_chat_argv()
 
         assert env is not None
         assert env["TERMINAL_ENV"] == "docker"
@@ -888,12 +888,12 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CWD", "/operator/work")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_cli.main._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
 
-        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["TERMINAL_ENV"] == "ssh"
@@ -913,7 +913,7 @@ class TestProfileScopedChatPty:
         )
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_cli.main._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -924,7 +924,7 @@ class TestProfileScopedChatPty:
         )
 
         with caplog.at_level(logging.WARNING, logger=web_server._log.name):
-            _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+            _argv, _cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
 
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])

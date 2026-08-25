@@ -51,7 +51,7 @@ async function emitPreviewClose(url?: string, sessionId = RUNTIME_SESSION_ID) {
       payload: url === undefined ? {} : { url },
       session_id: sessionId,
       type: 'preview.close'
-    } as unknown as GatewayEvent)
+    } as unknown as RpcEvent)
   })
 }
 
@@ -117,7 +117,7 @@ describe('preview routing', () => {
           payload: { url: '/tmp/other.html' },
           session_id: 'some-other-session',
           type: 'preview.open'
-        } as unknown as GatewayEvent)
+        } as unknown as RpcEvent)
       })
 
       expect($previewTabs.get()).toHaveLength(0)
@@ -194,12 +194,12 @@ describe('preview routing', () => {
           payload: { inline_diff: 'a/preview-demo.html -> b/preview-demo.html\n' },
           session_id: RUNTIME_SESSION_ID,
           type: 'tool.complete'
-        } as unknown as GatewayEvent)
+        } as unknown as RpcEvent)
         handleEvent({
           payload: { path: './dist/index.html' },
           session_id: RUNTIME_SESSION_ID,
           type: 'tool.complete'
-        } as unknown as GatewayEvent)
+        } as unknown as RpcEvent)
       })
 
       expect($previewTabs.get()).toHaveLength(0)

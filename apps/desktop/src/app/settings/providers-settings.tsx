@@ -22,7 +22,6 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
-import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import { $settingsRequestProfile } from '@/store/settings-scope'

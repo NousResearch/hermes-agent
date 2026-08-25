@@ -130,14 +130,35 @@ def _is_nous_welcome_route(base_url: str) -> bool:
 
 
 def is_free_tier_model(model: str, base_url: str = "") -> bool:
-    """True when *model* is a Nous free-tier model, using ONLY local data: (1) ``:free`` suffix — canonical
-    Nous free SKU marker; (2) ``stealth/`` prefix — stealth-preview SKUs are free without the suffix
-    (naming-convention trust: a PAID ``stealth/`` model would wrongly suppress the banner); (3) a PEEK into
-    ``hermes_cli.models``' pricing cache (filled by the model picker; a miss never fetches). Fail-open to
-    False (depleted notice still shows): a wrong warning is recoverable noise; hiding it masks a real block."""
+    """Return True when *model* is a Nous free-tier model, using ONLY local data.
+
+    Two signals, both zero-network:
+
+    1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
+       ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
+       (spend is forced to 0 for ``:free`` ids).
+    2. The ``stealth/`` prefix — Nous stealth-preview SKUs (e.g.
+       ``stealth/ox-alpha``) are free-tier but carry no ``:free`` suffix.  Spend
+       is forced to zero server-side, so these are also free by construction.
+    3. A peek into the in-process pricing cache in ``hermes_cli.models``
+       (populated when the model picker fetched ``/v1/models`` pricing for
+       *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
+       CLI/TUI-session best-effort: gateway sessions never run the picker's
+       pricing fetch, so suppression there rests entirely on the ``:free``
+       suffix and ``stealth/`` prefix.
+
+    Fail-open to False (the depleted notice still shows) on any error: wrongly
+    showing the warning is recoverable noise; wrongly hiding it on a paid model
+    would mask a real billing block.
+    """
     if not model:
         return False
     if model.endswith(":free") or model.startswith("stealth/"):
+        return True
+    # Stealth-preview SKUs are free-tier but carry no ``:free`` suffix (see
+    # docstring point 2). Naming-convention trust: if a PAID model ever shipped
+    # under ``stealth/`` this would wrongly suppress the banner on it.
+    if model.startswith("stealth/"):
         return True
     if not base_url:
         return False

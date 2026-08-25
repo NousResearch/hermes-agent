@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -133,14 +133,6 @@ describe('project scope', () => {
 })
 
 describe('projects RPC profile forwarding', () => {
-  it('distinguishes a failed drill-in from an empty project', async () => {
-    const failure = new Error('gateway read failed')
-    const request = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce({ project: null })
-    activeGateway.mockReturnValue({ connectionState: 'open', request } as unknown as ReturnType<typeof activeGateway>)
-    await expect(fetchProjectSessions('p_123')).rejects.toBe(failure)
-    await expect(fetchProjectSessions('p_123')).resolves.toBeNull()
-  })
-
   beforeEach(() => {
     vi.clearAllMocks()
     $activeGatewayProfile.set('default')
@@ -785,26 +777,6 @@ describe('project tree profile isolation', () => {
     $activeGatewayProfile.set('default')
     $projects.set([])
     $projectTree.set([])
-  })
-
-  it('retries a dropped projects.tree request once on the active gateway', async () => {
-    const request = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('request timed out after 30s: projects.tree'))
-      .mockResolvedValueOnce({
-        active_id: null,
-        projects: [{ id: 'remote-tree', label: 'Remote tree', path: null, repos: [], sessionCount: 0 }],
-        scoped_session_ids: []
-      })
-
-    const gateway = { connectionState: 'open', request }
-    activeGateway.mockReturnValue(gateway as never)
-    gatewayAtom.set(gateway as never)
-
-    await refreshProjectTree()
-
-    expect(request).toHaveBeenCalledTimes(2)
-    expect($projectTree.get().map(project => project.id)).toEqual(['remote-tree'])
   })
 
   it('does not publish a late response from the previous gateway', async () => {

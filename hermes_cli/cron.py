@@ -40,7 +40,28 @@ def _active_cron_provider_name() -> str:
 
 
 def _builtin_gateway_liveness() -> Optional[bool]:
-    """Tri-state liveness of the builtin cron scheduler's trigger (None = unknown).
+    """Tri-state liveness of the builtin cron scheduler's trigger.
+
+    Single source of truth shared by the CLI (``_warn_if_gateway_not_running``)
+    and the ``cronjob`` model tool (#87033): the builtin ticker only runs
+    inside the gateway process, so a scheduled job with no live gateway can
+    never fire. Non-builtin providers (e.g. Chronos) fire through their own
+    machinery and are deliberately exempt — a missing gateway process means
+    nothing for them, so they report active. ``None`` = probe failed; callers
+    must not claim either way.
+    """
+    try:
+        if _active_cron_provider_name() != "builtin":
+            return True  # external provider fires jobs without the gateway
+        from hermes_cli.gateway import find_gateway_pids
+
+        return bool(find_gateway_pids())
+    except Exception:
+        return None
+
+
+def _warn_if_gateway_not_running() -> None:
+    """Warn that scheduled jobs won't fire unless the gateway is running.
 
     The builtin ticker only runs inside the gateway process, so a scheduled job with no live
     gateway can never fire; non-builtin providers fire jobs without the gateway.
@@ -49,22 +70,10 @@ def _builtin_gateway_liveness() -> Optional[bool]:
     nothing for them, so they report active. ``None`` = probe failed; callers must not claim either way. See
     #87033.
     """
-    try:
-        if _active_cron_provider_name() != "builtin":
-            return True
-        # The runtime lock is held for exactly the gateway's lifetime — more reliable than PID
-        # scanning (find_gateway_pids transiently misses the gateway right after a restart, and
-        # inside the gateway it must never say "not running"). A crashing probe is "unknown".
-        with contextlib.suppress(Exception):
-            from gateway.status import is_gateway_runtime_lock_active
-            if is_gateway_runtime_lock_active():
-                return True
-        from hermes_cli.gateway import (
-            find_gateway_pids, named_profile_served_by_running_multiplexer)
-        # Satellite profile: no local gateway.pid, but the default multiplexer ticks its store.
-        return bool(find_gateway_pids()) or named_profile_served_by_running_multiplexer()
-    except Exception:
-        return None
+    # _builtin_gateway_liveness never raises (it maps probe failures to None),
+    # so no guard is needed here — False is the only warn-worthy state.
+    if _builtin_gateway_liveness() is not False:
+        return
 
 
 def _warn_if_gateway_not_running() -> None:
@@ -607,9 +616,11 @@ def cron_create(args):
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         no_agent=getattr(args, "no_agent", False) or None,
-        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
-           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
-        **_job_api_kwargs(args))
+        monitor_script=getattr(args, "monitor_script", None),
+        monitor_url=getattr(args, "monitor_url", None),
+        continuity=getattr(args, "continuity", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
+    )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -650,11 +661,29 @@ def cron_edit(args):
         final_skills = replacement_skills
     elif add_skills or remove_skills:
         final_skills = [skill for skill in existing_skills if skill not in remove_skills]
-        final_skills += [skill for skill in add_skills if skill not in final_skills]
-    result = _cron_api(action="update", job_id=args.job_id,
-                       schedule=getattr(args, "schedule", None),
-                       prompt=getattr(args, "prompt", None), skills=final_skills,
-                       no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
+        for skill in add_skills:
+            if skill not in final_skills:
+                final_skills.append(skill)
+
+    result = _cron_api(
+        action="update",
+        job_id=args.job_id,
+        schedule=getattr(args, "schedule", None),
+        prompt=getattr(args, "prompt", None),
+        name=getattr(args, "name", None),
+        deliver=getattr(args, "deliver", None),
+        repeat=getattr(args, "repeat", None),
+        skills=final_skills,
+        script=getattr(args, "script", None),
+        workdir=getattr(args, "workdir", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "model_provider", None),
+        no_agent=getattr(args, "no_agent", None),
+        monitor_script=getattr(args, "monitor_script", None),
+        monitor_url=getattr(args, "monitor_url", None),
+        continuity=getattr(args, "continuity", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
+    )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -736,6 +765,29 @@ def cron_resume(args) -> int:
     return 0
 
 
+def cron_resume(args) -> int:
+    """Resume a paused job or explicitly re-arm a completed one-shot."""
+    if bool(getattr(args, "run_at", None)) == bool(getattr(args, "run_now", False)):
+        if getattr(args, "run_at", None) or getattr(args, "run_now", False):
+            print(color("Use exactly one of --at or --run-now.", Colors.RED))
+            return 1
+        return _job_action("resume", args.job_id, "Resumed")
+    from cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot
+
+    run_at = _hermes_now().isoformat() if args.run_now else args.run_at
+    try:
+        job = rearm_oneshot(args.job_id, run_at)
+    except (AmbiguousJobReference, ValueError) as exc:
+        print(color(f"Failed to re-arm job: {exc}", Colors.RED))
+        return 1
+    if not job:
+        print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+    print(color(f"Re-armed job: {job.get('name', args.job_id)} ({args.job_id})", Colors.GREEN))
+    print(f"  Next run: {job.get('next_run_at')}")
+    return 0
+
+
 def cron_notepad(args) -> int:
     """Handle ``hermes cron notepad <job_id> [get|set|delete|list]`` (per-job durable KV).
 
@@ -806,11 +858,46 @@ _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remov
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
-    handler = _CRON_SUBCOMMANDS.get("list" if subcmd is None else subcmd)
-    if handler is not None:
-        return handler(args)
-    print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
+
+    if subcmd is None or subcmd == "list":
+        show_all = getattr(args, 'all', False)
+        cron_list(show_all)
+        return 0
+
+    if subcmd == "status":
+        cron_status()
+        return 0
+
+    if subcmd == "tick":
+        return cron_tick()
+
+    if subcmd in {"runs", "history"}:
+        cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
+        return 0
+
+    if subcmd == "notepad":
+        return cron_notepad(args)
+
+    if subcmd in {"create", "add"}:
+        return cron_create(args)
+
+    if subcmd == "edit":
+        return cron_edit(args)
+
+    if subcmd == "pause":
+        return _job_action("pause", args.job_id, "Paused")
+
+    if subcmd == "resume":
+        return cron_resume(args)
+
+    if subcmd == "run":
+        return _job_action("run", args.job_id, "Triggered")
+
+    if subcmd in {"remove", "rm", "delete"}:
+        return _job_action("remove", args.job_id, "Removed")
+
+    print(f"Unknown cron command: {subcmd}")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
     sys.exit(1)
 
 

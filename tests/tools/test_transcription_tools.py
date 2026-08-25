@@ -1339,11 +1339,11 @@ class TestExplicitOpenaiSelectionError:
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
+            "tools.transcription_tools.resolve_openai_audio_api_key",
             lambda: None,
         )
         monkeypatch.setattr(
-            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+            "tools.transcription_tools.resolve_managed_tool_gateway",
             lambda vendor: None,
         )
 
@@ -1352,7 +1352,7 @@ class TestExplicitOpenaiSelectionError:
     ):
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config", lambda: {}
@@ -1377,7 +1377,7 @@ class TestExplicitOpenaiSelectionError:
         hint."""
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config", lambda: {}
@@ -1385,7 +1385,7 @@ class TestExplicitOpenaiSelectionError:
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch(
-                 "tools.tool_backend_helpers.nous_tool_gateway_unavailable_message",
+                 "tools.transcription_tools.nous_tool_gateway_unavailable_message",
                  lambda what: f"managed route down for {what}; run `hermes tools`",
              ):
             from tools.transcription_tools import _dispatch_stt_provider

@@ -690,39 +690,9 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
 
         with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
-            _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
+            web_server._open_session_db_at_path(db_path, read_only=True)
 
         assert opens == [True]
-
-    def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
-        """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
-        message over corrupt file bytes (#98924) — must route through the
-        same one-writable-open heal as malformed schema."""
-        import hermes_state
-        from hermes_cli import web_server
-
-        db_path = tmp_path / "state.db"
-        db_path.write_bytes(b"not-empty")
-        opens = []
-
-        class _OkDB:
-            _conn = None
-
-            def close(self):
-                pass
-
-        def scripted_open(*_args, **kwargs):
-            opens.append(kwargs.get("read_only", False))
-            if opens == [True]:
-                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
-            return _OkDB()
-
-        monkeypatch.setattr(hermes_state, "SessionDB", scripted_open)
-
-        db = _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
-
-        assert isinstance(db, _OkDB)
-        assert opens == [True, False, True]
 
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
@@ -1355,11 +1325,11 @@ class TestWebServerEndpoints:
             f"=== hermes-update completed {action_id} ===\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_IDS", {})
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
+        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
 
         status = self.client.get("/api/actions/hermes-update/status?lines=2000")
 

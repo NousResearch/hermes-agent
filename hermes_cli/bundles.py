@@ -1,6 +1,7 @@
 """Implementation of the ``hermes bundles`` CLI subcommand."""
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import sys
 from typing import List

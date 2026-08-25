@@ -408,10 +408,14 @@ def make_tool_result_message(
     (session DB). High-risk tool content (web_extract, web_search, browser_*, mcp_*) is
     wrapped in untrusted-data delimiters — the defense against indirect prompt injection.
     """
-    # Replay-recovery callers bypass the executor's canonical-id helper, so normalize here too.
+    # Keep the constructor safe for every caller, including replay recovery
+    # paths that do not go through the live executor's canonical-id helper.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
-    # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
-    # the untrusted block next to the data it describes — once, at construction (cache-safe).
+
+    # Order matters: detect provider-side elision on the RAW content and
+    # append the notice first, THEN wrap — so the notice lives inside the
+    # untrusted block next to the data it describes, appended exactly once
+    # at construction time (cache-safe).
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
     message = stamp_message_timestamp({
         "role": "tool",
@@ -484,6 +488,70 @@ def _maybe_append_elision_notice(name: str, content: Any) -> Any:
     return content
 
 
+# --- Upstream-elision detection --------------------------------------------
+#
+# Some MCP servers elide data SERVER-SIDE and mark the elision inside the
+# payload itself (e.g. Composio: '...13 more items' inside a JSON array,
+# '"has_more": true', 'Complete response was large (N tokens). Full data
+# saved to sandbox in /mnt/files/...', 'data_preview' envelopes). Because the
+# result looks structurally complete, models treat the visible slice as the
+# whole dataset and falsely claim completeness. When one of these markers is
+# present, we append ONE compact notice at result-construction time — before
+# the message enters history, never mutated later, so prompt caching is safe.
+
+# Conservative patterns only: each one is an explicit provider-side "there is
+# more data than what you can see" signal, not a generic truncation heuristic.
+_UPSTREAM_ELISION_PATTERNS = (
+    re.compile(r"\.\.\.\s*\d+\s+more\s+items?", re.IGNORECASE),
+    re.compile(r'"has_more"\s*:\s*true', re.IGNORECASE),
+    re.compile(r"saved to sandbox", re.IGNORECASE),
+    re.compile(r"data_preview", re.IGNORECASE),
+)
+
+# Results smaller than this can't meaningfully hide an elided enumeration —
+# skip the scan entirely so tiny results pay nothing.
+_ELISION_SCAN_MIN_CHARS = 1_000
+
+# Bound the regex scan: markers appear near the elided structure, which for
+# the payload sizes that matter (20-50K) is always inside the first 64KB.
+_ELISION_SCAN_MAX_CHARS = 65_536
+
+_UPSTREAM_ELISION_NOTICE = (
+    '\n[hermes note: this result contains provider-side elision markers '
+    '(e.g. "...N more items" / has_more:true). The data shown is INCOMPLETE '
+    '— page/fetch the remainder before treating any enumeration as complete.]'
+)
+
+
+def _detect_upstream_elision(content: Any) -> bool:
+    """True when a string tool result carries provider-side elision markers.
+
+    Cheap and safe by construction: non-string content is never scanned,
+    results under ``_ELISION_SCAN_MIN_CHARS`` short-circuit, and the regex
+    scan is capped at the first ``_ELISION_SCAN_MAX_CHARS`` chars.
+    """
+    if not isinstance(content, str):
+        return False
+    if len(content) < _ELISION_SCAN_MIN_CHARS:
+        return False
+    window = content[:_ELISION_SCAN_MAX_CHARS]
+    return any(p.search(window) for p in _UPSTREAM_ELISION_PATTERNS)
+
+
+def _maybe_append_elision_notice(name: str, content: Any) -> Any:
+    """Append the incompleteness notice to untrusted string results that
+    embed upstream elision markers. Returns ``content`` unchanged otherwise.
+
+    Runs on the RAW result before untrusted-wrapping so the notice sits with
+    the data it describes, and only at result-construction time (cache-safe).
+    """
+    if not _is_untrusted_tool(name):
+        return content
+    if _detect_upstream_elision(content):
+        return content + _UPSTREAM_ELISION_NOTICE
+    return content
+
+
 def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, Any]]:
     """Internal-only advisory classification of attacker-controlled output: deterministic
     finding ids, never blocks or redacts, omits the scanned text."""
@@ -542,12 +610,28 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 
 
 __all__ = [
-    "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
-    "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_is_destructive_command",
-    "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
-    "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
-    "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",
-    "_extract_file_mutation_targets", "_extract_landed_file_mutation_paths", "_extract_error_preview",
-    "_trajectory_normalize_msg", "_detect_upstream_elision", "_maybe_append_elision_notice",
+    "_NEVER_PARALLEL_TOOLS",
+    "_PARALLEL_SAFE_TOOLS",
+    "_PATH_SCOPED_TOOLS",
+    "_PATH_SCOPED_READERS",
+    "_PATH_SCOPED_WRITERS",
+    "_DESTRUCTIVE_PATTERNS",
+    "_REDIRECT_OVERWRITE",
+    "_is_destructive_command",
+    "_plan_tool_batch_segments",
+    "_should_parallelize_tool_batch",
+    "_canonical_path",
+    "_extract_parallel_scope_path",
+    "_extract_parallel_scope_paths",
+    "_paths_overlap",
+    "_is_multimodal_tool_result",
+    "_multimodal_text_summary",
+    "_append_subdir_hint_to_multimodal",
+    "_extract_file_mutation_targets",
+    "_extract_landed_file_mutation_paths",
+    "_extract_error_preview",
+    "_trajectory_normalize_msg",
+    "_detect_upstream_elision",
+    "_maybe_append_elision_notice",
     "make_tool_result_message",
 ]

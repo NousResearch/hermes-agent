@@ -1343,6 +1343,7 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
 
 
 def test_memory_write_uses_one_connection_for_identity_uri_and_post(monkeypatch):
+    import threading
 
     provider = OpenVikingMemoryProvider()
     provider._agent = "alice-agent"

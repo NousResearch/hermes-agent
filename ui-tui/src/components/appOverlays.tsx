@@ -61,17 +61,10 @@ export function PromptZone({
   onClarifyAnswer,
   onClarifyQuestionAnswer,
   onSecretSubmit,
-  onSudoSubmit,
-  onVaultUnlockSubmit
+  onSudoSubmit
 }: Pick<
   AppOverlaysProps,
-  | 'cols'
-  | 'onApprovalChoice'
-  | 'onClarifyAnswer'
-  | 'onClarifyQuestionAnswer'
-  | 'onSecretSubmit'
-  | 'onSudoSubmit'
-  | 'onVaultUnlockSubmit'
+  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onClarifyQuestionAnswer' | 'onSecretSubmit' | 'onSudoSubmit'
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)

@@ -1,4 +1,3 @@
-import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,7 +19,7 @@ function mountStream() {
   stream = renderMessageStream(SID, { states: sessionStates })
 }
 
-function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}, sessionId = SID) {
+function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}, sessionId = SID) {
   act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
 }
 

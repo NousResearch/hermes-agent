@@ -118,12 +118,301 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/stdout", "/dev/stderr",                                # nonsensical to read
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",                       # fd aliases
 })
-# /proc/<pid>/... (and /proc/<pid>/task/<tid>/...) files that leak secrets,
-# argv, memory layout (ASLR oracle: maps family, auxv, pagemap) or raw memory.
-_BLOCKED_PROC_SUFFIXES = (
-    "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
-    "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
-    "/mem", "/auxv", "/pagemap")
+
+
+def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
+    instead of the main repository root.
+    """
+    return _resolve_path_for_task(filepath, task_id)
+
+
+# Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
+# directory to resolve against. A stale config / .env commonly leaves the
+# literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
+# these as a real relative base silently anchors edits to the agent PROCESS cwd
+# (e.g. the main repo while a worktree session is active), routing writes to the
+# wrong checkout. The gateway sanitizes the same set at import time
+# (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
+# sessions get the same protection. See references/worktree-cwd-discipline.md.
+_TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+
+
+def _terminal_env_type_for_task(task_id: str = "default") -> str:
+    """Best-effort terminal backend type for path-resolution decisions."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            name = env.__class__.__name__.lower()
+            if "local" in name:
+                return "local"
+            if "ssh" in name:
+                return "ssh"
+            if "docker" in name:
+                return "docker"
+            if "singularity" in name:
+                return "singularity"
+            if "modal" in name:
+                return "modal"
+            if "daytona" in name:
+                return "daytona"
+            stamped = getattr(env, "_hermes_backend_name", None)
+            if isinstance(stamped, str) and stamped:
+                return stamped
+        cfg = _get_env_config()
+        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    env_type = _terminal_env_type_for_task(task_id)
+    try:
+        from tools.terminal_tool import _is_container_backend
+
+        return _is_container_backend(env_type)
+    except Exception:
+        return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
+
+
+def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
+    """Normalize path syntax without following host symlinks.
+
+    Container backends use paths that are meaningful inside the sandbox. Calling
+    ``Path.resolve()`` on the host can dereference a host-side symlink such as
+    ``/workspace`` and rewrite the path before Docker sees it.
+    """
+    return PurePosixPath(posixpath.normpath(str(path)))
+
+
+def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
+    """Normalize a cwd candidate to an absolute, sentinel-free anchor.
+
+    Returns the expanded path only when *raw* is non-empty, not a sentinel (see
+    ``_TERMINAL_CWD_SENTINELS``), and absolute. A relative anchor is meaningless
+    without knowing which cwd it is relative to — exactly the ambiguity that
+    misroutes worktree edits — so relative/sentinel/empty values yield ``None``.
+    """
+    raw = str(raw or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = _expand_tilde(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
+def _configured_terminal_cwd() -> str | None:
+    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+
+    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
+    rejected — a relative anchor is meaningless without knowing which cwd it is
+    relative to, which is exactly the ambiguity that misroutes worktree edits.
+    Only an absolute, sentinel-free value is honored.
+    """
+    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+
+
+def _registered_task_cwd_override(task_id: str = "default") -> str | None:
+    """Return a registered cwd override for the raw task id, when available.
+
+    ``terminal_tool`` intentionally collapses CWD-only task overrides to the
+    shared ``"default"`` environment so TUI/dashboard/ACP sessions do not spin
+    up isolated sandboxes just because they have different workspaces. The cwd
+    value itself is still keyed by the raw session/task id, so file tools must
+    read that raw override before falling back to the collapsed container key.
+    """
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        overrides = resolve_task_overrides(task_id)
+    except Exception:
+        return None
+
+    return _sentinel_free_abs_cwd(overrides.get("cwd"))
+
+
+def _authoritative_workspace_root(task_id: str = "default") -> str | None:
+    """Best-effort absolute workspace root for divergence checks.
+
+    Resolution:
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions).
+
+    Returns ``None`` only when there is genuinely no reliable anchor, in which
+    case callers fall back to the process cwd.
+    """
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded
+    registered = _registered_task_cwd_override(task_id)
+    if registered:
+        return registered
+    return _configured_terminal_cwd()
+
+
+def _resolve_base_dir(
+    task_id: str = "default",
+    *,
+    container_paths: bool | None = None,
+) -> Path | PurePosixPath:
+    """Return the ABSOLUTE base directory for resolving relative paths.
+
+    Resolution order:
+      1. The task's live terminal cwd (the directory the agent is actually
+         working in — e.g. a git worktree). Authoritative when known.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed workspace cwd before any terminal command runs).
+      3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
+         terminal command has populated the live cwd registry.
+      4. The process cwd.
+
+    The returned base is ALWAYS absolute. This is the core invariant that
+    prevents the worktree-cwd divergence bug: a relative or sentinel
+    ``TERMINAL_CWD`` (commonly the literal ``"."`` from a stale config) is
+    meaningless as a resolution anchor — left to ``Path.resolve()`` it silently
+    resolves against whatever the agent PROCESS cwd happens to be (e.g. the main
+    repo while the terminal is in a worktree), routing edits to the wrong
+    checkout. We therefore reject sentinel/relative ``TERMINAL_CWD`` values
+    outright (rather than anchoring them to the process cwd) and fall through to
+    the process cwd only as a last resort, deterministically.
+    """
+    root = _authoritative_workspace_root(task_id)
+    if container_paths is None:
+        container_paths = _uses_container_paths(task_id)
+    if root:
+        base_text = _expand_tilde(root)
+    else:
+        base_text = os.getcwd()
+    if container_paths:
+        if not posixpath.isabs(base_text):
+            base_text = posixpath.join(os.getcwd(), base_text)
+        return _normalize_without_host_deref(base_text)
+    # Git Bash ``pwd -P`` reports ``/c/Users/...``; translate before Path so
+    # relative file-tool paths don't anchor under a nonexistent ``\\c\\Users``.
+    from tools.environments.local import _msys_to_windows_path
+
+    base_text = _msys_to_windows_path(base_text)
+    if sys.platform == "win32":
+        import ntpath
+
+        if not ntpath.isabs(base_text):
+            base_text = ntpath.join(os.getcwd(), base_text)
+        return Path(ntpath.normpath(base_text))
+    base = Path(base_text)
+    if not base.is_absolute():
+        # Last-resort anchoring: a live cwd should already be absolute, but if a
+        # terminal backend ever reports a relative cwd, anchor it to the process
+        # cwd once, here, so the result no longer depends on cwd at resolve().
+        base = Path(os.getcwd()) / base
+    return base.resolve()
+
+
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """Resolve *filepath* against the task's absolute base directory.
+
+    See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
+    paths are returned resolved-but-unanchored.
+
+    On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
+    translated to ``C:\\Users\\...`` before resolution so file tools don't
+    treat them as relative ``\\c\\Users\\...`` under the process cwd.
+    """
+    container_paths = _uses_container_paths(task_id)
+    if container_paths:
+        expanded = _expand_tilde(filepath)
+        if posixpath.isabs(expanded):
+            return _normalize_without_host_deref(expanded)
+        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        return _normalize_without_host_deref(resolved)
+
+    # Host paths only — never rewrite Linux paths inside a container/WSL env.
+    from tools.environments.local import _msys_to_windows_path
+
+    expanded = _expand_tilde(_msys_to_windows_path(filepath))
+    if sys.platform == "win32":
+        import ntpath
+
+        if ntpath.isabs(expanded):
+            return Path(ntpath.normpath(expanded))
+        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        return Path(ntpath.normpath(joined))
+
+    p = Path(expanded)
+    if p.is_absolute():
+        return p.resolve()
+    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    return resolved.resolve()
+
+
+def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
+    """Warn when a relative path resolved OUTSIDE the task's workspace root.
+
+    Surfaces the worktree-cwd divergence the moment it would matter: if the
+    agent passes a relative path but it resolves under a directory that is not
+    the workspace root (i.e. the edit is about to land in a different checkout
+    than the one the agent is working in), return a message naming the absolute
+    target. ``None`` when the path is absolute, the base is unknown, or the
+    resolved path is correctly under the workspace root.
+
+    The workspace root is the live terminal cwd when known, else a registered
+    task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
+    — so a worktree or Desktop session whose terminal registry is still empty
+    (no ``cd`` run yet) is warned on the very first write.
+    """
+    try:
+        if Path(_expand_tilde(filepath)).is_absolute():
+            return None
+        workspace_root = _authoritative_workspace_root(task_id)
+        if not workspace_root:
+            return None  # No authoritative workspace root to compare against.
+        if _uses_container_paths(task_id):
+            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        else:
+            root = Path(_expand_tilde(workspace_root)).resolve()
+        # Is `resolved` inside `root`?
+        try:
+            resolved.relative_to(root)
+            return None  # Inside the workspace — expected.
+        except ValueError:
+            return (
+                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"a different directory than the terminal's cwd. If this is not "
+                f"intended (e.g. a git-worktree session writing into the main "
+                f"checkout), pass an absolute path under the workspace instead."
+            )
+    except Exception:
+        return None
 
 
 def _file_ops_uses_host_paths(file_ops) -> bool:
@@ -246,6 +535,483 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     return omitted
 
 
+# Paths that file tools should refuse to write to without going through the
+# terminal tool's approval system.  These match prefixes after os.path.realpath.
+_SENSITIVE_PATH_PREFIXES = (
+    "/etc/", "/boot/", "/usr/lib/systemd/",
+    "/private/etc/",
+    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
+    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
+    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
+    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
+    # symlinks), and /private/var/tmp is a normal temp dir.
+    "/private/var/db/", "/private/var/root/",
+)
+_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+
+_hermes_config_resolved: str | None = None
+_hermes_config_resolved_loaded = False
+
+
+def _get_hermes_config_resolved() -> str | None:
+    """Return the resolved absolute path of the Hermes config file (cached)."""
+    global _hermes_config_resolved, _hermes_config_resolved_loaded
+    if _hermes_config_resolved_loaded:
+        return _hermes_config_resolved
+    _hermes_config_resolved_loaded = True
+    try:
+        from hermes_cli.config import get_config_path
+        _hermes_config_resolved = str(get_config_path().resolve())
+    except Exception:
+        try:
+            _hermes_config_resolved = str(Path(_expand_tilde("~/.hermes/config.yaml")).resolve())
+        except Exception:
+            _hermes_config_resolved = None
+    return _hermes_config_resolved
+
+
+def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return an error message if the path targets a sensitive system location."""
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+    normalized = os.path.normpath(_expand_tilde(filepath))
+    _err = (
+        f"Refusing to write to sensitive system path: {filepath}\n"
+        "Use the terminal tool with sudo if you need to modify system files."
+    )
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
+    # Prevent agents from modifying the Hermes config file directly.
+    # approvals.mode and other security settings live here; a malicious or
+    # prompt-injected agent could silently disable exec approval by writing to
+    # this file.
+    hermes_config = _get_hermes_config_resolved()
+    if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+        return (
+            f"Refusing to write to Hermes config file: {filepath}\n"
+            "Agent cannot modify security-sensitive configuration. "
+            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Protected agent-instruction files (always-ask approval gate)
+# ---------------------------------------------------------------------------
+# Files that steer FUTURE agent behavior are a prompt-injection persistence
+# vector: an injected instruction that edits AGENTS.md / CLAUDE.md / SOUL.md /
+# .cursorrules (or a project-local .hermes config tree) outlives the current
+# turn and poisons every later session that loads it. Writes to these files
+# therefore ALWAYS require human approval — even under --yolo / auto-approve —
+# and fail closed when no human channel exists.
+#
+# Ported from: RooCodeInc/Roo-Code RooProtectedController (Apache-2.0).
+# Companion: the terminal-tool vector is covered separately (#58631); this
+# gate covers the write_file/patch vector. Symlink lesson from #41351:
+# always realpath before matching.
+#
+# Scope decision (documented): basenames match in ANY directory, because
+# project-context instruction files are loaded from cwd trees — an
+# AGENTS.md anywhere the agent might later run from is a live target.
+# Basenames match case-insensitively so case-variant spellings on
+# case-insensitive filesystems (macOS/Windows) cannot slip past; on
+# case-sensitive filesystems most loaders probe common case variants too,
+# so the stricter behavior is kept uniform.
+_PROTECTED_INSTRUCTION_BASENAMES = frozenset({
+    "agents.md", "claude.md", "soul.md", ".cursorrules",
+})
+
+_real_hermes_home_cached: str | None = None
+_real_hermes_home_loaded = False
+
+
+def _get_real_hermes_home() -> str | None:
+    """Return the realpath of the authoritative Hermes home (cached)."""
+    global _real_hermes_home_cached, _real_hermes_home_loaded
+    if _real_hermes_home_loaded:
+        return _real_hermes_home_cached
+    _real_hermes_home_loaded = True
+    try:
+        from hermes_constants import get_hermes_home
+        _real_hermes_home_cached = os.path.realpath(str(get_hermes_home()))
+    except Exception:
+        try:
+            _real_hermes_home_cached = os.path.realpath(_expand_tilde("~/.hermes"))
+        except Exception:
+            _real_hermes_home_cached = None
+    return _real_hermes_home_cached
+
+
+def _protected_instruction_config() -> tuple[bool, list[str]]:
+    """Read the protected-instruction-files gate config.
+
+    Returns ``(enabled, extra_patterns)``. Defaults to enabled with no extra
+    patterns; config read failures keep the gate ON (fail-safe for a
+    security boundary).
+
+    Config keys (config.yaml)::
+
+        security:
+          protected_instruction_files: true       # default
+          protected_instruction_extra_patterns: []  # fnmatch on basename
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        enabled = cfg_get(cfg, "security", "protected_instruction_files",
+                          default=True)
+        extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns",
+                        default=[])
+    except Exception:
+        return True, []
+    if not isinstance(enabled, bool):
+        enabled = True
+    if not isinstance(extra, list):
+        extra = []
+    return enabled, [str(p) for p in extra if p]
+
+
+def _protected_instruction_reason(filepath: str, task_id: str = "default",
+                                  *, enabled: bool | None = None,
+                                  extra_patterns: list[str] | None = None) -> str | None:
+    """Return a short label when ``filepath`` targets a protected
+    agent-instruction file, else ``None``.
+
+    Matching runs on BOTH the normalized input path and its realpath so
+    neither a symlink pointing AT a protected file (#41351) nor a protected
+    name that is itself a symlink escapes the gate. ``..`` traversal is
+    neutralized by normpath/realpath before the basename compare.
+    """
+    if enabled is None or extra_patterns is None:
+        enabled, extra_patterns = _protected_instruction_config()
+    if not enabled:
+        return None
+
+    normalized = os.path.normpath(_expand_tilde(filepath))
+    try:
+        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+    except (OSError, ValueError, RuntimeError):
+        resolved = os.path.realpath(normalized)
+
+    # The authoritative ~/.hermes home is governed by its own guards
+    # (config.yaml hard-block, cross-profile guard, write_approval); this
+    # gate targets PROJECT-LOCAL instruction files only. Checked before the
+    # ``.hermes`` component rule below, which would otherwise match the
+    # home directory itself.
+    real_home = _get_real_hermes_home()
+    if real_home and (resolved == real_home
+                      or resolved.startswith(real_home + os.sep)):
+        return None
+
+    import fnmatch
+    for candidate in (normalized, resolved):
+        base = os.path.basename(candidate)
+        base_lower = base.lower()
+        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES:
+            return base
+        for pattern in extra_patterns:
+            if fnmatch.fnmatch(base_lower, pattern.lower()):
+                return base
+        # Project-local .hermes config dirs (e.g. <repo>/.hermes/config.yaml)
+        # are loaded as project context and steer behavior the same way.
+        # Scope: the file's IMMEDIATE parent must be ``.hermes`` — matching
+        # any ancestor named .hermes would gate every write inside a
+        # checkout that happens to live under ~/.hermes (e.g. the
+        # hermes-agent repo itself at ~/.hermes/hermes-agent).
+        parts = candidate.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) >= 2 and parts[-2] == ".hermes":
+            return candidate
+    return None
+
+
+def _request_protected_instruction_approval(
+        reasons: list[str], task_id: str = "default") -> str | None:
+    """Ask the human to approve a write to protected instruction file(s).
+
+    Returns ``None`` when approved, or a BLOCKED error string. This gate
+    intentionally does NOT route through ``_run_approval_gate``: that gate
+    honors --yolo and session/permanent allowlists, and the entire point
+    here is one-operation approval EVERY time, with no persistent scope
+    and no yolo bypass. Fail-closed when no human channel exists.
+    """
+    targets = ", ".join(dict.fromkeys(reasons))
+    description = (
+        f"Write to protected agent-instruction file(s): {targets}. "
+        "These files steer future agent behavior; approval is always "
+        "required (not bypassed by auto-approve)."
+    )
+    display = f"<write to {targets}>"
+    blocked = (
+        f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
+        "{why} The user has NOT consented to this write. Do NOT retry it or "
+        "attempt the same edit via another path (terminal, execute_code, "
+        "etc.)."
+    )
+
+    try:
+        import tools.approval as _approval
+    except Exception:
+        return blocked.format(why="requires approval but the approval "
+                                  "subsystem is unavailable.")
+
+    # Gateway surface: block on the button round-trip when a notify callback
+    # is registered for this session (Telegram/Discord/Slack). One-operation
+    # only — no session/permanent buttons are offered.
+    session_key = _approval.get_current_session_key()
+    notify_cb = None
+    try:
+        with _approval._lock:
+            notify_cb = _approval._gateway_notify_cbs.get(session_key)
+    except Exception:
+        notify_cb = None
+
+    if notify_cb is not None:
+        approval_data = {
+            "command": display,
+            "pattern_key": "protected_instruction_file",
+            "pattern_keys": ["protected_instruction_file"],
+            "description": description,
+            "allow_permanent": False,
+            "allow_session": False,
+        }
+        decision = _approval._await_gateway_decision(
+            session_key, notify_cb, approval_data, surface="gateway",
+        )
+        if decision.get("notify_failed"):
+            return blocked.format(
+                why="requires approval but the approval request could not "
+                    "be delivered.")
+        choice = decision.get("choice")
+        if decision.get("resolved") and choice in {"once", "session", "always"}:
+            # One-operation grant regardless of the tapped scope — nothing
+            # is persisted for this gate.
+            return None
+        if not decision.get("resolved"):
+            return blocked.format(
+                why="approval prompt timed out without a user response. "
+                    "Silence is not consent.")
+        return blocked.format(why="was denied by the user.")
+
+    # CLI surface: per-thread approval callback (prompt_toolkit panel).
+    callback = None
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        callback = _get_approval_callback()
+    except Exception:
+        callback = None
+
+    if callback is not None:
+        choice = _approval.prompt_dangerous_approval(
+            display, description,
+            allow_permanent=False,
+            allow_session=False,
+            approval_callback=callback,
+        )
+        if choice in {"once", "session", "always"}:
+            # One-operation grant; never persisted (see docstring).
+            return None
+        if choice == "timeout":
+            return blocked.format(
+                why="approval prompt timed out without a user response. "
+                    "Silence is not consent.")
+        return blocked.format(why="was denied by the user.")
+
+    # No human channel at all (script, cron, background thread): fail
+    # closed. Auto-approving here would recreate the persistence vector.
+    return blocked.format(
+        why="requires approval but no interactive user or gateway is "
+            "present to approve it.")
+
+
+def _check_protected_instruction_write(paths: list[str],
+                                       task_id: str = "default") -> str | None:
+    """Gate a write/patch touching protected instruction files.
+
+    Returns ``None`` when no target is protected or the human approved;
+    otherwise a BLOCKED error string. For multi-file V4A patches, ONE
+    protected file gates the ENTIRE patch: a single prompt lists every
+    protected target, and a deny applies nothing (including innocent
+    files) — partial application of an approved-in-part patch would be
+    more surprising than an atomic all-or-nothing outcome.
+    """
+    enabled, extra = _protected_instruction_config()
+    if not enabled:
+        return None
+    reasons: list[str] = []
+    for p in paths:
+        reason = _protected_instruction_reason(
+            p, task_id, enabled=enabled, extra_patterns=extra)
+        if reason:
+            reasons.append(reason)
+    if not reasons:
+        return None
+    return _request_protected_instruction_approval(reasons, task_id)
+
+
+def _check_approval_required_write(paths: list[str],
+                                   task_id: str = "default") -> str | None:
+    """Gate a write/patch touching an approval-required path (``~/.ssh/config``).
+
+    These paths are NOT credentials and NOT hard-denied, but a write must
+    be confirmed by a human because they can steer process execution
+    (an SSH ``ProxyCommand`` / ``Match exec``). Unlike the protected-
+    instruction gate this is a routine, user-initiated edit, so the prompt
+    offers once/session/always scopes and honors --yolo (the historical
+    dangerous-command semantics) rather than always re-asking.
+
+    Returns ``None`` when no target is approval-gated or the human
+    approved; otherwise a BLOCKED error string. Fail-closed when no
+    interactive/gateway channel exists (a background/ACP caller cannot
+    consent on the user's behalf).
+    """
+    try:
+        from agent.file_safety import is_write_approval_required
+    except Exception:
+        return None
+
+    targets = [p for p in paths if is_write_approval_required(p)]
+    if not targets:
+        return None
+
+    display_targets = ", ".join(dict.fromkeys(targets))
+    description = (
+        f"Write to SSH client config file(s): {display_targets}. "
+        "The SSH config can carry ProxyCommand / Match exec directives that "
+        "run commands, so writes require your approval."
+    )
+    blocked = (
+        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
+        "{why} Do NOT retry it via another path (terminal, execute_code) "
+        "without the user's explicit consent."
+    )
+
+    try:
+        import tools.approval as _approval
+    except Exception:
+        return blocked.format(why="requires approval but the approval "
+                                  "subsystem is unavailable.")
+
+    result = _approval._run_approval_gate(
+        pattern_key="ssh_config_write",
+        description=description,
+        display_target=f"<write to {display_targets}>",
+        cron_deny_message=blocked.format(
+            why="requires approval but this cron session denies it."),
+        single_query_deny_message=blocked.format(
+            why="requires approval but single-query (-q) sessions run "
+                "without a user present to approve it. To allow flagged "
+                "actions in single-query mode, set approvals.single_query_mode: "
+                "approve in config.yaml."),
+        autoapprove_log_prefix="ssh_config_write",
+        fail_closed_when_no_human=True,
+        no_human_block_message=blocked.format(
+            why="requires approval but no interactive user or gateway is "
+                "present to approve it."),
+    )
+    if result.get("approved"):
+        return None
+    return result.get("message") or blocked.format(why="was denied.")
+
+
+def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
+    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        return None
+
+    try:
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+
+        if env is not None:
+            if env.__class__.__name__ == "DockerEnvironment" and bool(
+                getattr(env, "_persistent", False)
+            ):
+                return "/root/.hermes"
+            return None
+
+        config = _get_env_config()
+    except Exception:
+        return None
+
+    if config.get("env_type") == "docker" and config.get("container_persistent", True):
+        return "/root/.hermes"
+    return None
+
+
+def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return a soft-guard warning when ``filepath`` lands in another Hermes
+    profile's scoped area, a host-side sandbox-mirror of authoritative profile
+    state, or the Docker container's sandbox mirror of Hermes state.
+
+    Three detectors run in order:
+
+    * cross-profile — writes that hit another profile's
+      ``skills/plugins/cron/memories`` directory.
+    * sandbox-mirror (#32049) — writes that hit the
+      ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
+      non-local terminal backend (Docker, Daytona, etc.), where the host
+      Hermes process never reads the mirror and the authoritative file is
+      left untouched.
+    * container-mirror (#32049 follow-up) — writes from inside a Docker
+      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
+      the agent sees a plain ``/root/.hermes/…`` path.
+
+    Returns ``None`` when the write is in-scope or outside Hermes scope.
+    All detectors are soft guards — the agent can override any by
+    passing ``cross_profile=True`` to its write tool after explicit user
+    direction. Defense-in-depth, NOT a security boundary — the terminal
+    tool runs as the same OS user and can write any of these paths
+    directly. See ``agent/file_safety.classify_cross_profile_target``,
+    ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
+    for the detection rules.
+    """
+    try:
+        from agent.file_safety import (
+            get_container_mirror_warning,
+            get_cross_profile_warning,
+            get_sandbox_mirror_warning,
+        )
+    except Exception:
+        # Fail open on import error — the existing sensitive-path guard
+        # plus the write_denied list still apply.
+        return None
+
+    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
+    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
+    # classified against the right base.
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+
+    warning = get_cross_profile_warning(resolved)
+    if warning is not None:
+        return warning
+
+    warning = get_sandbox_mirror_warning(resolved)
+    if warning is not None:
+        return warning
+
+    return get_container_mirror_warning(
+        resolved,
+        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+    )
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     return isinstance(exc, PermissionError) or (
@@ -351,7 +1117,96 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
         if terminal_env is None:
-            env_type, terminal_env = _create_terminal_env_for_file_ops(raw_task_id, task_id)
+            from tools.terminal_tool import resolve_task_overrides
+
+            config = _get_env_config()
+            env_type = config["env_type"]
+            overrides = resolve_task_overrides(raw_task_id)
+
+            if env_type == "docker":
+                image = overrides.get("docker_image") or config["docker_image"]
+            elif env_type == "singularity":
+                image = overrides.get("singularity_image") or config["singularity_image"]
+            elif env_type == "modal":
+                image = overrides.get("modal_image") or config["modal_image"]
+            elif env_type == "daytona":
+                image = overrides.get("daytona_image") or config["daytona_image"]
+            else:
+                image = ""
+
+            try:
+                from tools.terminal_tool import get_session_cwd
+                recorded_cwd = get_session_cwd(raw_task_id)
+            except Exception:
+                recorded_cwd = None
+            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+            # Re-apply the container cwd guard that _get_env_config() already
+            # ran on config["cwd"] (see #50636).  A per-task cwd override
+            # registered by the gateway/TUI/ACP for workspace tracking is a
+            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
+            # C:\\Users\\<me>). On a container backend that reaches
+            # ``docker run -w <host-path>`` and the container starts in a
+            # directory that doesn't exist inside the sandbox, so search_files
+            # and friends silently return empty results (#54447).  Sanitize it
+            # back to the already-validated config["cwd"] so the override can't
+            # bypass the guard.  Valid in-container override paths (RL/benchmark
+            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
+            # non-host paths and pass through untouched.
+            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+                if cwd != config["cwd"]:
+                    logger.info(
+                        "Ignoring host/relative cwd override %r for %s backend "
+                        "(won't exist in sandbox). Using %r instead.",
+                        cwd, env_type, config["cwd"],
+                    )
+                cwd = config["cwd"]
+            logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
+
+            container_config = None
+            from tools.terminal_tool import _is_container_backend as _is_container
+
+            if _is_container(env_type):
+                container_config = {
+                    "container_cpu": config.get("container_cpu", 1),
+                    "container_memory": config.get("container_memory", 5120),
+                    "container_disk": config.get("container_disk", 51200),
+                    "container_persistent": config.get("container_persistent", True),
+                    "vercel_runtime": config.get("vercel_runtime", ""),
+                    "docker_volumes": config.get("docker_volumes", []),
+                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                    "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "docker_network": config.get("docker_network", True),
+                }
+
+            ssh_config = None
+            if env_type == "ssh":
+                ssh_config = {
+                    "host": config.get("ssh_host", ""),
+                    "user": config.get("ssh_user", ""),
+                    "port": config.get("ssh_port", 22),
+                    "key": config.get("ssh_key", ""),
+                    "persistent": config.get("ssh_persistent", False),
+                }
+
+            local_config = None
+            if env_type == "local":
+                local_config = {
+                    "persistent": config.get("local_persistent", False),
+                }
+
+            terminal_env = _create_environment(
+                env_type=env_type,
+                image=image,
+                cwd=cwd,
+                timeout=config["timeout"],
+                ssh_config=ssh_config,
+                container_config=container_config,
+                local_config=local_config,
+                task_id=task_id,
+                host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+            )
+
             with _env_lock:
                 _active_environments[task_id] = terminal_env
                 _last_activity[task_id] = time.time()

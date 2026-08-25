@@ -14,7 +14,6 @@ import { useStore } from '@nanostores/react'
 
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
-import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { translateNow } from '@/i18n'
@@ -22,18 +21,13 @@ import { openExternalLink } from '@/lib/external-link'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
-  $dockedPreviewTabs,
   $previewTabs,
-  adoptPersistedBrowserTab,
   type BrowserPage,
   closeRightRailTab,
   forgetBrowserPage,
-  markBrowserTabPopped,
   newBrowserTab,
-  popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
-import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
@@ -42,51 +36,6 @@ import { forgetPreviewConsole } from './right-rail/preview-console-store'
 /** The target behind a tile id, or null once its tab is gone. */
 function targetFor(tabId: string): PreviewTarget | null {
   return $previewTabs.get().find(tab => tab.id === tabId)?.target ?? null
-}
-
-/** Schemes that are not a page the user's default browser can usefully open
- *  (blank vessel, Chromium internals, injected documents). */
-const NON_EXTERNAL_URL = /^(about|blob|chrome|data|devtools|javascript):/i
-
-/** The URL a Browser tab should hand to the OS browser — the page it is
- *  showing now, else the address it was opened with. Null when there isn't
- *  one (`about:blank`, a half-typed address, a file/artifact tab). */
-export function browserTabExternalUrl(tabId: string): null | string {
-  const target = targetFor(tabId)
-
-  if (target?.kind !== 'url') {
-    return null
-  }
-
-  const url = $browserPages.get()[tabId]?.url || target.url
-
-  return url && !NON_EXTERNAL_URL.test(url) ? url : null
-}
-
-function browserTabMenuPrefix(tabId: string) {
-  if (targetFor(tabId)?.kind !== 'url') {
-    return undefined
-  }
-
-  return (kit: MenuKit) => (
-    <>
-      {canOpenBrowserWindow()
-        ? renderActionItem(kit, {
-            icon: 'empty-window',
-            key: 'pop-out',
-            label: translateNow('preview.popOut'),
-            onSelect: () => popOutBrowserTab(tabId)
-          })
-        : null}
-      {renderActionItem(kit, {
-        disabled: !browserTabExternalUrl(tabId),
-        icon: 'link-external',
-        key: 'open-external',
-        label: translateNow('preview.openInExternal'),
-        onSelect: () => openExternalLink(browserTabExternalUrl(tabId) ?? '')
-      })}
-    </>
-  )
 }
 
 /** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see
@@ -185,7 +134,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
     return inTree
   }
 
-  const other = $dockedPreviewTabs.get().find(tab => tab.id !== tabId)
+  const other = $previewTabs.get().find(tab => tab.id !== tabId)
 
   return other ? previewPaneId(other.id) : undefined
 }
@@ -244,7 +193,7 @@ export function watchPreviewTiles(): void {
 }
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  source: $dockedPreviewTabs,
+  source: $previewTabs,
   // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
   // clicking a link in a bot chat must open the same pane Sessions already
   // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
@@ -265,7 +214,6 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // A Browser is a vessel, so there can be more of it — a file peek is one of
   // a kind and leaves the strip's "+" to whatever else the zone holds.
   newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
-  tabMenuPrefix: browserTabMenuPrefix,
   render: tabId => <PreviewTilePane tabId={tabId} />,
   close: tabId => {
     forgetBrowserPage(tabId)

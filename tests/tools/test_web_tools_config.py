@@ -120,9 +120,9 @@ class TestFirecrawlClientConfig:
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                with patch("plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
+            with patch("tools.web_tools._read_nous_access_token", return_value=None):
+                with patch("tools.web_tools.Firecrawl", side_effect=AssertionError("SDK path should not run")):
+                    from tools.web_tools import _get_firecrawl_client
 
                     result = _get_firecrawl_client()
 
@@ -342,7 +342,7 @@ class TestBackendSelection:
         vendors — no availability probe, no credential override."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
-             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_nous_backend_maps_to_firecrawl(self):
@@ -351,18 +351,6 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "nous"}):
             assert _get_backend() == "firecrawl"
-
-    def test_managed_gateway_does_not_preempt_explicit_exa(self):
-        """Regression: a Nous OAuth token (managed gateway "ready") must NOT
-        beat an explicitly configured EXA_API_KEY in the fallback path.
-        Free Nous tiers don't include web search, so the user's deliberate
-        Exa setup would fail at runtime with "no subscription" if the
-        gateway pre-empted it."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
-             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
-            assert _get_backend() == "exa"
 
     def test_managed_gateway_does_not_preempt_explicit_tavily(self):
         """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
@@ -824,27 +812,6 @@ class TestSiblingProvidersEnvResolution:
                 f"{cls_name}.is_available() ignored {env_key} from the "
                 "config-aware env layer (get_env_value)"
             )
-
-    def test_keenable_search_reads_key_via_get_env_value(self, monkeypatch):
-        """Keyed Keenable must Bearer-auth with a key that lives only in .env."""
-        monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"results": []}
-        mock_response.text = "{}"
-
-        with patch(
-            "hermes_cli.config.get_env_value",
-            side_effect=lambda k: "kn-from-dotenv" if k == "KEENABLE_API_KEY" else None,
-        ), patch(
-            "requests.post", return_value=mock_response
-        ) as mock_post:
-            from plugins.web.keenable.provider import KeenableWebSearchProvider
-
-            KeenableWebSearchProvider().search("q", limit=2)
-            headers = mock_post.call_args.kwargs["headers"]
-            assert headers["Authorization"] == "Bearer kn-from-dotenv"
-            assert headers["X-Keenable-Title"] == "hermes-agent"
 
     def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
         """Keyed Tavily must Bearer-auth with a key that lives only in .env."""

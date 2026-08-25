@@ -182,6 +182,7 @@ registry.registerMany([
   {
     id: 'workspace',
     area: 'panes',
+    workspaceMode: 'sessions',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
     title: NEW_SESSION_TITLE,
     data: {
@@ -454,6 +455,7 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
+    workspaceMode: 'sessions',
     // The placeholder, not the draft's live name — `tabTitle` below renders
     // that. Keeping it here would re-register the pane on every keystroke.
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
@@ -806,7 +808,57 @@ export function ContribController() {
           data-contrib-shell=""
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
-          <LayoutTreeRoot titlebar />
+          {/* Title bar: fixed chrome outside the grid, composable via slots.
+              Layout contract (no contribution can break it):
+                - a full-bar DRAG BASE underneath (pointer-events-none, like
+                  AppShell's drag strips) — everywhere without content drags
+                  the window;
+                - each slot region is width-fit, no-drag, pointer-events-auto,
+                  so every contribution is clickable by construction;
+                - LEFT/RIGHT slots align to the MAIN PANE's geometry via the
+                  tree-published --workspace-left/right vars (pure CSS, no rect
+                  threading), clamped to clear the REAL TitlebarControls
+                  clusters (fixed, z-70); center is truly window-centered. */}
+          <div className="relative flex h-[34px] shrink-0 items-center bg-(--ui-sidebar-surface-background) text-xs">
+            {/* Drag strips, AppShell-style: cut to AVOID the fixed control
+                clusters instead of overlapping them — Electron's no-drag
+                carve-out of fixed/transformed elements is unreliable, so a
+                full-bar drag base kills their clicks. In-flow slot content
+                still carves via its own no-drag wrapper (the same pattern as
+                the app's session-title button). */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-0 w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,24px)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
+            />
+            <TitlebarSlot
+              area="titleBar.left"
+              className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
+              style={{
+                left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 24px) + 1rem))'
+              }}
+            />
+            <TitlebarSlot
+              area="titleBar.center"
+              className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]"
+            />
+            <TitlebarSlot
+              area="titleBar.right"
+              className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
+              style={{
+                right:
+                  // Five static cluster buttons: four systemTools plus the
+                  // always-present right-sidebar toggle (titlebar-controls.tsx).
+                  // Keep in sync with wiring.tsx's SYSTEM_TOOL_COUNT.
+                  'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 5 * var(--titlebar-control-size, 24px) + 0.5rem))'
+              }}
+            />
+          </div>
+
+          <LayoutTreeRoot />
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />

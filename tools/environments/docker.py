@@ -21,12 +21,15 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
-from tools.environments.base_output import _popen_bash
-from tools.environments.docker_egress import (
-    _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
-    _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
-    check_forward_env_collisions, merge_egress_env,
+from tools.environments.base import (
+    BaseEnvironment,
+    EnvironmentConnectionError,
+    _popen_bash,
+    sanitize_task_id_for_path,
+)
+from tools.environments.local import (
+    _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _is_hermes_internal_secret,
 )
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
@@ -101,6 +104,13 @@ def _sanitize_label_value(value: str) -> str:
 _sandbox_dir_name = sanitize_task_id_for_path
 
 
+# The task_id -> host-directory-name mapping is shared with every backend
+# that persists per-task state on the host filesystem (Singularity overlays
+# use the same helper), so the whole bug class is fixed in one place:
+# tools.environments.base.sanitize_task_id_for_path.
+_sandbox_dir_name = sanitize_task_id_for_path
+
+
 def _get_active_profile_name() -> str:
     """Active Hermes profile name, or ``"default"`` on any error. Resolved at container-create
     time so a container stays tagged with its creator even if the process switches profiles."""
@@ -112,14 +122,26 @@ def _get_active_profile_name() -> str:
 
 
 def _container_identity(shared_key: str = "") -> str:
-    """Profile label used for container reuse and orphan reaping. Profiles are isolated by default; an
-    explicit shared key lets trusted profiles share one Docker identity. Label sanitization is lossy
-    and reuse is label-keyed, so a digest of the raw key disambiguates colliding keys. Plain profile
-    names keep their historical un-suffixed labels."""
+    """Return the profile label used for reuse and orphan reaping.
+
+    Profiles remain isolated by default. An explicit shared key lets trusted
+    profiles that intentionally share a workspace use one Docker identity.
+
+    Shared keys are made collision-resistant the same way
+    :func:`sanitize_task_id_for_path` is: label sanitization is lossy
+    (``team/workspace`` and ``team_workspace`` both sanitize to
+    ``team_workspace``, and >63-char keys truncate), and since container
+    reuse is label-keyed, two DIFFERENT keys colliding after sanitization
+    would silently attach to the same running container. A digest of the
+    raw key disambiguates; identical raw keys still map to identical
+    labels across processes. Plain profile names keep their historical
+    un-suffixed labels for backward compatibility with existing containers.
+    """
     if not shared_key:
         return _sanitize_label_value(_get_active_profile_name())
     digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
-    return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
+    stem = _sanitize_label_value(shared_key)[:50]
+    return f"{stem}-{digest}"
 
 
 def reap_orphan_containers(
@@ -514,7 +536,7 @@ class DockerEnvironment(BaseEnvironment):
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+    ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -538,11 +560,211 @@ class DockerEnvironment(BaseEnvironment):
 
         _ensure_docker_available()
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
-        volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
-        egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
+        # Build resource limit args (gated by cgroup availability probe so
+        # they degrade gracefully on hosts without controller delegation,
+        # e.g. unprivileged LXCs). The probe runs once per process and is
+        # cached host-wide.
+        resource_args = []
+        if cpu > 0 and _cgroup_limits_available(image):
+            resource_args.extend(["--cpus", str(cpu)])
+        if memory > 0 and _cgroup_limits_available(image):
+            resource_args.extend(["--memory", f"{memory}m"])
+        if _cgroup_limits_available(image):
+            resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
+        # /dev/shm size (not cgroup-gated: --shm-size is a tmpfs mount option,
+        # no controller delegation required). Skip when the user already sets
+        # it via docker_extra_args, or opted out with an empty/"0" value.
+        shm = str(shm_size or "").strip()
+        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+            resource_args.extend(["--shm-size", shm])
+        if disk > 0 and sys.platform != "darwin":
+            if self._storage_opt_supported():
+                resource_args.extend(["--storage-opt", f"size={disk}m"])
+            else:
+                logger.warning(
+                    "Docker storage driver does not support per-container disk limits "
+                    "(requires overlay2 on XFS with pquota). Container will run without disk quota."
+                )
+        if not network:
+            resource_args.append("--network=none")
+
+        # Persistent workspace via bind mounts from a configurable host directory
+        # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
+        # mode uses tmpfs (ephemeral, fast, gone on cleanup).
+        from tools.environments.base import get_sandbox_dir
+
+        # User-configured volume mounts (from config.yaml docker_volumes)
+        volume_args = []
+        workspace_explicitly_mounted = False
+        for vol in (volumes or []):
+            if not isinstance(vol, str):
+                logger.warning("Docker volume entry is not a string: %r", vol)
+                continue
+            vol = vol.strip()
+            if not vol:
+                continue
+            if ":" in vol:
+                volume_args.extend(["-v", vol])
+                if ":/workspace" in vol:
+                    workspace_explicitly_mounted = True
+            else:
+                logger.warning("Docker volume '%s' missing colon, skipping", vol)
+
+        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        bind_host_cwd = (
+            auto_mount_cwd
+            and bool(host_cwd_abs)
+            and os.path.isdir(host_cwd_abs)
+            and not workspace_explicitly_mounted
+        )
+        if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
+            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+
+        self._workspace_dir: Optional[str] = None
+        self._home_dir: Optional[str] = None
+        writable_args = []
+        if self._persistent:
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
+            self._home_dir = str(sandbox / "home")
+            os.makedirs(self._home_dir, exist_ok=True)
+            writable_args.extend([
+                "-v", f"{self._home_dir}:/root",
+            ])
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                self._workspace_dir = str(sandbox / "workspace")
+                os.makedirs(self._workspace_dir, exist_ok=True)
+                writable_args.extend([
+                    "-v", f"{self._workspace_dir}:/workspace",
+                ])
+        else:
+            if not bind_host_cwd and not workspace_explicitly_mounted:
+                writable_args.extend([
+                    "--tmpfs", "/workspace:rw,exec,size=10g",
+                ])
+            writable_args.extend([
+                "--tmpfs", "/home:rw,exec,size=1g",
+                "--tmpfs", "/root:rw,exec,size=1g",
+            ])
+
+        if bind_host_cwd:
+            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+        elif workspace_explicitly_mounted:
+            logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
+
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # Read-only so the container can authenticate but not modify host creds.
+        try:
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+                get_cache_directory_mounts,
+            )
+
+            for mount_entry in get_credential_file_mounts():
+                src = Path(mount_entry["host_path"])
+                if src.is_dir():
+                    # Docker-in-Docker: Docker auto-created the source path as
+                    # a directory when it didn't exist on the host.  Mounting a
+                    # directory over a file destination causes exit 125.
+                    logger.warning(
+                        "Docker: skipping credential mount — source is a directory "
+                        "(likely Docker-in-Docker auto-creation): %s",
+                        src,
+                    )
+                    continue
+                if not src.is_file():
+                    logger.warning(
+                        "Docker: skipping credential mount — source not found: %s", src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            # Mount skill directories (local + external) so skill
+            # scripts/templates are available inside the container.
+            for skills_mount in get_skills_directory_mount():
+                src = Path(skills_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping skills mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+
+            # Mount host-side cache directories (documents, images, audio,
+            # screenshots) so the agent can access uploaded files and other
+            # cached media from inside the container.  Read-only — the
+            # container reads these but the host gateway manages writes.
+            for cache_mount in get_cache_directory_mounts():
+                src = Path(cache_mount["host_path"])
+                if not src.is_dir():
+                    logger.warning(
+                        "Docker: skipping cache mount — source is not a directory: %s",
+                        src,
+                    )
+                    continue
+                volume_args.extend([
+                    "-v",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting cache dir %s -> %s",
+                    cache_mount["host_path"],
+                    cache_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Docker: could not load credential file mounts: %s", e)
+
+        # Egress credential-injection proxy (iron-proxy) — when configured,
+        # mount the CA cert into the sandbox and set HTTPS_PROXY + CA-bundle
+        # env vars so outbound traffic routes through the host-side proxy.
+        # The sandbox receives PROXY tokens instead of real API keys.
+        egress_volume_args, egress_env_overrides, egress_host_args = (
+            _egress_proxy_args_for_docker()
+        )
+        egress_label = _egress_reuse_fingerprint(
+            egress_volume_args, egress_env_overrides, egress_host_args,
+        )
+        _enforce_egress = _egress_enforce_on_docker()
+        _critical_egress_names = _critical_egress_env_names(egress_env_overrides)
+        if egress_env_overrides:
+            _forward_collisions = sorted(
+                key for key in self._forward_env if key in _critical_egress_names
+            )
+            if _forward_collisions:
+                _msg = (
+                    f"docker_forward_env would inject real egress-protected "
+                    f"variables {_forward_collisions}; enforce_on_docker is "
+                    f"{'enabled' if _enforce_egress else 'disabled'}."
+                )
+                if _enforce_egress:
+                    raise RuntimeError(
+                        f"{_msg}  Remove these names from docker_forward_env "
+                        "or disable enforce_on_docker to opt out of egress isolation."
+                    )
+                logger.warning(
+                    "%s  Explicit docker_forward_env values will override egress tokens.",
+                    _msg,
+                )
         volume_args.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
 
@@ -782,21 +1004,26 @@ class DockerEnvironment(BaseEnvironment):
         mid-pull) can leave a "Created" orphan the exited-only reaper never catches, so it is
         removed by name before re-raising."""
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
-        run_cmd = self._run_command(container_name, cwd)
-        logger.debug("Starting container: %s", ' '.join(run_cmd))
-        try:
-            result = run_capture(
-                run_cmd, timeout=120, check=True,  # image pull may take a while
-                env=self._docker_client_env(self._run_env_values))
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
-            subprocess.run(
-                [self._docker_exe, "rm", "-f", container_name],
-                capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
-            raise
-        container_id = result.stdout.strip()
-        logger.info("Started container %s (%s)", container_name, container_id[:12])
-        return container_id
+        # Labels make hermes-created containers identifiable to:
+        #   * the orphan reaper (`hermes-agent=1` for the global sweep filter)
+        #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
+        #   * operators running `docker ps --filter label=hermes-agent=1`
+        # Values are limited to the safe character set defined by
+        # _sanitize_label_value(); the configured reuse identity is captured at
+        # container-start time and never changes for the container's lifetime.
+        profile_name = _container_identity(shared_container_key)
+        task_label = _sanitize_label_value(task_id)
+        label_args = [
+            "--label", "hermes-agent=1",
+            "--label", f"hermes-task-id={task_label}",
+            "--label", f"hermes-profile={profile_name}",
+            "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+        ]
+        # Save args for container recreation on "No such container" recovery.
+        self._image = image
+        self._container_name = container_name
+        self._image_uses_s6_init = image_uses_s6_init
+        self._all_run_args = all_run_args
 
     # --- Env forwarding ---
     def _docker_client_env(self, values: dict[str, str]) -> dict[str, str] | None:

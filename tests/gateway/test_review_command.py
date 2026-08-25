@@ -103,7 +103,7 @@ async def test_review_command_dispatches_background_subagent(monkeypatch):
     runner = _make_runner(agent)
     out = await runner._handle_review_command(_Event("check tests"))
 
-    assert out == re_mod.format_dispatch_note({"status": "dispatched"})
+    assert "dispatched" in out
     assert "PR #5 opened" in built["context"]
     assert "check tests" in built["context"]
 

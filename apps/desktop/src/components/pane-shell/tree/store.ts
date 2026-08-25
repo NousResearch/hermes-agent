@@ -43,6 +43,7 @@ import {
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
+import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -776,11 +777,6 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
   })
 }
 
-/** Shared target for tab-number hints and shortcut dispatch. */
-export function treeTabSlotTarget(): GroupNode | null {
-  return tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
-}
-
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
@@ -1320,20 +1316,6 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 // against a live user — a mid-session drag out of the anchor strip sticks
 // until the next launch, so there is never a tug-of-war.
 const enforcedDocksThisBoot = new Set<string>()
-
-/**
- * Reopen the enforcement window. The ledger protects a user's mid-session
- * drags, but a wholesale tree replacement has no drags left to protect — and
- * a pass that ran against a DIFFERENT tree burned the entry for nothing. That
- * is how the guided onboarding shipped Bots as a tab over the chat: the boot
- * pass fired while the solo tree had no sessions column to anchor to, so the
- * assembled layout's pass was skipped as already-done.
- *
- * Only call this when replacing the tree wholesale.
- */
-export function resetEnforcedDocks(): void {
-  enforcedDocksThisBoot.clear()
-}
 
 /**
  * A `panes` contribution whose dock hint carries `enforce: true` is re-homed

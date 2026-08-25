@@ -28,21 +28,30 @@ class UpstageProfile(ProviderProfile):
         if not reasoning_config or not isinstance(reasoning_config, dict):
             return {}, {"reasoning_effort": "medium"}  # unset -> reasoning ON for agents
         if reasoning_config.get("enabled") is False:
-            return {}, {}  # explicitly disabled -> Solar's own default (minimal = off)
-        # Map Hermes' effort vocabulary onto Solar's accepted set via the shared clamp
-        # (agent.reasoning_effort). minimal → omit (Solar's minimal means off); unknown-but-enabled bespoke
-        # levels collapse to high rather than silently downgrading (#62650 precedent).
+            return {}, top_level
+
+        # Map Hermes' effort vocabulary onto Solar's accepted set via the
+        # shared clamp (agent.reasoning_effort). minimal → omit (Solar's
+        # minimal means off); unknown-but-enabled bespoke levels collapse to
+        # high rather than silently downgrading (#62650 precedent).
         effort = (reasoning_config.get("effort") or "").strip().lower()
         if not effort:
-            return {}, {"reasoning_effort": "medium"}
+            top_level["reasoning_effort"] = _DEFAULT_REASONING_EFFORT
+            return {}, top_level
         if effort == "minimal":
-            return {}, {}
+            return {}, top_level
+
+        from agent.reasoning_effort import EFFORT_LADDER, SOLAR_EFFORTS, clamp_effort
+
         mapped = clamp_effort(effort, SOLAR_EFFORTS)
         if mapped not in SOLAR_EFFORTS:
-            # Bespoke level outside the ladder runs at full strength rather than quietly
-            # falling to the default; ladder levels that still don't map are omitted.
+            # Bespoke level outside the ladder — Solar precedent is to run
+            # at full strength rather than quietly fall to the default.
             mapped = "high" if effort not in EFFORT_LADDER else None
-        return {}, {"reasoning_effort": mapped} if mapped else {}
+
+        if mapped:
+            top_level["reasoning_effort"] = mapped
+        return {}, top_level
 
 
 upstage = UpstageProfile(

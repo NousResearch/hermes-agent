@@ -689,6 +689,35 @@ class TestProtectedInstructionFiles:
 
         assert rendered["choices"] == ["once", "deny"]
 
+    def test_gateway_payload_renders_only_once_and_deny(self, tmp_path):
+        """End-to-end: what this gate emits, a TUI/desktop client can render.
+
+        The transport used to derive its button set from ``allow_permanent``
+        alone, so it re-added a "session" scope the gate refuses to persist —
+        users tapped it and got re-prompted on every write (#81887). Asserting
+        the two layers together is what catches that drift.
+        """
+        import tools.approval as A
+        from tui_gateway.server import _approval_request_payload
+
+        session_key = "protected-files-payload-session"
+        token = A.set_current_session_key(session_key)
+        rendered = {}
+        try:
+            def notify(approval_data):
+                rendered.update(_approval_request_payload(approval_data))
+                A.resolve_gateway_approval(session_key, "once")
+
+            A.register_gateway_notify(session_key, notify)
+            try:
+                self._write(tmp_path / "SOUL.md", "gateway approved")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            A.reset_current_session_key(token)
+
+        assert rendered["choices"] == ["once", "deny"]
+
 
 class TestProfileHomeExemptsHermesRoot:
     """issue #60: under ``hermes -p <name>`` (``HERMES_HOME=<root>/profiles/<name>``)

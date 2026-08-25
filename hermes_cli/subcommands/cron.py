@@ -26,15 +26,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
-    cron_create.add_argument("--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, "
+    cron_create.add_argument(
+        "--deliver",
+        help=(
+            "Delivery target: origin, local, telegram, discord, signal, "
             "platform:chat_id, or bot-chat[:profile] (inject output into a "
-            "local profile's canonical Bot Chat as a message the bot responds to)")
-    cron_create.add_argument("--failure-deliver", dest="failure_deliver",
-        help="Override target for FAILURE notices only (same grammar as "
-            "--deliver). 'local' suppresses failure notices entirely; run "
-            "state stays visible in `hermes cron list`. Omit = failures "
-            "follow --deliver.")
+            "local profile's canonical Bot Chat as a message the bot responds to)"
+        ),
+    )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
@@ -75,8 +74,28 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "and agent.reasoning_overrides for this job; unsupported levels are "
             "clamped by the provider at request time. Omit to follow config.")
     cron_create.add_argument(
-        "--continuity", dest="continuity", action="store_const", const=True, default=None,
-        help="Each run wakes up with the job's own previous output injected "
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
+    )
+    cron_create.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        help=(
+            "Pin this job's reasoning (thinking) effort: none, minimal, low, "
+            "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
+            "and agent.reasoning_overrides for this job; unsupported levels are "
+            "clamped by the provider at request time. Omit to follow config."
+        ),
+    )
+    cron_create.add_argument(
+        "--continuity",
+        dest="continuity",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Each run wakes up with the job's own previous output injected "
             "into its prompt, so it can dedupe against what was already "
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
@@ -129,13 +148,23 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--model",
         help="Pin this job to a specific inference model (user-owned; the "
             "agent's cronjob tool cannot set this). Pass empty string to "
-            "clear the pin and follow cron.model / model.default.")
-    cron_edit.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model. Pass empty string to clear.")
-    cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
-        help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
+            "clear the pin and follow cron.model / model.default."
+        ),
+    )
+    cron_edit.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        help=(
+            "Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
-            "the pin and follow config resolution.")
+            "the pin and follow config resolution."
+        ),
+    )
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
@@ -144,7 +173,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
     cron_resume.add_argument("job_id", help="Job ID to resume")
     cron_resume.add_argument("--at", dest="run_at", help="Re-arm at an ISO-8601 time")
-    _flag(cron_resume, "--run-now", help="Re-arm to run now")
+    cron_resume.add_argument("--run-now", action="store_true", help="Re-arm to run now")
 
     cron_run = cron_subparsers.add_parser("run", help="Run a job on the next scheduler tick")
     cron_run.add_argument("job_id", help="Job ID to trigger")

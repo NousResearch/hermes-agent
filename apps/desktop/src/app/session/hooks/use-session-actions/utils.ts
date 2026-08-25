@@ -5,7 +5,6 @@ import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
-import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -39,7 +38,6 @@ import {
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -1456,35 +1454,12 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-// Every session row reachable through the profile-scoped project tree —
-// preview rows on a collapsed project plus the drill-in lane rows. These are
-// the only rows guaranteed to name their owning profile (the gateway stamps
-// the request scope onto them), so owner resolution has to see them.
-function projectTreeSessions(): SessionInfo[] {
-  return $projectTree
-    .get()
-    .flatMap(project => [
-      ...(project.previewSessions ?? []),
-      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
-    ])
-}
-
-// The best cached row for a stored id, across every list that can hold one.
-// "Best" means self-describing: the same conversation can appear both as an
-// ownerless legacy Recents copy and as a profile-stamped project-tree row, and
-// picking the ownerless one throws away the only routing information we have.
-export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
-  const candidates = [
-    ...$sessions.get(),
-    ...$cronSessions.get(),
-    ...$messagingSessions.get(),
-    ...projectTreeSessions()
-  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
-
-  return (
-    candidates.find(session => session.connection_id?.trim()) ??
-    candidates.find(session => session.profile?.trim()) ??
-    candidates[0]
+export async function resolveStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<SessionInfo | undefined> {
+  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
+    sessionMatchesStoredId(session, storedSessionId)
   )
 }
 
@@ -1493,6 +1468,35 @@ export async function resolveStoredSession(
   ownerRoute?: SessionProfileRoute
 ): Promise<SessionInfo | undefined> {
   const cached = cachedSessionRow(storedSessionId)
+
+  if (ownerRoute) {
+    const scope = {
+      connectionId: ownerRoute.connectionId,
+      profile: ownerRoute.targetProfile || ownerRoute.profile
+    }
+
+    const cachedOwnerMatches =
+      cached &&
+      cached.connection_id === ownerRoute.connectionId &&
+      (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
+
+    if (cached && cachedOwnerMatches) {
+      return cached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, scope)
+      session.profile = normalizeProfileKey(ownerRoute.profile)
+      session.connection_id = ownerRoute.connectionId
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // An explicit owner is fail-closed. Probing the ambient or another
+      // profile would turn a stale route into a cross-connection open.
+      return undefined
+    }
+  }
 
   if (ownerRoute) {
     const scope = {

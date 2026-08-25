@@ -162,7 +162,7 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
     assert not shim.exists()
 
 
-@patch.object(main_install_repair, "_is_windows", return_value=True)
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monkeypatch):
     """Every retry failed: name the likely culprits, queue nothing for reboot."""
     shim = tmp_path / "hermes.exe"
@@ -171,11 +171,11 @@ def test_quarantine_reports_a_lock_it_cannot_break(_winp, tmp_path, capsys, monk
     def always_fails(self, target):
         raise OSError(32, "The process cannot access the file (simulated lock)")
 
-    monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
     with patch.object(Path, "rename", always_fails), patch(
         "time.sleep", lambda *_a, **_k: None
     ):
-        pairs = main_install_repair._quarantine_running_hermes_exe(tmp_path)
+        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out.lower()
 

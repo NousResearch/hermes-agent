@@ -89,7 +89,12 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")
-    add_yes_flag(skills_uninstall)
+    skills_uninstall.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
 
     skills_reset = skills_subparsers.add_parser("reset",
         help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",

@@ -137,10 +137,6 @@ export function openSession(
     const focused = focusOpenSession(storedSessionId, workspaceScope)
 
     if (focused) {
-      if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
-        navigate(sessionRoute(storedSessionId))
-      }
-
       return
     }
 
@@ -161,8 +157,6 @@ export function openSession(
     } else {
       openSessionTile(storedSessionId, 'center')
     }
-
-    focusOpenSession(storedSessionId, workspaceScope)
 
     return
   }

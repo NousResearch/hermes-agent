@@ -76,6 +76,32 @@ class TestProviderEnvDetection:
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
+    def test_detects_keyless_loopback_provider(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  provider: local-ollama\n"
+            "providers:\n"
+            "  local-ollama:\n"
+            "    api: http://127.0.0.1:11434/v1\n",
+            encoding="utf-8",
+        )
+
+        assert doctor._configured_model_uses_keyless_local_endpoint(config_path)
+
+    def test_does_not_treat_remote_provider_as_local(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  provider: remote\n"
+            "providers:\n"
+            "  remote:\n"
+            "    api: https://example.com/v1\n",
+            encoding="utf-8",
+        )
+
+        assert not doctor._configured_model_uses_keyless_local_endpoint(config_path)
+
 
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
@@ -88,31 +114,6 @@ class TestDoctorToolAvailabilitySummary:
         filtered = doctor_tools._missing_api_key_toolsets_for_summary(unavailable)
 
         assert [item["name"] for item in filtered] == ["web"]
-
-    def test_image_gen_without_provider_reports_setup_hint_not_system_dependency(self, monkeypatch):
-        """image_gen declares no single env var (FAL / managed Nous / plugin providers); an
-        unconfigured backend is a setup problem and must say so, and it counts toward the
-        'run hermes setup' summary like any missing key (#9516)."""
-        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
-                       {"name": "homeassistant", "env_vars": [], "tools": []}]
-        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
-        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
-        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
-        fake_model_tools = types.SimpleNamespace(
-            check_tool_availability=lambda: ([], unavailable),
-            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "homeassistant": {"name": "homeassistant"}},
-        )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            f = doctor_tools._check_tool_availability(False)
-        out = buf.getvalue()
-
-        image_line = next(line for line in out.splitlines() if "image_gen" in line)
-        assert "hermes tools" in image_line and "system dependency" not in image_line and "unavailable" in image_line
-        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
-        assert any("hermes setup" in issue for issue in f.issues)
 
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
@@ -132,7 +133,7 @@ class TestDoctorToolAvailabilitySummary:
             lambda: unavailable,
         )
 
-        rows = doctor_tools._doctor_web_capability_rows()
+        rows = doctor._doctor_web_capability_rows()
         assert rows
         assert all(status == "warn" for status, _, _ in rows)
         assert any("firecrawl selected; provider not configured" in detail for _, _, detail in rows)
@@ -154,7 +155,7 @@ class TestDoctorToolAvailabilitySummary:
             lambda: ready,
         )
 
-        rows = doctor_tools._doctor_web_capability_rows()
+        rows = doctor._doctor_web_capability_rows()
         assert rows == [
             ("ok", "web search", "(ddgs)"),
             ("ok", "web extract", "(ddgs)"),

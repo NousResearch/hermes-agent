@@ -386,12 +386,19 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    # Memory tool enablement for the CLI platform via the canonical resolver, respecting the
-    # check_fn gate when both stores are disabled.
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver and respects the check_fn gate when both stores are disabled.
     from hermes_cli.tools_config import _get_platform_tools
     from tools.memory_tool import check_memory_requirements
     cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
     memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
 
     print("\nMemory status\n" + "─" * 40)
     print("  Built-in (MEMORY.md / USER.md):")

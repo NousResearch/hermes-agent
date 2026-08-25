@@ -125,8 +125,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $removedSessionIds } from '@/store/session-removal'
-import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -789,18 +788,6 @@ export function ChatSidebar({
 
     return () => window.clearTimeout(warm)
   }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
-
-  // Widen the existing tree query when the user expands previews, without
-  // repeating repo discovery. Initial load/scope changes use the effect above.
-  useEffect(
-    () =>
-      $sidebarShowAllSessions.listen(() => {
-        if (gatewayReady && worktreeGroupingActive) {
-          void refreshProjectTree()
-        }
-      }),
-    [gatewayReady, worktreeGroupingActive]
-  )
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
@@ -1790,23 +1777,18 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
-                        {/* The flat-list header "+" is a drag source too — the
-                            same gesture as the nav's "New session" row: drag
-                            it onto a chat zone's tab strip / edge / center to
-                            create the session exactly there. Project-overview
-                            mode drags its "+" (the "New project" button) with
-                            the project-drag variant: a drop opens the SAME
-                            project dialog, and the created project starts at
-                            the dropped spot. */}
-                        <SidebarSectionAddButton
-                          ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                          onNewProjectDrag={
-                            agentsGrouped
-                              ? {
-                                  // Dragging the "New project" + arms WHERE the
-                                  // project should start; the dialog flow consumes
-                                  // it on create (see $newProjectDropPlacement).
-                                  onArm: placement => $newProjectDropPlacement.set(placement)
+                        {!showAllProfiles ? (
+                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
+                            <Button
+                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+
+                                if (agentsGrouped) {
+                                  openProjectCreate()
+                                } else {
+                                  onNewSessionInWorkspace(null)
                                 }
                               : undefined
                           }

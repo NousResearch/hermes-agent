@@ -391,4 +391,190 @@ def list_codex_sessions(root: Optional[Path] = None) -> List[ForeignSession]:
         )
     results.sort(key=lambda s: s.mtime, reverse=True)
     return results
-# ---- END PLUGIN-COMPAT ----
+
+
+def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
+    for role, text in turns:
+        if role == "user":
+            line = text.strip().splitlines()[0].strip()
+            if line:
+                return line[:_TITLE_MAX * 2]
+    return None
+
+
+# ── Import ───────────────────────────────────────────────────────────────
+
+_SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
+_SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli"}
+
+
+def import_foreign_session(source: str, path, db=None) -> str:
+    """Import one foreign session into the Hermes SessionDB.
+
+    Returns the new Hermes session id.  The foreign file is only read.
+    Raises ``ValueError`` on unknown source or a session with no usable
+    conversation turns.
+    """
+    source = (source or "").strip().lower().lstrip("@")
+    if source not in _SOURCE_LABELS:
+        raise ValueError(f"Unknown foreign session source: {source!r}")
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise ValueError(f"Session file not found: {path}")
+
+    parsed = (
+        parse_claude_session(path)
+        if source == "claude"
+        else parse_codex_session(path)
+    )
+    turns = parsed["turns"]
+    if not turns:
+        raise ValueError(
+            f"No user/assistant conversation turns found in {path}"
+        )
+
+    label = _SOURCE_LABELS[source]
+    first_user = _first_user_line(
+        [(t["role"], t["content"]) for t in turns]
+    ) or path.stem
+    if len(first_user) > _TITLE_MAX:
+        first_user = first_user[: _TITLE_MAX - 1] + "…"
+    title = f"Imported from {label}: {first_user}"
+
+    owns_db = db is None
+    if owns_db:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    try:
+        session_id = (
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        )
+        origin = {
+            "imported_from": {
+                "tool": _SOURCE_DB_NAMES[source],
+                "path": str(path),
+                "foreign_session_id": parsed.get("session_id"),
+            }
+        }
+        db.create_session(
+            session_id,
+            source=_SOURCE_DB_NAMES[source],
+            cwd=parsed.get("cwd"),
+            origin_json=json.dumps(origin),
+        )
+        for turn in turns:
+            db.append_message(session_id, turn["role"], turn["content"])
+        try:
+            db.set_session_title(session_id, title)
+        except Exception:
+            pass  # title is cosmetic; the import itself succeeded
+        return session_id
+    finally:
+        if owns_db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+# ── Picker / CLI helpers ─────────────────────────────────────────────────
+
+
+def gather_foreign_sessions(
+    source: Optional[str] = None,
+    *,
+    claude_root: Optional[Path] = None,
+    codex_root: Optional[Path] = None,
+    limit: int = 25,
+) -> List[ForeignSession]:
+    """List foreign sessions across sources, newest first."""
+    sessions: List[ForeignSession] = []
+    if source in (None, "claude"):
+        sessions.extend(list_claude_sessions(claude_root))
+    if source in (None, "codex"):
+        sessions.extend(list_codex_sessions(codex_root))
+    sessions.sort(key=lambda s: s.mtime, reverse=True)
+    return sessions[:limit] if limit else sessions
+
+
+def pick_foreign_session(
+    source: Optional[str] = None, *, limit: int = 25
+) -> Optional[ForeignSession]:
+    """Interactive numbered picker. Returns None when nothing was chosen."""
+    import os
+    import sys
+
+    sessions = gather_foreign_sessions(source, limit=limit)
+    if not sessions:
+        where = _SOURCE_LABELS.get(source or "", "Claude Code or Codex CLI")
+        print(f"No {where} sessions found on this machine.")
+        return None
+    print("Foreign sessions (newest first):")
+    for i, s in enumerate(sessions, 1):
+        when = datetime.fromtimestamp(s.mtime).strftime("%Y-%m-%d %H:%M")
+        ws = ""
+        if s.cwd:
+            ws = f"  ({os.path.basename(s.cwd.rstrip('/')) or s.cwd})"
+        print(f"  {i:>2}. {when}  {s.label}{ws}  [{s.turn_count} turns]")
+    if not sys.stdin.isatty():
+        print(
+            "Non-interactive terminal — pass the file path directly:\n"
+            "  hermes sessions import --from claude|codex <path>"
+        )
+        return None
+    try:
+        raw = input(f"Import which session? [1-{len(sessions)}, empty to cancel] ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        idx = int(raw)
+    except ValueError:
+        print(f"Not a number: {raw}")
+        return None
+    if not 1 <= idx <= len(sessions):
+        print(f"Out of range: {idx}")
+        return None
+    return sessions[idx - 1]
+
+
+def run_sessions_import(args, db=None) -> Optional[str]:
+    """`hermes sessions import` entry point. Returns new session id or None."""
+    source = getattr(args, "from_source", None)
+    path = getattr(args, "path", None)
+
+    if path:
+        # Report a missing file distinctly instead of the misleading
+        # "cannot infer source" (SES-10).
+        if not Path(path).exists():
+            print(f"Error: file not found: {path}")
+            return None
+        if not source:
+            # Guess from the path shape.
+            p = str(path)
+            if "/.claude/" in p or p.endswith(".jsonl") and "claude" in p:
+                source = "claude"
+            if "/.codex/" in p or Path(p).name.startswith("rollout-"):
+                source = "codex"
+        if not source:
+            print("Cannot infer source from path; pass --from claude|codex.")
+            return None
+        chosen_path = Path(path)
+    else:
+        picked = pick_foreign_session(source)
+        if picked is None:
+            return None
+        source, chosen_path = picked.source, picked.path
+
+    try:
+        session_id = import_foreign_session(source, chosen_path, db=db)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return None
+    label = _SOURCE_LABELS.get(source, source)
+    print(f"✓ Imported {label} session as {session_id}")
+    print(f"  Continue it with:  hermes --resume {session_id}")
+    return session_id

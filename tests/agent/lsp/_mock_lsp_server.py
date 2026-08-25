@@ -25,10 +25,6 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   ``didChange`` sleeps ``MOCK_LSP_PUSH_DELAY`` seconds (default 1.0)
   and then pushes EMPTY diagnostics.  Models a server that fixes
   the ghost if you actually wait for it.  Pull endpoint rejects.
-- ``"versionless"`` — errors on ``didOpen``, clean on ``didChange``, and
-  no ``version`` field in any publishDiagnostics (the client credits
-  each push with its current document version at receipt).  Push-only:
-  the pull endpoint rejects.
 - ``"clean_eof"`` — closes stdout after ``didOpen`` but keeps the
   process and stdin alive.
 - ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,

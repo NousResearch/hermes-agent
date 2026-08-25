@@ -24,8 +24,8 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-const clarifyRequest = ({ request_id, ...params }: Record<string, unknown>) =>
-  act(() => void stream.handleRequest('clarify', { ...params, session_id: SID }, request_id as string))
+const clarifyRequest = (payload: Record<string, unknown>) =>
+  act(() => stream.handleEvent({ payload, session_id: SID, type: 'clarify.request' }))
 
 const toolStart = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.start' }))
@@ -34,13 +34,7 @@ const toolComplete = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.complete' }))
 
 const clarifyExpire = (requestId: string) =>
-  act(() =>
-    stream.handleEvent({
-      payload: { id: requestId, method: 'clarify', reason: 'timeout' },
-      session_id: SID,
-      type: 'request.cancel'
-    })
-  )
+  act(() => stream.handleEvent({ payload: { request_id: requestId }, session_id: SID, type: 'clarify.expire' }))
 
 function clarifyParts() {
   const messages = stream.state().messages ?? []
@@ -55,7 +49,7 @@ function seedHydratedMessages(messages: ChatMessage[]) {
   stream.states.set(SID, state)
 }
 
-describe('clarify request stream hydration', () => {
+describe('clarify.request stream hydration', () => {
   beforeEach(() => {
     clearClarifyRequest()
     scrollToBottom.mockClear()
@@ -95,13 +89,12 @@ describe('clarify request stream hydration', () => {
   it('does not move the active thread for a background session clarify', () => {
     mountStream()
 
-    act(
-      () =>
-        void stream.handleRequest(
-          'clarify',
-          { choices: ['yes', 'no'], question: 'Ship it?', session_id: 'session-background' },
-          'req-background'
-        )
+    act(() =>
+      stream.handleEvent({
+        payload: { choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-background' },
+        session_id: 'session-background',
+        type: 'clarify.request'
+      })
     )
 
     expect(scrollToBottom).not.toHaveBeenCalled()

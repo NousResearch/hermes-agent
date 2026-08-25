@@ -266,7 +266,7 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
 
     try:
         with (
-            patch("model_tools.handle_function_call", side_effect=_dispatch),
+            patch("run_agent.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),

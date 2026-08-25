@@ -218,7 +218,7 @@ class TestUnconfiguredErrorEnvelopeParity:
 
     def test_explicit_firecrawl_unconfigured_uses_firecrawl_keyless(self, monkeypatch):
         """``web.backend: firecrawl`` with no creds routes through Firecrawl's
-        keyless cloud client (PR #50659 salvage) — a keyless ring peer must not
+        keyless cloud client (PR #50659 salvage) — keyless Tavily must not
         silently take over, and the request must hit api.firecrawl.dev.
         """
         from tools import web_tools

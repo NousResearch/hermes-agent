@@ -18,8 +18,7 @@ import { $backgroundResume } from '@/store/background-delegation'
 import { sessionCompacting } from '@/store/compaction'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { sessionAwaitingInput } from '@/store/prompts'
-import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
-import { $currentModel } from '@/store/session'
+import { sessionProviderWait } from '@/store/provider-wait'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
@@ -313,7 +312,6 @@ export const BackgroundResumeNotice: FC = () => {
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const TurnActivityIndicator: FC = () => {
-  const { t } = useI18n()
   const activity = useAuiState(s => activitySignature(s.message.content))
 
   // Timestamp of the last visible progress, held from the moment the quiet
@@ -334,10 +332,6 @@ export const TurnActivityIndicator: FC = () => {
   // turn of a fresh chat — so the row can't wait for the store to catch up.
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
-  // Renderer-synthesized load bar (see ResponseLoadingIndicator).
-  const working = busy || messageRunning
-  const localLoad = useLocalModelLoad(working && !hint && !toolNarrating)
-
   useEffect(() => {
     setQuietSince(undefined)
     const seenAt = Date.now()
@@ -351,10 +345,8 @@ export const TurnActivityIndicator: FC = () => {
   // TURN_QUIET_S first, or a run of quick calls would strobe a row between
   // each one. The two exemptions are waits already accounted for elsewhere: a
   // question the user is answering, and a tool call carrying its own timer.
-  // A live local-model load is a named wait too — it must not wait out the
-  // quiet window (the load IS the story from second one).
-  const active =
-    working && !awaitingInput && !toolNarrating && (Boolean(hint) || localLoad !== null || quietSince !== undefined)
+  const working = busy || messageRunning
+  const active = working && !awaitingInput && !toolNarrating && (Boolean(hint) || quietSince !== undefined)
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the turn last produced something — the

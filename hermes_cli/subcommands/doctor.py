@@ -18,8 +18,19 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
             "after the static checks. Makes real network calls.")
     doctor_parser.add_argument(
-        "--ack", metavar="ADVISORY_ID", default=None,
-        help="Acknowledge a security advisory by ID and exit. After ack, the "
+        "--offline",
+        action="store_true",
+        help=(
+            "Skip provider connectivity probes. Keeps file, configuration, "
+            "and dependency checks local without provider network calls."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--ack",
+        metavar="ADVISORY_ID",
+        default=None,
+        help=(
+            "Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "
             "doctor` first to see active advisories and their IDs.")
     doctor_parser.set_defaults(func=cmd_doctor)

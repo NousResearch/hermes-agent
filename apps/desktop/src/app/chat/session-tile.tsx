@@ -29,7 +29,6 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -51,7 +50,6 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
-import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -60,7 +58,8 @@ import {
   closeSessionTile,
   patchSessionTile,
   type SessionTile,
-  sessionTileDelegate
+  sessionTileDelegate,
+  sessionTileOwnerRoute
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -99,28 +98,6 @@ export function sessionTileResumeFailure(
   }
 
   return 'Session unavailable — you can retry resuming it.'
-}
-
-/** Should this tile dispatch a `session.resume`?
- *
- *  - The gateway must be OPEN: persisted tiles mount at boot while it is still
- *    connecting, and an ungated resume rejected there latched every restored
- *    tile into the error card.
- *  - A bound runtime, a latched error, or an in-flight attempt means there is
- *    nothing to do.
- *  - A removal-pending session is skipped for the same reason the primary's
- *    `resumeSession` skips it: a 4001 racing a delete unbinds this tile's
- *    runtime and re-arms the effect against an id that is already gone. The
- *    resume would 404 and latch an error card for a chat the user deleted;
- *    `closeSessionTile` lands moments later. */
-export function shouldResumeSessionTile(opts: {
-  gatewayOpen: boolean
-  removalPending: boolean
-  resuming: boolean
-  runtimeId: null | string | undefined
-  tileError: string | undefined
-}): boolean {
-  return !opts.removalPending && opts.gatewayOpen && !opts.runtimeId && !opts.tileError && !opts.resuming
 }
 
 /** The tile's SessionView: the same atom shape the primary chat renders
@@ -184,21 +161,7 @@ function TileChat({
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
-
-  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
-  // Recomputed when the tile store or any owner-bearing session list changes,
-  // NOT on every render: this component re-renders per streamed token, and the
-  // lookup spreads three arrays before scanning them.
-  const tiles = useStore($sessionTiles)
-  const sessionRows = useStore($sessions)
-  const cronRows = useStore($cronSessions)
-  const messagingRows = useStore($messagingSessions)
-
-  const ownerRoute = useMemo(() => {
-    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
-
-    return tileOwnerRoute(tiles, rows, storedSessionId)
-  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
+  const ownerRoute = sessionTileOwnerRoute(storedSessionId)
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>
@@ -206,13 +169,7 @@ function TileChat({
     [ownerRoute, requestGateway]
   )
 
-  const { selectModel } = useModelControls({
-    cacheOwnerConnectionId: ownerRoute?.connectionId || undefined,
-    cacheProfile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
-    queryClient,
-    requestGateway: requestTileGateway
-  })
-
+  const { selectModel } = useModelControls({ queryClient, requestGateway: requestTileGateway })
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
@@ -280,41 +237,11 @@ function TileChat({
       gatewayOpen ? (
         <ModelMenuPanel
           onSelectModel={selectModel}
-          ownerConnectionId={ownerRoute?.connectionId || undefined}
-          profile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
+          profile={ownerRoute?.profile || activeGatewayProfile}
           requestGateway={requestTileGateway}
         />
       ) : null,
-    [
-      activeGatewayProfile,
-      gatewayOpen,
-      ownerRoute?.connectionId,
-      ownerRoute?.profile,
-      ownerRoute?.targetProfile,
-      requestTileGateway,
-      selectModel
-    ]
-  )
-
-  const reasoningMenuContent = useMemo(
-    () =>
-      gatewayOpen ? (
-        <ReasoningMenuPanel
-          onSelectModel={selectModel}
-          ownerConnectionId={ownerRoute?.connectionId || undefined}
-          profile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
-          requestGateway={requestTileGateway}
-        />
-      ) : null,
-    [
-      activeGatewayProfile,
-      gatewayOpen,
-      ownerRoute?.connectionId,
-      ownerRoute?.profile,
-      ownerRoute?.targetProfile,
-      requestTileGateway,
-      selectModel
-    ]
+    [activeGatewayProfile, gateway, gatewayOpen, ownerRoute?.profile, requestTileGateway, selectModel]
   )
 
   return (
@@ -570,20 +497,12 @@ function tileTitle(storedSessionId: string): string {
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
 }
 
-/** The tab's CAPTION: a bot chat's owner name over the canonical stored title
- *  (#99152). The menu keeps `tileTitle` — rename/delete show the real row. */
-function tileCaption(storedSessionId: string): string {
-  return workspaceOwnerTitle(
-    tileTitle(storedSessionId),
-    $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
-  )
-}
-
 /** The `@session` link payload for a tile tab drag — id + owning profile + title.
  *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
-  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
+  const title = stored ? sessionTitle(stored) : explicit || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
   const title = stored
     ? sessionTitle(stored)
@@ -773,6 +692,8 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
  *  `$sessions`). Tiles dock against main on the chosen edge, flex width. */
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
+  workspaceMode: tile => tile.workspaceMode ?? 'sessions',
+  workspaceOwnerKey: tile => tile.workspaceOwnerKey,
   // $projectTree: a tile whose session is older than the recents page resolves
   // its title through the tree, which loads after the tiles register. (The tab's
   // status dot subscribes to color/state itself, so it needs no `also` entry.)

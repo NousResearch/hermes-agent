@@ -16,58 +16,57 @@ _COMMANDCODE_BASE = "https://api.commandcode.ai/provider/v1"
 _COMMANDCODE_MODELS_URL = f"{_COMMANDCODE_BASE}/models"
 
 
+def _fetch_commandcode_models(
+    timeout: float = 10.0,
+    base_url: str | None = None,
+) -> list[str] | None:
+    """Fetch the live model list from the CommandCode /models endpoint.
+
+    Returns a flat list of model IDs or None on failure.
+    No auth required — the public models endpoint is open.
+
+    ``base_url`` overrides the endpoint only when the caller passed a URL
+    that differs from the default ``_COMMANDCODE_BASE`` (a user-configured
+    ``model.base_url`` / ``COMMANDCODE_BASE_URL`` pointing at a proxy or
+    custom deployment). The picker passes base_url unconditionally, falling
+    back to the profile default — equality means "not customised".
+    """
+    caller_base = (base_url or "").strip()
+    if caller_base and caller_base.rstrip("/") != _COMMANDCODE_BASE.rstrip("/"):
+        models_url = caller_base.rstrip("/") + "/models"
+    else:
+        models_url = _COMMANDCODE_MODELS_URL
+    try:
+        req = urllib.request.Request(models_url)
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", _profile_user_agent())
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        # Response shape: {"object": "list", "data": [{"id": "..."}, ...]}
+        return [
+            m["id"]
+            for m in data.get("data", [])
+            if isinstance(m, dict) and "id" in m
+        ]
+    except Exception as exc:
+        logger.debug("fetch_models(commandcode): %s", exc)
+        return None
+
+
+# ── Chat Completions profile ──────────────────────────────────────────────────
+
 class CommandCodeProfile(ProviderProfile):
     """CommandCode — OpenAI-compatible chat completions endpoint."""
 
     def fetch_models(
-        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
     ) -> list[str] | None:
-        """Public (unauthenticated) /models endpoint. The picker passes base_url
-        unconditionally, so only a value differing from the default is a custom endpoint."""
-        caller_base = (base_url or "").strip().rstrip("/")
-        custom = caller_base and caller_base != _COMMANDCODE_BASE
-        models_url = caller_base + "/models" if custom else _COMMANDCODE_MODELS_URL
-        try:
-            req = urllib.request.Request(models_url)
-            req.add_header("Accept", "application/json")
-            req.add_header("User-Agent", _profile_user_agent())
-            with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
-            return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
-        except Exception as exc:
-            logger.debug("fetch_models(commandcode): %s", exc)
-            return None
-
-
-    def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
-    ) -> tuple[dict, dict]:
-        """DeepSeek ids (``deepseek/deepseek-v4-flash``) get the native DeepSeek wire
-        controls: DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so
-        without them ``/reasoning`` never reaches the request (#95232). Other model
-        families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
-        m = (model or "").strip()
-        if not m.lower().startswith("deepseek/"):
-            return {}, {}
-        # Registry lookup, not a module import: the deepseek shim is only a loader-injected
-        # sys.modules entry, and the registry honours a user override of the profile.
-        native = get_provider_profile("deepseek")
-        if native is None:
-            return {}, {}
-        return native.build_api_kwargs_extras(
-            reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
-        )
-
-
-class CommandCodeAnthropicProfile(CommandCodeProfile):
-    """CommandCode — Anthropic Messages API-compatible endpoint."""
-
-    def fetch_models(
-        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
-    ) -> list[str] | None:
-        """Public /models endpoint, filtered to Anthropic-family models."""
-        all_models = super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
-        return None if all_models is None else [m for m in all_models if m.startswith("claude-")]
+        """Fetch from the public CommandCode /models endpoint."""
+        return _fetch_commandcode_models(timeout=timeout, base_url=base_url)
 
 
 commandcode = CommandCodeProfile(
@@ -84,6 +83,34 @@ commandcode = CommandCodeProfile(
     ),
     default_aux_model="deepseek/deepseek-v4-flash",
 )
+
+
+# ── Anthropic Messages profile ────────────────────────────────────────────────
+
+class CommandCodeAnthropicProfile(ProviderProfile):
+    """CommandCode — Anthropic Messages API-compatible endpoint.
+
+    Uses Bearer auth (same API key), not Anthropic's native x-api-key header.
+    ``agent/anthropic_adapter.py`` must recognize ``api.commandcode.ai``
+    as a Bearer-auth domain for this to work.
+    """
+
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch from the public CommandCode /models endpoint.
+
+        Filter to Anthropic-family models only (claude-*).
+        """
+        all_models = _fetch_commandcode_models(timeout=timeout, base_url=base_url)
+        if all_models is None:
+            return None
+        return [m for m in all_models if m.startswith("claude-")]
+
 
 commandcode_anthropic = CommandCodeAnthropicProfile(
     name="commandcode-anthropic", aliases=("commandcode-claude",), api_mode="anthropic_messages",

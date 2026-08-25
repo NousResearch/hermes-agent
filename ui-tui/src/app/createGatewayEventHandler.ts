@@ -22,7 +22,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
+import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
@@ -1278,15 +1278,40 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'request.cancel': {
-        // The backend withdrew a server→client request (timeout / interrupt /
-        // session close): tear down whichever card carries that id. A clarify
-        // that timed out is persisted as an abandoned prompt by tool.complete.
-        const id = ev.payload?.id
+      case 'clarify.request': {
+        const batch = (ev.payload.questions ?? [])
+          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
+          .map(q => ({
+            choices: q.choices && q.choices.length > 0 ? q.choices : null,
+            multiSelect: q.multi_select === true,
+            qid: q.qid,
+            question: q.question.trim()
+          }))
 
-        if (!id) {
-          return
-        }
+        patchOverlayState({
+          clarify: batch.length
+            ? {
+                answers: ev.payload.answers ?? {},
+                choices: null,
+                question: '',
+                questions: batch,
+                requestId: ev.payload.request_id
+              }
+            : {
+                choices: ev.payload.choices ?? null,
+                question: ev.payload.question ?? '',
+                requestId: ev.payload.request_id
+              }
+        })
+        setStatus('waiting for input…')
+
+        return
+      }
+
+      case 'approval.request': {
+        const description = String(ev.payload.description ?? 'dangerous command')
+        // Only an explicit false (tirith warning) drops the permanent-allow option.
+        const allowPermanent = ev.payload.allow_permanent !== false
 
         // A password/secret/vault card that timed out vanished silently; say
         // what happened and how to get it back. Clarify already records its

@@ -73,10 +73,6 @@ export function isInlineMediaSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
 
-export function isArtifactFilePath(path: string): boolean {
-  return /^(?:file:|\/|[~.][\\/]|\.\.[\\/]|[a-z]:[\\/]|\\\\)/i.test(path)
-}
-
 export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }

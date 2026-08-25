@@ -532,10 +532,10 @@ def _chat_messages_to_responses_input(
     wire.
     """
     items: List[Dict[str, Any]] = []
-    # Parallel to ``items``: source chat message per item. Pruning reads a summary
-    # carrier's provenance from the source; the converted item may be a lossy shape.
-    # Pruning needs this to read a canonical summary carrier's up-to-date, provenance-tagged content
-    # directly — the converted `item` can be a lossy shape (stale exact-replay, or a typed
+    # Parallel to `items`: the raw chat message each converted item came
+    # from. Pruning needs this to read a canonical summary carrier's
+    # up-to-date, provenance-tagged content directly — the converted `item`
+    # can be a lossy shape (stale exact-replay, or a typed
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
@@ -547,53 +547,280 @@ def _chat_messages_to_responses_input(
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
+        if role == "system":
+            continue
+
+        if role in {"user", "assistant"}:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content_parts = _chat_content_to_responses_parts(content, role=role)
+                text_type = "output_text" if role == "assistant" else "input_text"
+                content_text = "".join(
+                    p.get("text", "") for p in content_parts if p.get("type") == text_type
+                )
+            else:
+                content_parts = []
+                content_text = str(content) if content is not None else ""
+
+            if role == "assistant":
+                # Replay encrypted reasoning items from previous turns
+                # so the API can maintain coherent reasoning chains.
+                # This applies to every Responses transport including
+                # xAI — see _chat_messages_to_responses_input docstring
+                # for the May 2026 reversal of the earlier xAI gate.
+                codex_reasoning = (
+                    msg.get("codex_reasoning_items")
+                    if replay_encrypted_reasoning
+                    else None
+                )
+                has_codex_reasoning = False
+                if isinstance(codex_reasoning, list):
+                    for ri in codex_reasoning:
+                        if isinstance(ri, dict) and ri.get("encrypted_content"):
+                            item_id = ri.get("id")
+                            if item_id and item_id in seen_item_ids:
+                                continue
+                            # Native-compaction gate: a checkpoint is only
+                            # meaningful to the endpoint/model that minted it
+                            # AND only while this request still asks for
+                            # server-side compaction. Once the gate closes
+                            # (model swapped out of the gpt-5.6 family,
+                            # compression disabled, rejection kill switch),
+                            # the persisted checkpoint must not be replayed —
+                            # replaying it is what makes the wire restructure
+                            # below erase pre-checkpoint history forever.
+                            if (
+                                ri.get("type") == "compaction"
+                                and not native_compaction_eligible
+                            ):
+                                continue
+                            # Cross-issuer guard: drop reasoning blocks that
+                            # were minted by a different Responses endpoint.
+                            # The current endpoint cannot decrypt foreign
+                            # encrypted_content and would reject the whole
+                            # request with HTTP 400 invalid_encrypted_content.
+                            # Unstamped (legacy) items pass through.
+                            item_issuer = ri.get("_issuer_kind")
+                            if (
+                                current_issuer_kind is not None
+                                and item_issuer is not None
+                                and item_issuer != current_issuer_kind
+                            ):
+                                global _CROSS_ISSUER_WARN_EMITTED
+                                if not _CROSS_ISSUER_WARN_EMITTED:
+                                    logger.warning(
+                                        "Dropping reasoning item minted by %s while "
+                                        "calling %s — encrypted_content is sealed to "
+                                        "its issuer. This happens when a session "
+                                        "switches model providers mid-conversation.",
+                                        item_issuer, current_issuer_kind,
+                                    )
+                                    _CROSS_ISSUER_WARN_EMITTED = True
+                                continue
+                            # Strip the "id" field — with store=False the
+                            # Responses API cannot look up items by ID and
+                            # returns 404.  The encrypted_content blob is
+                            # self-contained for reasoning chain continuity.
+                            # Also strip the internal "_issuer_kind" stamp;
+                            # it is a Hermes-side metadata key and not part
+                            # of the Responses API schema.
+                            replay_item = {
+                                k: v for k, v in ri.items()
+                                if k not in ("id", "_issuer_kind")
+                            }
+                            items.append(replay_item)
+                            item_sources.append(msg)
+                            if item_id:
+                                seen_item_ids.add(item_id)
+                            has_codex_reasoning = True
+
+                # Replay exact assistant message items (with id/phase) from
+                # previous turns so the API can maintain prefix-cache hits.
+                # OpenAI docs: "preserve and resend phase on all assistant
+                # messages — dropping it can degrade performance."
+                codex_message_items = msg.get("codex_message_items")
+                replayed_message_items = 0
+                if isinstance(codex_message_items, list):
+                    for raw_item in codex_message_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
+                            continue
+                        raw_content_parts = raw_item.get("content")
+                        if not isinstance(raw_content_parts, list):
+                            continue
+
+                        normalized_content_parts = []
+                        for part in raw_content_parts:
+                            if not isinstance(part, dict):
+                                continue
+                            part_type = str(part.get("type") or "").strip()
+                            if part_type not in {"output_text", "text"}:
+                                continue
+                            text = part.get("text", "")
+                            if text is None:
+                                text = ""
+                            if not isinstance(text, str):
+                                text = str(text)
+                            normalized_content_parts.append({"type": "output_text", "text": text})
+
+                        if not normalized_content_parts:
+                            continue
+
+                        replay_item = {
+                            "type": "message",
+                            "role": "assistant",
+                            "status": _normalize_responses_message_status(raw_item.get("status")),
+                            "content": normalized_content_parts,
+                        }
+                        item_id = raw_item.get("id")
+                        if (
+                            not is_github_responses
+                            and isinstance(item_id, str)
+                            and item_id.strip()
+                        ):
+                            stripped_id = item_id.strip()
+                            if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
+                                replay_item["id"] = stripped_id
+                        phase = raw_item.get("phase")
+                        if isinstance(phase, str) and phase.strip():
+                            replay_item["phase"] = phase.strip()
+                        items.append(replay_item)
+                        item_sources.append(msg)
+                        replayed_message_items += 1
+
+                if replayed_message_items > 0:
+                    pass
+                elif content_parts:
+                    items.append({"role": "assistant", "content": content_parts})
+                    item_sources.append(msg)
+                elif content_text.strip():
+                    items.append({"role": "assistant", "content": content_text})
+                    item_sources.append(msg)
+                elif has_codex_reasoning:
+                    # The Responses API requires a following item after each
+                    # reasoning item (otherwise: missing_following_item error).
+                    # When the assistant produced only reasoning with no visible
+                    # content, emit an empty assistant message as the required
+                    # following item.
+                    items.append({"role": "assistant", "content": ""})
+                    item_sources.append(msg)
+
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tc in tool_calls:
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function", {})
+                        fn_name = fn.get("name")
+                        if not isinstance(fn_name, str) or not fn_name.strip():
+                            continue
+
+                        embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
+                            tc.get("id")
+                        )
+                        call_id = tc.get("call_id")
+                        if not isinstance(call_id, str) or not call_id.strip():
+                            call_id = embedded_call_id
+                        if not isinstance(call_id, str) or not call_id.strip():
+                            if (
+                                isinstance(embedded_response_item_id, str)
+                                and embedded_response_item_id.startswith("fc_")
+                                and len(embedded_response_item_id) > len("fc_")
+                            ):
+                                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
+                            else:
+                                _raw_args = str(fn.get("arguments", "{}"))
+                                call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
+                        call_id = call_id.strip()
+
+                        arguments = fn.get("arguments", "{}")
+                        if isinstance(arguments, dict):
+                            arguments = json.dumps(arguments, ensure_ascii=False)
+                        elif not isinstance(arguments, str):
+                            arguments = str(arguments)
+                        arguments = arguments.strip() or "{}"
+
+                        items.append({
+                            "type": "function_call",
+                            "call_id": _clamp_responses_call_id(call_id),
+                            "name": fn_name,
+                            "arguments": arguments,
+                        })
+                        item_sources.append(msg)
+                continue
+
+            # Non-assistant (user) role: emit multimodal parts when present,
+            # otherwise fall back to the text payload.
+            if content_parts:
+                items.append({"role": role, "content": content_parts})
+            else:
+                items.append({"role": role, "content": content_text})
+            item_sources.append(msg)
+            continue
+
         if role == "tool":
-            emit(_tool_output_items(msg, wire_ids=wire_ids), msg)
-            continue
-        if role not in {"user", "assistant"}:
-            continue
-        content = msg.get("content", "")
-        content_parts = _chat_content_to_responses_parts(content, role=role)  # [] unless a list
-        text_type = _text_type_for(role)
-        content_text = (
-            "".join(p["text"] for p in content_parts if p["type"] == text_type)
-            if isinstance(content, list) else _str_or_empty(content)
-        )
-        if role == "user":
-            emit([{"role": role, "content": content_parts or content_text}], msg)
-            continue
-        reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
-            msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
-            current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
-        )
-        emit(reasoning_items, msg)
-        message_items = _replay_message_items(
-            msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
-        )
-        emit(message_items, msg)
-        if not message_items:
-            # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
-            fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
-            if fallback is not None:
-                emit([{"role": "assistant", "content": fallback}], msg)
-        emit(_replay_tool_call_items(msg, start_index=len(items), wire_ids=wire_ids), msg)
-    # The server renders nothing placed before a compaction item, so pre-checkpoint history is
-    # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
-    # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.
-    # Native server-side compaction: when a replayed checkpoint is present, restructure the wire around it.
-    # Gated on the CURRENT request's native eligibility, not merely on the presence of a checkpoint: a
-    # persisted checkpoint outlives the gate, and pruning for a request that carries no
-    # ``context_management`` deletes history the server never compacted. ``item_sources`` (parallel to
-    # ``items``) carries the raw chat message each converted item came from. A canonical summary carrier's
-    # content can be lost or gone stale by the time it becomes a Responses item — a merge-into-tail
-    # tool-result carrier becomes a typed ``function_call_output`` (no ``content``/``role`` at all), and a
-    # merge-into-tail assistant carrier can be shadowed by a stale exact ``codex_message_items`` replay from
-    # before the merge rewrote its content. Pruning reads the source message's own up-to-date,
-    # provenance-tagged content directly instead of trying to recover it from whatever shape the conversion
-    # produced (#90976).
+            raw_tool_call_id = msg.get("tool_call_id")
+            call_id, _ = _split_responses_tool_id(raw_tool_call_id)
+            if not isinstance(call_id, str) or not call_id.strip():
+                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                    call_id = raw_tool_call_id.strip()
+            if not isinstance(call_id, str) or not call_id.strip():
+                continue
+
+            # Multimodal tool result: convert OpenAI-style content list into
+            # Responses ``function_call_output.output`` array. The Responses
+            # API accepts ``output`` as either a string or an array of
+            # ``input_text``/``input_image`` items. See
+            # https://developers.openai.com/api/reference/python/resources/responses/.
+            tool_content = msg.get("content")
+            output_value: Any
+            if isinstance(tool_content, list):
+                converted = _chat_content_to_responses_parts(
+                    tool_content, role="user",
+                )
+                if converted:
+                    output_value = converted
+                else:
+                    output_value = ""
+            else:
+                output_value = str(tool_content or "")
+
+            items.append({
+                "type": "function_call_output",
+                "call_id": _clamp_responses_call_id(call_id),
+                "output": output_value,
+            })
+            item_sources.append(msg)
+
+    # Native server-side compaction: when a replayed checkpoint is present,
+    # restructure the wire around it. The server renders nothing placed
+    # before a compaction item (live-verified Aug 2026), so pre-checkpoint
+    # history is dead upload weight and — worse — the user's plaintext asks,
+    # and any local-compression summary already merged into that history,
+    # silently vanish from the model's view. Keep the newest checkpoint
+    # first, retain pre-checkpoint USER messages and compression-SUMMARY
+    # messages (whole, never byte-sliced) verbatim within a token budget
+    # each (Codex CLI parity for the user side), and leave the
+    # post-checkpoint tail untouched. Gated on the CURRENT request's native
+    # eligibility, not merely on the presence of a checkpoint: a persisted
+    # checkpoint outlives the gate, and pruning for a request that carries no
+    # ``context_management`` deletes history the server never compacted.
+    #
+    # ``item_sources`` (parallel to ``items``) carries the raw chat message
+    # each converted item came from. A canonical summary carrier's content
+    # can be lost or gone stale by the time it becomes a Responses item — a
+    # merge-into-tail tool-result carrier becomes a typed
+    # ``function_call_output`` (no ``content``/``role`` at all), and a
+    # merge-into-tail assistant carrier can be shadowed by a stale exact
+    # ``codex_message_items`` replay from before the merge rewrote its
+    # content. Pruning reads the source message's own up-to-date,
+    # provenance-tagged content directly instead of trying to recover it
+    # from whatever shape the conversion produced (#90976).
     if not native_compaction_eligible:
         return items
     from agent.native_compaction import prune_pre_checkpoint_items
+
     return prune_pre_checkpoint_items(items, item_sources=item_sources)
 
 

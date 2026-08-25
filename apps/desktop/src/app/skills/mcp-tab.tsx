@@ -32,7 +32,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { startCompletionPoll } from '@/lib/completion-poll'
+import { compactNumber } from '@/lib/format'
 import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'

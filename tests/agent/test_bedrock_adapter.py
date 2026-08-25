@@ -1197,9 +1197,35 @@ class TestIsStaleConnectionError:
 
 
 class TestCallConverseInvalidatesOnStaleError:
-    """call_converse evicts the cached client only on a stale-connection error — so the
-    next invocation reconnects instead of reusing the dead socket (the agent's streaming
-    path is pinned in ``TestAgentBedrockStreamRecovery``)."""
+    """call_converse / call_converse_stream evict the cached client when the
+    boto3 call raises a stale-connection error — so the next invocation
+    reconnects instead of reusing the dead socket."""
+
+
+    def test_converse_stream_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ConnectionClosedError
+
+        reset_client_cache()
+        dead_client = MagicMock()
+        dead_client.converse_stream.side_effect = ConnectionClosedError(
+            endpoint_url="https://bedrock.example",
+        )
+        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+
+        with pytest.raises(ConnectionClosedError):
+            call_converse_stream(
+                region="us-east-1",
+                model="anthropic.claude-3-sonnet-20240229-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert "us-east-1" not in _bedrock_runtime_client_cache
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
@@ -1274,14 +1300,13 @@ class TestAgentBedrockStreamRecovery:
     converse, streaming disabled for the session, client kept), stale connection →
     cached client evicted so the outer retry reconnects."""
 
-    _KW = {"__bedrock_region__": "us-east-1", "modelId": "anthropic.claude-3-sonnet-20240229-v1:0",
-           "messages": [{"role": "user", "content": [{"text": "hi"}]}]}
-
-    def test_streaming_denial_falls_back_to_converse_via_bedrock_stream(self):
+    def test_falls_back_to_converse_on_streaming_denial(self):
         pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
-        from types import SimpleNamespace
-        from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
-        from agent.chat_completion_helpers import _BedrockStream
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
         from botocore.exceptions import ClientError
 
         reset_client_cache()

@@ -419,7 +419,7 @@ class TestDockerHostBindApproval:
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""

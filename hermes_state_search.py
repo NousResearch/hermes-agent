@@ -13,10 +13,16 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
-    FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
-    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
+    FTS_CJK_STALE_KEY,
+    FTS_SQL,
+    FTS_STALE_KEY,
+    FTS_STORAGE_VERSION,
+    FTS_TRIGRAM_SQL,
+    MAX_FTS5_QUERY_CHARS,
+    SCHEMA_VERSION,
+    _FTS_CJK_TRIGGERS,
+    escape_like as _escape_like,
+    fts_rebuild_admission,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -1268,40 +1274,50 @@ class SessionSearchMixin:
         ``fts_rebuild_admission`` and FAILS CLOSED, returning 0 on deferral (callers treat 0
         as "no progress" and use the stale-FTS breadcrumb path). Returns indexes rebuilt.
 
-        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
-        rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
-        #50502.
-        A full structural rebuild must never run concurrently in two processes sharing one state.db — that
-        interleaving has structurally corrupted the database in production (PR #93200) — so this admits
-        through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
-        holds the rebuild lock beyond the bounded wait, this call defers (returns 0) rather than racing it.
-        Callers already treat 0 as "rebuild made no progress" and fall back to the stale-FTS breadcrumb
-        path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
-        and at next startup.
+        Uses the FTS5 ``'rebuild'`` command, which rewrites the internal
+        b-tree segments from the content rows. This is the documented
+        recovery for a corrupt FTS index that rejects message writes while
+        reads still succeed (issue #50502). Unlike ``optimize_fts`` (which
+        merges existing segments), ``rebuild`` discards and recreates the
+        index data entirely.
+
+        A full structural rebuild must never run concurrently in two
+        processes sharing one state.db — that interleaving has structurally
+        corrupted the database in production (PR #93200) — so this admits
+        through the cross-process ``fts_rebuild_admission`` authority and
+        FAILS CLOSED: if another process holds the rebuild lock beyond the
+        bounded wait, this call defers (returns 0) rather than racing it.
+        Callers already treat 0 as "rebuild made no progress" and fall back
+        to the stale-FTS breadcrumb path, which retries at next startup.
+
+        Safe to call when FTS tables don't exist (skips them).
+        Returns the number of FTS indexes that were rebuilt.
         """
         self._raise_if_db_corrupt()
         self._raise_if_db_replaced()
         rebuilt = 0
-        with fts_rebuild_admission(self.db_path) as admitted:
+        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
             if not admitted:
                 logger.warning(
-                    "Deferred in-place FTS rebuild: another process holds the rebuild authority for this state.db.")
+                    "Deferred in-place FTS rebuild: another process holds "
+                    "the rebuild authority for this state.db."
+                )
                 return 0
             with self._lock:
-                high_water = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
-                self._conn.execute(
-                    "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
-                )
-                for tbl in self._present_fts_tables():
+                for tbl in self._FTS_TABLES:
+                    if not self._fts_table_exists(tbl):
+                        continue
                     try:
-                        self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
+                        self._conn.execute(
+                            f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                        )
                         self._conn.commit()
                         rebuilt += 1
                     except sqlite3.OperationalError as exc:
                         self._conn.rollback()
-                        logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
+                        logger.warning(
+                            "FTS rebuild failed for %s: %s", tbl, exc
+                        )
         return rebuilt
 
     def _merge_fts_incrementally(self, *, max_pages: int, max_commands: Optional[int] = None) -> int:

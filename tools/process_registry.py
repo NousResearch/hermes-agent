@@ -49,29 +49,18 @@ def _checkpoint_path() -> Path:
     checkpoint to the launch home."""
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
-MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
-FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
-MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
-
-# Watch-pattern rate limiting, PER SESSION: one watch-match notification per
-# WATCH_MIN_INTERVAL_SECONDS; a match inside the cooldown is dropped and counts as one
-# strike per window; WATCH_STRIKE_LIMIT consecutive strike windows permanently disable
-# watching and fall back to notify_on_complete semantics.
-WATCH_MIN_INTERVAL_SECONDS = 15
-WATCH_STRIKE_LIMIT = 3
-# Lifetime cap, independent of strikes: a pattern recurring just above the cooldown never
-# strikes yet forces a full-context agent turn each time; watch_patterns is "ONLY for
-# rare one-shot signals", so after this many deliveries fall back to notify_on_complete.
-# MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
-# A process whose pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a service
-# restarted repeatedly over a day) never trips the consecutive-strike limit, since each match lands in its
-# own clean cooldown window, yet still forces a full-context agent turn every single time (#93513).
-# watch_patterns is documented as "ONLY for rare one-shot mid-process signals", so once a session has
-# delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
-# the strike-limit path.
+# Lifetime cap — independent of the strike counter above. A process whose
+# pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a
+# service restarted repeatedly over a day) never trips the consecutive-strike
+# limit, since each match lands in its own clean cooldown window, yet still
+# forces a full-context agent turn every single time (#93513). watch_patterns
+# is documented as "ONLY for rare one-shot mid-process signals", so once a
+# session has delivered this many matches over its whole life we disable it
+# and fall back to notify_on_complete, same as the strike-limit path.
 WATCH_LIFETIME_MAX_HITS = 8
-# Global circuit breaker across all sessions so concurrent siblings can't collectively
-# flood the user even when each is under its own cap.
+
+# Global circuit breaker — across all sessions. Secondary safety net so concurrent
+# siblings can't collectively flood the user even when each is under its own cap.
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
@@ -588,11 +577,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
             sink(session, chunk)
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
-        """Scan a freshly-read chunk for watch patterns and queue notifications.
-        Per-session rate limiting (see WATCH_* constants): one match per cooldown
-        window, a match inside the window is one strike, WATCH_STRIKE_LIMIT consecutive
-        strikes or WATCH_LIFETIME_MAX_HITS total deliveries disable watching and
-        promote the session to notify_on_complete."""
+        """Scan new output for watch patterns and queue notifications.
+
+        Called from reader threads with new_text being the freshly-read chunk.
+
+        Per-session rate limit: at most ONE watch-match notification per
+        WATCH_MIN_INTERVAL_SECONDS. Any match arriving inside the cooldown
+        window is dropped and counts as ONE strike for that window. After
+        WATCH_STRIKE_LIMIT consecutive strike windows, watch_patterns is
+        disabled for this session and the session is promoted to
+        notify_on_complete semantics — one notification when the process
+        actually exits, no more mid-process spam.
+
+        Independently, WATCH_LIFETIME_MAX_HITS caps the total number of
+        matches ever delivered for a session, so a pattern that keeps
+        recurring at a cadence just above the cooldown (e.g. a service
+        restarted repeatedly over a day) still gets disabled instead of
+        forcing a full-context agent turn indefinitely.
+        """
         if not session.watch_patterns or session._watch_disabled:
             return
         # Late chunks after the reader declared exit are post-exit noise; dropping them
@@ -607,41 +609,79 @@ class ProcessRegistry(ProcessCheckpointMixin):
         matched_pattern = hits[0][0]
         matched_lines = [line for _, line in hits]
         now = time.time()
+        should_disable = False
+        lifetime_exhausted = False
         with session._lock:
             if session._watch_cooldown_until and now < session._watch_cooldown_until:
                 # Inside the cooldown: drop, count one strike per window, disable +
                 # promote once the strike limit is hit.
                 session._watch_suppressed += len(matched_lines)
-                if session._watch_strike_candidate:
-                    return
-                session._watch_strike_candidate = True
-                session._watch_consecutive_strikes += 1
-                if session._watch_consecutive_strikes < WATCH_STRIKE_LIMIT:
-                    return
-                session._watch_disabled = True
-                # Promote so the agent still gets exactly one notification on exit,
-                # plus exactly one summary so it sees why things went quiet.
-                session.notify_on_complete = True
-                self._emit_watch_disabled(
-                    session, session._watch_suppressed,
-                    f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
-                    f"(min spacing {WATCH_MIN_INTERVAL_SECONDS}s). ")
-                return
-            # Cooldown expired. A prior window with no drops resets the
-            # consecutive-strike counter (healthy cadence again).
-            if session._watch_cooldown_until and not session._watch_strike_candidate:
-                session._watch_consecutive_strikes = 0
-            session._watch_strike_candidate = False
-            # Emit and start a new cooldown window.
-            session._watch_cooldown_until = now + WATCH_MIN_INTERVAL_SECONDS
-            session._watch_hits += 1
-            suppressed = session._watch_suppressed
-            session._watch_suppressed = 0
-            # Lifetime cap: this match is still delivered, but no further ones.
-            lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
-            if lifetime_exhausted:
-                session._watch_disabled = True
-                session.notify_on_complete = True
+                if not session._watch_strike_candidate:
+                    # First drop in this window — count one strike.
+                    session._watch_strike_candidate = True
+                    session._watch_consecutive_strikes += 1
+                    if session._watch_consecutive_strikes >= WATCH_STRIKE_LIMIT:
+                        session._watch_disabled = True
+                        # Promote to notify_on_complete so the agent still gets
+                        # exactly one notification when the process actually ends.
+                        session.notify_on_complete = True
+                        should_disable = True
+                return_early = True
+            else:
+                # Case 2: cooldown has expired.
+                # Decide whether this window was a "clean" one (no drops) or a
+                # strike window. If no strike candidate was set during the prior
+                # cooldown, reset the consecutive-strike counter — we're back to
+                # healthy emission cadence.
+                if (
+                    session._watch_cooldown_until
+                    and not session._watch_strike_candidate
+                ):
+                    session._watch_consecutive_strikes = 0
+                session._watch_strike_candidate = False
+
+                # Emit the notification and start a new cooldown window.
+                session._watch_last_emit_at = now
+                session._watch_cooldown_until = now + WATCH_MIN_INTERVAL_SECONDS
+                session._watch_hits += 1
+                suppressed = session._watch_suppressed
+                session._watch_suppressed = 0
+                return_early = False
+                # Lifetime cap: this match is delivered (it already earned it),
+                # but disable further ones regardless of how cleanly spaced
+                # they are — see WATCH_LIFETIME_MAX_HITS above.
+                lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
+                if lifetime_exhausted:
+                    session._watch_disabled = True
+                    session.notify_on_complete = True
+
+        if return_early:
+            if should_disable:
+                # Emit exactly one "watch disabled, falling back to notify_on_complete"
+                # summary event so the agent/user sees why things went quiet.
+                self.completion_queue.put({
+                    "session_id": session.id,
+                    "session_key": session.session_key,
+                    "command": session.command,
+                    "type": "watch_disabled",
+                    "suppressed": session._watch_suppressed,
+                    "platform": session.watcher_platform,
+                    "chat_id": session.watcher_chat_id,
+                    "user_id": session.watcher_user_id,
+                    "user_name": session.watcher_user_name,
+                    "thread_id": session.watcher_thread_id,
+                    "message_id": session.watcher_message_id,
+                    "message": (
+                        f"Watch patterns disabled for process {session.id} — "
+                        f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
+                        f"(min spacing {WATCH_MIN_INTERVAL_SECONDS}s). "
+                        f"Falling back to notify_on_complete semantics; you'll get "
+                        f"exactly one notification when the process exits."
+                    ),
+                })
+            return
+
+        # Trim matched output to a reasonable size
         output = "\n".join(matched_lines[:20])
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
@@ -661,17 +701,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session, 0, f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered matches. ",
             )
 
-    def _emit_watch_disabled(self, session: ProcessSession, suppressed: int, why: str) -> None:
-        """Queue the one-shot watch_disabled summary (strike-limit or lifetime-cap path)."""
-        self.completion_queue.put({
-            **self._watch_event_base(session),
-            "type": "watch_disabled",
-            "suppressed": suppressed,
-            "message": (
-                f"Watch patterns disabled for process {session.id} — {why}"
-                f"Falling back to notify_on_complete semantics; you'll get "
-                f"exactly one notification when the process exits."),
-        })
+        # Global circuit breaker — across all sessions (secondary safety net).
+        if not self._global_watch_admit(now):
+            if lifetime_exhausted:
+                # The final match was dropped by the global breaker, but the
+                # session is already disabled — still tell the user why things
+                # went quiet (the strike path emits its summary unconditionally
+                # too).
+                self._emit_lifetime_watch_disabled(session)
+            return
 
     @staticmethod
     def _watch_event_base(session: ProcessSession) -> dict:
@@ -680,7 +718,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id or session.task_id,
             "command": session.command,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
@@ -693,6 +730,33 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "message": message,
             "platform": "", "chat_id": "", "user_id": "", "user_name": "", "thread_id": "",
         }
+
+        if lifetime_exhausted:
+            # Same "why things went quiet" summary as the strike-limit path,
+            # queued right after the final delivered match.
+            self._emit_lifetime_watch_disabled(session)
+
+    def _emit_lifetime_watch_disabled(self, session: ProcessSession) -> None:
+        """Queue the watch_disabled summary for the lifetime-cap path (#93513)."""
+        self.completion_queue.put({
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "command": session.command,
+            "type": "watch_disabled",
+            "suppressed": 0,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
+            "message_id": session.watcher_message_id,
+            "message": (
+                f"Watch patterns disabled for process {session.id} — "
+                f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
+                f"matches. Falling back to notify_on_complete semantics; you'll get "
+                f"exactly one notification when the process exits."
+            ),
+        })
 
     def _global_watch_admit(self, now: float) -> bool:
         """True if this watch_match may pass the global breaker.
@@ -1384,7 +1448,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "task_id": session.task_id,
-                "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
@@ -1448,17 +1511,141 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session.watch_patterns and not session._watch_disabled and session._watch_hits > 0)
 
     def wait_for_pending_completions(
-        self, task_id: Optional[str] = None, *, timeout: float | None = None, poll_interval: float = 1.0,
+        self,
+        task_id: Optional[str] = None,
+        *,
+        timeout: float | None = None,
+        poll_interval: float = 1.0,
     ) -> dict:
-        """Bounded linger for ``notify_on_complete`` background processes at one-shot exit.
-        A one-shot CLI run (``hermes -q/-Q/-z``) exits when its turn ends; a background
-        process it spawned still holds a stdout pipe owned by the dying parent and dies of
-        SIGPIPE seconds later (Bot Mode handoff replies were the visible casualty). Only
-        ``notify_on_complete`` processes carry a completion contract — servers/daemons/
-        watchers aren't the parent's to wait for. ``task_id=None`` waits on every tracked
-        process; ``timeout=None`` reads ``terminal.oneshot_completion_wait_seconds`` (``<= 0``
-        disables). Each pass re-reconciles child state so an orphaned-pipe exit can't wedge
-        the linger. Returns ``{"waited", "completed", "timed_out"}`` id lists.
+        """Bounded wait for tracked ``notify_on_complete`` background processes.
+
+        One-shot CLI runs (``hermes -q/-Q/-z``) exit as soon as their single
+        turn ends.  Any background process the turn spawned with
+        ``notify_on_complete=True`` — a bounded task whose completion the
+        caller explicitly cares about — still holds a stdout pipe owned by
+        the dying parent, so it is killed by SIGPIPE on its next write a few
+        seconds later.  Bot Mode handoff REPLIES are the visible casualty
+        (#90879): a recipient invoked as ``hermes -p <bot> chat -Q
+        --query-file ...`` dispatches its reply via ``message_agent`` /
+        ``bot_relay`` exactly this way, then exits, and the reply process is
+        destroyed ~3s later.  The sender waits forever for a reply that was
+        already killed.
+
+        Called from the one-shot exit paths so the parent lingers (bounded)
+        until those deliveries actually finish.  This fixes the class — ANY
+        bounded background task in a one-shot run, not just DMs: bot_mode_dm
+        deliveries, bot_relay waiter processes, and plain
+        ``terminal(background=true, notify_on_complete=true)`` jobs.
+
+        Only ``notify_on_complete`` processes are waited on. Plain background
+        processes (servers, daemons, watch-pattern monitors) carry no
+        completion contract and are not the parent's to wait for.
+
+        Args:
+            task_id: restrict to processes spawned for this task; ``None``
+                waits on every tracked process (a one-shot CLI process hosts
+                exactly one agent, so its registry is private to that run).
+            timeout: max seconds to linger. ``None`` reads
+                ``terminal.oneshot_completion_wait_seconds`` from config
+                (default 600). ``<= 0`` disables the wait entirely.
+            poll_interval: per-pass event-wait bound; each pass re-reconciles
+                child state so an orphaned-pipe exit (#17327) can't wedge the
+                linger for the full timeout.
+
+        Returns:
+            ``{"waited": [...], "completed": [...], "timed_out": [...]}``
+            (session ids). All lists empty when there was nothing to wait on.
+        """
+        if timeout is None:
+            timeout = self._oneshot_completion_wait_seconds()
+        result: dict = {"waited": [], "completed": [], "timed_out": []}
+        with self._lock:
+            pending = [
+                s
+                for s in self._running.values()
+                if s.notify_on_complete
+                and not s.exited
+                and (task_id is None or s.task_id == task_id)
+            ]
+        if not pending or timeout <= 0:
+            return result
+        result["waited"] = [s.id for s in pending]
+        logger.info(
+            "One-shot exit lingering (bounded %ss) for %d notify_on_complete "
+            "background process(es): %s",
+            timeout,
+            len(pending),
+            ", ".join(s.id for s in pending),
+        )
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        interval = max(float(poll_interval), 0.05)
+        try:
+            from tools.interrupt import is_interrupted as _is_interrupted
+        except Exception:
+            def _is_interrupted() -> bool:
+                return False
+        interrupted = False
+        for session in pending:
+            try:
+                while not session.exited:
+                    if interrupted or _is_interrupted():
+                        interrupted = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # Reconcile first: catches direct-child exits whose reader
+                    # is blocked on a pipe held open by a descendant (#17327)
+                    # and detached/env sessions, so the event actually fires.
+                    try:
+                        self._reconcile_local_exit(session)
+                        self._refresh_detached_session(session)
+                    except Exception:
+                        pass
+                    if session.exited:
+                        break
+                    session._completion_event.wait(min(remaining, interval))
+            except KeyboardInterrupt:
+                # User aborted the linger — stop waiting on everything but
+                # never let the interrupt skip the caller's durable teardown
+                # (session flush, end_session) that follows this wait.
+                interrupted = True
+            if session.exited:
+                result["completed"].append(session.id)
+            else:
+                result["timed_out"].append(session.id)
+        if result["timed_out"]:
+            logger.warning(
+                "One-shot exit linger timed out after %ss with %d background "
+                "process(es) still running: %s — they may be killed when this "
+                "process exits.",
+                timeout,
+                len(result["timed_out"]),
+                ", ".join(result["timed_out"]),
+            )
+        return result
+
+    @staticmethod
+    def _oneshot_completion_wait_seconds() -> float:
+        """Bounded linger (s) for one-shot exits with pending notify_on_complete
+        processes.  Read from ``terminal.oneshot_completion_wait_seconds``;
+        0 disables. Falls back to the DEFAULT_CONFIG value (600) when config
+        is unreadable so callers always get a sane bound.
+        """
+        try:
+            from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "oneshot_completion_wait_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["oneshot_completion_wait_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 600.0
+
+    def _drain_should_skip(
+        self, session_id: str, *, skip_poll_observed: bool = True
+    ) -> bool:
+        """Whether this drain should skip a completion event for this session.
 
         Bot Mode handoff REPLIES are the visible casualty (#90879): a recipient invoked as ``hermes -p <bot>
         chat -Q --query-file ...`` dispatches its reply via ``message_agent`` / ``bot_relay`` exactly this
@@ -2187,7 +2374,300 @@ class ProcessRegistry(ProcessCheckpointMixin):
 process_registry = ProcessRegistry()
 
 
-# --- the "process_manage" tool schema + handler -----------------------------------
+def _format_age(seconds: float) -> str:
+    """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
+    try:
+        s = int(max(0, seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m" if s == 0 else f"{m}m{s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h" if m == 0 else f"{h}h{m}m"
+
+
+def _format_async_delegation(evt: dict) -> str:
+    """Format an async-delegation completion into a self-contained re-injection.
+
+    Carries the FULL original task source (goal, the context the parent
+    supplied, toolsets, role, model) plus dispatch time, status, and the
+    complete result summary. When this re-enters the conversation the agent
+    may be deep in unrelated context and won't remember why the subagent
+    existed, so the block is written to stand entirely on its own — enough to
+    use the result OR re-dispatch if the world has moved on.
+    """
+    import time as _time
+
+    deleg_id = evt.get("delegation_id", "unknown")
+    goal = evt.get("goal", "") or ""
+    context = evt.get("context")
+    toolsets = evt.get("toolsets")
+    role = evt.get("role") or "leaf"
+    model = evt.get("model") or "?"
+    status = evt.get("status") or "completed"
+    summary = evt.get("summary")
+    error = evt.get("error")
+    api_calls = evt.get("api_calls", 0)
+    duration = evt.get("duration_seconds", "?")
+    truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
+    dispatched_at = evt.get("dispatched_at")
+    completed_at = evt.get("completed_at") or _time.time()
+
+    # ----- Batch (fan-out) completion: consolidated multi-task block -----
+    # A whole delegate_task fan-out dispatched as one background unit finishes
+    # together and carries a per-task `results` list. Render every subagent's
+    # summary in one block so the model gets the consolidated outcome at once.
+    batch_results = evt.get("results")
+    if evt.get("is_batch") or isinstance(batch_results, list):
+        results = batch_results or []
+        goals = evt.get("goals") or []
+        n = len(results) if results else len(goals)
+        total_dur = evt.get("total_duration_seconds", duration)
+        lines = [
+            f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+            f"A background fan-out of {n} subagent(s) you dispatched earlier "
+            "has finished. All ran in parallel and waited on each other; their "
+            "consolidated results are below. You may have moved on since "
+            "dispatching — act on these or re-dispatch if things have changed.",
+            "",
+        ]
+        if isinstance(dispatched_at, (int, float)):
+            ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+            age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+            lines.append(f"Dispatched: {ts}{age}")
+        if context:
+            lines.append(f"Context you provided: {context}")
+        if toolsets:
+            lines.append(f"Toolsets: {', '.join(toolsets)}")
+        lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
+        if error and not results:
+            lines.append("--- ERROR ---")
+            lines.append(f"The batch did not complete successfully: {error}")
+            return "\n".join(lines)
+        for r in sorted(results, key=lambda x: x.get("task_index", 0)):
+            idx = r.get("task_index", 0)
+            r_status = r.get("status", "?")
+            r_summary = r.get("summary")
+            r_error = r.get("error")
+            r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+            r_truncated = r.get("truncated") or r.get("exit_reason") == "max_iterations"
+            icon = "⚠" if r_truncated else ("✓" if r_status in ("completed", "success") else "✗")
+            lines.append("")
+            header = f"--- {icon} TASK {idx + 1}/{n}"
+            if r_goal:
+                header += f": {r_goal}"
+            header += f"  (status={r_status}"
+            if r.get("api_calls"):
+                header += f", api_calls={r['api_calls']}"
+            if r.get("duration_seconds") is not None:
+                header += f", {r['duration_seconds']}s"
+            if r_truncated:
+                header += ", TRUNCATED: hit max_iterations — work may be incomplete"
+            header += ") ---"
+            lines.append(header)
+            if r_status in ("completed", "success") and r_summary:
+                if r_truncated:
+                    lines.append(
+                        "[TRUNCATED — subagent hit its iteration cap; the "
+                        "summary below may be incomplete. Verify before relying "
+                        "on it, or re-dispatch the unfinished part.]"
+                    )
+                lines.append(r_summary)
+            elif r_summary:
+                if r_error:
+                    lines.append(f"({r_status}: {r_error})")
+                lines.append("Partial output:")
+                lines.append(r_summary)
+            else:
+                lines.append(
+                    f"(no summary — status={r_status}"
+                    + (f": {r_error}" if r_error else "")
+                    + ")"
+                )
+            r_live = r.get("live_transcript")
+            if r_live:
+                lines.append(
+                    f"Full live transcript (complete tool/assistant trace): {r_live}"
+                )
+        return "\n".join(lines)
+
+    age = ""
+    if isinstance(dispatched_at, (int, float)):
+        age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+
+    lines = [
+        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
+        "",
+    ]
+    if isinstance(dispatched_at, (int, float)):
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+        lines.append(f"Dispatched: {ts}{age}")
+    lines.append(f"Original goal: {goal}")
+    if context:
+        lines.append(f"Context you provided: {context}")
+    if toolsets:
+        lines.append(f"Toolsets: {', '.join(toolsets)}")
+    lines.append(f"Role: {role}   Model: {model}")
+    _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
+    lines.append("--- RESULT ---")
+    if status in ("completed", "success") and summary:
+        if truncated:
+            lines.append(
+                "[TRUNCATED — subagent hit its iteration cap; the summary below "
+                "may be incomplete. Verify before relying on it, or re-dispatch "
+                "the unfinished part.]"
+            )
+        lines.append(summary)
+    elif status == "interrupted":
+        lines.append(
+            "The subagent was interrupted before completing"
+            + (f": {error}" if error else ".")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    else:
+        # error / timeout / failed
+        lines.append(
+            f"The subagent did not complete successfully (status={status})."
+            + (f"\n{error}" if error else "")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    return "\n".join(lines)
+
+
+def _delegation_attribution_line(evt: dict) -> "str | None":
+    """One-line delegation attribution for a child-originated process event.
+
+    Subagents run their terminal sessions under ``task_id == subagent_id``
+    (delegate_tool._run_single_child). When a background process they started
+    completes, its notification is routed to the PARENT conversation by
+    design (children consume their own waits via process(wait); anything
+    that outlives the child must land where a durable consumer exists).
+    Without attribution the parent-facing user sees an anonymous raw output
+    wall mid-conversation with no hint it came from a delegation. Resolve
+    the task_id against the live + recently-finished subagent registry and
+    return a short provenance line, or None for parent-owned processes.
+    """
+    task_id = str(evt.get("task_id") or "")
+    if not task_id.startswith("sa-"):
+        return None
+    try:
+        from tools.delegate_tool import get_subagent_attribution
+
+        info = get_subagent_attribution(task_id)
+    except Exception:
+        info = None
+    if not info:
+        # The task_id shape says "subagent" even when the registry entry has
+        # aged out — still attribute generically rather than anonymously.
+        return f"Started by subagent {task_id} (delegate_task)."
+    goal = str(info.get("goal") or "").strip()
+    if len(goal) > 120:
+        goal = goal[:117] + "..."
+    deleg = info.get("delegation_id")
+    parts = [f"Started by subagent {task_id}"]
+    if deleg:
+        parts.append(f"of delegation {deleg}")
+    line = " ".join(parts) + "."
+    if goal:
+        line += f' Task: "{goal}"'
+    return line
+
+
+def format_process_notification(evt: dict) -> "str | None":
+    """Format a process notification event into a [IMPORTANT: ...] message.
+
+    Handles completion events (notify_on_complete), watch pattern matches,
+    and watch disabled events from the unified completion_queue.
+    """
+    evt_type = evt.get("type", "completion")
+    _sid = evt.get("session_id", "unknown")
+    _cmd = evt.get("command", "unknown")
+    _attribution = _delegation_attribution_line(evt)
+
+    if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    if evt_type == "watch_match":
+        _pat = evt.get("pattern", "?")
+        _out = evt.get("output", "")
+        _sup = evt.get("suppressed", 0)
+        text = (
+            f"[IMPORTANT: Background process {_sid} matched "
+            f"watch pattern \"{_pat}\".\n"
+        )
+        if _attribution:
+            text += f"{_attribution}\n"
+        text += (
+            f"Command: {_cmd}\n"
+            f"Matched output:\n{_out}"
+        )
+        if _sup:
+            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
+        text += "]"
+        return text
+
+    if evt_type == "async_delegation":
+        return _format_async_delegation(evt)
+
+    _exit = evt.get("exit_code", "?")
+    _out = evt.get("output", "")
+    _reason = evt.get("completion_reason") or "exited"
+    _source = evt.get("termination_source") or ""
+    _signal = ""
+    if _exit in {-15, 143, "-15", "143"}:
+        _signal = ", SIGTERM"
+    if _reason == "killed":
+        _status = f"terminated by {_source or 'Hermes'}"
+    elif _reason == "lost":
+        _status = "marked lost because the process backend disappeared"
+    elif _reason == "failed_start":
+        _status = "failed to start"
+    elif _exit == 0:
+        _status = "completed normally"
+    else:
+        _status = "exited"
+    text = (
+        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"(exit code {_exit}{_signal}).\n"
+    )
+    if _attribution:
+        text += f"{_attribution}\n"
+        # A subagent-owned process's full output belongs in the child's
+        # transcript/summary, not as a raw wall in the parent conversation —
+        # trim the tail hard while keeping enough to recognise failures.
+        if isinstance(_out, str) and len(_out) > 600:
+            _out = (
+                "...(output trimmed — subagent-owned process; see the "
+                "delegation's live transcript for full output)\n"
+                + _out[-600:]
+            )
+    text += (
+        f"Command: {_cmd}\n"
+        f"Output:\n{_out}]"
+    )
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Registry -- the "process" tool schema + handler
+# ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {

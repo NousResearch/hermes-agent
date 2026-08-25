@@ -247,31 +247,12 @@ def _load_raw_config() -> Dict[str, Any]:
     return parsed
 
 
-def _skills_cfg() -> Optional[Dict[str, Any]]:
-    """The ``skills:`` mapping from config.yaml, or None when absent/malformed."""
-    skills_cfg = _load_raw_config().get("skills")
-    return skills_cfg if isinstance(skills_cfg, dict) else None
-
-
-def _skills_cfg_get(key: str) -> Any:
-    """``skills.<key>`` from config.yaml, or None when the section is absent/malformed."""
-    skills_cfg = _skills_cfg()
-    return skills_cfg.get(key) if skills_cfg is not None else None
-
-
-def _expand_path(entry: str) -> Path:
-    """Expand ``~`` and ``${VAR}`` in a config path entry."""
-    return Path(os.path.expanduser(os.path.expandvars(entry)))
-
-
-def _home_relative(p: Path) -> Path:
-    """Anchor a relative config path at HERMES_HOME; absolute paths pass through."""
-    from hermes_constants import get_hermes_home
-    return p if p.is_absolute() else get_hermes_home() / p
-
-
-# Never disableable: `hermes-agent` is the agent's own operating manual and the
-# system prompt points at it unconditionally.
+# Skills that must stay available regardless of configuration. The
+# `hermes-agent` skill is the agent's own operating manual — it drives
+# configuring, extending, and troubleshooting Hermes itself, and the system
+# prompt unconditionally points at it. Disabling it leaves the agent unable
+# to help with Hermes, so disable requests for these names are ignored
+# everywhere the disabled list is consulted.
 ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
 
 
@@ -282,12 +263,21 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if skills_cfg is None:
         return set()
     from gateway.session_context import get_session_env
-    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
-    disabled = _normalize_string_set(skills_cfg.get("disabled"))
-    platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
-    if platform_disabled is not None:
-        disabled |= _normalize_string_set(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    if resolved_platform:
+        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
+            resolved_platform
+        )
+        if platform_disabled is not None:
+            return (
+                global_disabled | _normalize_string_set(platform_disabled)
+            ) - ESSENTIAL_SKILLS
+    return global_disabled - ESSENTIAL_SKILLS
 
 
 def parse_config_string_list(value) -> List[str]:

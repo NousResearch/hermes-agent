@@ -97,7 +97,7 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
+  it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     const respond = liveApproval()
     setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })

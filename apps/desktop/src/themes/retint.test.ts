@@ -1,7 +1,6 @@
-import { contrastRatio } from '@hermes/shared/color'
 import { describe, expect, it } from 'vitest'
 
-import { hexToOklch, withHue } from './color'
+import { contrastRatio, hexToOklch, withHue } from './color'
 import { githubTheme, nousTheme } from './presets'
 import { retintTheme, themeHue } from './retint'
 import type { DesktopThemeColors } from './types'

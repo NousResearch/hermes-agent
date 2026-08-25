@@ -186,7 +186,7 @@ class TestRestorePrimaryRuntime:
 
         emitted = []
         agent._emit_status = emitted.append
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
         assert emitted == [
@@ -203,7 +203,7 @@ class TestRestorePrimaryRuntime:
         emitted = []
         agent._emit_status = emitted.append
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
         assert emitted == []
@@ -224,7 +224,7 @@ class TestRestorePrimaryRuntime:
         emitted = []
         agent._emit_status = emitted.append
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
             patch.object(
                 agent.context_compressor,
                 "update_model",
@@ -511,13 +511,13 @@ class TestRestorePrimaryRuntime:
         with (
             patch("agent.credential_pool._load_config_safe", return_value=config),
             patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
         assert result is True
         assert agent._credential_pool is primary_pool
-        load_pool.assert_called_once_with("gemini-no-filter")
+        load_pool.assert_called_once_with("custom:gemini-display")
         agent._swap_credential.assert_called_once_with(primary_pool.select.return_value)
 
     def test_restore_named_custom_pool_wrong_endpoint_fails_closed(self):
@@ -542,7 +542,7 @@ class TestRestorePrimaryRuntime:
         with (
             patch("agent.credential_pool._iter_custom_providers", return_value=configured),
             patch("agent.credential_pool.load_pool", return_value=None) as load_pool,
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 

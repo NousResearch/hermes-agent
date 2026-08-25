@@ -486,10 +486,6 @@ export const zhHant = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
-      appActionsTitle: '應用操作',
-      appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
-      appActionsLeft: '左側',
-      appActionsRight: '右側',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',
@@ -523,8 +519,6 @@ export const zhHant = defineLocale({
       },
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
-      userBubbleTitle: '訊息氣泡',
-      userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
@@ -1189,9 +1183,6 @@ export const zhHant = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
-        triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
-        kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
-        profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
       }
     },
@@ -3247,10 +3238,7 @@ export const zhHant = defineLocale({
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
-      errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
-      errorSignInAgain: provider => `重新登入 ${provider}`,
-      errorOauthExpired: provider => `您的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`,
       errorOpenLogs: '開啟日誌',
       errorOpenLogsFailed: '無法開啟日誌資料夾',
       errorOpenDesktopLogs: '開啟桌面端日誌',

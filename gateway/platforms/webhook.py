@@ -402,21 +402,33 @@ class WebhookAdapter(BasePlatformAdapter):
         return await dispatch_profile_ingress(
             self.gateway_runner, profile, request.match_info.get("tail", ""), request)
 
-    def _resolve_request_profile(self, request: "web.Request"):
-        """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the
-        prefix names this gateway's own profile), the profile name (served under multiplexing), or
-        ``_PROFILE_REJECTED`` (unknown / not served → 404)."""
+        Returns:
+          - ``None`` when no profile prefix is present, or when multiplexing
+            is off and the prefix names this gateway's own profile (the
+            request is handled as the serving profile).
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured, or names a profile this single-profile
+            gateway does not serve (handler returns 404).
+        """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
         cfg = getattr(self.gateway_runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # Only a self-referential prefix may fall through to the bare route; anything else fails
-            # closed (silently ignoring the prefix served the owner's routes under another profile's URL).
-            with suppress(Exception):
+            # Prefix supplied but multiplexing is off. Only a self-referential
+            # prefix (naming this gateway's own profile) may fall through to
+            # the bare route; anything else fails closed — silently ignoring
+            # the prefix served the gateway owner's routes/config under
+            # another profile's URL (#91583 defect 2).
+            try:
                 from hermes_cli.profiles import profile_matches_home
+
                 if profile_matches_home(profile):
                     return None
+            except Exception:
+                pass
             return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve

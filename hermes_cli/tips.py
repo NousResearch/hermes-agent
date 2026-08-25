@@ -434,8 +434,13 @@ def get_random_tip(exclude_recent: int = 0) -> str:
     return random.choice(TIPS)
 
 
-# Task-oriented example prompts for the empty composer. Kept generic — Hermes is
-# not a coding-only agent, so they must fit any project or none.
+# ---------------------------------------------------------------------------
+# Composer placeholders — short, task-oriented example prompts shown in the
+# empty input box to nudge new users toward high-value first actions (C-09,
+# inspired by opencode/codex rotating placeholders). Kept generic so they fit
+# any project or none — Hermes is not a coding-only agent.
+# ---------------------------------------------------------------------------
+
 COMPOSER_PLACEHOLDERS = [
     "Ask anything, or type / for commands…",
     "Summarize what's in this folder",
@@ -447,7 +452,8 @@ COMPOSER_PLACEHOLDERS = [
     "Turn these notes into a to-do list",
     "Explain this error and how to fix it",
     "Set a reminder or schedule a recurring task",
-    "Type / to browse commands, or Ctrl+P for the palette"]
+    "Type / to browse commands, or Ctrl+P for the palette",
+]
 
 
 def get_random_composer_placeholder() -> str:

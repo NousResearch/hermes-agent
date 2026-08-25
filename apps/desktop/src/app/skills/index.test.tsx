@@ -120,11 +120,11 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// SkillsView is a heavy module (import cost now paid at module scope above,
-// during collection) but the file still legitimately runs ~14s on CI runners —
-// right against the global 15s per-test budget, so slow runners cascade-fail
-// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
-// Give this file headroom; the tests are not slow individually.
+// SkillsView is a heavy module: the first test pays the whole dynamic-import
+// cost, and the file legitimately runs ~14s on CI runners — right against the
+// global 15s per-test budget, so slow runners cascade-fail all 11 tests
+// (2× in a row on PR #93612, plus a main run the same hour). Give this file
+// headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
@@ -378,6 +378,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
+    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -443,81 +444,5 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
-  })
-
-  it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {
-    // The full official catalog renders BELOW the installed list; each row
-    // carries an Install button (no toggle until installed) that routes
-    // through the standard hub action pipeline scoped to the Capabilities
-    // profile. Already-installed catalog entries are filtered out.
-    const { installHubSkill } = await import('@/store/hub-actions')
-
-    getSkills.mockResolvedValue([
-      {
-        name: 'web-research',
-        description: 'Research the web',
-        category: 'research',
-        enabled: true,
-        usage: 3,
-        provenance: 'bundled'
-      }
-    ])
-    getOfficialSkills.mockResolvedValue({
-      skills: [
-        {
-          name: 'gif-search',
-          description: 'Search GIFs',
-          identifier: 'official/gifs/gif-search',
-          category: 'gifs',
-          installed: false,
-          tags: ['gifs']
-        },
-        {
-          name: 'web-research',
-          description: 'already here under a different source',
-          identifier: 'official/research/web-research',
-          category: 'research',
-          installed: false,
-          tags: []
-        },
-        {
-          name: 'ascii-art',
-          description: 'ASCII art',
-          identifier: 'official/creative/ascii-art',
-          category: 'creative',
-          installed: true,
-          tags: []
-        }
-      ]
-    })
-
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills?tab=skills']}>
-            <SkillsView />
-          </MemoryRouter>
-        </QueryClientProvider>
-      )
-    })
-
-    // Catalog section header + the one genuinely-available row. Rows already
-    // installed (lock flag OR name collision with the installed list) are gone.
-    expect(await screen.findByText('Available to install')).toBeTruthy()
-    expect(await screen.findByText('gif-search')).toBeTruthy()
-    expect(screen.queryByText('ascii-art')).toBeNull()
-
-    // The installed skill still shows its toggle; the catalog row shows
-    // Install instead of a switch.
-    expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
-    const install = screen.getByRole('button', { name: 'Install' })
-
-    await act(async () => {
-      fireEvent.click(install)
-    })
-
-    await waitFor(() =>
-      expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
-    )
   })
 })

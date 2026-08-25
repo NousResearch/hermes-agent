@@ -1164,13 +1164,10 @@ agent:
   max_turns: none              # Iterations per conversation turn (default: none = unlimited)
                                # Set a positive integer to cap; "none"/"null"/
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
-  budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
 `agent.max_turns` is **unlimited by default** — the turn cap caused more problems than it solved (silent mid-task truncation), so out of the box Hermes runs a conversation turn to completion. To impose a cap, set a positive integer. To be explicit about "no limit", any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
-
-`agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
@@ -1388,7 +1385,7 @@ Auxiliary task blocks additionally accept a `reasoning_effort` knob:
 |-----|-------------|---------|
 | `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
 
-This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It applies to auxiliary-client tasks such as `vision`, `compression`, `title_generation`, and `curator`, across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It works on every auxiliary task block (`vision`, `compression`, `title_generation`, `curator`, `background_review`, ...), across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
 
 **Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](/user-guide/features/memory#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
 
@@ -1862,7 +1859,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`, `muse`. |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `grok`, `deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `mimo`, `mistral`. |
 | `true` | Always enabled, regardless of model. |
 | `false` | Always disabled, regardless of model. |
 | `["deepseek", "my-custom-model"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
@@ -1920,7 +1917,7 @@ This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), w
 
 ### Runtime anti-stall guards
 
-Complementing the failure-based guardrails above, `agent.stall_guards` (default `true`) enables two conservative runtime guards against wasted turns. First, an **identical-call loop breaker**: when the same tool is called 3+ consecutive times with identical arguments *and* returns an identical result, a short one-line notice is appended to that tool result telling the model not to repeat the call — in warning-only sessions it never blocks the call, and legitimately-repeatable pollers (`process`, `*_get_result`, `*_poll`) are exempt. When hard stops are active (explicit `hard_stop_enabled`, or an unattended gateway/cron platform), the same streak also becomes a hard stop once it reaches `hard_stop_after.idempotent_no_progress` consecutive identical calls — for **any** tool, not just the read-only ones the `idempotent_no_progress` guardrail tracks — so a model replaying the same successful `terminal` or `skill_view` call is halted instead of running out the iteration budget (`identical_call_streak_halt`). Second, a **continue-intent recovery**: when the model ends a turn with no tool calls but its short reply trails off announcing an action ("Let me now update the file…"), Hermes re-prompts it to act via the same bounded continuation mechanism used for intent-ack recovery (max 2 re-prompts per turn). Both are cache-safe (notices are added at result construction, never retroactively) and can be disabled together:
+Complementing the failure-based guardrails above, `agent.stall_guards` (default `true`) enables two conservative runtime guards against wasted turns. First, an **identical-call loop breaker**: when the same tool is called 3+ consecutive times with identical arguments *and* returns an identical result, a short one-line notice is appended to that tool result telling the model not to repeat the call — it never blocks the call, and legitimately-repeatable pollers (`process`, `*_get_result`, `*_poll`) are exempt. Second, a **continue-intent recovery**: when the model ends a turn with no tool calls but its short reply trails off announcing an action ("Let me now update the file…"), Hermes re-prompts it to act via the same bounded continuation mechanism used for intent-ack recovery (max 2 re-prompts per turn). Both are cache-safe (notices are added at result construction, never retroactively) and can be disabled together:
 
 ```yaml
 agent:
@@ -1928,19 +1925,6 @@ agent:
 ```
 
 The same gate also enables **result-reference stubbing**: when a re-issued identical tool call returns a byte-identical fresh result, the duplicate payload enters context as a short reference stub pointing at the earlier result (tool name, `tool_call_id`, an args summary, and — if the first result was persisted to disk — its spillover path) instead of repeating the full output. The tool still executes every time, so polling semantics are preserved: a changed result always flows through whole. Results under 512 characters, error results, and multimodal results are never stubbed, and pollers *are* stubbed (an unchanged poll is exactly the case where the duplicate payload carries no information).
-
-### Turn liveness watchdog
-
-`agent.turn_liveness` bounds how long a conversation turn may make **no observable progress** before Hermes force-recovers it. The watchdog keys off the activity clock (the same signal that stamps API waits, stream tokens, and tool heartbeats — lease renewal never counts), so a turn that silently wedges mid-flight (observed as issue #95548: no tool execution, no API call, no error, but the session stays "busy" indefinitely) is surfaced loudly, interrupted so it unwinds as a retriable interrupted turn, and — when the interrupt cannot unwind the wedge — its durable turn lease stops renewing so stale-turn cleanup can reclaim the session instead of it hanging until the process is killed.
-
-```yaml
-agent:
-  turn_liveness:
-    timeout_s: 600.0   # idle bound; <= 0 disables the watchdog
-    poll_s: 15.0        # sampling interval (seconds)
-```
-
-Legitimately slow work is not penalized: streaming responses, tool heartbeats (every 30s while a tool runs), and approval waits all keep touching the clock, so only a turn making *zero* progress for the full bound fires the watchdog. Invalid values (a typo, `NaN`, `Inf`, non-positive `poll_s`) log a warning and fall back to the defaults — they never crash startup or silently disable the watchdog. A fired abort reports the stall as it begins recovery, and publishes the definitive aborted/lease-stopped outcome only once the interrupt has actually committed.
 
 ## TTS Configuration
 
@@ -2513,7 +2497,7 @@ web:
 
   # Keyless free-tier fallback (default: true). With no backend configured
   # and no API keys present, web tools rotate across the Exa/Parallel/
-  # Firecrawl/Keenable free tiers. Set false to disable.
+  # Tavily/Firecrawl/Keenable free tiers. Set false to disable.
   keyless_fallback: true
 
   # One-shot keyless rescue (default: true). When the chosen/keyed backend
@@ -2535,10 +2519,9 @@ web:
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 | **Tavily** | `TAVILY_API_KEY` (optional — keyless when selected) | ✔ | ✔ |
-| **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Tavily / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
@@ -2872,8 +2855,6 @@ dashboard:
   ws_ping_interval: 20.0      # Non-loopback WebSocket keepalive ping interval (seconds)
   ws_ping_timeout: 20.0       # Non-loopback WebSocket keepalive pong timeout (seconds)
   ws_orphan_reap_grace_s: 20.0 # Grace before a WS-detached session is reaped (seconds)
-  ssh_isolated_idle_grace_s: 900.0 # Desktop-over-SSH backend exits after this long with no client and no running turn
-  ws_orphan_activity_stale_s: 600.0 # Activity idle bound before a detached RUNNING turn is interrupted (seconds)
   startup_orphan_sweep: true  # Close session rows orphaned by a dead gateway process at boot
 ```
 
@@ -2883,7 +2864,5 @@ dashboard:
 - `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
 - `ws_ping_interval` / `ws_ping_timeout` — WebSocket keepalive tuning for non-loopback binds (loopback connections never ping). Raise these on high-latency links (Tailscale, distant SSH tunnels) where the 20 s defaults can manufacture spurious 1006 disconnects.
-- `ssh_isolated_idle_grace_s` (default `900`) — a Desktop-owned `hermes serve --isolated` backend reached over SSH is detached from the SSH session on purpose, so a laptop that sleeps mid-connection cannot tear it down; each dark-wake reconnect used to leave another backend holding `state.db`. The backend now retires itself once no client WebSocket has been connected for this long and no agent turn is running (a turn keeps it alive; an unreadable turn state keeps it alive too). Set high if you rely on a detached backend finishing long work after the laptop sleeps. Such backends also send a slow WebSocket ping (60 s, 10 min timeout) so a half-open tunnel is noticed.
-- `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. Periodic session maintenance also completes cleanup for closed sockets and re-arms a missing orphan timer, so a detached chat cannot keep its ownership lease solely because its initial cleanup or timer was lost. Reconnecting cancels that timer; active delegated work and healthy running turns remain protected by the normal orphan-reaper checks. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
-- `ws_orphan_activity_stale_s` (default `600`) — how long a detached **running** turn's activity clock (the same clock the `agent.turn_liveness` watchdog samples: API waits, stream tokens, tool heartbeats) must be idle before the orphan reaper interrupts it. A client-absent turn that is still actively producing keeps running to completion detached — closing the laptop, backgrounding the mobile app, or a desktop update no longer cancels healthy long turns; only a genuinely wedged turn is interrupted. Set `0` to interrupt at the grace window regardless of activity (old behavior).
+- `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
 - `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.

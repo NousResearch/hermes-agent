@@ -121,12 +121,13 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
     1.5s window plus margins; the two-window CONTRACT is what's under
     test, not the production constants.
     """
+    import hermes_state
 
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_INIT_WAIT_S", 0.3)
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_LOOP_WAIT_S", 0.05)
 
     class _BlockingDB:
-        def __init__(self, db_path=None):
+        def __init__(self):
             # Far past both (shrunk) wait windows. The margin keeps the
             # "still None" assertions from racing the bootstrap thread on
             # a loaded runner (negative-timing race, flake policy).

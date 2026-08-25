@@ -952,23 +952,8 @@ Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
 first; without one, Hermes fails closed at startup. This prevents the local SPA
 session token from becoming a remote authentication mechanism through the
-proxy. Uvicorn also enables proxy-header processing in this mode. Loopback
-proxies are trusted automatically. If the TLS terminator connects from another
-container or host, add its exact IP address to `dashboard.trusted_proxies`, or
-add a bounded CIDR for a dedicated proxy network when the address is dynamic:
-
-```yaml
-dashboard:
-  public_url: "https://dashboard.example.com/hermes"
-  trusted_proxies:
-    - "172.20.0.0/24"
-```
-
-Only listed peers may supply `X-Forwarded-Proto` and `X-Forwarded-For`.
-Hermes always preserves loopback trust and rejects `*`, `0.0.0.0/0`, and
-`::/0`. Trusting a network means every container or machine on that network
-can supply forwarding metadata, so prefer an exact proxy IP or a dedicated
-proxy-only network.
+proxy. Uvicorn also enables trusted proxy-header processing in this mode so a
+local TLS terminator can supply `X-Forwarded-Proto: https` for secure cookies.
 
 ```bash
 # Backend remains reachable only on this machine.

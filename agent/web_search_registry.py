@@ -79,6 +79,44 @@ def _keyless_preference() -> tuple:
         logger.debug("keyless ring order unavailable: %s", exc)
     return _KEYLESS_PREFERENCE
 
+# Keyless free-tier walk — strictly LAST-resort, tried only after the
+# availability-filtered legacy walk finds nothing (i.e. the user has zero
+# web credentials and no importable ddgs). All five vendors expose public
+# anonymous free tiers (see plugins/web/keyless_mcp.py). Unpinned keyless
+# traffic round-robins across the ring per request (the ring cursor lives
+# in keyless_mcp; an explicit `hermes tools` pick bypasses this walk
+# entirely, and rate-limited requests fail over to the next ring vendor).
+# Disable the tier with ``web.keyless_fallback: false``.
+_KEYLESS_PREFERENCE = (
+    "exa",
+    "parallel",
+    "tavily",
+    "firecrawl",
+    "keenable",
+)
+
+
+def _keyless_preference() -> tuple:
+    """Return the keyless walk order for resolution.
+
+    Delegates the entry-vendor choice to the ring cursor in
+    :mod:`plugins.web.keyless_mcp` (round-robin per request, seeded by the
+    per-process random session id) so resolution and dispatch agree on
+    which vendor a fresh install starts at. The remaining vendors follow
+    in ring order as fallbacks for registration gaps.
+    """
+    try:
+        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
+
+        start = _ring_cursor % len(_KEYLESS_RING)
+        return tuple(
+            _KEYLESS_RING[(start + i) % len(_KEYLESS_RING)]
+            for i in range(len(_KEYLESS_RING))
+        )
+    except Exception as exc:  # noqa: BLE001 — ring optional in stripped envs
+        logger.debug("keyless ring order unavailable: %s", exc)
+    return _KEYLESS_PREFERENCE
+
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
     """Resolve the active provider for a capability ("search" | "extract").
@@ -122,9 +160,11 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         if provider is not None and provider in eligible:
             return provider
 
-    # Keyless free tier (anonymous public MCP tiers) is last-resort only: it is
-    # reachable solely when the legacy walk found nothing, never pre-empting a
-    # keyed setup. Disabled via ``web.keyless_fallback: false``.
+    # 4. Keyless free-tier walk — the user has NO credentialed/importable
+    #    backend at all. Fall back to providers that can serve anonymously
+    #    (public MCP free tiers), unless disabled via
+    #    ``web.keyless_fallback: false``. This tier never pre-empts a keyed
+    #    setup: it is only reachable when the legacy walk found nothing.
     if _keyless_tier_enabled():
         for name in _keyless_preference():
             provider = snapshot.get(name)
@@ -134,7 +174,9 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
                 if provider.is_keyless_available():
                     return provider
             except Exception as exc:  # noqa: BLE001 — buggy provider skipped
-                logger.debug("provider %s.is_keyless_available() raised %s", name, exc)
+                logger.debug(
+                    "provider %s.is_keyless_available() raised %s", name, exc
+                )
 
     return None
 

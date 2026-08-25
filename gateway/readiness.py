@@ -80,6 +80,20 @@ def _probe_session_store(runtime_status: dict[str, Any], state_db_probe: dict[st
     return _check("ok" if state_db_probe.get("status") == "ok" else "unavailable")
 
 
+def _probe_session_store(
+    runtime_status: dict[str, Any], state_db_probe: dict[str, Any]
+) -> dict[str, Any]:
+    """Report the running gateway cache state, not an independent reopen."""
+    runtime_store = runtime_status.get("session_store")
+    if isinstance(runtime_store, dict):
+        state = str(runtime_store.get("status") or "unknown")
+        if state in {"ok", "unavailable", "retrying"}:
+            return _check(state)
+    # Older gateways do not publish a cache state. Preserve their readiness
+    # behavior until their process restarts onto a version that does.
+    return _check("ok" if state_db_probe.get("status") == "ok" else "unavailable")
+
+
 def collect_runtime_readiness(
     *, configured_model: str, runtime_status: dict[str, Any] | None, active_api_runs: int = 0,
     process_completion_queue_depth: int = 0, active_delegations: int = 0,

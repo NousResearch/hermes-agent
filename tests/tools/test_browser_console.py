@@ -347,9 +347,9 @@ class TestBrowserVisionConfig:
         try:
             with (
                 patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
-                patch("tools.browser_tool_lifecycle._cleanup_old_screenshots"),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
                 patch(
-                    "tools.browser_tool_session._run_browser_command",
+                    "tools.browser_tool._run_browser_command",
                     return_value={
                         "success": True,
                         "data": {"path": str(screenshot)},
@@ -359,7 +359,7 @@ class TestBrowserVisionConfig:
                     "hermes_cli.config.load_config",
                     return_value={"model": {"supports_vision": True}},
                 ),
-                patch("agent.auxiliary_client.call_llm") as mock_llm,
+                patch("tools.browser_tool.call_llm") as mock_llm,
             ):
                 result = browser_vision("what is on the page?", task_id="test")
         finally:

@@ -199,7 +199,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
     showed the wrong skill.
     """
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_models import SkillBundle, SkillMeta
+    from tools.skills_hub import SkillBundle, SkillMeta
 
     class CatalogSource:
         def inspect(self, identifier):
@@ -250,7 +250,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
 
 def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_models import SkillMeta
+    from tools.skills_hub import SkillMeta
 
     class CatalogSource:
         def inspect(self, identifier):

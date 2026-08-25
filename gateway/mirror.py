@@ -23,8 +23,14 @@ def _origin_user_id(entry: dict) -> str:
 
 
 def mirror_to_session(
-    platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
-    user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
+    platform: str,
+    chat_id: str,
+    message_text: str,
+    source_label: str = "cli",
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    role: str = "assistant",
+    session_id: Optional[str] = None,
 ) -> bool:
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
@@ -38,16 +44,47 @@ def mirror_to_session(
     collapses safely via the consecutive-user merge.
     Returns True if mirrored, False if no matching session or error. Never raises.
 
-    ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the
-    mirrored text is the agent's own outgoing reply (a genuine assistant turn). See #2221.
+    ``session_id``: when the caller already KNOWS the exact session (e.g. the
+    cron in_channel seed, which just created the row via
+    ``get_or_create_session``), pass it to skip the origin-scan heuristics
+    entirely. ``_find_session_id`` matches by origin (chat_id + user
+    preference with a multi-candidate bail-out), which is correct for
+    "mirror into whatever conversation lives here" callers but WRONG for a
+    caller holding the precise target — on a populated chat (flat session +
+    N per-message thread sessions sharing one chat_id) the scan can refuse
+    to guess and silently drop the mirror (live failure, Alice 2026-08-19:
+    'in_channel seed did NOT land').
+
+    ``role`` defaults to ``"assistant"`` — correct for the interactive
+    ``send_message`` mirror, where the mirrored text is the agent's own
+    outgoing reply (a genuine assistant turn). Callers mirroring text that is
+    NOT the agent speaking — e.g. a cron brief delivered out-of-band — must
+    pass ``role="user"``: the ``mirror``/``mirror_source`` metadata is dropped
+    at the SQLite boundary (only role+content persist), so on replay an
+    assistant-role mirror is indistinguishable from a real assistant turn and
+    produces ``assistant → assistant`` pairs that break strict-alternation
+    providers (issue #2221). A user-role mirror collapses safely via
+    ``repair_message_sequence``'s consecutive-user merge on every provider.
+
+    Returns True if mirrored successfully, False if no matching session or error.
+    All errors are caught -- this is never fatal.
     """
     try:
         if not session_id:
-            session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id)
+            session_id = _find_session_id(
+                platform,
+                str(chat_id),
+                thread_id=thread_id,
+                user_id=user_id,
+            )
         if not session_id:
             logger.warning(
-                "Mirror: no session found for %s:%s thread=%s user=%s (explicit_id=none, origin-scan bailed)",
-                platform, chat_id, thread_id, user_id,
+                "Mirror: no session found for %s:%s thread=%s user=%s "
+                "(explicit_id=none, origin-scan bailed)",
+                platform,
+                chat_id,
+                thread_id,
+                user_id,
             )
             return False
         _append_to_sqlite(session_id, {
@@ -57,8 +94,19 @@ def mirror_to_session(
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
     except Exception as e:
-        # WARNING, not debug: a silent mirror drop is the cron continuation-amnesia bug.
-        logger.warning("Mirror failed for %s:%s thread=%s user=%s session=%s: %s", platform, chat_id, thread_id, user_id, session_id, e)
+        # WARNING with the exception: a silent mirror drop IS the cron
+        # continuation-amnesia bug (Alice 2026-08-19 — the seed's own
+        # deterministic session_id was in hand and the append STILL failed
+        # invisibly at debug level).
+        logger.warning(
+            "Mirror failed for %s:%s thread=%s user=%s session=%s: %s",
+            platform,
+            chat_id,
+            thread_id,
+            user_id,
+            session_id,
+            e,
+        )
         return False
 
 

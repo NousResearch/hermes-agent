@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
@@ -14,7 +14,7 @@ $displayTimestamps.set(true)
 const timestamp = new Date('2026-05-01T00:00:00.000Z')
 stubThreadEnvironment()
 
-function Harness({ text, asyncResult }: { text: string; asyncResult?: string }) {
+function Harness({ text }: { text: string }) {
   const message = {
     id: 'system-1',
     role: 'system',

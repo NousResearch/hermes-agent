@@ -2483,6 +2483,78 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
 
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Matrix client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+            profile=self._session_key_profile(event.source),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer."""
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = (
+                    f"{existing.text}\n{event.text}" if existing.text else event.text
+                )
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._split_threshold:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Matrix] Flushing text batch %s (%d chars)",
+                key,
+                len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
+    # ------------------------------------------------------------------
+    # Read receipts
+    # ------------------------------------------------------------------
+
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 
         async def _send() -> None:

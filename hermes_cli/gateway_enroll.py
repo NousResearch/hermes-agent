@@ -198,11 +198,19 @@ def cmd_gateway_enroll(args) -> None:
         shown = "<hidden>" if key in ("GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY") else value
         print(f"    {key}={shown}")
     print()
-    # GATEWAY_RELAY_URL / GATEWAY_RELAY_WAKE_URL are process-global deployment stamps
-    # (agent/secret_scope.py): a multiplexed gateway reads them from the PROCESS environment only,
-    # never a secondary profile's .env. Warn (don't refuse) so a secondary-profile enroll can't claim
-    # a config that silently never activates — BEFORE the generic restart line so they don't clash.
-    if not (any(explicit_urls.values()) and _warn_if_secondary_multiplex_profile()):
+    # GATEWAY_RELAY_URL / GATEWAY_RELAY_WAKE_URL are process-global deployment
+    # stamps (agent/secret_scope.py): a multiplexed gateway resolves them from
+    # the PROCESS environment only, never from a secondary profile's .env
+    # (which is loaded into an isolated secret scope, not exported). The .env
+    # write above works for a single-profile gateway and for the profile the
+    # process is launched under (load_hermes_dotenv exports that .env), so
+    # warn rather than refuse — but don't let a secondary-profile enroll claim
+    # a config that will silently never activate. Emitted BEFORE the generic
+    # restart line so the two don't contradict each other.
+    warned_secondary = False
+    if explicit_url or explicit_wake_url:
+        warned_secondary = _warn_if_secondary_multiplex_profile()
+    if not warned_secondary:
         print(
             "  The gateway now authenticates its relay WS upgrade with the per-gateway\n"
             "  secret and verifies signed inbound deliveries with the tenant delivery\n"
@@ -211,8 +219,18 @@ def cmd_gateway_enroll(args) -> None:
 
 
 def _warn_if_secondary_multiplex_profile() -> bool:
-    """Warn when relay routing stamps landed in a secondary profile's .env that a multiplexed gateway
-    will never read. Returns True when the warning fired (caller suppresses the restart text)."""
+    """Warn when relay routing stamps were written to a secondary profile's
+    .env that a multiplexed gateway will never read them from. Returns True
+    when the warning fired (the caller suppresses the generic restart text).
+
+    The topology decision is owned by the DEFAULT root, not the active
+    profile home: ``multiplex_profiles`` normally lives in
+    ``<default_root>/config.yaml`` (or the GATEWAY_MULTIPLEX_PROFILES env
+    override), and the secondary check is the resolved-path relationship to
+    ``<default_root>/profiles/`` — mirroring the multiplexer-conflict guard
+    in hermes_cli/gateway.py. Best-effort: any failure to determine the
+    topology stays silent (the credential write itself succeeded).
+    """
     try:
         from hermes_constants import get_default_hermes_root
         from hermes_cli.config import get_hermes_home
@@ -224,9 +242,11 @@ def _warn_if_secondary_multiplex_profile() -> bool:
         except ValueError:
             return False  # default profile or custom layout — not a secondary
 
-        # Multiplex precedence mirrors gateway.config: recognized env override wins, else a RAW read
-        # of the DEFAULT root's config.yaml (the active profile's load_gateway_config() is the wrong
-        # owner and runs the full enablement pass, whose log output has no place in enroll output).
+        # Multiplex flag precedence mirrors gateway.config: recognized env
+        # override wins, else the DEFAULT root's config.yaml (raw read — the
+        # active profile's load_gateway_config() is the wrong owner AND runs
+        # the full enablement pass, including the relay-exclusive sweep's own
+        # log output, which has no place in enroll output).
         from gateway.config import _env_multiplex_profiles_override
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is False:

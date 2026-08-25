@@ -240,7 +240,7 @@ payload to later middleware and the base tool dispatcher.
 Plugin-specific examples should live with the plugin that owns the behavior.
 NeMo Relay execution middleware is installed through an explicitly selected
 Relay `plugins.toml`; see
-[Relay shared metrics](relay-shared-metrics.md).
+[Relay shared metrics](../observability/relay-shared-metrics.md).
 
 ## Safety Notes
 

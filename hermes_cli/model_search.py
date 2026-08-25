@@ -7,7 +7,8 @@ _MODEL_SEARCH_ALIASES: dict[str, tuple[str, ...]] = {
     "k3": ("kimi-k3", "kimi"),
     # OpenCode Zen serves the "Ox Alpha" stealth model under an opaque
     # preview slug; let users find it by its public codename.
-    "x-preview-f-free": ("ox-alpha", "ox")}
+    "x-preview-f-free": ("ox-alpha", "ox"),
+}
 
 # Lowercased wire id → canonical public slug (the FIRST alias by convention), so picker dedup doesn't
 # render a live bare id and its curated slug (``k3`` / ``kimi-k3``) as two rows.

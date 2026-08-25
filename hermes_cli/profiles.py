@@ -346,6 +346,58 @@ def list_profile_names() -> List[str]:
     return names
 
 
+def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
+    """Return True when *name* refers to the profile served from *home*.
+
+    ``home`` defaults to the process's current Hermes home
+    (:func:`hermes_constants.get_hermes_home`).  Used by single-profile
+    gateways to decide whether a ``/p/<profile>/`` URL prefix is
+    self-referential (safe to serve on the bare route) or names a *different*
+    profile — in which case the request must fail closed rather than silently
+    resolve config/toolsets from the gateway owner (#91583 defect 2).
+
+    Invalid profile names return False (fail closed).
+    """
+    try:
+        target = get_profile_dir(name)
+    except Exception:
+        return False
+    if home is None:
+        try:
+            from hermes_constants import get_hermes_home
+
+            home = get_hermes_home()
+        except Exception:
+            return False
+    try:
+        return (
+            Path(target).expanduser().resolve(strict=False)
+            == Path(home).expanduser().resolve(strict=False)
+        )
+    except Exception:
+        return False
+
+
+def list_profile_names() -> List[str]:
+    """Cheap name-only profile listing: ``default`` plus profile dirs.
+
+    Unlike :func:`list_profiles` this reads NO per-profile config/metadata —
+    it is a directory scan, safe to call from hot paths (cron delivery-target
+    listings, create-time validation).
+    """
+    names = ["default"]
+    profiles_root = _get_profiles_root()
+    try:
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name):
+                    names.append(entry.name)
+    except OSError:
+        pass
+    return names
+
+
+# ---------------------------------------------------------------------------
 # Alias / wrapper script management
 
 def check_alias_collision(name: str) -> Optional[str]:
@@ -528,20 +580,9 @@ class ProfileInfo:
     # True when ``description`` was LLM-generated and not yet user-confirmed (dashboard
     # shows a "review" badge).
     description_auto: bool = False
-    # Presentation-only display name; resolution/comparison/spawn always use ``name``.
+    # Optional user-facing display name from profile.yaml. Presentation
+    # only — resolution/comparison/spawn paths always use ``name``.
     display_name: str = ""
-
-
-def _load_yaml_dict(path: Path) -> Optional[dict]:
-    """Return the mapping in a YAML file, or None when missing/unreadable/not a mapping."""
-    if not path.is_file():
-        return None
-    try:
-        import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -665,10 +706,25 @@ def _count_skills(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name}`` (empty
-    defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
-    break ``hermes profile list``."""
-    data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
+    """Read ``<profile_dir>/profile.yaml`` and return a dict.
+
+    Returns ``{"description": "", "description_auto": False,
+    "display_name": ""}`` when the file is missing or unreadable. Never
+    raises — a corrupt profile.yaml on an unrelated profile must not
+    break ``hermes profile list``.
+    """
+    empty = {"description": "", "description_auto": False, "display_name": ""}
+    path = _profile_yaml_path(profile_dir)
+    if not path.is_file():
+        return empty
+    try:
+        import yaml
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return empty
+    if not isinstance(data, dict):
+        return empty
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
@@ -677,7 +733,10 @@ def read_profile_meta(profile_dir: Path) -> dict:
 
 
 def write_profile_meta(
-    profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
+    profile_dir: Path,
+    *,
+    description: Optional[str] = None,
+    description_auto: Optional[bool] = None,
     display_name: Optional[str] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
@@ -696,24 +755,36 @@ def write_profile_meta(
             existing["display_name"] = display_name.strip()
         else:
             existing.pop("display_name", None)
-    # Atomic write: bare open("w") truncates before the dump, and the read path swallows
-    # parse errors as {}, so a crashed write would silently drop unspecified fields.
-    # See #51356.
+    # Atomic write: bare open("w") truncates before the dump, and the read
+    # path above swallows parse errors as {}, so a crashed write would
+    # silently drop unspecified fields on the next call (#51356, #16743).
     from utils import atomic_yaml_write
     atomic_yaml_write(path, existing, sort_keys=False)
 
 
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
-    """``display_name (canonical_id)``, or the bare id when no display name is set (or it
-    equals the id) — byte-for-byte the pre-feature rendering."""
+    """Render a profile for display: ``display_name (canonical_id)``.
+
+    Falls back to the bare canonical id when no display name is set (or it
+    equals the id) — byte-for-byte the pre-feature rendering. Display names
+    are presentation-only free text (Unicode fine); they are never a
+    directory name, wrapper filename, or argv token.
+    """
     dn = (display_name or "").strip()
     return f"{dn} ({name})" if dn and dn != name else name
 
 
 def set_profile_display_name(profile_name: str, display_name: str) -> str:
-    """Set (or clear, with ``""``) a presentation-only display name. Returns the stored value;
-    raises ``ValueError`` over 64 chars."""
-    canon, profile_dir = _existing_profile_dir(profile_name)
+    """Set (or clear, with ``""``) a profile's user-facing display name.
+
+    Presentation-only: the canonical profile id is untouched. Returns the
+    stored value. Raises ``ValueError`` for names over 64 chars.
+    """
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
     cleaned = (display_name or "").strip()
     if len(cleaned) > 64:
         raise ValueError(f"Display name too long ({len(cleaned)} chars, max 64).")
@@ -721,6 +792,7 @@ def set_profile_display_name(profile_name: str, display_name: str) -> str:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
 # CRUD operations
 
 def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Optional[str] = None) -> ProfileInfo:
@@ -748,13 +820,69 @@ def list_profiles() -> List[ProfileInfo]:
     profiles = []
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
-        profiles.append(_profile_info("default", default_home, is_default=True))
-    named = _iter_named_profile_dirs()
-    if named:
-        alias_map = build_alias_map()  # ONCE, not per profile (was the dominant cost)
-        for entry in named:
-            alias_name = alias_map.get(normalize_profile_name(entry.name))
-            profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name))
+        model, provider = _read_config_model(default_home)
+        dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
+        meta = read_profile_meta(default_home)
+        profiles.append(ProfileInfo(
+            name="default",
+            path=default_home,
+            is_default=True,
+            gateway_running=_check_gateway_running(default_home),
+            model=model,
+            provider=provider,
+            has_env=(default_home / ".env").exists(),
+            skill_count=_count_skills(default_home),
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
+            description=meta.get("description", ""),
+            description_auto=meta.get("description_auto", False),
+            display_name=meta.get("display_name", ""),
+        ))
+
+    # Named profiles
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        # Build the {profile -> alias} map ONCE here instead of calling
+        # find_alias_for_profile() per profile (which re-scanned the whole
+        # wrapper dir each time — O(N*M), the dominant cost in this function).
+        alias_map = build_alias_map()
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # already added as the built-in default above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            model, provider = _read_config_model(entry)
+            alias_name = alias_map.get(normalize_profile_name(name))
+            if alias_name:
+                is_windows = sys.platform == "win32"
+                alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
+            else:
+                alias_path = None
+            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
+            meta = read_profile_meta(entry)
+            profiles.append(ProfileInfo(
+                name=name,
+                path=entry,
+                is_default=False,
+                gateway_running=_check_gateway_running(entry),
+                model=model,
+                provider=provider,
+                has_env=(entry / ".env").exists(),
+                skill_count=_count_skills(entry),
+                alias_path=alias_path if (alias_path and alias_path.exists()) else None,
+                alias_name=alias_name,
+                distribution_name=dist_name,
+                distribution_version=dist_version,
+                distribution_source=dist_source,
+                description=meta.get("description", ""),
+                description_auto=meta.get("description_auto", False),
+                display_name=meta.get("display_name", ""),
+            ))
+
     return profiles
 
 
@@ -1031,9 +1159,17 @@ def _live_default_multiplexer() -> bool:
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
-    """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
-    module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials."""
+    """Seed bundled skills into a profile via subprocess.
+
+    Uses subprocess because sync_skills() caches HERMES_HOME at module level.
+    Returns the sync result dict, or None on failure.
+
+    Profiles that opted out of bundled skills (via ``hermes profile create
+    --no-skills`` — which writes ``.no-bundled-skills`` to the profile root)
+    still run the sync: ``sync_skills()`` detects the marker itself and seeds
+    only the essential skills (e.g. ``hermes-agent``), reporting
+    ``skipped_opt_out`` so callers can say "opted out" instead of "failed".
+    """
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
@@ -1785,17 +1921,28 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
 
 
 def rename_profile(old_name: str, new_name: str) -> Path:
-    """Rename a profile: directory, wrapper script, service, active_profile. The default
-    profile's home IS the installation root, so "renaming" it sets a presentation-only
-    ``display_name`` instead — the canonical id stays ``default``."""
-    old_canon = _canon_valid(old_name)
+    """Rename a profile: directory, wrapper script, service, active_profile.
+
+    The default profile's home IS the installation root, so "renaming" it
+    sets a presentation-only ``display_name`` in profile.yaml instead —
+    the canonical id stays ``default`` and every resolution path is
+    untouched.
+
+    Returns the (new) profile directory.
+    """
+    old_canon = normalize_profile_name(old_name)
+    validate_profile_name(old_canon)
+
     if old_canon == "default":
         if not (new_name or "").strip():
             raise ValueError("Display name cannot be empty.")
         cleaned = set_profile_display_name("default", new_name)
         print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
         return _get_default_hermes_home()
-    new_canon = _canon_valid(new_name)
+
+    new_canon = normalize_profile_name(new_name)
+    validate_profile_name(new_canon)
+
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
     old_dir = get_profile_dir(old_canon)

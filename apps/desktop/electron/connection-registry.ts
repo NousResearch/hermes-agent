@@ -223,7 +223,6 @@ export interface RegistryLocalRoute {
 }
 
 export interface ResolvedConnectionSshDescriptor {
-  effectiveConfigFingerprint?: string
   host?: string
   keyPath?: string
   port?: number
@@ -370,85 +369,6 @@ export function resolvedConnectionId(
   }
 
   return matchingConnectionId(registry, route, 'unique') ?? null
-}
-
-export interface ReuseMatchingPrimarySshBackendOptions {
-  connectionId: null | string | undefined
-  effectiveFingerprint: (source: RegistryConnection) => Promise<string>
-  ensurePrimary: () => Promise<ResolvedConnectionDescriptor>
-  profile: null | string | undefined
-  registry: ConnectionRegistry
-  source: RegistryConnection
-}
-
-/**
- * Reuse the v1 window SSH backend only when its actual dialing identity matches
- * the registry primary. Resolving that descriptor may boot the primary; a
- * mismatch returns null without reusing it so the caller continues with its
- * separately scoped registry backend. A matching descriptor is returned
- * unchanged and the caller may re-stamp routing fields such as profile and
- * connectionId. Guards run before either async dependency so secondary
- * profiles and sources never bootstrap the primary.
- */
-export async function reuseMatchingPrimarySshBackend({
-  connectionId,
-  effectiveFingerprint,
-  ensurePrimary,
-  profile,
-  registry,
-  source
-}: ReuseMatchingPrimarySshBackendOptions): Promise<null | ResolvedConnectionDescriptor> {
-  const id = String(connectionId ?? '').trim()
-  const profileKey = String(profile ?? '').trim() || 'default'
-
-  if (profileKey !== 'default' || !id || id !== registry.primary || source.id !== id || source.kind !== 'ssh') {
-    return null
-  }
-
-  let sourceFingerprint
-
-  try {
-    sourceFingerprint = String(await effectiveFingerprint(source)).trim()
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause)
-
-    throw new Error(
-      `Could not resolve effective SSH config for connection "${source.label}" (${source.id}) via ssh -G: ${detail}`,
-      { cause }
-    )
-  }
-
-  const descriptor = await ensurePrimary()
-  const activeSsh = descriptor.mode === 'remote' && descriptor.remoteKind === 'ssh' ? descriptor.ssh : null
-  const rootProfile = (value: unknown) => String(value || '').trim() || 'default'
-
-  if (
-    !sourceFingerprint ||
-    !activeSsh ||
-    sourceFingerprint !== String(activeSsh.effectiveConfigFingerprint || '').trim() ||
-    String(source.remoteHermesPath || '').trim() !== String(activeSsh.remoteHermesPath || '').trim() ||
-    rootProfile(source.remoteProfile) !== rootProfile(activeSsh.remoteProfile)
-  ) {
-    return null
-  }
-
-  return descriptor
-}
-
-/**
- * Whether a registry-scoped request names the already-running primary backend.
- * Main uses this before opening a pooled registry backend so the registry's
- * primary SSH/remote source cannot spawn a second isolated server for the same
- * descriptor.
- */
-export function registrySourceOwnsPrimaryBackend(
-  registry: ConnectionRegistry,
-  connectionId: null | string | undefined,
-  descriptor: ResolvedConnectionDescriptor
-): boolean {
-  const id = String(connectionId ?? '').trim()
-
-  return Boolean(id) && id === registry.primary && resolvedConnectionId(registry, descriptor) === id
 }
 
 function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
@@ -739,8 +659,7 @@ export function buildAgentRoster(
       connectionLabel: connection.label,
       profile,
       targetProfile: connection.remoteProfile || profile,
-      handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1),
-      ...(profileMetadata ? { profileMetadata } : {})
+      handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1)
     })
   }
 
@@ -1472,7 +1391,7 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
  *
  * Remote-shaped entries are matched by normalized URL across remote/cloud so
  * changing provenance never duplicates a gateway. Existing identity and
- * user-chosen label win; a Cloud name upgrades only the default host label. Switching to
+ * user-chosen label win; a new entry derives both from the host. Switching to
  * local keeps registered remotes available while moving primary/last-used
  * back to This device.
  */
@@ -1509,16 +1428,12 @@ export function reconcileAppliedGlobalConnection(
 
   const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
 
-  const hostLabel = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
-  const name = kind === 'cloud' ? String(block.name ?? existing?.name ?? '').trim() : ''
-
   const label =
-    existing && (!name || existing.label !== hostLabel)
-      ? existing.label
-      : uniqueLabel(
-          name || hostLabel,
-          registry.connections.filter(connection => connection.id !== existing?.id).map(connection => connection.label)
-        )
+    existing?.label ||
+    uniqueLabel(
+      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+      registry.connections.map(connection => connection.label)
+    )
 
   const entry = normalizeConnectionInput(
     {
@@ -1529,8 +1444,7 @@ export function reconcileAppliedGlobalConnection(
       authMode: block.authMode,
       token: block.token,
       headers: block.headers,
-      org: block.org,
-      name
+      org: block.org
     },
     registry
   )
@@ -1558,13 +1472,6 @@ export function reconcileAppliedGlobalConnection(
  * registry entry at all. That is the drift state and nothing else. If the
  * route is already registered but `primary` names another source, the user
  * chose that in the Connections panel and we leave it alone.
- *
- * SSH drifts the same way remote does: a v1 global `mode:'ssh'` route (host,
- * no url) written by Settings after the one-shot migration has no registry
- * identity, so `resolvedConnectionId` returns null, `primary` stays `local`,
- * and every launch re-homes the window onto a local backend — and because the
- * heal used to skip SSH entirely, the two files re-drifted after every update
- * relaunch instead of converging once.
  */
 export function reconcileRegistryDrift(
   registry: ConnectionRegistry,
@@ -1572,60 +1479,6 @@ export function reconcileRegistryDrift(
 ): { changed: boolean; registry: ConnectionRegistry } {
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
   const unchanged = { changed: false, registry }
-
-  if (config.mode === 'ssh') {
-    const ssh = normalizeSshConfig({
-      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
-      mode: 'ssh'
-    })
-
-    if (!ssh) {
-      // A v1 SSH route without a usable host is not a route we can register.
-      return unchanged
-    }
-
-    const target = normalizedSshTarget(ssh)
-
-    const alreadyRegistered = registry.connections.some(
-      connection =>
-        connection.kind === 'ssh' &&
-        normalizedSshTarget(connection) === target &&
-        (connection.port ?? 22) === (ssh.port ?? 22)
-    )
-
-    if (alreadyRegistered) {
-      // Route is known; if primary names another source, that is the user's
-      // Connections-panel choice, not drift.
-      return unchanged
-    }
-
-    const { mode: _mode, ...sshFields } = ssh
-
-    let entry: RegistryConnection
-
-    try {
-      entry = normalizeConnectionInput(
-        {
-          kind: 'ssh',
-          label: uniqueLabel(
-            ssh.host,
-            registry.connections.map(connection => connection.label)
-          ),
-          ...sshFields
-        },
-        registry
-      )
-    } catch {
-      // Validation failure (e.g. a crafted collision) must not corrupt the
-      // registry; the v1 path keeps failing the way it already does.
-      return unchanged
-    }
-
-    return {
-      changed: true,
-      registry: { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
-    }
-  }
 
   if (!modeIsRemoteLike(config.mode)) {
     return unchanged

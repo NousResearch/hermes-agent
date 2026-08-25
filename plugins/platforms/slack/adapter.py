@@ -5922,9 +5922,11 @@ class SlackAdapter(BasePlatformAdapter):
             source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
             store_cfg = getattr(session_store, "config", None)
             return build_session_key(
-                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False),
-                profile=self._session_key_profile(source))
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+                profile=self._session_key_profile(source),
+            )
         except Exception:
             return None
 

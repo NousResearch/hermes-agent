@@ -90,11 +90,11 @@ export function RenameProfileDialog({
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (!isDefault) {
         retireLocalProfileGateways(currentName)
       }
 
-      await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+      await renameProfile(currentName, trimmed)
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)

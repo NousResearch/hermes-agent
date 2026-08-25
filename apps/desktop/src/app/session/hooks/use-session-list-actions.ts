@@ -239,10 +239,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   }, [profileScope])
 
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
-  const refreshSessions = useCallback(
-    async (shouldPublish: () => boolean = () => true) => {
-      const sessionProfile = sidebarProfileForScope(profileScope)
-      const activationEpoch = gatewayActivationEpoch()
+  const refreshSessions = useCallback(async () => {
+    const sessionProfile = sidebarProfileForScope(profileScope)
+    const activationEpoch = gatewayActivationEpoch()
 
       if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
         return
@@ -263,26 +262,49 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       try {
         const limit = $sessionsLimit.get()
 
-        // Require at least one message so abandoned/empty "Untitled" drafts (one
-        // was created per TUI/desktop launch before the lazy-create fix) don't
-        // clutter the sidebar.
-        // Unified cross-profile list (served read-only off each profile's
-        // state.db; no per-profile backend is spawned). Single-profile users get
-        // the same rows tagged profile="default".
-        // Scope every sidebar slice to the active profile (not always 'all') so a profile
-        // with few recent sessions isn't windowed out of the cross-profile
-        // recency page and never inherits another profile's cron or messaging
-        // sections. ALL_PROFILES remains the explicit unified view.
-        // Batched: one request opens each profile DB once and returns all three
-        // source-scoped slices, instead of three separate listAllProfileSessions
-        // calls that each reopened + re-counted every profile DB per refresh.
-        const result = await listSidebarSessions({
-          recentsProfile: sessionProfile,
-          recentsLimit: limit,
-          recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
-          cronLimit: CRON_SECTION_LIMIT,
-          messagingLimit: MESSAGING_SECTION_LIMIT,
-          messagingExclude: MESSAGING_EXCLUDED_SOURCES
+      // Require at least one message so abandoned/empty "Untitled" drafts (one
+      // was created per TUI/desktop launch before the lazy-create fix) don't
+      // clutter the sidebar.
+      // Unified cross-profile list (served read-only off each profile's
+      // state.db; no per-profile backend is spawned). Single-profile users get
+      // the same rows tagged profile="default".
+      // Scope every sidebar slice to the active profile (not always 'all') so a profile
+      // with few recent sessions isn't windowed out of the cross-profile
+      // recency page and never inherits another profile's cron or messaging
+      // sections. ALL_PROFILES remains the explicit unified view.
+      // Batched: one request opens each profile DB once and returns all three
+      // source-scoped slices, instead of three separate listAllProfileSessions
+      // calls that each reopened + re-counted every profile DB per refresh.
+      const result = await listSidebarSessions({
+        recentsProfile: sessionProfile,
+        recentsLimit: limit,
+        recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+        cronLimit: CRON_SECTION_LIMIT,
+        messagingLimit: MESSAGING_SECTION_LIMIT,
+        messagingExclude: MESSAGING_EXCLUDED_SOURCES
+      })
+
+      if (
+        refreshSessionsRequestRef.current === requestId &&
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
+        gatewayActivationEpoch() === activationEpoch
+      ) {
+        const recents = result.recents
+
+        // Drop rows the user just deleted/archived: a refresh can race an
+        // in-flight mutation and the backend page still carries the doomed row.
+        // Honoring the optimistic tombstone keeps the removal from flashing back
+        // (the tombstone self-clears once projects.tree confirms the delete).
+        const incoming = dropTombstoned(recents.sessions)
+
+        // Signature-gate the swap (same pattern as cron/messaging): a refresh
+        // that returns content-identical rows must keep the previous array
+        // identity, or every sidebar memo keyed on $sessions recomputes and the
+        // whole list re-renders once per turn/broadcast for nothing.
+        setSessions(prev => {
+          const next = mergeSessionPage(prev, incoming, sessionsToKeep())
+
+          return sameCronSignature(prev, next) ? prev : next
         })
 
         if (
@@ -378,6 +400,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           setSessionsLoading(false)
         }
       }
+    } finally {
+      // The request id is enough here: a newer refresh owns its own loading
+      // state, while a failed source activation still needs the old request to
+      // clear the spinner even though it advanced the gateway epoch.
+      if (showLoading && refreshSessionsRequestRef.current === requestId) {
+        setSessionsLoading(false)
+      }
+    }
 
       // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
       if (shouldPublish() && sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {

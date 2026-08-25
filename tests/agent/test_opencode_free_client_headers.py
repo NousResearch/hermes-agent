@@ -41,7 +41,7 @@ def _zen_call_headers(mock_openai):
     return dict(matching[-1].kwargs.get("default_headers") or {})
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("run_agent.OpenAI")
 def test_opencode_free_blanks_authorization_header(mock_openai):
     """Whatever api_key value reaches the client build (placeholder, stale
     key, empty), the Authorization default header must be blanked so the
@@ -62,7 +62,7 @@ def test_opencode_free_blanks_authorization_header(mock_openai):
         )
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("run_agent.OpenAI")
 def test_opencode_free_sends_hermes_attribution(mock_openai):
     """Keyless requests still identify as Hermes (attribution headers match
     the opencode zen/go profiles)."""
@@ -78,7 +78,7 @@ def test_opencode_free_sends_hermes_attribution(mock_openai):
     assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("run_agent.OpenAI")
 def test_other_providers_unaffected(mock_openai):
     """The opencode-free header policy must not leak to other providers."""
     mock_openai.return_value = MagicMock()
@@ -94,34 +94,3 @@ def test_other_providers_unaffected(mock_openai):
     assert "Authorization" not in headers, (
         "opencode-zen (keyed) must not have its Authorization header blanked"
     )
-
-
-@patch("agent.process_bootstrap.OpenAI")
-def test_keyless_placeholder_blanks_authorization_under_paid_opencode_profile(mock_openai):
-    """A free slug selected under the paid ``opencode`` profile resolves to the keyless
-    placeholder; it must be blanked exactly like under ``opencode-free``, or every request
-    401s with nothing in the pool to rotate (#110831)."""
-    mock_openai.return_value = MagicMock()
-    agent = _FakeAgent(api_key="opencode-zen-free-keyless")
-    agent.provider = "opencode"
-    create_openai_client(
-        agent,
-        {"api_key": "opencode-zen-free-keyless", "base_url": ZEN_V1},
-        reason="test",
-        shared=False,
-    )
-    assert _zen_call_headers(mock_openai).get("Authorization") == ""
-
-
-def test_async_aux_wrapper_keeps_keyless_authorization_blank():
-    """``_to_async_client`` rebuilds default_headers; the keyless placeholder must stay
-    blanked on the async twin too, or every async aux call ships the placeholder bearer."""
-    import openai
-    import agent.auxiliary_client as aux
-
-    sync_client = aux._create_openai_client(api_key="opencode-zen-free-keyless", base_url=ZEN_V1)
-    async_client, _ = aux._to_async_client(sync_client, "x-preview-f-free")
-    request = async_client._build_request(
-        openai._models.FinalRequestOptions.construct(method="post", url="/chat/completions", json_data={})
-    )
-    assert request.headers.get("authorization") == ""

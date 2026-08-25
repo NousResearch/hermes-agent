@@ -7,6 +7,8 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 ``base_session_env``, ``base_wait``, ``path_utils``).
 """
 
+import codecs
+import hashlib
 import json
 import logging
 import os
@@ -116,6 +118,148 @@ def get_sandbox_dir() -> Path:
     return p
 
 
+# A persistent sandbox's host directory is named after task_id, and that name
+# then becomes the source half of a `-v <source>:<target>` spec (Docker) or a
+# writable-overlay directory (Singularity). Docker splits the spec on ':', so
+# a colon-bearing name arrives as extra mount fields and the run is refused
+# outright ("invalid spec ... too many colons" / "invalid mode", exit 125).
+# Path separators would additionally escape the sandbox root, and Windows
+# forbids ':' in path segments entirely.
+_SANDBOX_DIR_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_SANDBOX_DIR_MAX_LEN = 128
+_SANDBOX_DIR_HASH_LEN = 12
+
+
+def sanitize_task_id_for_path(task_id: str) -> str:
+    """Return a bind-mountable directory name for *task_id*'s sandbox.
+
+    Shared by every environment backend that turns a task id into a host
+    filesystem path component (Docker persistent sandboxes, Singularity
+    persistent overlays). Names that are already safe are returned verbatim,
+    so the shared ``default`` sandbox and RL/benchmark task ids keep resolving
+    to the directory they have always used — no installed package or ``/root``
+    state moves. Only ids that could never have produced a working bind mount
+    are rewritten.
+
+    A rewrite also appends a digest of the original id, because the character
+    substitution alone is not injective: ``a:b`` and ``a_b`` would otherwise
+    share one persistent sandbox and leak one session's ``/root`` into
+    another's container. The digest is a pure function of the id, so the same
+    session resolves to the same directory in every process — cross-process
+    container reuse depends on that.
+    """
+    value = task_id if isinstance(task_id, str) else ""
+    if not value:
+        # An empty component collapses the path onto the sandbox root, which
+        # would bind-mount every task's state at once.
+        return "default"
+
+    cleaned = _SANDBOX_DIR_UNSAFE_RE.sub("_", value)
+    if (
+        cleaned == value
+        and len(value) <= _SANDBOX_DIR_MAX_LEN
+        and value not in {".", ".."}
+        # Windows silently strips trailing dots/spaces, aliasing two ids onto
+        # one directory.
+        and not value.endswith((".", " "))
+    ):
+        return value
+
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_SANDBOX_DIR_HASH_LEN]
+    stem = cleaned[: _SANDBOX_DIR_MAX_LEN - _SANDBOX_DIR_HASH_LEN - 1].strip("._")
+    return f"{stem or 'task'}-{digest}"
+
+
+# ---------------------------------------------------------------------------
+# Shared constants and utilities
+# ---------------------------------------------------------------------------
+
+
+def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
+    """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
+
+    On Windows, text-mode stdin (``text=True`` / ``encoding="utf-8"``)
+    translates ``\\n`` → ``\\r\\n`` as the data flows through the pipe —
+    which corrupts every write_file / patch call because the bytes that
+    land on disk include injected carriage returns.  The file IS created,
+    but every subsequent byte-count / content compare against the
+    caller's ``\\n``-only string fails.
+
+    Workaround: write through ``proc.stdin.buffer`` (the underlying byte
+    buffer), encoding to UTF-8 ourselves.  That bypasses Python's
+    newline translation entirely on every platform.  No behaviour change
+    on POSIX — the byte sequence is identical to what text-mode would
+    produce there.
+
+    Encoding uses ``errors="surrogateescape"`` — the exact inverse of the
+    surrogateescape decode, so original bytes are restored.  For
+    surrogate-free strings it is byte-identical to strict UTF-8.
+    Surrogates outside the round-trip range U+DC80–U+DCFF raise and are
+    recorded on ``proc._hermes_stdin_errors`` while stdin is still closed
+    in ``finally`` so the child sees EOF instead of hanging;
+    ``_wait_for_process`` reads the recorded error and surfaces it as
+    ``stdin_error`` on the result.
+    """
+
+    errors: list[BaseException] = []
+    proc._hermes_stdin_errors = errors
+
+    def _write():
+        if proc.stdin is None:
+            errors.append(RuntimeError("process stdin unavailable"))
+            return
+        # Resolve the target BEFORE encoding: a failed encode must still
+        # reach the finally-close, or the child hangs on EOF forever.
+        target = getattr(proc.stdin, "buffer", proc.stdin)
+        try:
+            raw = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
+            written = target.write(raw)
+            if written != len(raw):
+                # Buffered writers normally complete or raise; a short write
+                # is a real failure and must be surfaced, not swallowed.
+                raise RuntimeError(f"short stdin write: {written} of {len(raw)} bytes")
+        except (BrokenPipeError, OSError):
+            pass  # child closed stdin early — normal
+        except Exception as exc:
+            # Only reachable with surrogates outside the surrogateescape
+            # round-trip range (e.g. a literal U+D800). Record it so
+            # _wait_for_process can surface it instead of a silent false
+            # success.
+            errors.append(exc)
+        finally:
+            try:
+                target.close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_write, daemon=True)
+    proc._hermes_stdin_thread = thread
+    thread.start()
+
+
+def _popen_bash(
+    cmd: list[str], stdin_data: str | None = None, **kwargs
+) -> subprocess.Popen:
+    """Spawn a subprocess with standard stdout/stderr/stdin setup.
+
+    If *stdin_data* is provided, writes it asynchronously via :func:`_pipe_stdin`.
+    Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
+    this and call :func:`_pipe_stdin` directly.
+    """
+    kwargs.setdefault("creationflags", windows_hide_flags())
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+        **kwargs,
+    )
+    if stdin_data is not None:
+        _pipe_stdin(proc, stdin_data)
+    return proc
+
+
 def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
     try:
@@ -137,6 +281,191 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return (st.st_mtime, st.st_size)
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# ProcessHandle protocol
+# ---------------------------------------------------------------------------
+
+
+class ProcessHandle(Protocol):
+    """Duck type that every backend's _run_bash() must return.
+
+    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
+    return _ThreadedProcessHandle which adapts their blocking calls.
+    """
+
+    def poll(self) -> int | None: ...
+    def kill(self) -> None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    @property
+    def stdout(self) -> IO[str] | None: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+
+class _ThreadedProcessHandle:
+    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
+
+    Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
+    thread and exposes a ProcessHandle-compatible interface.  An optional
+    ``cancel_fn`` is invoked on ``kill()`` for backend-specific cancellation
+    (e.g. Modal sandbox.terminate, Daytona sandbox.stop).
+    """
+
+    def __init__(
+        self,
+        exec_fn: Callable[[], tuple[str, int]],
+        cancel_fn: Callable[[], None] | None = None,
+    ):
+        self._cancel_fn = cancel_fn
+        self._done = threading.Event()
+        self._returncode: int | None = None
+        self._error: Exception | None = None
+
+        # Pipe for stdout — drain thread in _wait_for_process reads the read end.
+        read_fd, write_fd = os.pipe()
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self._write_fd = write_fd
+
+        def _worker():
+            try:
+                output, exit_code = exec_fn()
+                self._returncode = exit_code
+                # Write output into the pipe so drain thread picks it up.
+                try:
+                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
+                except OSError:
+                    pass
+            except Exception as exc:
+                self._error = exc
+                self._returncode = 1
+            finally:
+                try:
+                    os.close(self._write_fd)
+                except OSError:
+                    pass
+                self._done.set()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        return self._returncode if self._done.is_set() else None
+
+    def kill(self):
+        if self._cancel_fn:
+            try:
+                self._cancel_fn()
+            except Exception:
+                pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._done.wait(timeout=timeout)
+        return self._returncode
+
+
+# ---------------------------------------------------------------------------
+# CWD marker for remote backends
+# ---------------------------------------------------------------------------
+
+
+def _cwd_marker(session_id: str) -> str:
+    return f"__HERMES_CWD_{session_id}__"
+
+
+# Per-session variables that the gateway bridges freshly onto every command's
+# process environment (via tools/environments/local._inject_session_context_env,
+# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
+# the shared bash session snapshot: a single long-lived backend serves many
+# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
+# collapse the terminal to one "default" environment), so ``export -p`` dumping
+# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
+# session ``source`` that stale value and see a FOREIGN session's identity —
+# overriding the correct per-command Popen env (issue: cross-session
+# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
+# snapshot is safe because they are re-injected on every command; a snapshot
+# should only carry the user's own shell state (PATH, functions, exports they
+# set), not Hermes' per-turn session identity.
+#
+# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
+# with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
+# as the Python-side contract for the exclusion set; the dump path unsets by
+# name/prefix instead of grepping declare lines (see below / issue #71296).
+_SNAPSHOT_EXCLUDED_ENV_REGEX = (
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
+)
+_SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _export_dump_excluding_session_vars(
+    tmp_path: str,
+    excluded_names: Iterable[str] = (),
+) -> str:
+    """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
+    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and any
+    additional names supplied by the caller.
+
+    Unset the bridged vars in a subshell *before* ``export -p``. A line-based
+    ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
+    as a multi-line ``declare -x NAME="…`` block, so only the opener matches the
+    regex and continuation lines (e.g. ``curl … | bash #`` smuggled into a
+    Matrix room/display name via ``HERMES_SESSION_CHAT_NAME``) land in the
+    snapshot and execute on the next ``source`` (issue #71296). Unsetting first
+    means ``export -p`` never emits those vars — including any continuation
+    lines. ``|| true`` keeps the success contract for callers that chain on it.
+
+    The dump MUST be wrapped in a brace group with the redirection applied to
+    the group. *tmp_path* is typically a shell-variable expansion (a
+    mktemp-allocated per-writer temp name); a redirection attached to a
+    pipeline segment would expand it inside that segment's subshell,
+    potentially inconsistently with the parent that expands the follow-up
+    ``mv``. The brace-group redirect is expanded in the current shell,
+    keeping both expansions consistent.
+    """
+    # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
+    # because ``unset`` with only missing names is ignored under 2>/dev/null.
+    # Quote caller-provided names so malformed configuration can never become
+    # shell syntax. Valid environment names remain unquoted by shlex.quote().
+    safe_names = {
+        name for name in excluded_names
+        if isinstance(name, str) and name
+    }
+    extra_unset = " ".join(shlex.quote(name) for name in sorted(safe_names))
+    if extra_unset:
+        extra_unset = f" {extra_unset}"
+    return (
+        "{ ( "
+        "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "${!HERMES_BROWSER_CONTROL_*} "
+        # AI_AGENT / HERMES_AGENT are per-command attribution markers
+        # (re-exported by every _wrap_command with outer-harness-preserving
+        # ${VAR:-default} semantics).  Persisting them into the snapshot
+        # would make the FIRST command's value override a later outer
+        # harness value arriving via the process env, exactly like the
+        # session-var leak this dump already guards against.
+        "AI_AGENT HERMES_AGENT "
+        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        "export -p; "
+        ") || true; } "
+        f"> {tmp_path}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BaseEnvironment
+# ---------------------------------------------------------------------------
 
 
 class BaseEnvironment(ABC):

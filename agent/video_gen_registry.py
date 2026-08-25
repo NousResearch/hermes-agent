@@ -27,9 +27,39 @@ _registry.export(globals())
 
 
 def get_active_provider() -> Optional[VideoGenProvider]:
-    """Resolve the currently-active provider (see module docstring)."""
-    configured = configured_provider_name("video_gen", logger)
-    snapshot = _registry.merged()
+    """Resolve the currently-active provider.
+
+    Reads ``video_gen.provider`` from config.yaml; falls back per the
+    module docstring.
+    """
+    configured: Optional[str] = None
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        section = cfg.get("video_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            raw = section.get("provider")
+            if isinstance(raw, str) and raw.strip():
+                configured = raw.strip()
+    except Exception as exc:
+        logger.debug("Could not read video_gen.provider from config: %s", exc)
+
+    # The managed "Nous Subscription" selection is serviced by the FAL
+    # plugin through the managed fal-queue gateway (the plugin's resolver
+    # routes managed when the stored selection is "nous").
+    if configured:
+        try:
+            from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+            if configured.lower() == NOUS_MANAGED_PROVIDER:
+                configured = "fal"
+        except Exception:  # pragma: no cover — helpers are in-repo
+            pass
+
+    with _lock:
+        snapshot = dict(_providers)
+        snapshot.update(_scoped_providers.get(hermes_home_key(), {}))
 
     if configured:
         provider = snapshot.get(configured)

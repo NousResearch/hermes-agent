@@ -476,23 +476,47 @@ _DB_CACHE: Dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
 
-# How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap before degrading to None.
-# Normal SessionDB init is ~10-100ms so a mid-bootstrap call usually picks the cached instance up;
-# a contended init (locked state.db mid-migration) exceeds it and degrades. Far under the
-# watchdog's probe window.
+# How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap
+# before degrading to None. Normal SessionDB init is ~10-100ms, so a call
+# that arrives mid-bootstrap usually picks the cached instance up within
+# this window. A contended init (locked state.db mid-migration) blows past
+# it and the caller degrades. The loop stalls far under the watchdog's
+# probe window.
 _DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
 
-# The call that STARTS the bootstrap (cold cache) waits this long instead. A fresh state.db init
-# (schema DDL, FTS tables, first hermes_cli.config import) measures ~300ms warm and more on slow
-# CI — well past 0.25s, which used to drop the first /goal write ("Goal set" but nothing
-# persisted). Only the kick call pays this one-time stall; later calls keep the short window.
+# The call that STARTS the bootstrap (cold cache, nothing in flight)
+# waits this long instead of the short window above. A fresh state.db
+# init measures ~300ms warm on a fast machine: schema DDL, FTS table
+# creation, and the first hermes_cli.config import (journal-mode
+# resolution). It is longer on a slow CI box, and it is well past 0.25s.
+# The old window dropped the first /goal write. The response said
+# "Goal set" but nothing persisted. The longer window is a bounded
+# one-time stall. Only the kick call pays it. Every later call keeps
+# the short window, so a contended migration never stalls the loop
+# repeatedly.
 _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 
 
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
-        db = _acquire_session_db(home)
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_state import SessionDB
+
+        # Bind the caller's home for this thread. The cache key is the
+        # caller's scoped home, so the constructed SessionDB must point at
+        # that home's state.db too. Without the override, a multiplexed
+        # worker thread resolves the process env (the default profile's
+        # HERMES_HOME). It then caches the wrong profile's DB under this
+        # profile's key.
+        token = set_hermes_home_override(home)
+        try:
+            db = SessionDB()
+        finally:
+            reset_hermes_home_override(token)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
@@ -509,9 +533,24 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
 def _get_session_db() -> Optional[Any]:
     """Cached SessionDB per HERMES_HOME (profile switches pick the right DB); None on any failure.
 
-    Never constructs SessionDB on an event-loop thread: a cache miss there kicks a one-shot background
-    bootstrap and waits a bounded grace window (the kick call waits ``_DB_BOOTSTRAP_INIT_WAIT_S`` so a
-    healthy cold init completes and the first write isn't dropped).
+    SessionDB has no built-in singleton, but opening a new connection per
+    /goal call would thrash the file. We cache one instance per
+    ``hermes_home`` path so profile switches still pick up the right DB.
+    Defensive against import/instantiation failures so tests and
+    non-standard launchers can still use the GoalManager.
+
+    Never constructs SessionDB on an event-loop thread. ``SessionDB.__init__``
+    runs schema init, and a migration against a contended state.db blocks for
+    seconds — on the gateway's loop thread that starves the loop-liveness
+    watchdog, which hard-exits the process (exit 75) and crash-loops the
+    gateway (enterprise field report, 2026-08-14). On a cache miss with a running
+    loop we kick a one-shot background bootstrap and wait a bounded grace
+    window for it. The kick call waits the one-time init window
+    (``_DB_BOOTSTRAP_INIT_WAIT_S``), so a healthy cold init completes and
+    the first write is not dropped. Later calls wait only the short window
+    (``_DB_BOOTSTRAP_LOOP_WAIT_S``). On timeout we return None. Every
+    caller degrades gracefully on None, and a later call returns the
+    cached instance.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -549,9 +588,27 @@ def _get_session_db() -> Optional[Any]:
             done = _DB_BOOTSTRAP_INFLIGHT.get(home)
             wait = _DB_BOOTSTRAP_LOOP_WAIT_S   # already running: brief grace window only
             if done is None:
-                done = _DB_BOOTSTRAP_INFLIGHT[home] = threading.Event()
-                threading.Thread(target=_bootstrap_session_db, args=(home, done), name="goals-sessiondb-bootstrap", daemon=True).start()
-                wait = _DB_BOOTSTRAP_INIT_WAIT_S   # kick call pays the one-time init cost
+                done = threading.Event()
+                _DB_BOOTSTRAP_INFLIGHT[home] = done
+                threading.Thread(
+                    target=_bootstrap_session_db,
+                    args=(home, done),
+                    name="goals-sessiondb-bootstrap",
+                    daemon=True,
+                ).start()
+                # This call starts the bootstrap, so it pays the one-time
+                # init cost. Wait long enough for a healthy cold init
+                # (~300ms warm, more on slow CI) to finish. This keeps the
+                # first goal/heartbeat write from being silently dropped.
+                wait = _DB_BOOTSTRAP_INIT_WAIT_S
+            else:
+                # Bootstrap already running: brief grace window only. A
+                # healthy init usually finishes in tens of ms, so this
+                # still picks the cached instance up. A contended init
+                # (the crash-loop scenario) exceeds the window and we
+                # degrade to None. The stall is bounded, far below the
+                # watchdog's probe timeout.
+                wait = _DB_BOOTSTRAP_LOOP_WAIT_S
         done.wait(wait)
         return _DB_CACHE.get(home)
 
@@ -570,36 +627,19 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
-def _acquire_session_db(home: str):
-    """The registry's shared handle for ``home/state.db``. A bare ``SessionDB()`` here was a SECOND
-    writer per profile beside the gateway's registry handle — its own token-writer thread and
-    close-time checkpoint (the #90837 corruption shape), doubled under multiplexing."""
-    from hermes_state_registry import acquire
-    return acquire(Path(home) / "state.db")
-
-
-def _release_session_db(db) -> None:
-    from hermes_state_registry import release_or_close
-    try:
-        release_or_close(db)
-    except Exception:
-        pass
-
-
-def _registry_tore_down(db) -> bool:
-    """True once the registry force-closed *db* (``close_all`` / ``close_all_under`` clear the
-    shared-owned flag at teardown); every handle cached here was acquired through the registry, so a
-    cleared flag means the connection is gone and the cache entry is stale."""
-    return getattr(db, "_shared_registry_owned", True) is False
-
-
 def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
-    """WARN on a dropped state write — the reply already told the user the state was set. One shared
-    message keeps goal, loop and heartbeat logs greppable as one bug class."""
+    """Log a dropped state write at WARNING.
+
+    The reply already told the user that the state was set. A silent
+    drop makes that reply a lie. One shared message keeps the goal,
+    loop, and heartbeat logs greppable as one bug class.
+    """
     logger.warning(
         "%s: %s for %s not persisted — session DB unavailable "
         "(bootstrap window exceeded, in-memory state still active)",
-        manager, kind, session_id,
+        manager,
+        kind,
+        session_id,
     )
 
 
@@ -734,12 +774,383 @@ def _goal_judge_setting(key: str, default, cast):
     return default
 
 
-def _goal_judge_max_tokens() -> int:
-    return _goal_judge_setting("max_tokens", DEFAULT_JUDGE_MAX_TOKENS, int)
-
-
 def _goal_judge_timeout() -> float:
-    return _goal_judge_setting("timeout", DEFAULT_JUDGE_TIMEOUT, float)
+    """Resolve auxiliary.goal_judge.timeout, falling back to the default.
+
+    Mirrors :func:`_goal_judge_max_tokens`. The key is declared in
+    ``DEFAULT_CONFIG`` and surfaces in the auxiliary config UI, but the
+    judge path used to hardcode ``DEFAULT_JUDGE_TIMEOUT`` and never read
+    it — so a user raising the timeout for a slow-but-healthy reasoning
+    endpoint got no effect, and the loop auto-paused on misleading
+    transport failures pointing at provider/key (#91022). A non-positive
+    or non-numeric value falls back rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("timeout", DEFAULT_JUDGE_TIMEOUT)
+        )
+        value = float(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_TIMEOUT
+
+
+def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+    """Parse the judge's reply. Fail-open on unusable output.
+
+    Returns ``(verdict, reason, parse_failed, wait_directive)`` where:
+      - ``verdict`` is ``"done"``, ``"continue"``, or ``"wait"``.
+      - ``parse_failed`` is True when the judge returned output that couldn't
+        be interpreted as the expected JSON verdict (empty body, prose,
+        malformed JSON). Callers use it to auto-pause after N consecutive
+        parse failures so a weak judge model doesn't silently burn the budget.
+      - ``wait_directive`` is set only for ``verdict == "wait"``: a dict with
+        ``{"pid": int}`` or ``{"seconds": int}`` (whichever the judge supplied).
+        ``None`` otherwise. If a wait verdict carries neither a usable pid nor
+        seconds, it is downgraded to ``continue`` (can't park on nothing).
+
+    Accepts both the new ``{"verdict": ...}`` shape and the legacy
+    ``{"done": <bool>}`` shape.
+    """
+    if not raw:
+        return "continue", "judge returned empty response", True, None
+
+    text = raw.strip()
+
+    # Strip markdown code fences the model may wrap JSON in.
+    if text.startswith("```"):
+        text = text.strip("`")
+        # Peel off leading json/JSON/etc tag
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+
+    # First try: parse the whole blob.
+    data: Optional[Dict[str, Any]] = None
+    try:
+        data = json.loads(text)
+    except Exception:
+        # Second try: pull the first JSON object out.
+        match = _JSON_OBJECT_RE.search(text)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except Exception:
+                data = None
+
+    if not isinstance(data, dict):
+        return "continue", f"judge reply was not JSON: {_truncate(raw, 200)!r}", True, None
+
+    reason = str(data.get("reason") or "").strip() or "no reason provided"
+
+    # Determine verdict — prefer the explicit "verdict" field, fall back to
+    # the legacy "done" boolean.
+    verdict_raw = data.get("verdict")
+    if isinstance(verdict_raw, str):
+        verdict = verdict_raw.strip().lower()
+    else:
+        done_val = data.get("done")
+        if isinstance(done_val, str):
+            done = done_val.strip().lower() in {"true", "yes", "1", "done"}
+        else:
+            done = bool(done_val)
+        verdict = "done" if done else "continue"
+
+    if verdict not in {"done", "continue", "wait"}:
+        verdict = "continue"
+
+    if verdict != "wait":
+        return verdict, reason, False, None
+
+    # Wait verdict: extract a concrete directive (pid or seconds). Accept a
+    # few key spellings the model might emit.
+    def _first_int(*keys: str) -> Optional[int]:
+        for k in keys:
+            v = data.get(k)
+            if v is None:
+                continue
+            try:
+                iv = int(v)
+                if iv > 0:
+                    return iv
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    # Prefer a session-id directive (releases on the process's own trigger —
+    # exit OR watch-pattern match), then pid (exit only), then seconds.
+    sess = data.get("wait_on_session") or data.get("session_id") or data.get("wait_session")
+    if isinstance(sess, str) and sess.strip():
+        return "wait", reason, False, {"session_id": sess.strip()}
+    pid = _first_int("wait_on_pid", "pid", "wait_pid")
+    if pid is not None:
+        return "wait", reason, False, {"pid": pid}
+    seconds = _first_int("wait_for_seconds", "seconds", "wait_seconds")
+    if seconds is not None:
+        return "wait", reason, False, {"seconds": seconds}
+    # Wait with no usable target — can't park on nothing; treat as continue.
+    return "continue", f"{reason} (wait verdict had no target — continuing)", False, None
+
+
+def _render_background_block(background_processes: Optional[List[Dict[str, Any]]]) -> str:
+    """Render the live background-process list for the judge prompt.
+
+    Each entry is a ``process_registry.list_sessions()`` dict. Only RUNNING
+    processes are worth showing (an exited one is nothing to wait on). Returns
+    an empty string when there's nothing running, so the judge prompt is
+    byte-identical to the no-background case (no behavior change for the
+    common path).
+    """
+    if not background_processes:
+        return ""
+    lines: List[str] = []
+    for p in background_processes:
+        if not isinstance(p, dict):
+            continue
+        if p.get("status") == "exited":
+            continue
+        pid = p.get("pid")
+        if not pid:
+            continue
+        cmd = _truncate(str(p.get("command") or "").replace("\n", " ").strip(), 120)
+        uptime = p.get("uptime_seconds")
+        tail = _truncate(str(p.get("output_preview") or "").replace("\n", " ").strip(), 120)
+        sid = p.get("session_id")
+        line = f"- pid {pid}"
+        if sid:
+            line += f" / session {sid}"
+        line += f": {cmd}"
+        if uptime is not None:
+            line += f" (running {uptime}s)"
+        # Surface the process's own trigger so the judge can wait on a
+        # mid-run signal (watch-pattern) or completion, not just exit.
+        wps = p.get("watch_patterns")
+        if wps:
+            hit = " [already matched]" if p.get("watch_hit") else ""
+            line += f" | watch_patterns={wps}{hit}"
+        elif p.get("notify_on_complete"):
+            line += " | notify_on_complete"
+        if tail:
+            line += f" | recent output: {tail}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
+
+
+def judge_goal(
+    goal: str,
+    last_response: str,
+    *,
+    timeout: Optional[float] = None,
+    subgoals: Optional[List[str]] = None,
+    background_processes: Optional[List[Dict[str, Any]]] = None,
+    contract: Optional[GoalContract] = None,
+) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
+    """Ask the auxiliary model whether the goal is satisfied.
+
+    Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
+    is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
+    judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
+    (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
+
+    ``parse_failed`` is True only when the judge call succeeded but its output
+    was unusable (empty or non-JSON). API/transport errors return False — they
+    are transient and should fail-open silently.
+
+    ``transport_failed`` is True only when the judge couldn't reach the API at
+    all (auth 401, timeout, DNS, connection error).  Repeated transport
+    failures signal a permanent config problem (e.g. invalid API key).  Callers
+    use this flag to auto-pause after N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``). Callers use this flag to
+    auto-pause after N consecutive parse failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
+
+    ``subgoals`` is an optional list of user-added criteria (from
+    ``/subgoal``) factored into the verdict. ``background_processes`` is the
+    live ``process_registry.list_sessions()`` snapshot; when the agent is
+    waiting on one (a CI poller, build, etc.) the judge can return a ``wait``
+    verdict naming its pid, parking the loop instead of re-poking.
+    ``contract`` is an optional structured completion contract; when present
+    the judge decides DONE strictly against its Verification criterion and
+    refuses completion when a Constraint was violated. All three are additive
+    — a contract, subgoals, and a background-process list can coexist in one
+    judge prompt; when none are set, behavior is identical to the original
+    free-form judge.
+
+    This is deliberately fail-open: transport errors return ``("continue", ..., ..., None, True)``
+    — the ``transport_failed=True`` flag lets callers track and auto-pause after
+    N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``) so a permanently broken
+    judge doesn't burn the entire turn budget.
+    """
+    if not goal.strip():
+        return "skipped", "empty goal", False, None, False
+    if not last_response.strip():
+        # No substantive reply this turn — almost certainly not done yet.
+        return "continue", "empty response (nothing to evaluate)", False, None, False
+    if timeout is None:
+        # The declared default for this path is the config key, not the
+        # module constant — see _goal_judge_timeout (#91022).
+        timeout = _goal_judge_timeout()
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception as exc:
+        logger.debug("goal judge: auxiliary client import failed: %s", exc)
+        return "continue", "auxiliary client unavailable", False, None, False
+
+    # Build the prompt. Priority: contract > subgoals > plain. When both a
+    # contract and subgoals exist, the subgoals are appended into the
+    # contract block as extra criteria so the judge sees a single source of
+    # truth.
+    clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    background_block = _render_background_block(background_processes)
+    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    if contract is not None and not contract.is_empty():
+        contract_block = contract.render_block()
+        if clean_subgoals:
+            extra = "\n".join(
+                f"- Extra criterion {i}: {text}"
+                for i, text in enumerate(clean_subgoals, start=1)
+            )
+            contract_block = f"{contract_block}\n{extra}"
+        prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            contract_block=_truncate(contract_block, 2500),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
+            current_time=current_time,
+        )
+    elif clean_subgoals:
+        subgoals_block = "\n".join(
+            f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
+        )
+        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            subgoals_block=_truncate(subgoals_block, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
+            current_time=current_time,
+        )
+    else:
+        prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
+            current_time=current_time,
+        )
+
+    try:
+        # Route through call_llm so auxiliary.goal_judge.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="goal_judge",
+            messages=[
+                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
+        return "continue", f"judge error: {type(exc).__name__}", False, None, True
+
+    try:
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+    logger.info(
+        "goal judge: verdict=%s reason=%s%s",
+        verdict, _truncate(reason, 120),
+        f" wait={wait_directive}" if wait_directive else "",
+    )
+    return verdict, reason, parse_failed, wait_directive, False
+
+
+def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return the live background-process snapshot for the goal judge.
+
+    Thin, fail-safe wrapper over ``process_registry.list_sessions(task_id)``.
+    Returns only RUNNING processes (an exited one is nothing to wait on) and
+    never raises — any import/registry failure yields ``[]`` so the goal loop
+    degrades to its pre-wait-barrier behavior (judge just won't see processes).
+    The drivers (CLI + gateway) call this and pass the result into
+    ``GoalManager.evaluate_after_turn(background_processes=...)``.
+    """
+    try:
+        from tools.process_registry import process_registry
+
+        sessions = process_registry.list_sessions(task_id=task_id) or []
+    except Exception as exc:
+        logger.debug("gather_background_processes failed: %s", exc)
+        return []
+    return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+
+
+def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
+    """Expand a plain-language objective into a structured completion contract.
+
+    Uses the ``goal_judge`` auxiliary task (main-model-first, cache-safe — it
+    is a side LLM call, not a conversation turn). Returns a populated
+    :class:`GoalContract` on success, or ``None`` when the auxiliary client is
+    unavailable or the model's reply can't be parsed. Callers fall back to a
+    bare free-form goal in that case, so a missing/weak aux model never blocks
+    setting a goal.
+    """
+    objective = (objective or "").strip()
+    if not objective:
+        return None
+    if timeout is None:
+        # Same config-backed default as judge_goal (#91022).
+        timeout = _goal_judge_timeout()
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception as exc:
+        logger.debug("goal draft: auxiliary client import failed: %s", exc)
+        return None
+
+    try:
+        # Route through call_llm — same #35566 fix as the judge call above.
+        resp = call_llm(
+            task="goal_judge",
+            messages=[
+                {"role": "system", "content": DRAFT_CONTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Objective:\n{_truncate(objective, 4000)}"},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.info("goal draft: API call failed (%s)", exc)
+        return None
+
+    try:
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        logger.debug("goal draft: reply was not JSON: %r", _truncate(raw, 200))
+        return None
+    contract = GoalContract.from_dict(data)
+    return None if contract.is_empty() else contract
 
 
 def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:

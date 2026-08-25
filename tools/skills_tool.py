@@ -69,6 +69,35 @@ def _skills_dir() -> Path:
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
 
 
+# Anthropic-recommended limits for progressive disclosure efficiency
+MAX_NAME_LENGTH = 64
+MAX_DESCRIPTION_LENGTH = 1024
+
+# Platform identifiers for the 'platforms' frontmatter field.
+# Maps user-friendly names to sys.platform prefixes.
+_PLATFORM_MAP = {
+    "macos": "darwin",
+    "linux": "linux",
+    "windows": "win32",
+}
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_REMOTE_ENV_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+)
+
+
+def _is_remote_env_backend(backend: str) -> bool:
+    """Built-in remote backends plus plugin backends declaring is_remote."""
+    if backend in _REMOTE_ENV_BACKENDS:
+        return True
+    if not backend or backend == "local":
+        return False
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(backend, "is_remote", False))
+    except Exception:
+        return False
 _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 
@@ -595,9 +624,44 @@ def skill_view(
             **readiness,
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
-            **readiness_extras}
-        _mark_background_review_read(skill_md)
-        if frontmatter.get("compatibility"):  # agentskills.io optional fields
+        }
+
+        setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
+        if setup_help:
+            result["setup_help"] = setup_help
+
+        if capture_result["gateway_setup_hint"]:
+            result["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
+
+        try:
+            from tools.skill_manager_tool import mark_background_review_skill_read
+
+            mark_background_review_skill_read(skill_md)
+        except Exception:
+            logger.debug(
+                "Could not record background-review skill read for %s",
+                skill_md,
+                exc_info=True,
+            )
+
+        if setup_needed:
+            missing_items = [
+                f"env ${env_name}" for env_name in remaining_missing_required_envs
+            ] + [
+                f"file {path}" for path in missing_cred_files
+            ]
+            setup_note = _build_setup_note(
+                SkillReadinessStatus.SETUP_NEEDED,
+                missing_items,
+                setup_help,
+            )
+            if _is_remote_env_backend(backend) and setup_note:
+                setup_note = f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."
+            if setup_note:
+                result["setup_note"] = setup_note
+
+        # Surface agentskills.io optional fields when present
+        if frontmatter.get("compatibility"):
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):
             result["metadata"] = metadata

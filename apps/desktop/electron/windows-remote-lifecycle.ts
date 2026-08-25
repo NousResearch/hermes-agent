@@ -641,7 +641,6 @@ async function connectWindowsRemote(deps) {
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
   const token = crypto.randomBytes(32).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
   await helper(ssh, runtime, 'upload-token', [ownershipId, spawnNonce], token)

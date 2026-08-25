@@ -324,17 +324,30 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "close_interrupted_tool_sequence",
-    "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
-    "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
-    "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
-    # call_id policy owners
-    "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids",
-    # reasoning_content policy owners
-    "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
+    "_SURROGATE_RE",
+    "close_interrupted_tool_sequence",
+    "_sanitize_surrogates",
+    "_sanitize_structure_surrogates",
+    "_sanitize_messages_surrogates",
+    "_escape_invalid_chars_in_json_strings",
+    "_repair_tool_call_arguments",
+    "_strip_non_ascii",
+    "_sanitize_messages_non_ascii",
+    "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages",
+    "_sanitize_structure_non_ascii",
+    # call_id policy owners (F4 consolidation)
+    "deterministic_call_id",
+    "coalesce_tool_call_id",
+    "tool_call_id_variants",
+    "tool_result_id_variants",
+    "uniquify_tool_call_ids",
+    # reasoning_content policy owners (F4 consolidation)
+    "reasoning_echo_family",
+    "matches_reasoning_echo_family",
+    "needs_reasoning_echo",
+    "apply_reasoning_content_policy",
+    "reapply_reasoning_echo",
 ]
 
 
@@ -393,12 +406,69 @@ def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
     return _expand_tool_id_variants((tool_call_id,))
 
 
+def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:
+    """Return every wire spelling of one or more tool-call identifiers.
+
+    Responses bridges may expose the pairing id and response-item id
+    separately, or encode both as ``call_id|response_item_id``.  The values
+    are aliases for one call, not distinct calls.  Keeping the expansion in
+    the shared policy module prevents the repair and pre-send paths from
+    drifting apart again.
+    """
+    variants: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if not value:
+            continue
+        variants.add(value)
+        if "|" in value:
+            for part in value.split("|"):
+                part = part.strip()
+                if part:
+                    variants.add(part)
+    return frozenset(variants)
+
+
+def tool_call_id_variants(tc: Any) -> frozenset[str]:
+    """Return all pairing-id variants carried by a tool-call entry."""
+    if isinstance(tc, dict):
+        values = (
+            tc.get("call_id"),
+            tc.get("id"),
+            tc.get("response_item_id"),
+        )
+    else:
+        values = (
+            getattr(tc, "call_id", None),
+            getattr(tc, "id", None),
+            getattr(tc, "response_item_id", None),
+        )
+    return _expand_tool_id_variants(values)
+
+
+def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
+    """Return all matching variants for a role=tool ``tool_call_id``."""
+    return _expand_tool_id_variants((tool_call_id,))
+
+
 def coalesce_tool_call_id(tc: Any) -> str:
-    """Effective call id of a tool_call entry (dict or object); ``""`` when none. Codex Responses
-    carry ``call_id`` (authoritative pairing key), Chat Completions ``id`` only, and bridge ids
-    may be ``call_id|response_item_id``."""
-    for raw in (_tc_field(tc, "call_id"), _tc_field(tc, "id")):
-        value = raw.strip() if isinstance(raw, str) else ""
+    """Extract the effective call ID from a tool_call entry (dict or object).
+
+    Single owner for the canonical pairing rule: Codex Responses tool calls
+    carry ``call_id`` (authoritative pairing key), Chat Completions ones carry
+    ``id`` only, and bridge ids may encode ``call_id|response_item_id``.
+    Returns ``""`` when neither pairing field is set.
+    """
+    if isinstance(tc, dict):
+        values = (tc.get("call_id"), tc.get("id"))
+    else:
+        values = (getattr(tc, "call_id", None), getattr(tc, "id", None))
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
         if value:
             return value.split("|", 1)[0].strip() or value
     return ""

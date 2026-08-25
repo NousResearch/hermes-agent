@@ -58,14 +58,3 @@ test('finalizeGatewayDownload prompts a save dialog then streams the response', 
   // HTTP errors carry their status so a 404 can trigger the fallback.
   assert.match(fn, /throw httpStatusError\(statusCode, /)
 })
-
-test('data-URL fallback writes through the same failure-atomic primitive, never writeFile in place', () => {
-  const fn = extract('async function saveGatewayFileViaDataUrl', '\n// Mint a single-use WS ticket')
-
-  assert.match(fn, /dialog\.showSaveDialog/)
-  assert.match(fn, /writeBufferToFile\(/)
-  assert.match(fn, /fsPumpDeps\(\)/)
-  // A direct writeFile truncates an existing destination before the write
-  // completes; a mid-write failure would destroy it (#96597).
-  assert.doesNotMatch(fn, /fs\.promises\.writeFile/)
-})

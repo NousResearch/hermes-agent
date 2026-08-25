@@ -101,15 +101,16 @@ class PricingEntry:
     source_url: Optional[str] = None
     pricing_version: Optional[str] = None
     fetched_at: Optional[datetime] = None
-    # Context-tiered pricing (e.g. Gemini Pro above 200k prompt tokens): when
-    # ``usage.prompt_tokens`` exceeds ``tier_threshold_tokens`` the ``*_above``
-    # rates replace the base rates for the WHOLE request (Google's semantics,
-    # not marginal brackets). A None ``*_above`` falls back to its base rate.
+    # Context-tiered pricing (e.g. Gemini Pro models charge higher rates once
+    # the prompt exceeds 200k tokens). When ``tier_threshold_tokens`` is set
+    # and ``usage.prompt_tokens`` (input + cache read + cache write) exceeds
+    # it, the ``*_above`` rates replace the base rates for the WHOLE request —
+    # that matches Google's billing semantics (not marginal/bracketed rates).
+    # Any ``*_above`` field left as None falls back to its base rate.
     tier_threshold_tokens: Optional[int] = None
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
-    cache_write_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -130,18 +131,875 @@ _INCLUDED_ENTRY = PricingEntry(
 )
 
 
-def _snap(
-    inp: str, out: str, cache_read: Optional[str] = None, cache_write: Optional[str] = None, *,
-    version: str, url: Optional[str] = None, **tiers: Any,
-) -> PricingEntry:
-    """Build an official-docs snapshot entry from per-million USD rate strings."""
-    return PricingEntry(
-        input_cost_per_million=Decimal(inp), output_cost_per_million=Decimal(out),
-        cache_read_cost_per_million=Decimal(cache_read) if cache_read is not None else None,
-        cache_write_cost_per_million=Decimal(cache_write) if cache_write is not None else None,
-        source="official_docs_snapshot", source_url=url, pricing_version=version, **tiers,
-    )
+# Official docs snapshot entries. Models whose published pricing and cache
+# semantics are stable enough to encode exactly.
+_OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
+    # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
+    # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache
+    # writes are billed at 1.25x the uncached input rate; cache reads get the
+    # standard 90% discount (0.10x input, confirmed: Sol $0.50/M cached).
+    # Note: "Sol Fast mode" ($12.5/$75, up to 750 tok/s via Cerebras) is a
+    # separate serving tier, not covered by these entries. The "-pro"
+    # variants (high-effort modes, GA alongside base tiers) bill at the
+    # SAME per-token rates and are aliased onto these entries below the
+    # dict (they cost more per task by consuming more tokens, not by a
+    # higher rate — verified against OpenRouter's live pricing 2026-07-09).
+    # Source: https://openai.com/index/previewing-gpt-5-6-sol/
+    (
+        "openai",
+        "gpt-5.6-sol",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("30.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-terra",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("3.125"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-luna",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
+    # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
+    # model ID with 2x premium (vs the 6x premium on older Opus generations).
+    # Source: https://openrouter.ai/anthropic/claude-opus-4.8
+    (
+        "anthropic",
+        "claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-8-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
+    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
+    # through 2026-08-31, after which it reverts to $3/$15 (matching
+    # Sonnet 4.6). Update this entry when the intro window closes.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-06-intro",
+    ),
+    # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
+    # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
+    # tokens for the same text).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-7-20250507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.6 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.5 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4 / 4.1 ─────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-20250514",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-20250514",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # OpenAI
+    (
+        "openai",
+        "gpt-4o",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4o-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.075"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "gpt-4.1-nano",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "o3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("40.00"),
+        cache_read_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    (
+        "openai",
+        "o3-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.10"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.55"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/api/pricing/",
+        pricing_version="openai-pricing-2026-03-16",
+    ),
+    # ── Anthropic older models (pre-4.5 generation) ────────────────────────
+    (
+        "anthropic",
+        "claude-3-5-sonnet-20241022",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-3-5-haiku-20241022",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-3-opus-20240229",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-3-haiku-20240307",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.25"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        cache_write_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # DeepSeek
+    # Snapshot of https://api-docs.deepseek.com/quick_start/pricing (2026-07).
+    # deepseek-chat / deepseek-reasoner are deprecated 2026-07-24 and now alias
+    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
+    (
+        "deepseek",
+        "deepseek-chat",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-07",
+    ),
+    (
+        "deepseek",
+        "deepseek-reasoner",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-07",
+    ),
+    (
+        "deepseek",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.003625"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-07",
+    ),
+    (
+        "deepseek",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-07",
+    ),
+    # Google Gemini
+    (
+        "google",
+        "gemini-3.6-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("7.50"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_version="google-pricing-2026-07-28",
+    ),
+    (
+        "google",
+        "gemini-3.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("9.00"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.5-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("2.50"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_version="google-pricing-2026-07-28",
+    ),
+    (
+        "google",
+        "gemini-3.1-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        tier_threshold_tokens=200_000,
+        input_cost_per_million_above=Decimal("4.00"),
+        output_cost_per_million_above=Decimal("18.00"),
+        cache_read_cost_per_million_above=Decimal("0.40"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-pro-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-flash-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.50"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.25"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.125"),
+        tier_threshold_tokens=200_000,
+        input_cost_per_million_above=Decimal("2.50"),
+        output_cost_per_million_above=Decimal("15.00"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-2.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.015"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-2.0-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.01"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    # AWS Bedrock — pricing per the Bedrock pricing page.
+    # Bedrock charges the same per-token rates as the model provider but
+    # through AWS billing.  These are the on-demand prices (no commitment).
+    # Source: https://aws.amazon.com/bedrock/pricing/
+    # Current-gen Claude Opus on Bedrock. Commercial Bedrock on-demand
+    # mirrors Anthropic's published list price for the Claude line
+    # ($5/$25 for Opus 4.6/4.7/4.8; cache write = 1.25x input at the
+    # 5-minute TTL, cache read = 0.1x input). NOTE: the AWS Price List API
+    # had not published these SKUs machine-readably as of 2026-07 — these
+    # are commercial-list snapshots pending an authoritative machine source.
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-06",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("3.20"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.06"),
+        output_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-micro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.035"),
+        output_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    # MiniMax
+    (
+        "minimax",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    # Fireworks AI — serverless pricing for the models hermes typically routes
+    # through when configured with provider="fireworks". Fireworks publishes a
+    # cached_input rate per model alongside input/output, which maps to
+    # cache_read_cost_per_million. No separately published cache_write rate.
+    # Snapshot of https://docs.fireworks.ai/serverless/pricing (Standard tier).
+    (
+        "fireworks",
+        "kimi-k2p6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.95"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.16"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p7-code",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.95"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.19"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.74"),
+        output_cost_per_million=Decimal("3.48"),
+        cache_read_cost_per_million=Decimal("0.145"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.028"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "qwen3p7-plus",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "gpt-oss-120b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.015"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "gpt-oss-20b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.07"),
+        output_cost_per_million=Decimal("0.30"),
+        cache_read_cost_per_million=Decimal("0.035"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "minimax-m2p7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    # Fast/turbo serving tiers — exposed as accounts/fireworks/routers/<name>,
+    # so rsplit("/", 1) yields these distinct ids with their own (higher) rates.
+    (
+        "fireworks",
+        "kimi-k2p6-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p6-turbo",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p7-code-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.90"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.38"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p2-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.10"),
+        output_cost_per_million=Decimal("6.60"),
+        cache_read_cost_per_million=Decimal("0.21"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p1-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.80"),
+        output_cost_per_million=Decimal("8.80"),
+        cache_read_cost_per_million=Decimal("0.52"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+}
 
+# GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
+# their base tiers (more tokens per task, not a higher rate). Alias them
+# onto the base entries so the snapshot stays single-source. The Hermes-side
+# "-900k" large-context Codex picker variants are the same underlying model
+# (the suffix is stripped on the wire), so they alias identically.
+for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-900k")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+del _base_56
 
 # Official docs snapshot: models whose published pricing and cache semantics are
 # stable enough to encode exactly. Each snapshot is (provider, source_url,
@@ -568,21 +1426,56 @@ def estimate_usage_cost(
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
     amount = _ZERO
-    for tokens, rate, rate_above, note in (
-        (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
-        (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
-        (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
-         ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
-         ("cache-write pricing unavailable for route",)),
+
+    # Whole-request context-tier selection (e.g. Gemini Pro >200k prompts):
+    # once the prompt (input + cache read + cache write) exceeds the entry's
+    # threshold, the above-threshold rates apply to the entire request. Any
+    # tier rate left as None falls back to the base rate.
+    input_rate = entry.input_cost_per_million
+    output_rate = entry.output_cost_per_million
+    cache_read_rate = entry.cache_read_cost_per_million
+    if (
+        entry.tier_threshold_tokens is not None
+        and usage.prompt_tokens > entry.tier_threshold_tokens
     ):
-        if above and rate_above is not None:
-            rate = rate_above
-        if rate is None:
-            if tokens:
-                return _unknown_cost(entry.source, *note)
-            continue
-        amount += Decimal(tokens) * rate / _ONE_MILLION
+        if entry.input_cost_per_million_above is not None:
+            input_rate = entry.input_cost_per_million_above
+        if entry.output_cost_per_million_above is not None:
+            output_rate = entry.output_cost_per_million_above
+        if entry.cache_read_cost_per_million_above is not None:
+            cache_read_rate = entry.cache_read_cost_per_million_above
+
+    if usage.input_tokens and input_rate is None:
+        return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
+    if usage.output_tokens and output_rate is None:
+        return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
+    if usage.cache_read_tokens:
+        if cache_read_rate is None:
+            return CostResult(
+                amount_usd=None,
+                status="unknown",
+                source=entry.source,
+                label="n/a",
+                notes=("cache-read pricing unavailable for route",),
+            )
+    if usage.cache_write_tokens:
+        if entry.cache_write_cost_per_million is None:
+            return CostResult(
+                amount_usd=None,
+                status="unknown",
+                source=entry.source,
+                label="n/a",
+                notes=("cache-write pricing unavailable for route",),
+            )
+
+    if input_rate is not None:
+        amount += Decimal(usage.input_tokens) * input_rate / _ONE_MILLION
+    if output_rate is not None:
+        amount += Decimal(usage.output_tokens) * output_rate / _ONE_MILLION
+    if cache_read_rate is not None:
+        amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
+    if entry.cache_write_cost_per_million is not None:
+        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 

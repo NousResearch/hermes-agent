@@ -171,19 +171,10 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
   }
 
   try {
-    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequestFor(gateway), 'slash.exec', {
-      command: 'goal status',
-      session_id: sid
-    })
+    const result = await gateway.request<{ output?: string }>('slash.exec', { command: 'goal status', session_id: sid })
 
     applyGoalStatusText(sid, result?.output ?? '', { hydrate: true })
-  } catch (error) {
-    if (isSessionGoneForBackgroundPolling(error)) {
-      markSessionGone(sid)
-
-      return
-    }
-
-    // Best-effort: older gateways or a transport blip simply won't hydrate it.
+  } catch {
+    // Best-effort: older gateways or detached sessions simply won't hydrate it.
   }
 }

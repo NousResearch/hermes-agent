@@ -388,10 +388,6 @@ class TestClawHubSource(unittest.TestCase):
             ("skillopt", "harrylabsj"),
         )
         self.assertEqual(
-            ClawHubSource._parse_identifier("clawhub/@harrylabsj/skillopt"),
-            ("skillopt", "harrylabsj"),
-        )
-        self.assertEqual(
             ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
             ("skillopt", "harrylabsj"),
         )
@@ -439,7 +435,6 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(meta)
         mock_get.assert_called_once()
-
 
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):

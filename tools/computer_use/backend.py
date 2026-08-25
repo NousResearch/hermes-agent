@@ -77,8 +77,9 @@ class CaptureResult:
     # part). None → consumers fall back to base64-prefix sniffing (older drivers).
     # See #1961, #47072.
     image_mime_type: Optional[str] = None
-    # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
-    # full-screen composited grabs) to point the model at an interactive lane.
+    # Optional guidance appended to the human-readable summary — used by
+    # capture lanes that intentionally return no elements (e.g. full-screen
+    # composited grabs) to tell the model how to reach an interactive lane.
     note: str = ""
 
 

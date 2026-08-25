@@ -31,7 +31,7 @@ import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
+import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -134,6 +134,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
   const scopeProfile = useStore($settingsRequestProfile)
+  // Both save/toggle toasts offer the same one-click restart.
+  const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart

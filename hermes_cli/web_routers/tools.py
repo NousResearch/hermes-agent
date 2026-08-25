@@ -28,189 +28,18 @@ router = APIRouter()
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
-
-def _env_value(name: str) -> str:
-    """``get_env_value`` that never raises (empty string on any failure)."""
-    try:
-        from hermes_cli.config import get_env_value
-
-        return get_env_value(name) or ""
-    except Exception:
-        return ""
-
-
-def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
-    """Read a terminal.* setting from config.yaml, falling back to its env var."""
-    value = terminal_cfg.get(key)
-    if value is not None and str(value).strip():
-        return str(value).strip()
-    return _env_value(env_var).strip()
-
-
-def _terminal_backend_rows() -> List[Dict[str, str]]:
-    """Built-in picker rows plus plugin-registered backends, computed per request
-    so a plugin installed after server start still shows up."""
-    from hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
-    return [*_TERMINAL_BACKENDS, *_plugin_terminal_backend_rows()]
-
-
-def _probe_docker_backend(_cfg) -> tuple:
-    if not shutil.which("docker"):
-        return ("needs_setup", "Docker CLI not found — install Docker Desktop or docker-ce.")
-    try:
-        proc = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2)
-        if proc.returncode == 0:
-            return ("ready", "")
-        return ("needs_setup", "Docker daemon not reachable — start Docker and retry.")
-    except subprocess.TimeoutExpired:
-        return ("needs_setup", "Docker daemon not responding (timed out).")
-    except Exception as exc:
-        return ("unavailable", f"Docker probe failed: {exc}")
-
-
-def _probe_singularity_backend(_cfg) -> tuple:
-    if shutil.which("singularity") or shutil.which("apptainer"):
-        return ("ready", "")
-    return ("needs_setup", "Neither singularity nor apptainer found on PATH.")
-
-
-def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
-    host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
-    user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
-    missing = [k for k, v in (("terminal.ssh_host", host), ("terminal.ssh_user", user)) if not v]
-    if missing:
-        return (
-            "needs_setup",
-            f"Set {' and '.join(missing)} in config.yaml (or the matching TERMINAL_SSH_* env vars).",
-        )
-    return ("ready", f"{user}@{host}")
-
-
-def _probe_modal_backend(_cfg) -> tuple:
-    try:
-        from tools.tool_backend_helpers import has_direct_modal_credentials
-
-        if has_direct_modal_credentials():
-            return ("ready", "")
-    except Exception:
-        pass
-    if _env_value("MODAL_TOKEN_ID") and _env_value("MODAL_TOKEN_SECRET"):
-        return ("ready", "")
-    return (
-        "needs_setup",
-        "Modal credentials not found — set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (or run `modal setup`).",
-    )
-
-
-def _probe_daytona_backend(_cfg) -> tuple:
-    if _env_value("DAYTONA_API_KEY"):
-        return ("ready", "")
-    return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
-
-
-_BACKEND_PROBES = {
-    "local": lambda _cfg: ("ready", ""),
-    "docker": _probe_docker_backend,
-    "singularity": _probe_singularity_backend,
-    "ssh": _probe_ssh_backend,
-    "modal": _probe_modal_backend,
-    "daytona": _probe_daytona_backend,
-}
-
-
-def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
-    """Return ``(status, detail)`` for one backend. Never raises."""
-    try:
-        probe = _BACKEND_PROBES.get(name)
-        if probe is not None:
-            return probe(terminal_cfg)
-        try:
-            from agent.terminal_env_registry import get_provider
-
-            provider = get_provider(name)
-            if provider is not None:
-                return provider.probe()
-        except Exception:
-            pass
-        return ("unavailable", f"Unknown backend: {name}")
-    except Exception as exc:  # pragma: no cover — belt-and-braces guard
-        return ("unavailable", f"Probe failed: {exc}")
-
-
-# Toolsets whose backends carry a selectable model catalog, mapped to the
-# config.yaml section their `model` key lives in. Mirrors the CLI's
-# post-selection model pickers in tools_config.py.
-_MODEL_CATALOG_TOOLSETS = {"image_gen": "image_gen", "video_gen": "video_gen"}
-
-
-def _resolve_toolset_model_plugin(ts_key: str, provider_row: dict) -> Optional[str]:
-    """Map a provider picker row to its model-catalog plugin name.
-
-    Plugin-backed rows carry ``image_gen_plugin_name`` / ``video_gen_plugin_name``;
-    the managed "Nous Subscription" image row instead carries the legacy
-    ``imagegen_backend: "fal"`` marker (same underlying FAL catalog).
-    """
-    if ts_key == "image_gen":
-        return provider_row.get("image_gen_plugin_name") or (
-            "fal" if provider_row.get("imagegen_backend") else None)
-    if ts_key == "video_gen":
-        return provider_row.get("video_gen_plugin_name")
-    return None
-
-
-def _toolset_model_catalog(ts_key: str, plugin_name: str):
-    """Return ``(catalog_dict, default_model)`` for a toolset's plugin backend."""
-    from hermes_cli.tools_config import _plugin_image_gen_catalog, _plugin_video_gen_catalog
-
-    if ts_key == "image_gen":
-        return _plugin_image_gen_catalog(plugin_name)
-    return _plugin_video_gen_catalog(plugin_name)
-
-
-def _category_providers(ts_key: str, config: dict) -> list:
-    """Visible provider rows for a toolset's category (fresh entitlement read)."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
-
-    cat = TOOL_CATEGORIES.get(ts_key)
-    return _visible_providers(cat, config, force_fresh=True) if cat else []
-
-
-def _find_toolset_provider_row(
-    ts_key: str, config: dict, provider: Optional[str]) -> Optional[dict]:
-    """Resolve a provider picker row by name, or the active row when omitted."""
-    from hermes_cli.tools_config import _is_provider_active
-
-    rows = _category_providers(ts_key, config)
-    if provider:
-        return next((p for p in rows if p.get("name") == provider), None)
-    return next((p for p in rows if _is_provider_active(p, config, force_fresh=True)), None)
-
-
-def _require_known_toolset(name: str) -> None:
-    """400 for toolset keys outside the effective configurable set."""
-    from hermes_cli.tools_config import _get_effective_configurable_toolsets
-
-    if name not in {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}:
-        raise _bad_request(f"Unknown toolset: {name}")
-
-
-def _dict_section(config: dict, key: str) -> dict:
-    """``config[key]`` as a dict, replacing a non-dict value in place."""
-    section = config.setdefault(key, {})
-    if not isinstance(section, dict):
-        section = {}
-        config[key] = section
-    return section
-
-
-def _bad_request(detail: str) -> HTTPException:
-    return HTTPException(status_code=400, detail=detail)
-
-
-def _no_models(name: str) -> dict:
-    return {"name": name, "has_models": False, "models": [], "current": None, "default": None}
+# Live proxies for web_server-owned module state (mutations/monkeypatches
+# on web_server remain authoritative; resolved at operation time).
+_MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
+_TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
+_TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+# Dynamic variants: built-ins + plugin-registered backends, computed per
+# request so a plugin installed after server start still shows up.
+_terminal_backend_rows = late("_terminal_backend_rows")
+_terminal_backend_names = late("_terminal_backend_names")
+# Config read-modify-write serialization for off-loop handlers (defined in
+# web_server.py; LateState supports ``with``-blocks, so this is the live lock).
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 @router.get("/api/tools/toolsets")
@@ -650,11 +479,13 @@ async def select_terminal_backend(
     """Persist ``terminal.backend``.  A backend that still needs setup is
     allowed — the picker shows guidance instead of blocking, like the CLI."""
     backend = (body.backend or "").strip().lower()
-    valid_names = {row["name"] for row in _terminal_backend_rows()}
+    valid_names = _terminal_backend_names()
     if backend not in valid_names:
-        raise _bad_request(
-            f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(valid_names))}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown terminal backend: {body.backend!r}. "
+            f"Use one of: {', '.join(sorted(valid_names))}",
+        )
 
     def _run():
         with config_write_scope(body.profile or profile):

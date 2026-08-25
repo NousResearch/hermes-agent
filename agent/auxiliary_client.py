@@ -107,7 +107,11 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
+    get_model_context_length,
+    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
+)
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
@@ -125,8 +129,14 @@ _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
-    """httpx ``verify`` for an aux base_url, mirroring the main client (per-provider ``ssl_ca_cert`` /
-    ``ssl_verify``, ``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE``); any failure → httpx default (``True``)."""
+    """Resolve httpx ``verify`` for an auxiliary-client base_url.
+
+    Mirrors the main client's TLS resolution so auxiliary calls (compression,
+    vision, title generation, etc.) honor per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` config and the ``HERMES_CA_BUNDLE`` /
+    ``SSL_CERT_FILE`` env conventions. Best-effort: any failure falls back to
+    the httpx/certifi default (``True``).
+    """
     try:
         from agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
@@ -166,21 +176,30 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
-    # OpenCode Zen free tier: the keyless placeholder must never hit the wire (relay 401s any
-    # unrecognized bearer) — blank the Authorization header.
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+    # OpenCode Zen free tier: the keyless placeholder must never reach the
+    # wire — the Zen relay serves free models anonymously but 401s any
+    # unrecognized bearer. Override the SDK's Authorization header with an
+    # empty value (single shared chokepoint for every aux client build).
+    try:
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+            opencode_zen_free_headers,
+        )
         if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+            merged = dict(kwargs.get("default_headers") or {})
+            merged.update(opencode_zen_free_headers())
+            kwargs["default_headers"] = merged
+    except Exception:
+        pass
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
-    # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
-    # wall time on a hung endpoint before Hermes sees one failure.
-    # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
-    # call_llm plus the except-chain fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
-    # attempts) silently multiplies the effective wall time of every aux call by 3× on a slow/hung endpoint,
-    # so a 120s timeout can stall ~360s before Hermes sees a single failure (issue #54465). Disable
-    # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
-    # via kwargs.
+    # Hermes owns auxiliary retry + provider/model fallback policy (the
+    # same-provider transient retry in call_llm plus the except-chain
+    # fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
+    # attempts) silently multiplies the effective wall time of every aux call
+    # by 3× on a slow/hung endpoint, so a 120s timeout can stall ~360s before
+    # Hermes sees a single failure (issue #54465). Disable SDK-internal retries
+    # by default and let Hermes control the budget; explicit callers can still
+    # override via kwargs.
     kwargs.setdefault("max_retries", 0)
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
@@ -583,27 +602,41 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
     """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
-    Other routes expose a larger window for the same slug and keep the user's threshold.
-    Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
-    picker variants are excluded. Astra is substring-matched (any slug containing ``astra``
-    without ``900k``). Name kept for the ``compression.codex_gpt55_autoraise`` key.
+    Matches only the Codex OAuth route (provider ``openai-codex``), not the
+    direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
+    larger context window for the same slug and must keep the user's default
+    compaction threshold. ``-pro`` variants and dated snapshots are matched
+    via prefix so the override tracks every 272K-capped family (5.4, 5.5,
+    5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
+    variant. (Name kept for backward compatibility with the
+    ``compression.codex_gpt55_autoraise`` config key.) The exact
+    ``gpt-daybreak-blue-latest`` Codex slug is also a verified Sol-family
+    alias and receives the same autoraise.
+
+    ``-900k`` large-context picker variants are explicitly EXCLUDED: the
+    85% autoraise exists to stop wasting a small 272K window, and a 900K
+    window doesn't have that problem — those sessions keep the user's
+    global ``compression.threshold`` (default 50%, ~450K).
     """
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
         return False
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     from agent.model_metadata import is_codex_context_variant
     if is_codex_context_variant(bare):
         return False
-    if "astra" in bare:
-        return "900k" not in bare
-    return bare == "gpt-daybreak-blue-latest" or any(
-        bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
-
-
-def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
-    """Lowercased bare model slug when ``provider`` is the Codex OAuth route, else None."""
-    return _bare_model(model) if (provider or "").strip().lower() == "openai-codex" else None
+    return (
+        bare == "gpt-5.4"
+        or bare.startswith("gpt-5.4-")
+        or bare.startswith("gpt-5.4.")
+        or bare == "gpt-5.5"
+        or bare.startswith("gpt-5.5-")
+        or bare.startswith("gpt-5.5.")
+        or bare == "gpt-5.6"
+        or bare.startswith("gpt-5.6-")
+        or bare.startswith("gpt-5.6.")
+        or bare == "gpt-daybreak-blue-latest"
+    )
 
 
 def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> bool:
@@ -627,8 +660,27 @@ def _compression_threshold_for_model(
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
-    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
-    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
+    The threshold is the fraction of the model's context window that must be
+    consumed before Hermes triggers summarization.  Higher values delay
+    compression and preserve more raw context.
+
+    Per-model/route overrides:
+      - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 and the exact Daybreak Sol alias on the
+        Codex OAuth route → 0.85, because
+        Codex caps all three families at 272K and the default 50% trigger
+        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
+        (historical config-key name kept for backward compatibility) so the
+        user can opt back down to the global default (the caller passes the
+        config flag through here).
+      - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
+        has a native 128K window and the default 50% trigger would compact at
+        ~64K — wasting half the usable context. Not gated by the gpt-5.5
+        opt-out flag: 128K is the model's native window, so the raise is
+        unambiguously correct.
+
+    Returns a float in (0, 1] to override the global ``compression.threshold``
+    config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
@@ -910,16 +962,93 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _AUTH_JSON_PATH_AT_IMPORT = _AUTH_JSON_PATH
 
 
-def _auth_json_path():
-    """Active profile's ``auth.json`` at call time (a patched ``_AUTH_JSON_PATH`` still wins). The
-    import-time constant is the LAUNCH profile's; under multiplexing a secondary's auxiliary calls
-    would otherwise authenticate to Nous with the default profile's token."""
-    from hermes_cli.auth import _auth_file_path
-    return _AUTH_JSON_PATH if _AUTH_JSON_PATH != _AUTH_JSON_PATH_AT_IMPORT else _auth_file_path()
+def _is_official_codex_base_url(base_url: str) -> bool:
+    """Identify OpenAI's Codex endpoint without matching custom proxies."""
+    try:
+        parsed = urlparse(base_url)
+        path = parsed.path.rstrip("/")
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "chatgpt.com"
+            and parsed.port in (None, 443)
+            and (path == "/backend-api/codex" or path.startswith("/backend-api/codex/"))
+        )
+    except (TypeError, ValueError):
+        return False
 
-# Hosts exposing BOTH ``…/anthropic`` and a sibling OpenAI ``…/v1``. Matched on the URL *host*
-# only: unconditional rewrites break Anthropic-only gateways.
-_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = ("minimax.io", "minimax.chat", "minimaxi.com")
+
+def _codex_cloudflare_headers(
+    access_token: str, *, base_url: str = _CODEX_AUX_BASE_URL,
+) -> Dict[str, str]:
+    """Identity and account headers for chatgpt.com/backend-api/codex.
+
+    OpenAI requires third-party harnesses to identify themselves. Requests to
+    the official endpoint always send Hermes' originator and version. Custom
+    endpoints retain the existing compatibility identity. In either case,
+    preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
+    ``chatgpt_account_id`` claim.
+
+    Malformed tokens are tolerated — we drop the account-ID header rather than
+    raise, so a bad token still surfaces as an auth error (401) instead of a
+    crash at client construction.
+    """
+    headers = {
+        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+        "originator": "codex_cli_rs",
+    }
+    if _is_official_codex_base_url(base_url):
+        from hermes_cli import __version__
+
+        headers.update({
+            "User-Agent": f"HermesAgent/{__version__}",
+            "originator": "hermes-agent",
+        })
+    if not isinstance(access_token, str) or not access_token.strip():
+        return headers
+    try:
+        import base64
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return headers
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        if isinstance(acct_id, str) and acct_id:
+            headers["ChatGPT-Account-ID"] = acct_id
+    except Exception:
+        pass
+    return headers
+
+
+def _apply_required_codex_headers(
+    client_kwargs: Dict[str, Any], *, access_token: str, base_url: str,
+) -> None:
+    """Keep required Codex identity after user/provider header overrides."""
+    if not _is_official_codex_base_url(base_url):
+        return
+    required = _codex_cloudflare_headers(access_token, base_url=base_url)
+    required_names = {name.lower() for name in required}
+    existing = client_kwargs.get("default_headers") or {}
+    client_kwargs["default_headers"] = {
+        **{name: value for name, value in existing.items()
+           if str(name).lower() not in required_names},
+        **required,
+    }
+
+
+# Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
+# OpenAI-compatible ``…/v1`` (or vendor-specific OpenAI path). Unconditional
+# ``/anthropic`` → ``/v1`` rewrites break Anthropic-only gateways such as
+# Alibaba Bailian Token Plan (#83642).
+#
+# Matching is anchored to the URL *host* (exact domain or subdomain suffix /
+# ``api.minimax.*`` prefix) — never a substring of the whole URL, so a path
+# that merely contains ``api.minimax`` cannot false-positive.
+_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = (
+    "minimax.io",
+    "minimax.chat",
+    "minimaxi.com",
+)
 _DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES = ("api.minimax.",)
 
 
@@ -1379,9 +1508,13 @@ class _CodexCompletionsAdapter:
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
-            # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
-            "model": wire_model, "instructions": instructions,
-            "input": input_items or [{"role": "user", "content": ""}], "store": False,
+            # Strip the Hermes-side ``-900k`` large-context picker suffix —
+            # the Codex backend only knows the base slug (mirrors the main
+            # transport in agent/transports/codex.py::build_kwargs).
+            "model": _strip_codex_ctx_variant(model),
+            "instructions": instructions,
+            "input": input_items or [{"role": "user", "content": ""}],
+            "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
         # dead-looking CLI until the user force-interrupts.
@@ -1400,18 +1533,37 @@ class _CodexCompletionsAdapter:
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
-            # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
-            if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
-                # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
-                # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
-                effort = clamp_effort(
-                    reasoning_cfg.get("effort") or "medium",
-                    _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend),
-                )
-                resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                resp_kwargs["include"] = ["reasoning.encrypted_content"]
+            if isinstance(reasoning_cfg, dict):
+                if reasoning_cfg.get("enabled") is False:
+                    # Reasoning explicitly disabled — do not set reasoning
+                    # or include.  The Codex backend still thinks by
+                    # default, but we honor the caller's intent where the
+                    # API allows it.
+                    pass
+                else:
+                    # Truthy-only check mirrors agent/transports/codex.py
+                    # build_kwargs(): falsy values (None, "", 0) fall back
+                    # to the default rather than being forwarded to the
+                    # Codex backend, which rejects e.g. {"effort": null}
+                    # with a 400.
+                    effort = reasoning_cfg.get("effort") or "medium"
+                    # Same declared vocabulary + shared clamp as the main
+                    # Codex transport (agent.reasoning_effort): per-model —
+                    # "max" is gpt-5.6-only, "minimal"/"ultra" always
+                    # rejected (live-verified, #68365).
+                    from agent.reasoning_effort import (
+                        clamp_effort,
+                        codex_supported_efforts,
+                    )
+
+                    effort = clamp_effort(effort, codex_supported_efforts(model))
+                    resp_kwargs["reasoning"] = {
+                        "effort": effort,
+                        "summary": "auto",
+                    }
+                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+
+        # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
             # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
@@ -1484,10 +1636,42 @@ class _CodexCompletionsAdapter:
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
-            guard.start()
-            from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
-            # Keep bulk wire payload out of the SDK's GIL-holding request transform.
-            stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            if total_timeout:
+                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
+                timeout_timer.daemon = True
+                timeout_timer.start()
+            _check_cancelled()
+
+            # Event-driven Responses streaming via the low-level
+            # ``responses.create(stream=True)`` path.  The high-level
+            # ``responses.stream(...)`` helper does post-hoc typed
+            # reconstruction from ``response.completed.response.output``,
+            # which the chatgpt.com Codex backend has been observed to
+            # return as ``null`` (gpt-5.5, May 2026) — that crashes the SDK
+            # with ``TypeError: 'NoneType' object is not iterable``.
+            # Consuming raw events and assembling the final response
+            # ourselves from ``response.output_item.done`` makes us
+            # structurally immune to that drift.
+            from agent.codex_runtime import (
+                _bypass_sdk_request_transform,
+                _consume_codex_event_stream,
+            )
+
+            stream_kwargs = dict(resp_kwargs)
+            stream_kwargs["stream"] = True
+            # #93650: keep bulk wire-format payload out of the SDK's
+            # GIL-holding request transform on auxiliary calls too.
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
+
+            def _on_each_event(_event: Any) -> None:
+                # Re-check timeout/cancellation per event, matching the
+                # cadence the old in-line ``_check_cancelled()`` used.
+                # Each SSE event is also forward progress for hosts watching
+                # a progress hook (gateway session hygiene): a reasoning
+                # model streaming a long summary must not look hung.
+                _notify_aux_progress()
+                _check_cancelled()
+
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1606,6 +1790,39 @@ def _translate_anthropic_response_format(anthropic_kwargs: Dict[str, Any], respo
     output_config["format"] = {"type": "json_schema", "schema": schema}
 
 
+def _translate_anthropic_response_format(
+    anthropic_kwargs: Dict[str, Any], response_format: Any,
+) -> None:
+    """Merge an OpenAI response format into Anthropic ``output_config``."""
+    if not isinstance(response_format, dict):
+        return
+
+    format_type = response_format.get("type")
+    if format_type == "json_schema":
+        json_schema = response_format.get("json_schema")
+        if not isinstance(json_schema, dict) or "schema" not in json_schema:
+            return
+        native_format = {
+            "type": "json_schema",
+            "schema": json_schema["schema"],
+        }
+    elif format_type == "json_object":
+        # Anthropic SDK 0.87.0 exposes only JSONOutputFormatParam, whose
+        # required type is ``json_schema``; it has no schema-less JSON mode.
+        native_format = {
+            "type": "json_schema",
+            "schema": {"type": "object"},
+        }
+    else:
+        return
+
+    output_config = anthropic_kwargs.get("output_config")
+    if not isinstance(output_config, dict):
+        output_config = {}
+        anthropic_kwargs["output_config"] = output_config
+    output_config["format"] = native_format
+
+
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
@@ -1667,28 +1884,45 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
-        # Per-request HTTP headers (OpenCode session affinity) — the Anthropic SDK accepts
-        # ``extra_headers`` on messages.create/stream too.
-        if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
-            anthropic_kwargs["extra_headers"] = {
-                **(anthropic_kwargs.get("extra_headers") or {}),
-                **kwargs["extra_headers"],
-            }
-        # response_format: top-level gets the same translation as the extra_body form; when both
-        # are present the extra_body form wins. Passthrough excludes ``reasoning``/``response_format``
-        # (already TRANSLATED to native fields — raw would 400 on strict gateways) and ``_`` Hermes plumbing.
-        # The adapter builds the Messages body from a fixed allow-list of kwargs, so before this an
-        # unrecognized top-level kwarg was dropped on the floor: the request succeeded but the schema
-        # contract silently became prompt compliance (#85626 review, point 2).
+
+        # Pass through caller-supplied extra_body so providers behind
+        # Anthropic-compatible gateways receive their per-vendor request
+        # fields (thinking control, metadata, portal tags, ...). The dict
+        # form is the documented Anthropic SDK passthrough for non-standard
+        # request body keys; merge on top of whatever build_anthropic_kwargs
+        # already produced (e.g. fast-mode ``speed``) so call-time settings
+        # survive. Three exclusions:
+        #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
+        #     the native ``thinking`` field above (build_anthropic_kwargs);
+        #     forwarding the raw field alongside would double-specify
+        #     reasoning and 400 on strict gateways.
+        #   - ``response_format``: the OpenAI structured-output shape is
+        #     TRANSLATED into top-level ``output_config.format`` below;
+        #     forwarding the raw field 400s on strict Anthropic gateways.
+        #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
+        #     et al.), never wire fields.
+        caller_extra_body = kwargs.get("extra_body")
+        # A top-level ``response_format`` kwarg (the OpenAI SDK's documented
+        # call shape) must get the same translation as the extra_body form.
+        # The adapter builds the Messages body from a fixed allow-list of
+        # kwargs, so before this an unrecognized top-level kwarg was dropped
+        # on the floor: the request succeeded but the schema contract
+        # silently became prompt compliance (#85626 review, point 2). When
+        # both shapes are present, the extra_body form wins — it is the shape
+        # every in-tree caller uses.
         top_level_response_format = kwargs.get("response_format")
         if top_level_response_format is not None:
-            _translate_anthropic_response_format(anthropic_kwargs, top_level_response_format)
-        caller_extra_body = kwargs.get("extra_body")
+            _translate_anthropic_response_format(
+                anthropic_kwargs, top_level_response_format,
+            )
         if caller_extra_body and isinstance(caller_extra_body, dict):
-            _translate_anthropic_response_format(anthropic_kwargs, caller_extra_body.get("response_format"))
+            _translate_anthropic_response_format(
+                anthropic_kwargs, caller_extra_body.get("response_format"),
+            )
             passthrough = {
                 k: v for k, v in caller_extra_body.items()
-                if k not in {"reasoning", "response_format"} and not str(k).startswith("_")
+                if k not in {"reasoning", "response_format"}
+                and not str(k).startswith("_")
             }
             if passthrough:
                 existing = anthropic_kwargs.get("extra_body") or {}
@@ -2151,7 +2385,11 @@ _paid_lane_warned: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix) — naming-convention trust."""
+    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix).
+
+    Naming-convention trust: a paid model shipped under ``stealth/`` would
+    silently bypass both the free_only gate and the paid-lane warning.
+    """
     if not model:
         return False
     normalized = str(model).strip()
@@ -2172,7 +2410,8 @@ def _aux_openrouter_settings() -> Tuple[bool, str]:
 
 
 def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-free OpenRouter model is engaged."""
+    """Log a WARNING the first time a non-free (neither ``:free`` nor
+    ``stealth/``) OpenRouter model is engaged."""
     if model in _paid_lane_warned:
         return
     _paid_lane_warned.add(model)
@@ -2803,7 +3042,8 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         base_url = codex_override or _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
-        api_key=codex_token, base_url=base_url,
+        api_key=codex_token,
+        base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
     return CodexAuxiliaryClient(real_client, model), model
@@ -3206,6 +3446,71 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     extra_body = retry_kwargs.get("extra_body")
     if isinstance(extra_body, dict) and "response_format" in extra_body:
         remaining = {k: v for k, v in extra_body.items() if k != "response_format"}
+        if remaining:
+            retry_kwargs["extra_body"] = remaining
+        else:
+            retry_kwargs.pop("extra_body", None)
+        changed = True
+    return retry_kwargs if changed else None
+
+
+def _is_structured_output_rejection(exc: Exception) -> bool:
+    """Detect provider 400s that reject the structured-output request field.
+
+    One predicate covers the field on both wires, because both come from the
+    same caller-supplied ``response_format``:
+
+    - OpenAI wire: the provider rejects ``response_format`` itself. vLLM
+      gateways translate the field into ``guided_grammar`` and fail when the
+      grammar backend is absent (``compile_grammar_error: No module named
+      'xgrammar'``, #82816). Other endpoints answer ``This response_format
+      type is unavailable now``.
+    - Anthropic wire: the adapter translates ``response_format`` into
+      ``output_config.format``. Gateways that predate structured outputs
+      (the documented case is the ``bedrock-mantle`` Messages endpoint)
+      reject that field: ``output_config: Extra inputs are not permitted``.
+
+    Callers tolerate an unconstrained reply — the title prompt demands bare
+    JSON and ``_extract_title_text`` has a loose-JSON fallback — so the right
+    reaction is one retry without the field, not a hard failure.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    err_lower = str(exc).lower()
+    # vLLM grammar-backend failures name the translated parameter, not ours.
+    if "guided_grammar" in err_lower or "xgrammar" in err_lower or (
+        "compile_grammar_error" in err_lower
+    ):
+        return True
+    if "extra inputs are not permitted" in err_lower and (
+        "response_format" in err_lower or "output_config" in err_lower
+    ):
+        return True
+    if "response_format" in err_lower and "unavailable" in err_lower:
+        return True
+    return (
+        _is_unsupported_parameter_error(exc, "response_format")
+        or _is_unsupported_parameter_error(exc, "output_config")
+    )
+
+
+def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without any ``response_format`` request field.
+
+    Removes the top-level kwarg and the ``extra_body`` entry. Returns None
+    when the kwargs carry no such field, so call sites do not retry a
+    request that the removal did not change.
+    """
+    changed = False
+    retry_kwargs = dict(kwargs)
+    if retry_kwargs.pop("response_format", None) is not None:
+        changed = True
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and "response_format" in extra_body:
+        remaining = {
+            k: v for k, v in extra_body.items() if k != "response_format"
+        }
         if remaining:
             retry_kwargs["extra_body"] = remaining
         else:
@@ -3990,8 +4295,24 @@ def _try_main_agent_model_fallback(
 # it). This preserves the existing fallback surface for unrecognised/custom models while closing the gap on
 # the well-known ones.
 def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
-    """Minimum context length for an auxiliary task; None = no floor (only ``compression`` has one)."""
-    return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
+    """Return the minimum context length required for an auxiliary task.
+
+    Only ``compression`` carries an explicit minimum today (the same
+    ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
+    ``check_compression_model_feasibility`` already enforces at startup).
+    Other tasks (``vision``, ``title_generation``,
+    ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
+    have no per-task context floor and the runtime chain must remain
+    permissive for them.
+
+    Returns ``None`` for an empty/``None`` task name so the helper is a
+    safe no-op when called from generic sites.
+    """
+    if not task:
+        return None
+    if task == "compression":
+        return MINIMUM_CONTEXT_LENGTH
+    return None
 
 
 def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
@@ -4365,29 +4686,44 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     sync_base_url = str(sync_client.base_url)
     async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        headers = _apply_user_default_headers(build_or_headers())
+        async_kwargs["default_headers"] = build_or_headers()
+    elif base_url_host_matches(sync_base_url, "githubcopilot.com"):
+        from hermes_cli.copilot_auth import copilot_request_headers
+
+        async_kwargs["default_headers"] = copilot_request_headers(
+            is_agent_turn=True, is_vision=is_vision
+        )
+    elif base_url_host_matches(sync_base_url, "api.kimi.com"):
+        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
+        async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
     elif _is_official_codex_base_url(sync_base_url):
-        headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
+        async_kwargs["default_headers"] = _codex_cloudflare_headers(
+            sync_client.api_key, base_url=sync_base_url,
+        )
+    elif base_url_host_matches(sync_base_url, "x.ai"):
+        from tools.xai_http import hermes_xai_default_headers
+
+        async_kwargs["default_headers"] = hermes_xai_default_headers()
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
             from agent.model_metadata import _infer_provider_from_url
             inferred = _infer_provider_from_url(sync_base_url) or ""
         except Exception:
-            inferred = ""
-        headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
-    # Headers are rebuilt from scratch here, so re-apply the OpenCode keyless policy from
-    # _create_openai_client: the placeholder must never ship as a bearer (see #110831).
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if sync_client.api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            headers = {**(headers or {}), **opencode_zen_free_headers()}
-    if headers:
-        async_kwargs["default_headers"] = headers
-    _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
-    async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
-    # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
-    # See #54465.
+            pass
+    _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    if _merged_async:
+        async_kwargs["default_headers"] = _merged_async
+    _apply_required_codex_headers(
+        async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url,
+    )
+    async_kwargs = {
+        **_openai_http_client_kwargs(sync_base_url, async_mode=True),
+        **async_kwargs,
+    }
+    # See _create_openai_client: disable SDK-internal retries so Hermes owns
+    # the auxiliary retry/timeout budget (issue #54465).
     async_kwargs.setdefault("max_retries", 0)
     return AsyncOpenAI(**async_kwargs), model
 
@@ -5072,14 +5408,379 @@ def resolve_provider_client(
     if result is not None:
         return result
     if provider == "azure-foundry":
-        return _resolve_azure_foundry_branch(req)
-    return _resolve_registry_branch(req)
+        client, default_model = _try_azure_foundry(
+            model=model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            api_mode=api_mode,
+        )
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: azure-foundry requested but "
+                "runtime resolution failed (run: hermes doctor for "
+                "diagnostics)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+            resolve_external_process_provider_credentials,
+        )
+    except ImportError:
+        logger.debug("hermes_cli.auth not available for provider %s", provider)
+        return None, None
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig is None:
+        # Demoted from logger.warning to debug; dedup keyed by provider name
+        # so the first occurrence surfaces but repeated retries stay silent.
+        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+            logger.debug("resolve_provider_client: unknown provider %r", provider)
+        return None, None
+
+    if pconfig.auth_type == "api_key":
+        if provider == "anthropic":
+            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            if client is None:
+                logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                return None, None
+            final_model = _normalize_resolved_model(model or default_model, provider)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
+
+        creds = resolve_api_key_provider_credentials(provider)
+        api_key = str(creds.get("api_key", "")).strip()
+        # Honour an explicit api_key override (e.g. from a fallback_model entry
+        # or a custom_providers entry) so callers that pass an explicit
+        # credential can authenticate against endpoints where no built-in
+        # credential is registered for this provider alias.
+        if explicit_api_key:
+            api_key = explicit_api_key.strip() or api_key
+        raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        if explicit_base_url:
+            raw_base_url = explicit_base_url.strip().rstrip("/")
+        # OpenCode Zen free tier (*-free slugs): served anonymously on the
+        # Zen relay only — no credential needed, and any unknown bearer
+        # (including a Go subscription key) is rejected. Route through the
+        # keyless Zen runtime regardless of configured OpenCode credentials.
+        try:
+            from hermes_cli.models import opencode_zen_free_runtime as _oc_free_rt
+            _free_rt = _oc_free_rt(provider, model)
+        except Exception:
+            _free_rt = None
+        if _free_rt is not None:
+            api_key = _free_rt["api_key"]
+            raw_base_url = str(_free_rt["base_url"]).rstrip("/")
+        if provider == "actual":
+            try:
+                from hermes_cli.auth import (
+                    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
+                    is_actual_local_base_url,
+                    normalize_actual_base_url,
+                )
+
+                raw_base_url = normalize_actual_base_url(raw_base_url)
+                if not api_key and is_actual_local_base_url(raw_base_url):
+                    api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+            except Exception:
+                pass
+        if not api_key:
+            tried_sources = list(pconfig.api_key_env_vars)
+            if provider == "copilot":
+                tried_sources.append("gh auth token")
+            logger.debug("resolve_provider_client: provider %s has no API "
+                         "key configured (tried: %s)",
+                         provider, ", ".join(tried_sources))
+            return None, None
+
+        base_url = _to_openai_base_url(raw_base_url)
+        # Honour an explicit base_url override from the caller — used when a
+        # fallback_model entry (or custom_providers lookup) routes through a
+        # built-in provider name but targets a user-specified endpoint.
+        if explicit_base_url:
+            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
+
+        default_model = _get_aux_model_for_provider(provider)
+        final_model = _normalize_resolved_model(model or default_model, provider)
+
+        if provider == "gemini":
+            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+            if is_native_gemini_base_url(base_url):
+                client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+
+        # Provider-specific headers
+        headers = {}
+        if base_url_host_matches(base_url, "api.kimi.com"):
+            headers["User-Agent"] = "claude-code/0.1.0"
+        elif base_url_host_matches(base_url, "githubcopilot.com"):
+            from hermes_cli.copilot_auth import copilot_request_headers
+
+            headers.update(copilot_request_headers(
+                is_agent_turn=True, is_vision=is_vision
+            ))
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            headers.update(build_nvidia_nim_headers(base_url))
+        elif base_url_host_matches(base_url, "x.ai"):
+            from tools.xai_http import hermes_xai_default_headers
+
+            headers.update(hermes_xai_default_headers())
+        else:
+            # Fall back to profile.default_headers for providers that declare
+            # client-level attribution headers on their profile (e.g. GMI
+            # User-Agent for traffic identification, Vercel AI Gateway
+            # Referer/Title for analytics).
+            try:
+                from providers import get_provider_profile as _gpf_main
+                _ph_main = _gpf_main(provider)
+                if _ph_main and _ph_main.default_headers:
+                    headers.update(_ph_main.default_headers)
+            except Exception:
+                pass
+        _merged_main = _apply_user_default_headers(headers)
+        if _merged_main:
+            headers = _merged_main
+        client = _create_openai_client(api_key=api_key, base_url=base_url,
+                        **({"default_headers": headers} if headers else {}))
+
+        # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
+        # API — they are not accessible via /chat/completions.  Wrap the
+        # plain client in CodexAuxiliaryClient so call_llm() transparently
+        # routes through responses.stream().
+        if provider == "copilot" and final_model and not raw_codex:
+            try:
+                from hermes_cli.models import _should_use_copilot_responses_api
+                if _should_use_copilot_responses_api(final_model):
+                    logger.debug(
+                        "resolve_provider_client: copilot model %s needs "
+                        "Responses API — wrapping with CodexAuxiliaryClient",
+                        final_model)
+                    client = CodexAuxiliaryClient(client, final_model)
+            except ImportError:
+                pass
+
+        # Honor api_mode for any API-key provider (e.g. direct OpenAI with
+        # codex-family models).  The copilot-specific wrapping above handles
+        # copilot; this covers the general case (#6800).  Also rewraps
+        # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
+        # /anthropic-suffixed gateways) so named providers like kimi-coding
+        # land on the right transport without needing per-provider branches.
+        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
+
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    if pconfig.auth_type == "external_process":
+        creds = resolve_external_process_provider_credentials(provider)
+        final_model = _normalize_resolved_model(
+            model
+            or (main_runtime.get("model") if main_runtime else None)
+            or _read_main_model_for_aux(),
+            provider,
+        )
+        if provider == "copilot-acp":
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: copilot-acp requested but no model "
+                    "was provided or configured"
+                )
+                return None, None
+            if not api_key or not base_url:
+                logger.warning(
+                    "resolve_provider_client: copilot-acp requested but external "
+                    "process credentials are incomplete"
+                )
+                return None, None
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+        if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
+            _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
+            logger.debug("resolve_provider_client: external-process provider %s not "
+                         "directly supported", provider)
+        return None, None
+
+    elif pconfig.auth_type == "vertex":
+        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
+        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
+        # client pointed at the runtime-computed Vertex base_url with a fresh
+        # token; no custom SDK or message translation needed.
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "google-auth not installed")
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug("resolve_provider_client: vertex requested but "
+                         "no GCP credentials found")
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning("resolve_provider_client: vertex requested but "
+                           "could not mint token / resolve project")
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            # Alias the import: a bare `from openai import OpenAI` here would
+            # make `OpenAI` function-local and shadow the module-level lazy
+            # proxy for every other branch of this function (breaking both the
+            # Bedrock Mantle branch below and patch("agent.auxiliary_client.OpenAI")).
+            from openai import OpenAI as _VertexOpenAI
+            client = _VertexOpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex "
+                           "client: %s", exc)
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    elif pconfig.auth_type == "aws_sdk":
+        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
+        # SDK (prompt caching, thinking); OpenAI models (GPT-5.5/5.6) use
+        # Bedrock Mantle's OpenAI Responses endpoint; all other models use the
+        # Converse API.
+        try:
+            from agent.bedrock_adapter import (
+                has_aws_credentials,
+                is_anthropic_bedrock_model,
+                resolve_bedrock_runtime_region,
+                is_openai_bedrock_model,
+                bedrock_openai_base_url,
+                resolve_bedrock_bearer_token,
+                configure_bedrock_openai_client_kwargs,
+            )
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+        except ImportError:
+            logger.warning("resolve_provider_client: bedrock requested but "
+                           "boto3, httpx/openai, or anthropic SDK not installed")
+            return None, None
+
+        if not has_aws_credentials():
+            logger.debug("resolve_provider_client: bedrock requested but "
+                         "no AWS credentials found")
+            return None, None
+
+        # Region must match the main runtime's resolution (bedrock.region in
+        # config.yaml first, then env/profile) — see review on #53880/#65076:
+        # a bare resolve_bedrock_region() here let auxiliary calls (compression,
+        # memory, vision) leave the primary runtime's configured region.
+        region = resolve_bedrock_runtime_region()
+        default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_openai_bedrock_model(final_model):
+            # NOTE: no local `from openai import OpenAI` here — the module-level
+            # lazy proxy (see top of file) must stay visible so tests can
+            # patch("agent.auxiliary_client.OpenAI", ...).
+            bearer = resolve_bedrock_bearer_token()
+            mantle_base_url = bedrock_openai_base_url(region)
+            client_kwargs: Dict[str, Any] = {
+                "api_key": bearer or "aws-sdk",
+                "base_url": mantle_base_url,
+            }
+            configure_bedrock_openai_client_kwargs(client_kwargs)
+            client = OpenAI(**client_kwargs)
+            logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
+            if raw_codex:
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+            wrapped = CodexAuxiliaryClient(client, final_model)
+            return (_to_async_client(wrapped, final_model, is_vision=is_vision) if async_mode
+                    else (wrapped, final_model))
+
+        base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+        if is_anthropic_bedrock_model(final_model):
+            try:
+                real_client = build_anthropic_bedrock_client(region)
+            except ImportError as exc:
+                logger.warning("resolve_provider_client: cannot create Bedrock "
+                               "client: %s", exc)
+                return None, None
+            client = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key="aws-sdk",
+                base_url=base_url,
+            )
+            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
+                         final_model, region)
+        else:
+            client = BedrockAuxiliaryClient(region, final_model)
+            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
+                         final_model, region)
+
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+        # OAuth providers — route through their specific try functions
+        if provider == "nous":
+            return resolve_provider_client("nous", model, async_mode)
+        if provider == "openai-codex":
+            return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "xai-oauth":
+            return resolve_provider_client("xai-oauth", model, async_mode)
+        # Other OAuth providers not directly supported
+        if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
+            _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
+            logger.debug("resolve_provider_client: OAuth provider %s not "
+                         "directly supported, try 'auto'", provider)
+        return None, None
+
+    # Demoted from logger.warning to debug; dedup keyed on (auth_type,
+    # provider) so the first occurrence surfaces (real schema-drift bug) but
+    # per-call retries stay silent.
+    _auth_dedup_key = (pconfig.auth_type, provider)
+    if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
+        _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
+        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
+                     pconfig.auth_type, provider)
+    return None, None
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
-def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, default_model_slug) for text-only aux tasks; ``task`` selects auxiliary.<task> overrides."""
+def get_text_auxiliary_client(
+    task: str = "",
+    *,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Return (client, default_model_slug) for text-only auxiliary tasks.
+
+    Args:
+        task: Optional task name ("compression", "skills_hub") to check
+              for a task-specific provider override.
+
+    Callers may override the returned model via config.yaml
+    (e.g. auxiliary.compression.model, auxiliary.skills_hub.model).
+    """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
@@ -7331,18 +8032,69 @@ def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.Bound
             semaphore.release()
 
 
-def _plan_aux_call(
-    task: Optional[str], *, async_mode: bool, provider: Optional[str], model: Optional[str],
-    base_url: Optional[str], api_key: Optional[str], main_runtime: Optional[Dict[str, Any]],
-    messages: list, temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
-    timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
-    extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]],
-) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
-    """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
-    drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
-    runtime snapshot for keying/resolution/retries/fallbacks, so a concurrent /model switch
-    can't mix key and client from different runtimes."""
+def _call_llm_impl(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    messages: list,
+    temperature: Optional[float] = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = None,
+    extra_body: dict = None,
+    reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    api_mode: str = None,
+    stream: bool = False,
+    stream_options: dict = None,
+    route_info: Optional[Dict[str, str]] = None,
+) -> Any:
+    """Centralized synchronous LLM call.
+
+    Resolves provider + model (from task config, explicit args, or auto-detect),
+    handles auth, request formatting, and model-specific arg adjustments.
+
+    Args:
+        task: Auxiliary task name ("compression", "vision",
+              "session_search", "skills_hub", "mcp", "title_generation").
+              Reads provider:model from config/env. Ignored if provider is set.
+        provider: Explicit provider override.
+        model: Explicit model override.
+        api_mode: Explicit API mode override (e.g. "codex_responses",
+              "anthropic_messages"). Takes precedence over task config.
+        messages: Chat messages list.
+        temperature: Sampling temperature (None = provider default).
+        max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
+        tools: Tool definitions (for function calling).
+        timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
+        extra_body: Additional request body fields.
+        reasoning_config: Optional Hermes reasoning config for direct model calls
+              such as MoA reference/aggregator slots.
+        extra_headers: Additional per-request HTTP headers. These override
+            client-level defaults for providers that gate capabilities on
+            request attribution (for example Copilot's ``x-initiator``).
+        stream: When True, return the raw SDK streaming iterator instead of a
+            validated complete response. The caller is responsible for consuming
+            chunks (and for any fallback). Used by the MoA aggregator so its
+            output can stream to the user.
+        stream_options: Passed through to the request when stream is True
+            (e.g. {"include_usage": True}).
+
+    Returns:
+        Response object with .choices[0].message.content, OR — when stream=True —
+        the raw streaming iterator from client.chat.completions.create().
+
+    Raises:
+        RuntimeError: If no provider is configured.
+    """
+    # Capture one immutable runtime snapshot for keying, resolution, retries,
+    # and fallbacks. Reading ambient state independently in each phase lets a
+    # concurrent /model switch produce a key for one runtime and a client for
+    # another.
     main_runtime = _normalize_main_runtime(main_runtime)
     req = _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
@@ -7484,16 +8236,463 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
-        def _perform(step: _LadderStep) -> Any:
-            kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
-            if kind == "call":
-                return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
-            if kind == "retry":
-                return _retry_same_provider_sync(**kw)
-            return _call_fallback_candidate_sync(*args, **kw)
-        return _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
-            _perform)
+        if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("temperature", None)
+            logger.info(
+                "Auxiliary %s: provider rejected temperature; retrying once without it",
+                task or "call",
+            )
+            try:
+                return _validate_llm_response(
+                    _relay_sync_completion(
+                        client,
+                        retry_kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
+            except Exception as retry_err:
+                retry_err_str = str(retry_err)
+                # If retry still fails, fall through to the max_tokens /
+                # payment / auth chains below using the temperature-stripped
+                # kwargs.  Re-raise only if the retry hit something those
+                # chains won't handle.
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_auth_error(retry_err)
+                    or "max_tokens" in retry_err_str
+                    or "unsupported_parameter" in retry_err_str
+                ):
+                    raise
+                first_err = retry_err
+                kwargs = retry_kwargs
+
+        if _is_structured_output_rejection(first_err):
+            retry_kwargs = _without_structured_output_format(kwargs)
+            if retry_kwargs is not None:
+                logger.info(
+                    "Auxiliary %s: provider rejected the structured-output "
+                    "format field; retrying once without it (schema "
+                    "enforcement degrades to prompt compliance): %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    # Same contract as the temperature rung: fall through to
+                    # the max_tokens / payment / auth chains below with the
+                    # stripped kwargs; re-raise anything those chains do not
+                    # handle.
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
+
+        err_str = str(first_err)
+        # ZAI vision models (glm-4v-flash etc.) return error code 1210
+        # ("API 调用参数有误") when max_tokens is passed on multimodal
+        # calls.  The error message does NOT contain "max_tokens" so the
+        # generic retry below never fires.  Detect the ZAI-specific error
+        # and strip max_tokens before retrying.
+        _is_zai_param_error = (
+            "1210" in err_str
+            and "bigmodel" in str(getattr(client, "base_url", ""))
+        )
+        if max_tokens is not None and (
+            "max_tokens" in err_str
+            or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(first_err, "max_tokens")
+            or _is_zai_param_error
+        ):
+            kwargs.pop("max_tokens", None)
+            kwargs.pop("max_completion_tokens", None)
+            try:
+                return _validate_llm_response(
+                    _relay_sync_completion(
+                        client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
+            except Exception as retry_err:
+                # If the max_tokens retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                    raise
+                first_err = retry_err
+
+        # ── Stale-model self-heal (Nous Portal recommendation drift) ───
+        # A long-lived process can pin a Portal-recommended model that has
+        # since been dropped from the Nous → OpenRouter catalog, so every
+        # auxiliary call 404s with "model does not exist". Force a fresh
+        # Portal fetch and retry once with the current recommendation (or the
+        # known-good default). Only applies to Nous-routed calls.
+        _heal_is_nous = (
+            resolved_provider == "nous"
+            or base_url_host_matches(_base_info, "inference-api.nousresearch.com")
+        )
+        if _is_model_not_found_error(first_err) and _heal_is_nous:
+            healed_model = _refresh_nous_recommended_model(
+                vision=(task == "vision"), stale_model=kwargs.get("model"))
+            if healed_model and healed_model != kwargs.get("model"):
+                logger.warning(
+                    "Auxiliary %s: model %r no longer in Nous catalog; "
+                    "retrying with refreshed recommendation %r",
+                    task or "call", kwargs.get("model"), healed_model,
+                )
+                kwargs["model"] = healed_model
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    first_err = retry_err
+
+        # ── Nous auth refresh parity with main agent ──────────────────
+        client_is_nous = (
+            resolved_provider == "nous"
+            or base_url_host_matches(_base_info, "inference-api.nousresearch.com")
+        )
+        if (
+            _is_payment_error(first_err)
+            and client_is_nous
+            and _nous_portal_account_has_fresh_paid_access()
+        ):
+            refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
+                cache_provider=resolved_provider or "nous",
+                model=final_model,
+                async_mode=False,
+                base_url=resolved_base_url,
+                api_key=resolved_api_key,
+                api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
+                is_vision=(task == "vision"),
+            )
+            if refreshed_client is not None:
+                logger.info(
+                    "Auxiliary %s: refreshed Nous runtime credentials after paid account check, retrying",
+                    task or "call",
+                )
+                if refreshed_model and refreshed_model != kwargs.get("model"):
+                    kwargs["model"] = refreshed_model
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            refreshed_client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    if not (
+                        _is_auth_error(retry_err)
+                        or _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_rate_limit_error(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+
+        if _is_auth_error(first_err) and client_is_nous:
+            refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
+                cache_provider=resolved_provider or "nous",
+                model=final_model,
+                async_mode=False,
+                base_url=resolved_base_url,
+                api_key=resolved_api_key,
+                api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
+                is_vision=(task == "vision"),
+            )
+            if refreshed_client is not None:
+                logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
+                            task or "call")
+                if refreshed_model and refreshed_model != kwargs.get("model"):
+                    kwargs["model"] = refreshed_model
+                return _validate_llm_response(
+                    _relay_sync_completion(
+                        refreshed_client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
+
+        # ── Auth refresh retry ───────────────────────────────────────
+        auth_refresh_provider = _auth_refresh_provider_for_route(
+            resolved_provider, _base_info)
+        if (_is_auth_error(first_err)
+                and auth_refresh_provider not in {"auto", "", None}
+                and not client_is_nous):
+            if _refresh_provider_credentials(auth_refresh_provider):
+                if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
+                    # The stale client is cached under the route label
+                    # (e.g. "auto"), not the concrete backend we refreshed.
+                    _evict_cached_clients(resolved_provider)
+                logger.info(
+                    "Auxiliary %s: refreshed %s credentials after auth error, retrying",
+                    task or "call", auth_refresh_provider,
+                )
+                return _retry_same_provider_sync(
+                    task=task,
+                    resolved_provider=auth_refresh_provider,
+                    resolved_model=resolved_model or final_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config,
+                    extra_headers=extra_headers,
+                )
+
+        # ── Same-provider credential-pool recovery ─────────────────────
+        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
+        # Capture the exact API key used so mark_exhausted_and_rotate can find
+        # the correct pool entry even when another process rotated the pool
+        # between this call and recovery (which leaves current()=None and makes
+        # _select_unlocked() return the NEXT key by mistake).
+        _client_api_key = str(getattr(client, "api_key", "") or "")
+        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+            recovery_err = first_err
+            # Skip the extra retry for clear payment/quota errors — the endpoint
+            # won't accept another request with the same exhausted key.
+            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                        raise
+                    recovery_err = retry_err
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+                logger.info(
+                    "Auxiliary %s: recovered %s via credential-pool rotation after %s",
+                    task or "call", pool_provider, type(recovery_err).__name__,
+                )
+                try:
+                    return _retry_same_provider_sync(
+                        task=task,
+                        resolved_provider=resolved_provider,
+                        resolved_model=resolved_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config,
+                        extra_headers=extra_headers,
+                    )
+                except Exception as retry2_err:
+                    # The rotated key also hit a quota/auth wall.  Mark it
+                    # immediately so concurrent processes don't make a
+                    # redundant API call to discover it's exhausted too.
+                    # Then fall through to the payment fallback below so
+                    # alternative providers can still serve the request.
+                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
+                            or _is_rate_limit_error(retry2_err)):
+                        _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    else:
+                        raise
+
+        # ── Payment / credit exhaustion fallback ──────────────────────
+        # When the resolved provider returns 402 or a credit-related error,
+        # try alternative providers instead of giving up.  This handles the
+        # common case where a user runs out of OpenRouter credits but has
+        # Codex OAuth or another provider available.
+        #
+        # ── Connection error fallback ────────────────────────────────
+        # When a provider endpoint is unreachable (DNS failure, connection
+        # refused, timeout), try alternative providers.  This handles stale
+        # Codex/OAuth tokens that authenticate but whose endpoint is down,
+        # and providers the user never configured that got picked up by
+        # the auto-detection chain.
+        #
+        # ── Rate-limit fallback (#13579) ─────────────────────────────
+        # When the provider returns a 429 rate-limit (not billing), fall
+        # back to an alternative provider instead of exhausting retries
+        # against the same rate-limited endpoint.
+        #
+        # ── Auth error fallback (#21165) ─────────────────────────────
+        # When the resolved provider returns 401 and neither the Nous
+        # refresh path nor explicit provider credential refresh applies,
+        # fall back to an alternative provider instead of dropping the
+        # auxiliary task on the floor (silent compression failure /
+        # message loss). Auth is NOT a capacity error: it only bypasses
+        # the explicit-provider gate when the user is in auto mode.
+        should_fallback = (
+            _is_auth_error(first_err)
+            or _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
+        )
+        # Respect explicit provider choice for transient errors (auth, request
+        # validation, etc.) but allow fallback when the provider clearly cannot
+        # serve the request due to capacity: payment/quota exhaustion and
+        # connection failures are capacity problems, not request constraints.
+        # See #26803: daily token quota (429 + "too many tokens per day") must
+        # fall back just like a 402 credit error.
+        is_auto = resolved_provider in {"auto", "", None}
+        # Capacity errors bypass the explicit-provider gate: the provider
+        # literally cannot serve this request regardless of user intent.
+        # Rate limits are included: after retries are exhausted, a 429 means
+        # the provider cannot serve this request — fall back. See #52228.
+        # Model-incompatibility 400s are also a hard capability mismatch (the
+        # route cannot run this model at all — e.g. a codex/ChatGPT-account
+        # fallback asked to compress a glm-5.2 conversation), so they bypass
+        # the explicit-provider gate and continue to the next candidate
+        # instead of aborting the auxiliary task and churning the session.
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
+            or _is_invalid_aux_response_error(first_err)
+        )
+        if should_fallback and (is_auto or is_capacity_error):
+            if _is_auth_error(first_err):
+                reason = "auth error"
+            elif _is_payment_error(first_err):
+                reason = "payment error"
+                # Resolve the actual provider label (resolved_provider may be
+                # "auto"; the client's base_url tells us which backend got the
+                # 402). Mark THAT label unhealthy so subsequent aux calls
+                # skip it instead of paying another doomed RTT.
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
+                )
+            elif _is_rate_limit_error(first_err):
+                reason = "rate limit"
+            elif _is_model_incompatible_error(first_err):
+                reason = "model incompatible with route"
+            elif _is_invalid_aux_response_error(first_err):
+                reason = "invalid provider response"
+            else:
+                reason = "connection error"
+            logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
+                        task or "call", reason, resolved_provider, first_err)
+
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
+            # Fallback order (#26882, #26803):
+            #   1. User-configured fallback_chain (per-task) if set
+            #   2. For auto: top-level main fallback_providers/fallback_model
+            #   3. For auto: built-in auxiliary discovery chain
+            #   4. For explicit aux providers: main agent model safety net
+            fb_client, fb_model, fb_label = (None, None, "")
+            if is_auto:
+                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_main_fallback_chain(
+                        task, resolved_provider or "auto", reason=reason)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider, task, reason=reason)
+            else:
+                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
+                        resolved_provider, task, reason=reason,
+                        failed_model=_chain_failed_model)
+
+            if fb_client is not None:
+                _record_route_info(
+                    route_info, _fallback_provider_from_label(fb_label), fb_model
+                )
+                fb_resp = _call_fallback_candidate_sync(
+                    fb_client, fb_model, fb_label,
+                    task=task, messages=messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                    reasoning_config=reasoning_config)
+                if fb_resp is not None:
+                    return fb_resp
+                # The candidate had a stale/unrefreshable credential and was
+                # quarantined — walk the discovery chain once more; unhealthy
+                # entries are skipped so the next viable candidate serves.
+                fb_client, fb_model, fb_label = _try_payment_fallback(
+                    resolved_provider, task, reason="stale fallback credential")
+                if fb_client is not None:
+                    _record_route_info(
+                        route_info, _fallback_provider_from_label(fb_label), fb_model
+                    )
+                    fb_resp = _call_fallback_candidate_sync(
+                        fb_client, fb_model, fb_label,
+                        task=task, messages=messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                        reasoning_config=reasoning_config)
+                    if fb_resp is not None:
+                        return fb_resp
+            # All fallback layers exhausted — emit a single user-visible
+            # warning so the operator knows aux task is about to fail.
+            # (#26882) The error itself is re-raised below.
+            logger.warning(
+                "Auxiliary %s: %s on %s and all fallbacks exhausted "
+                "(fallback_chain + main agent model). Raising original error.",
+                task or "call", reason, resolved_provider,
+            )
+        # Connection/timeout errors leave the cached client poisoned (closed
+        # httpx transport, half-read stream, dead async loop).  Drop it from
+        # the cache regardless of whether we found a fallback above so the
+        # next auxiliary call rebuilds a fresh client instead of reusing the
+        # dead one.  See issue #23432.
+        if _is_connection_error(first_err):
+            try:
+                _evict_cached_client_instance(client)
+            except Exception:
+                logger.debug("Auxiliary: cache eviction after connection error failed",
+                             exc_info=True)
+        raise
 
 
 def _coerce_llm_message(response):
@@ -7643,6 +8842,72 @@ async def _async_call_llm_impl(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
 
+        if _is_structured_output_rejection(first_err):
+            retry_kwargs = _without_structured_output_format(kwargs)
+            if retry_kwargs is not None:
+                logger.info(
+                    "Auxiliary %s (async): provider rejected the "
+                    "structured-output format field; retrying once without "
+                    "it (schema enforcement degrades to prompt "
+                    "compliance): %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        await _relay_async_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    # Same contract as the temperature rung: fall through to
+                    # the max_tokens / payment / auth chains below with the
+                    # stripped kwargs; re-raise anything those chains do not
+                    # handle.
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
+
+        err_str = str(first_err)
+        # ZAI vision models (glm-4v-flash etc.) return error code 1210
+        # ("API 调用参数有误") when max_tokens is passed on multimodal
+        # calls.  The error message does NOT contain "max_tokens" so the
+        # generic retry below never fires.  Detect the ZAI-specific error
+        # and strip max_tokens before retrying.
+        _is_zai_param_error = (
+            "1210" in err_str
+            and "bigmodel" in str(getattr(client, "base_url", ""))
+        )
+        if max_tokens is not None and (
+            "max_tokens" in err_str
+            or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(first_err, "max_tokens")
+            or _is_zai_param_error
+        ):
+            kwargs.pop("max_tokens", None)
+            kwargs.pop("max_completion_tokens", None)
+            try:
+                return _validate_llm_response(
+                    await _relay_async_completion(
+                        client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
+            except Exception as retry_err:
+                # If the max_tokens retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                    raise
+                first_err = retry_err
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.

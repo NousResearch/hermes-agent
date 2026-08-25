@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from contextvars import Context
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,10 +32,168 @@ from gateway.kanban_watchers_dispatcher import (
     _resolve_dispatcher_settings,
 )
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
-_GC_INTERVAL_SECONDS = 3600.0
-_HEALTH_WINDOW = 6
+# Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
+# "gateway.run") so extracted log records keep their original logger name.
+logger = logging.getLogger("gateway.run")
+
+
+def _resolve_auto_decompose_settings(
+    load_config: Callable[[], Any],
+) -> "tuple[bool, int]":
+    """Resolve the live (enabled, per_tick) auto-decompose settings.
+
+    Read fresh from config on every dispatcher tick (#49638) so that flipping
+    ``kanban.auto_decompose: false`` to STOP runaway fan-out takes effect on the
+    next tick instead of requiring a gateway restart. Auto-decompose is a
+    safety toggle — a user who sees it create and launch tasks they didn't
+    intend reaches for this flag to halt it, and a stale boot-captured value
+    silently ignoring that change is the bug reported in #49638.
+
+    Fails **safe**: if the config read raises, return ``(False, 3)`` — a
+    transient read error must never re-enable a feature the user turned off,
+    nor fall back to the burst-prone default-on behaviour. ``per_tick`` is
+    clamped to ``>= 1``.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False, 3
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    enabled = bool(kcfg.get("auto_decompose", True))
+    try:
+        per_tick = int(kcfg.get("auto_decompose_per_tick", 3) or 3)
+    except (TypeError, ValueError):
+        per_tick = 3
+    if per_tick < 1:
+        per_tick = 1
+    return enabled, per_tick
+
+
+def _kanban_dispatch_allowed() -> bool:
+    """Return False while the global emergency stop (`hermes pause`) is engaged.
+
+    Checked every dispatcher tick BEFORE spawning new workers so a pause takes
+    effect on the next tick without a gateway restart. In-flight workers are
+    never touched — this only stops NEW spawns. Fails open: if the estop
+    module is unimportable, dispatch proceeds (the sentinel gate must not
+    become a new crash surface for the dispatcher).
+    """
+    try:
+        from agent.estop import check_paused
+    except ImportError:
+        return True
+    return not check_paused("kanban", logger)
+
+
+def _run_in_fresh_context(func: Callable[..., Any], /, *args: Any) -> Any:
+    """Run *func* in an empty ``Context`` so request-local ContextVars stay behind.
+
+    ``asyncio.to_thread`` copies the calling task's context onto the worker
+    thread. Supervised Kanban ticks are process-owned writers; if that copy
+    still carries a ``delegate_task`` child marker, ``write_txn``
+    false-trips. Since watchers spawn from a fresh ``Context``
+    (``_spawn_supervised``), this offload-boundary scrub is defense in
+    depth: it covers non-supervised spawn paths and any task context frozen
+    before spawn isolation shipped. An empty Context keeps the DB guard
+    intact for real children without exempting dispatcher writes.
+    """
+    return Context().run(func, *args)
+
+
+async def _to_thread_process_service(func: Callable[..., Any], /, *args: Any) -> Any:
+    """Offload blocking process-service work (dispatcher + notifier writers)
+    without inheriting request-local ContextVars."""
+    return await asyncio.to_thread(_run_in_fresh_context, func, *args)
+
+
+def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
+    """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
+
+    Only one gateway process machine-wide may run the embedded kanban
+    dispatcher: concurrent dispatchers double the reclaim frequency (each
+    runs its own ``release_stale_claims`` → promote → dispatch loop), double
+    claim-attempt events in the event log, and — with ``wal_autocheckpoint=0`` —
+    concurrent manual WAL checkpoints can corrupt index pages. The
+    ``dispatch_in_gateway`` config flag is the primary control; this lock is the
+    backstop that survives config drift and same-profile restart races.
+
+    Delegates to :func:`gateway.status._try_acquire_file_lock` (``fcntl`` on
+    POSIX, ``msvcrt`` on Windows) so the guard is cross-platform.
+
+    Returns ``(handle, "held")`` on success — the caller keeps the file handle
+    for the process lifetime and **must** release it via
+    :func:`_release_singleton_lock` when done. ``(None, "contended")`` when
+    another process holds the lock (caller must NOT dispatch). ``(None,
+    "unavailable")`` when locking cannot be performed (non-POSIX filesystem
+    without flock, or the status.py helpers are unimportable) — caller falls
+    back to config-only control.
+    """
+    try:
+        from gateway.status import _try_acquire_file_lock  # deferred; same package
+    except ImportError:
+        return None, "unavailable"
+    try:
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+        handle = open(str(lock_path), "a+", encoding="utf-8")
+    except OSError:
+        return None, "unavailable"
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return None, "contended"
+    return handle, "held"
+
+
+def _release_singleton_lock(handle) -> None:
+    """Release a dispatcher singleton lock acquired via :func:`_acquire_singleton_lock`."""
+    if handle is None:
+        return
+    try:
+        from gateway.status import _release_file_lock
+        _release_file_lock(handle)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
+    """Return the tenant scope (Slack workspace) a subscription's wake keys to.
+
+    ``build_session_key()`` includes ``SessionSource.scope_id`` on platforms
+    where one bot serves several isolated tenants, so a wake source must carry
+    the same scope as inbound messages from that chat to resolve to the same
+    session.
+
+    The subscription's persisted ``delivery_metadata`` wins over the adapter's
+    live chat → scope mapping, because it records the scope the subscription was
+    created from; the mapping only covers rows that stored no metadata. ``None``
+    means the chat has no scope, which is what an unscoped platform's key
+    contains.
+    """
+    delivery_meta = sub.get("delivery_metadata")
+    if isinstance(delivery_meta, dict):
+        for key in ("scope_id", "slack_team_id", "team_id"):
+            value = delivery_meta.get(key)
+            if value:
+                return str(value)
+    resolver = getattr(adapter, "scope_id_for_chat", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(str(sub.get("chat_id") or ""))
+        except Exception as exc:
+            # An adapter-side lookup failure yields no scope, never an error.
+            logger.debug(
+                "kanban notifier: scope lookup failed for chat %s: %s",
+                sub.get("chat_id"),
+                exc,
+                exc_info=True,
+            )
+            return None
+        if resolved:
+            return str(resolved)
+    return None
 
 
 class GatewayKanbanWatchersMixin:
@@ -113,9 +272,540 @@ class GatewayKanbanWatchersMixin:
                     notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
                 )
                 for d in deliveries:
-                    await _KanbanNotification(
-                        self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
-                    ).deliver()
+                    sub = d["sub"]
+                    task = d["task"]
+                    board_slug = d.get("board")
+                    platform_str = (sub["platform"] or "").lower()
+                    try:
+                        plat = _Platform(platform_str)
+                    except ValueError:
+                        # Unknown platform string; skip and advance cursor so
+                        # we don't replay forever.
+                        await _to_thread_process_service(
+                            self._kanban_advance, sub, d["cursor"], board_slug,
+                        )
+                        continue
+                    sub_profile = sub.get("notifier_profile") or ""
+                    # Route via the SAME chokepoint the authorization path uses
+                    # (gateway/authz_mixin.py::_authorization_adapter): a stamped
+                    # profile with its own adapter-registry entry must be served
+                    # by THAT profile's same-platform adapter and must NOT silently
+                    # fall back to the default profile's adapter — otherwise a
+                    # secondary profile's task notification is delivered by the
+                    # wrong bot (the cross-profile mis-delivery this whole change
+                    # exists to fix). The helper returns None only when the profile
+                    # (or default) genuinely has no adapter for the platform.
+                    adapter = self._authorization_adapter(plat, sub_profile or None)
+                    if adapter is None:
+                        logger.debug(
+                            "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
+                            platform_str, sub["task_id"],
+                        )
+                        await _to_thread_process_service(
+                            self._kanban_rewind,
+                            sub,
+                            d["cursor"],
+                            d.get("old_cursor", 0),
+                            board_slug,
+                        )
+                        continue
+                    title = (task.title if task else sub["task_id"])[:120]
+                    board_tag = f"[{board_slug}] " if board_slug else ""
+                    # Per-subscription failure-counter key. Hoisted out of the
+                    # event loop: the wake self-post path (in the loop's
+                    # ``else`` clause) needs it even when every event in the
+                    # claim was skipped before reaching the send site.
+                    sub_key = (
+                        sub["task_id"], sub["platform"],
+                        sub["chat_id"], sub.get("thread_id") or "",
+                    )
+                    mode = sub.get("delivery_mode") or "notify"
+                    wake_agent = mode in ("notify+wake", "wake")
+                    send_passive = mode != "wake"
+                    # Worker handoff carried into the synthetic wake turn below
+                    # (#70752): without it the woken creator only sees
+                    # "Task X completed" and re-decomposes work that already
+                    # exists on the board.
+                    wake_handoff = ""
+                    for ev in d["events"]:
+                        kind = ev.kind
+                        # Identity prefix: attribute terminal pings to the
+                        # worker that did the work. Makes fleets (where one
+                        # chat subscribes to many tasks) legible at a glance.
+                        who = (task.assignee if task and task.assignee else None)
+                        tag = f"@{who} " if who else ""
+                        if kind == "completed":
+                            # Prefer the run's summary (the worker's
+                            # intentional human-facing handoff, carried
+                            # in the event payload), then fall back to
+                            # task.result for legacy rows written before
+                            # runs shipped.
+                            handoff = ""
+                            payload_summary = None
+                            if ev.payload and ev.payload.get("summary"):
+                                payload_summary = str(ev.payload["summary"])
+                            if payload_summary:
+                                lines = payload_summary.strip().splitlines()
+                                h = lines[0][:200] if lines else payload_summary[:200]
+                                handoff = f"\n{h}"
+                                wake_handoff = h
+                            elif task and task.result:
+                                lines = task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else task.result[:160]
+                                handoff = f"\n{r}"
+                                wake_handoff = r
+                            msg = (
+                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
+                                f" — {title}{handoff}"
+                            )
+                        elif kind == "blocked":
+                            reason = ""
+                            if ev.payload and ev.payload.get("reason"):
+                                reason = f": {str(ev.payload['reason'])[:160]}"
+                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                        elif kind == "gave_up":
+                            err = ""
+                            if ev.payload and ev.payload.get("error"):
+                                err = f"\n{str(ev.payload['error'])[:200]}"
+                            msg = (
+                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
+                                f"after repeated spawn failures{err}"
+                            )
+                        elif kind == "crashed":
+                            msg = (
+                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
+                                f"(pid gone); dispatcher will retry"
+                            )
+                        elif kind == "timed_out":
+                            limit = 0
+                            if ev.payload and ev.payload.get("limit_seconds"):
+                                limit = int(ev.payload["limit_seconds"])
+                            msg = (
+                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
+                                f"(max_runtime={limit}s); will retry"
+                            )
+                        elif kind == "status":
+                            new_status = ""
+                            if ev.payload and ev.payload.get("status"):
+                                new_status = str(ev.payload["status"])
+                            msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
+                        elif kind == "review_requested":
+                            # Implementation complete; task moved to the
+                            # first-class review lane. Wake the origin thread.
+                            handoff = ""
+                            if ev.payload and ev.payload.get("summary"):
+                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                            msg = (
+                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
+                                f" — {title}{handoff}"
+                            )
+                        elif kind == "block_loop_detected":
+                            # A task re-blocked for the same cause past the
+                            # recurrence limit and was routed to `triage` for a
+                            # human decision. This is the ONE transition that
+                            # exists to force human attention, yet it emits no
+                            # `blocked`/`status` event — so before adding it to
+                            # TERMINAL_KINDS it produced zero notification and
+                            # the task stalled in triage silently. Ping loudly.
+                            reason = ""
+                            recurrences = None
+                            if ev.payload:
+                                if ev.payload.get("reason"):
+                                    reason = f": {str(ev.payload['reason'])[:160]}"
+                                recurrences = ev.payload.get("recurrences")
+                            rc = f" (blocked {recurrences}x for the same cause)" if recurrences else ""
+                            msg = (
+                                f"🛑 {board_tag}{tag}Kanban {sub['task_id']} routed to TRIAGE"
+                                f" — needs a human decision{rc}{reason}"
+                            )
+                        else:
+                            # archived / unblocked are claimed by TERMINAL_KINDS
+                            # (so the cursor advances past them and they can't
+                            # wedge a later completed/blocked event behind an
+                            # unclaimed row) but are intentionally SILENT: an
+                            # archive needs no user ping, and unblocked is an
+                            # internal transition. They are also excluded from
+                            # _WAKE_KINDS below, so they never wake the creator.
+                            continue
+                        delivery_metadata = sub.get("delivery_metadata")
+                        metadata: dict[str, Any] = (
+                            dict(delivery_metadata)
+                            if isinstance(delivery_metadata, dict)
+                            else {}
+                        )
+
+                        if sub.get("thread_id") and not metadata.get("thread_id"):
+                            metadata["thread_id"] = sub["thread_id"]
+                        # Adapters with no push channel (the API server —
+                        # ``supports_async_delivery = False``) can NEVER
+                        # satisfy a text-send: ``send()`` always reports
+                        # SendResult(success=False) by design (see
+                        # ApiServerAdapter.send()). Treating that as a
+                        # delivery failure would rewind/drop the subscription
+                        # forever and — because the wake dispatch below lives
+                        # in this loop's ``else`` clause — would also make the
+                        # wake-on-completion path (the actual fix for the
+                        # api_server wrong-session bug) unreachable. So for
+                        # non-push adapters, skip the doomed send attempt
+                        # entirely: there is nothing to text-notify, the
+                        # creator is woken via the self-post below instead.
+                        from gateway.wake import adapter_supports_push
+
+                        if not adapter_supports_push(adapter) and wake_agent:
+                            logger.debug(
+                                "kanban notifier: adapter %s has no push "
+                                "channel; skipping text ping for %s, relying "
+                                "on wake self-post instead",
+                                platform_str, sub["task_id"],
+                            )
+                            # Do NOT reset the failure counter here: on this
+                            # path the wake self-post below IS the delivery,
+                            # so the counter is resolved (reset or bumped) by
+                            # the self-post outcome, not by skipping the send.
+                            continue
+                        if not send_passive:
+                            # Wake-only subscriptions intentionally skip the
+                            # visible platform message. The retained wake path
+                            # below is the sole delivery — the failure counter
+                            # is resolved (reset or bumped) by the wake
+                            # outcome there, not by skipping the send here.
+                            continue
+                        try:
+                            _send_res = await adapter.send(
+                                sub["chat_id"], msg, metadata=metadata,
+                            )
+                            # A SendResult(success=False) without an exception
+                            # (returned by push-capable adapters on a genuine
+                            # transient failure) must count as a FAILED
+                            # delivery — otherwise the cursor advances and the
+                            # event is permanently lost. Adapters returning
+                            # None (or anything non-SendResult shaped) keep
+                            # the legacy "no exception == delivered" contract.
+                            if getattr(_send_res, "success", True) is False:
+                                raise RuntimeError(
+                                    "adapter send() reported failure: "
+                                    f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                                )
+                            logger.debug(
+                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                            )
+                            # After delivering the text notification, surface
+                            # any artifact paths the worker referenced in
+                            # ``kanban_complete(summary=..., artifacts=[...])``
+                            # (or the legacy ``result`` field) as native
+                            # uploads. ``extract_local_files`` finds bare
+                            # absolute paths in the summary;
+                            # ``send_document`` / ``send_image_file`` uploads
+                            # them. Only fires on the ``completed`` event so
+                            # we never spam attachments on retries.
+                            if kind == "completed":
+                                try:
+                                    await self._deliver_kanban_artifacts(
+                                        adapter=adapter,
+                                        chat_id=sub["chat_id"],
+                                        metadata=metadata,
+                                        event_payload=getattr(ev, "payload", None),
+                                        task=task,
+                                    )
+                                except Exception as art_exc:
+                                    logger.debug(
+                                        "kanban notifier: artifact delivery for %s failed: %s",
+                                        sub["task_id"], art_exc,
+                                    )
+                            # Reset the failure counter on success.
+                            sub_fail_counts.pop(sub_key, None)
+                        except Exception as exc:
+                            fails = sub_fail_counts.get(sub_key, 0) + 1
+                            sub_fail_counts[sub_key] = fails
+                            logger.warning(
+                                "kanban notifier: send failed for %s on %s "
+                                "(attempt %d/%d): %s",
+                                sub["task_id"], platform_str, fails,
+                                MAX_SEND_FAILURES, exc,
+                            )
+                            if fails >= MAX_SEND_FAILURES:
+                                logger.warning(
+                                    "kanban notifier: dropping subscription "
+                                    "%s on %s after %d consecutive send failures",
+                                    sub["task_id"], platform_str, fails,
+                                )
+                                await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
+                                sub_fail_counts.pop(sub_key, None)
+                            else:
+                                await _to_thread_process_service(
+                                    self._kanban_rewind,
+                                    sub,
+                                    d["cursor"],
+                                    d.get("old_cursor", 0),
+                                    board_slug,
+                                )
+                            # Rewind the pre-send claim on transient failure so
+                            # a later tick can retry. After too many failures,
+                            # dropping the subscription is the terminal action.
+                            break
+                    else:
+                        # All text pings delivered (or intentionally skipped
+                        # for non-push adapters, whose delivery is the wake
+                        # self-post below). Whether the cursor may advance now
+                        # depends on the adapter class:
+                        #
+                        # * push-capable: the text send WAS the delivery, so
+                        #   advance immediately (pre-existing behavior); the
+                        #   wake injection below stays best-effort.
+                        # * non-push (api_server): the wake self-post IS the
+                        #   delivery. Advancing first would let a failed /
+                        #   retry-exhausted self-post (swallowed by the
+                        #   best-effort except) permanently lose the event.
+                        #   So the self-post runs FIRST and the cursor only
+                        #   advances after it succeeds — a failure rewinds the
+                        #   claim exactly like a failed send() above, so the
+                        #   next tick retries.
+                        task_terminal = task and task.status == "archived"
+                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _wake_kinds = (
+                            {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                            if wake_agent
+                            else set()
+                        )
+                        from gateway.wake import adapter_supports_push as _adapter_push_ok
+
+                        _is_push_adapter = _adapter_push_ok(adapter)
+                        _session_key = ""
+                        _synth = ""
+                        if _wake_kinds:
+                            if _is_push_adapter:
+                                _session_key = getattr(task, "session_id", None) or ""
+                            else:
+                                # Non-push (api_server) wakes go to the
+                                # subscription's delivery destination —
+                                # sub["chat_id"] IS the raw session id the
+                                # subscriber registered with. task.session_id
+                                # is worker/creator provenance and may point
+                                # at a WORKER session for child tasks with
+                                # inherited subscriptions; falling back to it
+                                # only when chat_id is empty (legacy rows).
+                                _session_key = (
+                                    sub["chat_id"]
+                                    or getattr(task, "session_id", None)
+                                    or ""
+                                )
+                        if _wake_kinds:
+                            _title = (task.title if task else sub["task_id"])[:120]
+                            _assignee = task.assignee if task else ""
+                            _parts = []
+                            if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
+                            if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
+                            if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
+                            if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
+                            if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                            _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+                            _synth = t(
+                                "gateway.kanban.wake.message",
+                                task_id=sub["task_id"],
+                                status=_status,
+                                title=_title,
+                                assignee=_assignee,
+                                board=board_slug,
+                            )
+                            # Graph-safe wake turn (#70752): carry the worker's
+                            # completion handoff into the synthetic turn and
+                            # label it as an automatic notification so the woken
+                            # creator inspects the board instead of
+                            # re-decomposing work that already exists.
+                            if wake_handoff:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.handoff",
+                                    summary=wake_handoff,
+                                )
+                            _synth += "\n\n" + t(
+                                "gateway.kanban.wake.guidance"
+                            )
+
+                        if not _is_push_adapter and _wake_kinds and _session_key:
+                            # Wake self-post IS the delivery on this path —
+                            # it must succeed BEFORE the cursor advances.
+                            from gateway.wake import deliver_wake
+
+                            try:
+                                await deliver_wake(
+                                    adapter,
+                                    text=_synth,
+                                    session_id=_session_key,
+                                )
+                                logger.info(
+                                    "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                                )
+                                sub_fail_counts.pop(sub_key, None)
+                            except Exception as _wk_err:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: wake self-post failed "
+                                    "for %s (attempt %d/%d): %s",
+                                    sub["task_id"], fails,
+                                    MAX_SEND_FAILURES, _wk_err, exc_info=True,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription "
+                                        "%s on %s after %d consecutive wake failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    # Rewind the pre-send claim so the next
+                                    # tick retries the self-post — the event
+                                    # is NOT lost.
+                                    await _to_thread_process_service(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                continue
+
+                        async def _push_wake() -> None:
+                            """Wake the creator session behind a push adapter.
+
+                            Shared by the wake-only (pre-advance, delivery)
+                            and notify+wake (post-advance, best-effort)
+                            branches below; raises on failure so the caller
+                            decides whether to rewind or merely log.
+                            """
+                            from gateway.session import SessionSource
+                            from gateway.wake import deliver_wake
+                            # Rebuild the creator's real session scope from
+                            # the chat_type persisted on the subscription
+                            # row (#56580). build_session_key() keys DMs
+                            # (":dm:<chat_id>") on a wholly different shape
+                            # from group/thread, so the old hardcoded
+                            # "group" mis-routed DM/thread creators into a
+                            # fresh session. Legacy rows written before the
+                            # column existed may still carry chat_type in
+                            # delivery_metadata (#60600 rows) — fall back
+                            # to that, then to "group" (the historical
+                            # default that suits the dashboard/group flows).
+                            # handle_message() get_or_create_session's the
+                            # target, so a mismatch only ever degrades to a
+                            # fresh session, never an exception.
+                            _chat_type = str(sub.get("chat_type") or "").strip()
+                            if not _chat_type:
+                                _delivery_meta = sub.get("delivery_metadata")
+                                if isinstance(_delivery_meta, dict):
+                                    _chat_type = str(
+                                        _delivery_meta.get("chat_type") or ""
+                                    ).strip()
+                            _chat_type = _chat_type or "group"
+                            _source = SessionSource(
+                                platform=plat,
+                                chat_id=sub["chat_id"],
+                                chat_type=_chat_type,
+                                thread_id=sub.get("thread_id") or None,
+                                user_id=sub.get("user_id"),
+                                user_id_alt=sub.get("user_id_alt"),
+                                profile=sub_profile or None,
+                                scope_id=_wake_scope_id(adapter, sub),
+                            )
+                            # deliver_wake preserves the synthetic
+                            # MessageEvent/handle_message path for
+                            # push-capable adapters (the non-push /
+                            # self-post branch is handled BEFORE the
+                            # cursor advance above).
+                            await deliver_wake(
+                                adapter,
+                                text=_synth,
+                                session_id=_session_key,
+                                source=_source,
+                            )
+                            logger.info(
+                                "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+                                sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                            )
+
+                        if _is_push_adapter and not send_passive and _wake_kinds:
+                            # Wake-only (delivery_mode='wake') push sub: the
+                            # text ping was intentionally skipped above, so
+                            # the wake IS the sole delivery. It must succeed
+                            # BEFORE the cursor advances — advancing first
+                            # would let a failed wake (previously swallowed
+                            # by the best-effort except below) permanently
+                            # lose the event. Mirrors the non-push
+                            # (api_server) self-post ordering above.
+                            try:
+                                await _push_wake()
+                                sub_fail_counts.pop(sub_key, None)
+                            except Exception as _wk_err:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: wake-only delivery failed "
+                                    "for %s (attempt %d/%d): %s",
+                                    sub["task_id"], fails,
+                                    MAX_SEND_FAILURES, _wk_err, exc_info=True,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription "
+                                        "%s on %s after %d consecutive wake failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await _to_thread_process_service(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    # Rewind the pre-send claim so the next
+                                    # tick retries the wake — the event is
+                                    # NOT lost.
+                                    await _to_thread_process_service(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                continue
+
+                        # Delivery complete (text ping for push adapters, wake
+                        # self-post for non-push, wake injection for wake-only
+                        # push subs): advance cursor. The cursor is the dedup
+                        # mechanism — it prevents re-delivery of the same
+                        # event on subsequent ticks.
+                        await _to_thread_process_service(
+                            self._kanban_advance, sub, d["cursor"], board_slug,
+                        )
+                        if not _is_push_adapter:
+                            # Nothing left to deliver on this path (the wake,
+                            # if any, already succeeded above).
+                            sub_fail_counts.pop(sub_key, None)
+                        # Unsubscribe only on archive. Completion (``done``)
+                        # remains reversible: controllers reopen completed
+                        # work for review corrections and continuation. The
+                        # retained cursor prevents replay while preserving the
+                        # original delivery and wake ownership for that cycle.
+                        if _is_push_adapter and send_passive and _wake_kinds:
+                            # notify+wake: the text ping above was the
+                            # delivery and the cursor has advanced; the wake
+                            # injection stays best-effort.
+                            try:
+                                await _push_wake()
+                            except Exception as _wk_err:
+                                # Best-effort: the notification itself already
+                                # delivered and the cursor has advanced, so a
+                                # broken wake path must not wedge the tick — but
+                                # log at WARNING with a traceback rather than
+                                # DEBUG so a persistently-failing wake is visible
+                                # in normal logs instead of silently no-op'ing.
+                                logger.warning(
+                                    "kanban notifier: wakeup injection failed for %s: %s",
+                                    sub["task_id"], _wk_err, exc_info=True,
+                                )
+                        if task_terminal:
+                            await _to_thread_process_service(
+                                self._kanban_unsub, sub, board_slug,
+                            )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
@@ -277,10 +967,9 @@ class GatewayKanbanWatchersMixin:
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
             try:
-                # Reap zombies before per-board work so a board DB failure
-                # cannot block cleanup of unrelated workers.
-                from hermes_cli import kanban_db_dispatch as _kbd
-                pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
+                # Reap zombie children before per-board work so a board DB
+                # failure cannot block cleanup of unrelated workers.
+                pids = await _to_thread_process_service(_kb.reap_worker_zombies)
                 if pids:
                     logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
             except Exception:
@@ -297,21 +986,42 @@ class GatewayKanbanWatchersMixin:
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
                     if _ad_enabled:
-                        await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(dispatcher.tick_once)
-                    any_spawned = _log_spawn_results(results)
-                    ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
-                now = int(time.time())
-                if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
-                    logger.warning(
-                        "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned. Check "
-                        "profile health (venv, PATH, credentials) and "
-                        "`hermes kanban list --status ready`.",
-                        bad_ticks,
-                    )
-                    last_warn_at = now
+                        await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
+                    results = await _to_thread_process_service(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await _to_thread_process_service(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+                if bad_ticks >= HEALTH_WINDOW:
+                    now = int(time.time())
+                    if now - last_warn_at >= 300:
+                        logger.warning(
+                            "kanban dispatcher stuck: ready queue non-empty for "
+                            "%d consecutive ticks but 0 workers spawned. Check "
+                            "profile health (venv, PATH, credentials) and "
+                            "`hermes kanban list --status ready`.",
+                            bad_ticks,
+                        )
+                        last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
                 self._release_kanban_dispatcher_lock()

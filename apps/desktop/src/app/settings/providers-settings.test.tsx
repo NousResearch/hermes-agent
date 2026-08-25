@@ -177,7 +177,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', undefined))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 

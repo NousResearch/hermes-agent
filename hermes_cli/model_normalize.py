@@ -206,14 +206,21 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # OpenCode Zen / Go are flat-namespace resellers: /v1/models returns bare IDs and inference 401s
-    # vendor-prefixed names, so strip ANY leading ``vendor/`` (commonly copied from aggregator slugs).
+    # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
+    #     Their /v1/models API returns bare IDs only (no vendor prefix), and
+    #     the inference endpoint rejects vendor-prefixed names with HTTP 401
+    #     "Model not supported".  Strip ANY leading ``vendor/`` so config
+    #     entries like ``minimax/minimax-m2.7`` or ``deepseek/deepseek-v4-flash``
+    #     — commonly copied from aggregator slugs into fallback_model lists —
+    #     resolve to bare ``minimax-m2.7`` / ``deepseek-v4-flash`` the API
+    #     actually serves.  See PR reviewing opencode-go fallback 401s. ---
     from hermes_cli.models import opencode_provider_family
 
     _oc_family = opencode_provider_family(provider)
     if _oc_family is not None:
         if "/" in name:
-            name = name.split("/", 1)[1].strip() or name
+            _, bare_after_slash = name.split("/", 1)
+            name = bare_after_slash.strip() or name
         if _oc_family == "opencode-zen" and name.lower().startswith("claude-"):
             return _dots_to_hyphens(name)
         return name

@@ -39,13 +39,29 @@ def _get_custom_provider_entries() -> list[dict]:
         return []
     result: list[dict] = []
     for entry in get_compatible_custom_providers(config):
-        name = entry.get("name") if isinstance(entry, dict) else None
-        if isinstance(name, str) and name.strip():
-            result.append({
-                **entry, "name": name.strip(),
-                "pool_key": f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}",
-                "provider_key": str(entry.get("provider_key", "") or "").strip()})
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        normalized = dict(entry)
+        normalized["name"] = name.strip()
+        normalized["pool_key"] = (
+            f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
+        )
+        normalized["provider_key"] = str(
+            entry.get("provider_key", "") or ""
+        ).strip()
+        result.append(normalized)
     return result
+
+
+def _get_custom_provider_names() -> list:
+    """Return list of (display_name, pool_key, provider_key) tuples."""
+    return [
+        (entry["name"], entry["pool_key"], entry["provider_key"])
+        for entry in _get_custom_provider_entries()
+    ]
 
 
 def _configured_provider_entry(provider: str) -> dict | None:
@@ -53,7 +69,11 @@ def _configured_provider_entry(provider: str) -> dict | None:
     normalized = (provider or "").strip().lower()
     if not normalized or normalized.startswith(CUSTOM_POOL_PREFIX):
         return None
-    return next((e for e in _get_custom_provider_entries() if e["provider_key"].lower() == normalized), None)
+    for entry in _get_custom_provider_entries():
+        provider_key = str(entry.get("provider_key") or "").strip().lower()
+        if provider_key and provider_key == normalized:
+            return entry
+    return None
 
 
 def _resolve_custom_provider_input(raw: str) -> str | None:
@@ -64,13 +84,17 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
     for entry in _get_custom_provider_entries():
-        # ``providers:`` entries already have a durable runtime slug; keep credentials under it
-        # instead of leaking the legacy ``custom:`` identity into auth.json and discovery.
-        provider_key = entry["provider_key"].lower()
-        if provider_key and provider_key == normalized:
-            return provider_key
-        if _normalize_custom_pool_name(entry["name"]) == normalized:
-            return provider_key or entry["pool_key"]
+        display_name = entry["name"]
+        pool_key = entry["pool_key"]
+        provider_key = entry["provider_key"]
+        # ``providers:`` entries already have a durable runtime slug. Keep
+        # credentials under that slug instead of leaking the legacy
+        # ``custom:`` compatibility identity into auth.json and discovery.
+        normalized_provider_key = provider_key.strip().lower()
+        if normalized_provider_key and normalized_provider_key == normalized:
+            return normalized_provider_key
+        if _normalize_custom_pool_name(display_name) == normalized:
+            return normalized_provider_key or pool_key
     return None
 
 
@@ -113,12 +137,54 @@ def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
         pass
 
 
+def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
+    """Move a keyed provider's old ``custom:`` pool into its runtime slug."""
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        credential_pool = auth_store.get("credential_pool")
+        if not isinstance(credential_pool, dict):
+            return
+        legacy_entries = credential_pool.get(legacy_key)
+        if not isinstance(legacy_entries, list) or not legacy_entries:
+            return
+
+        current_entries = credential_pool.get(provider)
+        merged = list(current_entries) if isinstance(current_entries, list) else []
+        known_ids = {
+            entry.get("id")
+            for entry in merged
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        for entry in legacy_entries:
+            entry_id = entry.get("id") if isinstance(entry, dict) else None
+            if entry_id and entry_id in known_ids:
+                continue
+            merged.append(entry)
+            if entry_id:
+                known_ids.add(entry_id)
+
+        credential_pool[provider] = merged
+        del credential_pool[legacy_key]
+        auth_mod._save_auth_store(auth_store)
+
+    try:
+        from hermes_cli.models import clear_provider_models_cache
+
+        clear_provider_models_cache(legacy_key)
+    except Exception:
+        pass
+
+
 def _provider_base_url(provider: str) -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
         from agent.credential_pool import _get_custom_provider_config
-        return str((_get_custom_provider_config(provider) or {}).get("base_url") or "").strip()
+
+        cp_config = _get_custom_provider_config(provider)
+        if cp_config:
+            return str(cp_config.get("base_url") or "").strip()
+        return ""
     configured = _configured_provider_entry(provider)
     if configured is not None:
         return str(configured.get("base_url") or "").strip()
@@ -127,8 +193,16 @@ def _provider_base_url(provider: str) -> str:
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
-    return (provider in PROVIDER_REGISTRY or provider == "openrouter"
-            or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+    return (
+        provider in PROVIDER_REGISTRY
+        or provider == "openrouter"
+        or provider.startswith(CUSTOM_POOL_PREFIX)
+        or configured_provider is not None
+    )
+
+
+def _oauth_default_label(provider: str, count: int) -> str:
+    return f"{provider}-oauth-{count}"
 
 
 def _unknown_provider_exit(provider: str) -> SystemExit:
@@ -360,7 +434,7 @@ def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise _unknown_provider_exit(provider)
+        raise SystemExit(f"Unknown provider: {provider}")
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -386,7 +460,58 @@ def auth_add_command(args) -> None:
 
 def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCredential:
     if requested_type == AUTH_TYPE_API_KEY:
-        return _add_api_key_credential(args, provider, pool)
+        token = (getattr(args, "api_key", None) or "").strip()
+        if not token:
+            token = masked_secret_prompt("Paste your API key: ").strip()
+        if not token:
+            raise SystemExit("No API key provided.")
+        default_label = _api_key_default_label(len(pool.entries()) + 1)
+        label = (getattr(args, "label", None) or "").strip()
+        if not label:
+            if sys.stdin.isatty():
+                label = line_input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            else:
+                label = default_label
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source=SOURCE_MANUAL,
+            access_token=token,
+            base_url=_provider_base_url(provider),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+        return
+
+    if provider == "anthropic":
+        from agent import anthropic_adapter as anthropic_mod
+
+        creds = anthropic_mod.run_hermes_oauth_login_pure()
+        if not creds:
+            raise SystemExit("Anthropic OAuth login did not return credentials.")
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:hermes_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            expires_at_ms=creds.get("expires_at_ms"),
+            base_url=_provider_base_url(provider),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     if provider == "nous":
         return _add_nous_oauth_credential(args, provider)
 
@@ -463,10 +588,21 @@ def auth_list_command(args) -> None:
         providers = [provider_filter]
     else:
         credential_pool = auth_mod._load_auth_store().get("credential_pool")
+        persisted_providers = (
+            credential_pool.keys() if isinstance(credential_pool, dict) else ()
+        )
+        configured_providers = (
+            entry["provider_key"]
+            for entry in _get_custom_provider_entries()
+            if entry["provider_key"]
+        )
         providers = sorted({
-            *PROVIDER_REGISTRY.keys(), "openrouter", *list_custom_pool_providers(),
-            *(e["provider_key"] for e in _get_custom_provider_entries() if e["provider_key"]),
-            *(credential_pool.keys() if isinstance(credential_pool, dict) else ())})
+            *PROVIDER_REGISTRY.keys(),
+            "openrouter",
+            *list_custom_pool_providers(),
+            *configured_providers,
+            *persisted_providers,
+        })
     for provider in providers:
         pool = load_pool(provider)
         entries = pool.entries()
@@ -725,8 +861,11 @@ def _pick_provider(prompt: str = "Provider") -> str:
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:
         print(f"Custom endpoints: {', '.join(custom_display)}")
-    raw = _ask(f"{prompt}: ", line_input)
-    if raw is None:
+    else:
+        print(f"\nKnown providers: {', '.join(known)}")
+    try:
+        raw = line_input(f"{prompt}: ").strip()
+    except (EOFError, KeyboardInterrupt):
         raise SystemExit()
     return _normalize_provider(raw)
 
@@ -735,7 +874,7 @@ def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise _unknown_provider_exit(provider)
+        raise SystemExit(f"Unknown provider: {provider}")
 
     auth_type = "api_key"
     if provider in _OAUTH_CAPABLE_PROVIDERS:
@@ -747,8 +886,15 @@ def _interactive_add() -> None:
             return
         if type_choice == "2":
             auth_type = "oauth"
-    label = _ask("Label / account name (optional): ", line_input)
-    if label is None:
+        else:
+            auth_type = "api_key"
+    else:
+        auth_type = "api_key"
+
+    label = None
+    try:
+        typed_label = line_input("Label / account name (optional): ").strip()
+    except (EOFError, KeyboardInterrupt):
         return
     auth_add_command(SimpleNamespace(
         provider=provider, auth_type=auth_type, label=label or None, api_key=None,
@@ -763,10 +909,17 @@ def _interactive_remove() -> None:
         print(f"No credentials for {provider}.")
         return
     for i, e in enumerate(pool.entries(), 1):
-        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{_format_exhausted_status(e)} [id:{e.id}]")
-    raw = _ask("Remove #, id, or label (blank to cancel): ", line_input)
-    if raw:
-        auth_remove_command(SimpleNamespace(provider=provider, target=raw))
+        exhausted = _format_exhausted_status(e)
+        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
+
+    try:
+        raw = line_input("Remove #, id, or label (blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not raw:
+        return
+
+    auth_remove_command(SimpleNamespace(provider=provider, target=raw))
 
 
 def _interactive_reset() -> None:

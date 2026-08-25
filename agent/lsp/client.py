@@ -143,6 +143,8 @@ class LSPClient:
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._cleanup_lock = asyncio.Lock()
+
+        # Request/response correlation
         self._next_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
 
@@ -169,6 +171,26 @@ class LSPClient:
         # predicate" — avoids the asyncio.Event sticky-state trap.
         self._push_event = asyncio.Event()
         self._push_counter = 0
+        # Registration change event so wait_for_diagnostics can re-loop
+        # when the server announces a new dynamic provider.
+        self._registration_event = asyncio.Event()
+
+    @property
+    def is_running(self) -> bool:
+        return self._state == "running" and self._connection_is_open()
+
+    def _connection_is_open(self) -> bool:
+        proc = self._proc
+        reader = self._reader_task
+        return (
+            self._state in {"starting", "running"}
+            and proc is not None
+            and proc.returncode is None
+            and proc.stdin is not None
+            and not proc.stdin.is_closing()
+            and reader is not None
+            and not reader.done()
+        )
 
     @property
     def state(self) -> str:
@@ -260,28 +282,16 @@ class LSPClient:
         except (asyncio.CancelledError, OSError):
             pass
         finally:
-            unexpected_close = not self._stopping and self._state in _LIVE_STATES
+            unexpected_close = not self._stopping and self._state in {"starting", "running"}
             if unexpected_close:
                 self._state = "error"
-            for fut in list(self._pending.values()):  # fail pending requests fast
+            # Wake up any pending requests so they can fail fast.
+            for fut in list(self._pending.values()):
                 if not fut.done():
                     fut.set_exception(LSPProtocolError("server connection closed"))
             self._pending.clear()
             if unexpected_close:
                 await self._cleanup_process()
-
-    def _workspace_folders(self) -> List[Dict[str, str]]:
-        return [_folder(r) for r in self.workspace_folders]
-
-    async def add_workspace_folder(self, root: str) -> None:
-        """Attach another root to a running multi-root server.  Idempotent; the folder is recorded
-        before the notification is sent so concurrent callers for the same root only announce once."""
-        if root in self.workspace_folders:
-            return
-        self.workspace_folders.append(root)
-        await self._send_notification(
-            "workspace/didChangeWorkspaceFolders", {"event": {"added": [_folder(root)], "removed": []}},
-        )
 
     async def _initialize(self) -> None:
         params = {
@@ -319,24 +329,44 @@ class LSPClient:
 
     async def _cleanup_process(self) -> None:
         async with self._cleanup_lock:
-            tasks = [self._reader_task, self._stderr_task]
-            self._reader_task = self._stderr_task = None
-            proc, self._proc = self._proc, None
-            live = [t for t in tasks if t is not None and not t.done() and t is not asyncio.current_task()]
-            for t in live:
-                t.cancel()
-            await asyncio.gather(*live, return_exceptions=True)
-            if proc is None or proc.returncode is not None:
-                return
-            try:
-                proc.terminate()
+            current_task = asyncio.current_task()
+            reader_task = self._reader_task
+            self._reader_task = None
+            if (
+                reader_task is not None
+                and reader_task is not current_task
+                and not reader_task.done()
+            ):
+                reader_task.cancel()
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-            except ProcessLookupError:
-                pass
+                    await reader_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            stderr_task = self._stderr_task
+            self._stderr_task = None
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            proc = self._proc
+            self._proc = None
+            if proc is None:
+                return
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except ProcessLookupError:
+                            pass
+                except ProcessLookupError:
+                    pass
 
     # ---- request / notification plumbing ----
 
@@ -350,9 +380,13 @@ class LSPClient:
             raise LSPProtocolError(f"cannot send {method!r}: server connection closed")
 
     async def _send_request(self, method: str, params: Any) -> Any:
-        self._require_open(method)
-        req_id, self._next_id = self._next_id, self._next_id + 1
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        if not self._connection_is_open():
+            raise LSPProtocolError(f"cannot send {method!r}: server connection closed")
+        assert self._proc is not None and self._proc.stdin is not None
+        loop = asyncio.get_running_loop()
+        req_id = self._next_id
+        self._next_id += 1
+        fut: asyncio.Future = loop.create_future()
         self._pending[req_id] = fut
         try:
             await self._write(make_request(req_id, method, params))
@@ -375,7 +409,9 @@ class LSPClient:
                 await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
 
     async def _send_notification(self, method: str, params: Any) -> None:
-        self._require_open(method)
+        if not self._connection_is_open():
+            raise LSPProtocolError(f"cannot send {method!r}: server connection closed")
+        assert self._proc is not None and self._proc.stdin is not None
         try:
             await self._write(make_notification(method, params))
         except _WRITE_ERRORS as e:
@@ -566,8 +602,10 @@ class LSPClient:
         abs_path = os.path.abspath(path)
         while True:
             if not self._connection_is_open():
-                raise LSPProtocolError("server connection closed while waiting for diagnostics")
-            remaining = deadline - now()
+                raise LSPProtocolError(
+                    "server connection closed while waiting for diagnostics"
+                )
+            remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return False
             # Concurrent: document pull + push wait.

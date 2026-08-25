@@ -323,25 +323,41 @@ class RuntimeMode:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
-    def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None) -> tuple[list[str], list[str], list[str]]:
-        """Return (prefix, workspace, trailing) posture blocks in the historical flat order —
-        brief, snapshot, operator instructions — so prompt assembly can put a cache boundary
-        before the snapshot without changing persisted bytes. The brief carries the model-family
-        edit-format nudge (one cached string); ``valid_tool_names`` drops the ``todo_list``
-        sentence when that tool isn't loaded; operator instructions ride their own block so
-        the brief stays byte-stable. ``workspace_block`` replays a snapshot the caller already
-        pinned at session start (``""`` = no workspace) instead of re-running the git probe;
-        ``None`` probes."""
+    def system_prompt_parts(
+        self, valid_tool_names=None
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Return prefix, workspace, and trailing posture blocks separately.
+
+        The operating brief carries a model-family edit-format nudge appended
+        to it (one cached string, not a separate block) so the model is steered
+        toward the `patch` mode it handles best — see ``_edit_format_line``.
+
+        ``valid_tool_names`` (when provided) tailors the brief to the session's
+        toolset: the ``todo`` tracking sentence is dropped when the todo tool
+        isn't loaded (e.g. Blank Slate), so the brief never references a tool
+        the model can't call. The toolset is fixed at session construction,
+        so the rendered brief is deterministic per session — cache-safe.
+
+        The three lists preserve the historical flat prompt order: the brief,
+        the live workspace snapshot, then configured operator instructions.
+        Prompt assembly can therefore put a cache boundary before the snapshot
+        without changing the persisted system-prompt bytes.
+        """
         if not self.is_coding:
             return [], [], []
         prefix: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
-            if valid_tool_names is not None and "todo_list" not in valid_tool_names:
-                brief = brief.replace(_TODO_SENTENCE, _NO_TODO_SENTENCE)
-            family = _model_family(self.model)
-            if family is not None:
-                brief = f"{brief}\n{_EDIT_FORMAT_GUIDANCE[family][1]}"
+            if valid_tool_names is not None and "todo" not in valid_tool_names:
+                brief = brief.replace(
+                    "- Track multi-step work with `todo`. Reference code as "
+                    "`path:line` instead of pasting whole files.",
+                    "- Reference code as `path:line` instead of pasting "
+                    "whole files.",
+                )
+            edit_line = _edit_format_line(self.model)
+            if edit_line:
+                brief = f"{brief}\n{edit_line}"
             prefix.append(brief)
         workspace = build_coding_workspace_block(self.cwd) if workspace_block is None else workspace_block
         trailing = [f"Operator instructions (from config):\n{self.instructions}"] if self.instructions else []
@@ -585,7 +601,258 @@ _PROFILES: dict[str, ContextProfile] = {
     CODING_PROFILE.name: CODING_PROFILE,
 }
 
-def get_profile(name: str) -> ContextProfile:
-    """Return a registered profile, falling back to ``general``."""
-    return _PROFILES.get(name, GENERAL_PROFILE)
-# ---- END PLUGIN-COMPAT ----
+def coding_system_prompt_parts(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    config: Optional[dict[str, Any]] = None,
+    model: Optional[str] = None,
+    valid_tool_names=None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return coding prefix, workspace snapshot, and trailing guidance."""
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).system_prompt_parts(valid_tool_names=valid_tool_names)
+
+
+def coding_compact_skill_categories(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> frozenset[str]:
+    """Skill categories the active posture demotes to names-only in the index.
+
+    Empty outside the coding posture and outside the opt-in ``focus`` mode —
+    the default posture never touches the skill index. Under ``focus``,
+    demoted — never hidden: every skill name stays in the index and remains
+    loadable via ``skill_view`` / ``skills_list``; only descriptions are
+    dropped.
+    """
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config
+    ).compact_skill_categories()
+
+
+def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
+    """Names of MCP servers the user has enabled — kept in the coding posture.
+
+    MCP servers (figma, browser, tophat, …) are explicitly configured and part
+    of the coding workflow, not noise to strip.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import _parse_enabled_flag
+
+        servers = read_raw_config().get("mcp_servers") or {}
+        return [
+            str(name)
+            for name, cfg in servers.items()
+            if isinstance(cfg, dict)
+            and _parse_enabled_flag(cfg.get("enabled", True), default=True)
+        ]
+    except Exception:
+        return []
+
+
+# ── git/workspace probe ─────────────────────────────────────────────────────
+
+
+def _git(cwd: Path, *args: str) -> str:
+    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure.
+
+    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded
+    on Windows — a plain ``subprocess.run(timeout=...)`` here deadlocked the agent
+    turn inside ``build_coding_workspace_block`` when a killed git left a suspended
+    descendant holding the pipe handles (issue #66037).
+    """
+    return bounded_git_probe(["git", "-C", str(cwd), *args], timeout=_GIT_TIMEOUT)
+
+
+def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:
+    """Parse ``git status --porcelain=2 --branch`` into branch + counts."""
+    branch: dict[str, str] = {}
+    counts = {"staged": 0, "modified": 0, "untracked": 0, "conflicts": 0}
+    for line in porcelain.splitlines():
+        if line.startswith("# branch.head"):
+            branch["head"] = line.split(maxsplit=2)[-1]
+        elif line.startswith("# branch.upstream"):
+            branch["upstream"] = line.split(maxsplit=2)[-1]
+        elif line.startswith("# branch.ab"):
+            parts = line.split()
+            branch["ahead"], branch["behind"] = parts[2].lstrip("+"), parts[3].lstrip("-")
+        elif line.startswith(("1 ", "2 ")):
+            xy = line.split(maxsplit=2)[1]
+            if xy[0] != ".":
+                counts["staged"] += 1
+            if xy[1] != ".":
+                counts["modified"] += 1
+        elif line.startswith("u "):
+            counts["conflicts"] += 1
+        elif line.startswith("? "):
+            counts["untracked"] += 1
+    return branch, counts
+
+
+def _read_small(path: Path) -> str:
+    """Read a small text file, or ``""`` — never raises, never reads huge files."""
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+@dataclass(frozen=True)
+class ProjectFacts:
+    """Structured project facts — the model's verify loop, detected once.
+
+    The same data that feeds the workspace snapshot, exposed structurally so
+    non-prompt consumers (e.g. the desktop verify UI) read it instead of
+    re-detecting and drifting from the prompt.
+    """
+
+    manifests: list[str]
+    package_managers: list[str]
+    verify_commands: list[str]
+    context_files: list[str]
+
+
+def detect_project_facts(root: Path) -> ProjectFacts:
+    """Detect manifests, package manager(s), verify commands, and context files.
+
+    Cheap: stat calls plus reads of a couple of small files. The single source
+    of truth for both the prompt snapshot (:func:`_project_facts`) and the
+    gateway's ``project.facts`` — so the UI never re-sniffs verify commands.
+    """
+    manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
+    package_managers = list(
+        dict.fromkeys(pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file())
+    )
+
+    verify: list[str] = []
+    if (root / "scripts" / "run_tests.sh").is_file():
+        verify.append("scripts/run_tests.sh")
+    if (root / "package.json").is_file():
+        try:
+            scripts = json.loads(_read_small(root / "package.json") or "{}").get("scripts") or {}
+        except (json.JSONDecodeError, AttributeError):
+            scripts = {}
+        js_pm = next((pm for lock, pm in _JS_LOCKFILES if (root / lock).is_file()), "npm")
+        verify.extend(f"{js_pm} run {name}" for name in _VERIFY_TARGETS if name in scripts)
+    if (root / "pytest.ini").is_file() or "[tool.pytest" in _read_small(root / "pyproject.toml"):
+        verify.append("pytest")
+    makefile = _read_small(root / "Makefile")
+    if makefile:
+        verify.extend(
+            f"make {name}" for name in _VERIFY_TARGETS
+            if re.search(rf"^{re.escape(name)}\s*:", makefile, re.MULTILINE)
+        )
+
+    return ProjectFacts(
+        manifests=manifests,
+        package_managers=package_managers,
+        verify_commands=list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS],
+        context_files=[c for c in _CONTEXT_FILES if (root / c).is_file()],
+    )
+
+
+def _project_facts(root: Path) -> list[str]:
+    """Render :func:`detect_project_facts` as workspace-snapshot lines.
+
+    Hands the model its *verify loop* up front — which manifest, which package
+    manager, and the exact test/lint/build commands — instead of making it
+    rediscover them every session. Built once at prompt-build time; the string
+    output must stay byte-stable to preserve the prompt cache.
+    """
+    f = detect_project_facts(root)
+    facts: list[str] = []
+
+    if f.manifests:
+        line = f"- Project: {', '.join(f.manifests[:6])}"
+        if f.package_managers:
+            line += f" ({'/'.join(f.package_managers)})"
+        facts.append(line)
+    if f.verify_commands:
+        facts.append(f"- Verify: {'; '.join(f.verify_commands)}")
+    if f.context_files:
+        facts.append(f"- Context files: {', '.join(f.context_files)}")
+
+    return facts
+
+
+def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
+    """Structured project facts for ``cwd`` — ``None`` outside a workspace.
+
+    Same detection the system-prompt snapshot uses (git root, else marker root),
+    exposed for non-prompt consumers (the desktop verify UI) so they never
+    re-derive "are we coding?" or duplicate the verify-command sniffing.
+    """
+    resolved = _resolve_cwd(cwd)
+    root = _git_root(resolved) or _marker_root(resolved)
+    if root is None:
+        return None
+
+    f = detect_project_facts(root)
+    return {
+        "root": str(root),
+        "manifests": f.manifests,
+        "packageManagers": f.package_managers,
+        "verifyCommands": f.verify_commands,
+        "contextFiles": f.context_files,
+    }
+
+
+def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
+    """Workspace snapshot for the system prompt (empty outside a workspace).
+
+    Git state (branch/status/commits) when the cwd is in a repo, plus detected
+    project facts (manifest, package manager, verify commands, context files)
+    — so marker-only (non-git) projects still get a snapshot.
+    """
+    resolved = _resolve_cwd(cwd)
+    git_root = _git_root(resolved)
+    root = git_root or _marker_root(resolved)
+    if root is None:
+        return ""
+
+    lines = ["Workspace (snapshot at session start — re-check with `git` before acting on it):"]
+    lines.append(f"- Root: {root}")
+
+    if git_root is not None:
+        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
+        head = branch.get("head", "")
+        if head and head != "(detached)":
+            line = f"- Branch: {head}"
+            if branch.get("upstream"):
+                line += f" \u2192 {branch['upstream']}"
+                ahead, behind = branch.get("ahead", "0"), branch.get("behind", "0")
+                if ahead != "0" or behind != "0":
+                    line += f" (ahead {ahead}, behind {behind})"
+            lines.append(line)
+        elif head == "(detached)":
+            lines.append("- Branch: (detached HEAD)")
+
+        # Linked worktree: the per-worktree git dir differs from the shared common dir.
+        # We surface the fact that it's a worktree (so the model knows branches/stashes
+        # are shared state) but deliberately do NOT expose the primary tree path —
+        # giving the model a second absolute path causes it to sometimes run commands
+        # in the wrong directory.
+        git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
+        if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
+            lines.append("- Worktree: linked (git state shared with primary tree)")
+
+        dirty = [f"{n} {label}" for label, n in (
+            ("staged", counts["staged"]), ("modified", counts["modified"]),
+            ("untracked", counts["untracked"]), ("conflicts", counts["conflicts"]),
+        ) if n]
+        lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
+
+        recent = _git(root, "log", "-3", "--pretty=%h %s")
+        if recent:
+            lines.append("- Recent commits:")
+            lines.extend(f"    {c}" for c in recent.splitlines())
+
+    lines.extend(_project_facts(root))
+    return "\n".join(lines)

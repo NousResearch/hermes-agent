@@ -166,15 +166,64 @@ def _normalize_input_images(
     return [_to_input_image(value) for value in values]
 
 
-def _build_image_request(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
-) -> Tuple[str, Dict[str, Any]]:
-    """``(endpoint_path, json_body)`` — ``images/edits`` when sources are present, else
-    ``images/generations``. Field set mirrors the official client's ``ImageGenerationRequest`` /
-    ``ImageEditRequest``."""
-    body: Dict[str, Any] = {
-        "prompt": prompt, "model": API_MODEL, "n": 1, "quality": quality, "size": size,
-        "background": "opaque",
+# Progressive preview frames (partial_image_b64) are intermediate renders.
+# Saving them as finals produced the long-running "smear" failure mode on the
+# Codex Responses path. Defense in depth:
+#   1) request layer prefers no progressive frames when the backend honors it
+#   2) extractor never lets a partial overwrite a final result
+#   3) generate() only delivers source=final; partial-only / empty are not success
+# Live streams sometimes still emit a partial event even with 0; that is fine as
+# long as only a final ``result`` can be saved.
+_PARTIAL_IMAGES_REQUESTED = 0
+# Content-agnostic retries when the stream does not yield a final result
+# (empty stream or progressive-only). No prompt-class branching.
+_NONFINAL_RETRIES = 1
+
+
+def _build_responses_payload(
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Build the Codex Responses request body for an image_generation call."""
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if input_images:
+        content.extend(input_images)
+    return {
+        "model": _CODEX_CHAT_MODEL,
+        "store": False,
+        "instructions": _CODEX_INSTRUCTIONS,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": content,
+        }],
+        "tools": [{
+            "type": "image_generation",
+            "model": API_MODEL,
+            "size": size,
+            "quality": quality,
+            "output_format": "png",
+            "background": "opaque",
+            # Prefer 0 progressive preview frames. Preview frames can arrive
+            # without a later final ``result`` and look like smeared /
+            # unfinished images if saved as the deliverable. Even when the
+            # backend still emits a partial event, generate() refuses to
+            # deliver anything except source=final.
+            "partial_images": _PARTIAL_IMAGES_REQUESTED,
+        }],
+        # No ``tool_choice`` is sent: the chatgpt.com/backend-api/codex backend
+        # rejects every shape we have for forcing the hosted ``image_generation``
+        # tool. ``{"type": "allowed_tools", "mode": "required", "tools": [{"type":
+        # "image_generation"}]}`` (and the simpler ``{"type": "image_generation"}``
+        # form) both 400 with ``Tool choice 'image_generation' not found in 'tools'
+        # parameter`` — the backend looks up tool_choice as a *function* name and
+        # never recognizes hosted-tool entries. Letting the host model decide is
+        # the only shape Codex currently accepts; the ``instructions`` above are
+        # what nudge it toward the tool. See issue #19505.
+        "stream": True,
     }
     if input_images:
         body["images"] = input_images
@@ -182,11 +231,122 @@ def _build_image_request(
     return "images/generations", body
 
 
-def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
-) -> Dict[str, Any]:
-    """POST to the native Codex images endpoint; return the decoded JSON body plus
-    ``imagegen_request_id`` (backend correlation id, for support tickets)."""
+def _extract_image_candidates(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(final_result_b64, latest_partial_b64)`` from a payload tree.
+
+    Final ``image_generation_call.result`` and progressive ``partial_image_b64``
+    are tracked separately so a partial can never overwrite a genuine final,
+    including when both coexist in the same event payload.
+    """
+    result_b64: Optional[str] = None
+    partial_b64: Optional[str] = None
+
+    def walk(node: Any) -> None:
+        nonlocal result_b64, partial_b64
+        if isinstance(node, dict):
+            if node.get("type") == "image_generation_call":
+                result = node.get("result")
+                if isinstance(result, str) and result:
+                    result_b64 = result
+            partial = node.get("partial_image_b64")
+            if isinstance(partial, str) and partial:
+                partial_b64 = partial
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return result_b64, partial_b64
+
+
+def _extract_image_b64(value: Any) -> Optional[str]:
+    """Return image b64 from a payload, preferring final result over partial.
+
+    Progressive ``partial_image_b64`` is only used when no final
+    ``image_generation_call.result`` is present in the same payload tree.
+    """
+    result_b64, partial_b64 = _extract_image_candidates(value)
+    return result_b64 or partial_b64
+
+
+def _png_pixel_size(raw: bytes) -> Optional[str]:
+    """Return ``\"{w}x{h}\"`` for a PNG payload, or None if not a PNG IHDR."""
+    import struct
+
+    if len(raw) < 24 or raw[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    # IHDR: length(4) + type(4) + width(4) + height(4)
+    if raw[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", raw[16:24])
+    return f"{width}x{height}"
+
+
+def _iter_sse_json(response: Any):
+    """Yield JSON payloads from an SSE response without OpenAI SDK parsing.
+
+    The ChatGPT/Codex backend can emit image-generation events newer than the
+    pinned Python SDK understands. Parsing raw SSE keeps this provider tolerant
+    of those event-shape changes.
+    """
+    event_name: Optional[str] = None
+    data_lines: List[str] = []
+
+    def flush():
+        nonlocal event_name, data_lines
+        if not data_lines:
+            event_name = None
+            return None
+        raw = "\n".join(data_lines).strip()
+        event = event_name
+        event_name = None
+        data_lines = []
+        if not raw or raw == "[DONE]":
+            return None
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and event and "type" not in payload:
+            payload["type"] = event
+        return payload
+
+    for line in response.iter_lines():
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        line = str(line)
+        if line == "":
+            payload = flush()
+            if payload is not None:
+                yield payload
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:"):].lstrip())
+
+    payload = flush()
+    if payload is not None:
+        yield payload
+
+
+def _collect_image_b64(
+    token: str,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Dict[str, str]]:
+    """Stream a Codex Responses image_generation call.
+
+    Returns ``{\"b64\": ..., \"source\": \"final\"|\"partial\"}`` or ``None``.
+
+    Final ``result`` frames are preferred across the whole stream. A progressive
+    ``partial_image_b64`` is retained only when no final result ever arrives;
+    callers must not treat partial-only as an unconditional success.
+    """
     import httpx
     from agent.codex_headers import codex_cloudflare_headers
 
@@ -196,19 +356,38 @@ def _post_image_request(
         "Content-Type": "application/json",
         "x-codex-image-turn-id": str(uuid.uuid4()),
     })
-    path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
-    timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
+    payload = _build_responses_payload(
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        input_images=input_images,
+    )
+    timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
+
+    final_b64: Optional[str] = None
+    partial_b64: Optional[str] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Codex images API returned HTTP {response.status_code}: "
-            f"{_summarize_error_body(response.text)}")
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError("Codex images API returned a non-object body")
-    payload["imagegen_request_id"] = response.headers.get("x-codex-imagegen-request-id")
-    return payload
+        with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                exc.response.read()
+                raise RuntimeError(
+                    f"Codex Responses API returned HTTP {exc.response.status_code}: "
+                    f"{_summarize_error_body(exc.response.text)}"
+                ) from exc
+            for event in _iter_sse_json(response):
+                result_b64, event_partial = _extract_image_candidates(event)
+                if result_b64:
+                    final_b64 = result_b64
+                if event_partial:
+                    partial_b64 = event_partial
+
+    if final_b64:
+        return {"b64": final_b64, "source": "final"}
+    if partial_b64:
+        return {"b64": partial_b64, "source": "partial"}
+    return None
 
 
 def _png_pixel_size(raw: bytes) -> Optional[str]:
@@ -272,31 +451,113 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
 
         try:
-            payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+            collected: Optional[Dict[str, str]] = None
+            for attempt in range(_NONFINAL_RETRIES + 1):
+                collected = _collect_image_b64(
+                    token,
+                    prompt=prompt,
+                    size=size,
+                    quality=meta["quality"],
+                    input_images=input_images or None,
+                )
+                if collected and collected.get("source") == "final" and collected.get("b64"):
+                    break
+                if attempt < _NONFINAL_RETRIES:
+                    kind = (
+                        "progressive-only partial frame"
+                        if collected and collected.get("source") == "partial"
+                        else "no image_generation_call result"
+                    )
+                    logger.warning(
+                        "Codex image stream ended with %s (attempt %s/%s); "
+                        "retrying once before failing closed.",
+                        kind,
+                        attempt + 1,
+                        _NONFINAL_RETRIES + 1,
+                    )
+                    continue
+                break
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
 
-        data = payload.get("data")
-        b64 = data[0].get("b64_json") if isinstance(data, list) and data and isinstance(data[0], dict) else None
-        if not isinstance(b64, str) or not b64:
-            return fail("Codex images API response contained no image data", "empty_response")
+        if not collected or not collected.get("b64"):
+            return error_response(
+                error=(
+                    "Codex response contained no image_generation_call result "
+                    f"after {_NONFINAL_RETRIES + 1} attempt(s)"
+                ),
+                error_type="empty_response",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        image_source = collected.get("source") or "unknown"
+        b64 = collected["b64"]
+
+        # Defense in depth: never deliver a progressive-only frame as success.
+        # Partials are intermediate previews and have presented as smeared /
+        # unfinished images when saved as finals.
+        if image_source != "final":
+            pixel_hint = None
+            try:
+                import base64 as _b64mod
+
+                pixel_hint = _png_pixel_size(_b64mod.b64decode(b64, validate=False))
+            except Exception:
+                pixel_hint = None
+            detail = (
+                "Codex returned only a progressive partial image frame after "
+                f"{_NONFINAL_RETRIES + 1} attempt(s); refusing to save it "
+                "as a final deliverable."
+            )
+            if pixel_hint:
+                detail = f"{detail} partial_pixel_size={pixel_hint}."
+            err = error_response(
+                error=detail,
+                error_type="incomplete_image",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+            err["image_source"] = image_source
+            err["requested_size"] = size
+            err["partial_pixel_size"] = pixel_hint
+            err["nonfinal_retries"] = _NONFINAL_RETRIES
+            return err
 
         try:
-            pixel_size = _png_pixel_size(base64.b64decode(b64))
+            import base64 as _b64mod
+
+            raw_bytes = _b64mod.b64decode(b64)
+            pixel_size = _png_pixel_size(raw_bytes)
             saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
         except Exception as exc:
             return fail(f"Could not save image to cache: {exc}", "io_error")
         return success_response(
-            image=str(saved_path), model=tier_id, prompt=prompt, aspect_ratio=aspect,
-            provider="openai-codex", modality="image" if input_images else "text",
+            image=str(saved_path),
+            model=tier_id,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai-codex",
+            modality="image" if input_images else "text",
             extra={
-                "size": size, "quality": meta["quality"], "input_image_count": len(input_images),
-                "requested_size": size, "pixel_size": pixel_size,
-                "reported_quality": payload.get("quality"), "reported_size": payload.get("size"),
-                "imagegen_request_id": payload.get("imagegen_request_id"),
-            })
+                "size": size,
+                "quality": meta["quality"],
+                "input_image_count": len(input_images),
+                "image_source": image_source,
+                "requested_size": size,
+                "pixel_size": pixel_size,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plugin entry point
+# ---------------------------------------------------------------------------
 
 
 def register(ctx) -> None:

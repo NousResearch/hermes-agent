@@ -1,10 +1,8 @@
 import { translateNow } from '@/i18n'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
-import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 
 import { fileEditBasename, isFileEditTool, parseMaybeObject } from './fallback-model'
-import { skillActivityTitle } from './skill-activity'
 
 /**
  * The little a summary needs from a tool call, stated structurally so both

@@ -126,8 +126,17 @@ def _resolve_terminal_backend() -> str:
 
 
 def _build_probe_line() -> str:
-    """Build the one-liner; "" when nothing notable is detected — the goal is to
-    save the model from an avoidable wall, not narrate a healthy environment."""
+    """Build the one-liner.  Returns "" when nothing notable is detected.
+
+    Emit only when SOMETHING is off — the goal is to save the model from
+    hitting an avoidable wall, not to narrate a healthy environment.
+    """
+    # Bail out if a remote terminal backend is configured; the host's
+    # Python state isn't where the agent's tools run.
+    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
+        return ""
+
     py3_ver = _python_version_of("python3")
     py_ver = _python_version_of("python")  # for systems with a `python` alias
     py3_has_pip = _has_pip_module("python3") if py3_ver else False

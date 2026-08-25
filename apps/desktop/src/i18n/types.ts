@@ -205,8 +205,6 @@ export interface Translations {
       desktopBootFailed: string
       gatewayConnectionLost: string
       gatewayConnectionLostDetail: string
-      reconnectNow: string
-      connectionSettings: string
       gatewaySignInRequired: string
       gatewaySignInRequiredDetail: string
       signInAgain: string
@@ -584,6 +582,38 @@ export interface Translations {
         unlockDescription: string
         masterPasswordPlaceholder: string
       }
+      installModal: {
+        title: string
+        description: string
+        repoLabel: string
+        includesHeading: string
+        agentLabel: string
+        desktopLabel: string
+        agentTargetLocal: (profile: string) => string
+        agentTargetRemote: (profile: string) => string
+        desktopTarget: string
+        desktopOnlyNote: string
+        insecureWarning: string
+        securityHeading: string
+        securityIntro: string
+        sourceHeading: string
+        viewRepository: string
+        viewPluginFiles: string
+        gitCloneLabel: string
+        enableAgent: string
+        forceReinstall: string
+        install: string
+        installing: string
+        probing: string
+        probeUnavailable: string
+        desktopUnavailable: string
+        selectComponent: string
+        agentSuccess: (name: string) => string
+        desktopSuccess: (name: string) => string
+        agentFailed: string
+        desktopFailed: string
+        missingEnv: (vars: string) => string
+      }
     }
     notifications: {
       title: string
@@ -628,10 +658,6 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
-      appActionsTitle: string
-      appActionsDesc: string
-      appActionsLeft: string
-      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -664,8 +690,6 @@ export interface Translations {
       }
       backdropTitle: string
       backdropDesc: string
-      userBubbleTitle: string
-      userBubbleDesc: string
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string
@@ -2032,14 +2056,6 @@ export interface Translations {
     switchConnectionFailed: (name: string) => string
     manageProfiles: string
     connectGateway: string
-    fleet: {
-      allOnGateway: string
-      gateway: (gateway: string) => string
-      gatewayUnreachable: (gateway: string) => string
-      onGateway: (name: string, gateway: string) => string
-      switchTo: (name: string, gateway: string) => string
-      deleteOn: (gateway: string) => string
-    }
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
@@ -2500,13 +2516,6 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceControls: string
-    voiceEngine: string
-    voiceEngineChained: string
-    voiceEngineLive: string
-    voiceEngineLiveNeedsKey: string
-    voiceEngineChangeFailed: string
-    voiceEngineChainedShort: string
-    voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -3450,48 +3459,8 @@ export interface Translations {
         runtime: string
         streaming: string
       }
-      /** One plain sentence per layer — what happened and what to do — shown
-       *  when the failure code has no dedicated entry in `errorCodes`. */
-      errorLayerBodies: {
-        auth: string
-        billing: string
-        disk: string
-        endpoint: string
-        gateway: string
-        generic: string
-        provider: string
-        runtime: string
-        streaming: string
-      }
-      /** Per failure code (agent/error_classifier.py FailoverReason values plus
-       *  the gateway's site codes): a title and one plain sentence saying what
-       *  happened and what to do. Function entries take the provider label. */
-      errorCodes: Record<ErrorCodeKey, ErrorCardCopy>
-      /** Auth layer, keyed on how the provider is credentialed. The OAuth
-       *  body is `errorOauthExpired` (already translated per locale). */
-      errorAuthKinds: { api_key: ErrorCardCopy; oauth: Pick<ErrorCardCopy, 'title'> }
-      /** Collapsed "Details" line holding the raw provider/gateway text. */
-      errorDetails: string
-      /** Stands in for the provider name when the descriptor carries none. */
-      errorGenericProvider: string
-      /** Global toast title for a mid-turn gateway `error` event. */
-      errorToastTitle: string
       errorRetry: string
-      /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
-      errorStartNewSession: string
       errorSwitchProvider: string
-      errorChooseModel: string
-      errorCompressConversation: string
-      errorCompressFailed: string
-      errorOpenHermesFolder: string
-      errorOpenHermesFolderFailed: string
-      errorUpdateApiKey: string
-      /** One-click recovery for an expired/revoked OAuth grant: re-runs that
-       *  provider's sign-in flow (auth layer, authKind 'oauth'). */
-      errorSignInAgain: (provider: string) => string
-      /** Explains WHY the turn failed for an OAuth 401 — the raw body
-       *  ("HTTP 401: User not found.") doesn't say "sign in again". */
-      errorOauthExpired: (provider: string) => string
       errorOpenLogs: string
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string

@@ -37,10 +37,23 @@ class NousProfile(ProviderProfile):
 
     @staticmethod
     def _cannot_disable_reasoning(model: str | None) -> bool:
-        """True when ``reasoning: {enabled: false}`` would 400 on *model*. Cache-only catalog
-        lookup; unknown/cold (warmer kicked) and no-reasoning routes both answer True (omit > 400)."""
+        """True when a disable can't safely be sent for *model*.
+
+        Reasoning-mandatory routes answer ``reasoning: {enabled: false}``
+        with HTTP 400 ("Reasoning is mandatory for this model"), so the
+        catalog decides. Cache-only, and an unknown model (catalog cold,
+        unlisted, or unreachable) also answers True: a cold first turn errs
+        toward the old omit-everything behavior rather than risking a 400.
+
+        A route the catalog says takes no reasoning parameter at all is
+        treated the same way — sending it a disable is sending a parameter
+        the Portal has told us it doesn't accept.
+        """
         try:
-            from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities, warm_nous_reasoning_caps_async
+            from hermes_cli.models import (
+                nous_model_reasoning_capabilities,
+                warm_nous_reasoning_caps_async,
+            )
 
             caps = nous_model_reasoning_capabilities(model)
             if caps is None:
@@ -48,22 +61,37 @@ class NousProfile(ProviderProfile):
                 return True
         except Exception:
             return True
-        return not caps.get("supports_reasoning") or bool(caps.get("mandatory"))
+        if not caps.get("supports_reasoning"):
+            return True
+        return bool(caps.get("mandatory"))
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False,
-        model: str | None = None, **context,
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        supports_reasoning: bool = False,
+        model: str | None = None,
+        **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Pass the full reasoning_config, disable included (the Portal honors it;
-        omitting it means the upstream default, thinking ON for V4-class models)."""
-        if not supports_reasoning:
-            return {}, {}
-        if reasoning_config is None:
-            return {"reasoning": {"enabled": True, "effort": "medium"}}, {}
-        rc = dict(reasoning_config)
-        if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
-            return {}, {}
-        return {"reasoning": rc}, {}
+        """Nous: passes the full reasoning_config, disable included.
+
+        The Portal honors ``reasoning: {enabled: false}`` — it is the only
+        wire shape that does. Sending nothing means the *upstream* default,
+        which for a thinking-first model like ``deepseek/deepseek-v4-pro``
+        (catalog: ``default_effort: high``) is thinking ON, so omitting a
+        disable silently ignored the user's "thinking off".
+        """
+        extra_body = {}
+        if supports_reasoning:
+            if reasoning_config is not None:
+                rc = dict(reasoning_config)
+                if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
+                    pass  # route rejects a disable — let the model think
+                else:
+                    extra_body["reasoning"] = rc
+            else:
+                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+        return extra_body, {}
 
 
 nous = NousProfile(

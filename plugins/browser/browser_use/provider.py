@@ -72,14 +72,24 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
         return self._get_config_or_none(refresh_token=False) is not None
 
     def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[Dict[str, Any]]:
-        # Lazy: managed_tool_gateway pulls in the Nous auth stack direct-key users never need.
-        from tools.managed_tool_gateway import peek_nous_access_token, resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        # Import here to avoid a hard dependency at module-import time —
+        # managed_tool_gateway pulls in the Nous auth stack which can be
+        # heavy and is not needed for direct-API-key users.
+        from tools.managed_tool_gateway import (
+            peek_nous_access_token,
+            resolve_managed_tool_gateway,
+        )
+        from tools.tool_backend_helpers import (
+            NOUS_MANAGED_PROVIDER,
+            read_selection,
+        )
 
         def _managed_config() -> Optional[Dict[str, Any]]:
             # Keep availability scans off the synchronous OAuth refresh path.
             managed = resolve_managed_tool_gateway(
-                "browser-use", token_reader=None if refresh_token else peek_nous_access_token)
+                "browser-use",
+                token_reader=None if refresh_token else peek_nous_access_token,
+            )
             if managed is None:
                 return None
             return {
@@ -90,35 +100,67 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
 
         api_key = get_secret("BROWSER_USE_API_KEY")
         selected = read_selection("browser")
-        direct = {"api_key": api_key, "base_url": _BASE_URL, "managed_mode": False}
 
-        # Strict: "nous" (or legacy use_gateway: true) → managed ONLY; any other stored selection →
-        # direct ONLY (no silent managed fallback); never-configured → direct if present, else managed.
+        # Strict selection: "nous" (or legacy use_gateway: true) → managed
+        # gateway ONLY; any other stored browser selection → direct API key
+        # ONLY (no silent managed fallback); never-configured → legacy
+        # behavior (direct key when present, else managed gateway).
         if selected == NOUS_MANAGED_PROVIDER:
             return _managed_config()
         if selected is not None:
-            return direct if api_key else None
-        return direct if api_key else _managed_config()
+            if api_key:
+                return {
+                    "api_key": api_key,
+                    "base_url": _BASE_URL,
+                    "managed_mode": False,
+                }
+            return None
+        if api_key:
+            return {
+                "api_key": managed.nous_user_token,
+                "base_url": managed.gateway_origin.rstrip("/"),
+                "managed_mode": True,
+            }
+        return _managed_config()
 
     def _get_config(self) -> Dict[str, Any]:
         from tools.tool_backend_helpers import (
-            NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, read_selection, selection_error)
+            NOUS_MANAGED_PROVIDER,
+            managed_nous_tools_enabled,
+            read_selection,
+            selection_error,
+        )
 
         config = self._get_config_or_none()
-        if config is not None:
-            return config
-        selected = read_selection("browser")
-        if selected == NOUS_MANAGED_PROVIDER:
-            raise ValueError(selection_error(
-                "browser", NOUS_MANAGED_PROVIDER,
-                "the Nous Tool Gateway is not available (not entitled or unreachable)"))
-        if selected is not None:
-            raise ValueError(selection_error("browser", selected, "BROWSER_USE_API_KEY is not set"))
-        if managed_nous_tools_enabled():
-            raise ValueError(
-                "Browser Use requires either a direct BROWSER_USE_API_KEY "
-                "credential or a managed Browser Use gateway configuration.")
-        raise ValueError("Browser Use requires a direct BROWSER_USE_API_KEY credential.")
+        if config is None:
+            selected = read_selection("browser")
+            if selected == NOUS_MANAGED_PROVIDER:
+                raise ValueError(selection_error(
+                    "browser",
+                    NOUS_MANAGED_PROVIDER,
+                    "the Nous Tool Gateway is not available (not entitled or "
+                    "unreachable)",
+                ))
+            if selected is not None:
+                raise ValueError(selection_error(
+                    "browser",
+                    selected,
+                    "BROWSER_USE_API_KEY is not set",
+                ))
+            message = (
+                "Browser Use requires a direct BROWSER_USE_API_KEY credential."
+            )
+            if managed_nous_tools_enabled():
+                message = (
+                    "Browser Use requires either a direct BROWSER_USE_API_KEY "
+                    "credential or a managed Browser Use gateway configuration."
+                )
+            raise ValueError(message)
+        return config
+
+    # ------------------------------------------------------------------
+    # Session lifecycle
+    # ------------------------------------------------------------------
 
     def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
         return {"Content-Type": "application/json", "X-Browser-Use-API-Key": config["api_key"]}

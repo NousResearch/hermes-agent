@@ -819,6 +819,60 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
+  // Lock one answer of a batch clarify (clarify.respond + question_id). The
+  // overlay stays up until the server reports no remaining questions — the
+  // final lock resolves the tool and the turn continues.
+  const answerClarifyQuestion = useCallback(
+    (qid: string, answer: string) => {
+      const clarify = overlay.clarify
+
+      if (!clarify?.questions?.length) {
+        return
+      }
+
+      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
+        answer,
+        question_id: qid,
+        request_id: clarify.requestId
+      }).then(r => {
+        if (!r) {
+          return
+        }
+
+        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+
+        if ((r.remaining ?? []).length > 0) {
+          patchOverlayState({ clarify: { ...clarify, answers } })
+
+          return
+        }
+
+        // Batch complete: persist the whole Q&A set as one user-visible
+        // block (mirrors the single-question trail + answer lines).
+        const label = toolTrailLabel('clarify')
+
+        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+        patchTurnState({ turnTrail: turnController.turnTools })
+        turnController.persistedToolLabels.add(label)
+        appendMessage({
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          tools: [buildToolTrailLine('clarify', `${clarify.questions!.length} questions`)]
+        })
+        appendMessage({
+          role: 'user',
+          text: clarify
+            .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
+            .join('\n')
+        })
+        patchUiState({ status: 'running…' })
+        patchOverlayState({ clarify: null })
+      })
+    },
+    [appendMessage, overlay.clarify, rpc]
+  )
+
   sysRef.current = sys
 
   const { dispatchSubmission, send, sendQueued, submit, submitLiteral } = useSubmission({

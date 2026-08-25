@@ -24,7 +24,7 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
-import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
@@ -49,7 +49,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 
@@ -314,7 +314,7 @@ function ChatRuntimeBoundary({
     // something older to show. Fire-and-forget: the prepend lands through the
     // session-state write path and re-renders this boundary.
     if (
-      !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
+      !windowStateRef.current?.window.windowed &&
       runtimeId &&
       storedId &&
       transcriptBackfillAvailable(storedId, tailProfile)

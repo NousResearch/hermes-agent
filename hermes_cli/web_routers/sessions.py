@@ -551,17 +551,35 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
-    projected_messages = _project_for_display(messages)
+    from agent.compaction_display import project_compaction_message_for_display
+    from agent.context_compressor import is_compaction_summary_message
+
+    projected_messages = []
+    for message in messages:
+        if not is_compaction_summary_message(message):
+            projected_messages.append(message)
+            continue
+        display_view = project_compaction_message_for_display(message)
+        projected = message.copy()
+        if display_view is None:
+            if not projected.get("display_kind"):
+                projected["display_kind"] = "hidden"
+        else:
+            # Keep the physical content for inspection/export compatibility;
+            # Desktop consumes this display-only projection. A legacy hidden
+            # wrapper must not hide a successfully recovered live ask.
+            projected["display_content"] = display_view.get("content")
+            projected.pop("display_kind", None)
+        projected_messages.append(projected)
     return {
         "session_id": sid,
-        # The same stamp list rows carry, so the Desktop keys a page under the
-        # owner it already routes the session by.
-        "profile": _serving_profile(profile),
         "messages": projected_messages,
         "pagination": {
             "limit": _limit, "offset": offset,
             "order": order or ("latest" if limit is None else "oldest"),
-            "returned": len(projected_messages)}}
+            "returned": len(projected_messages),
+        },
+    }
 
 
 @manage_router.delete("/api/sessions/{session_id}")

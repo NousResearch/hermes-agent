@@ -72,22 +72,144 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
         logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
 
-    async def _initialize(self) -> None:
-        """Load stored state, seed ``token_expiry_time``, restore/prefetch metadata. The SDK's
-        ``_initialize`` never calls ``update_token_expiry``, so a restarted process would ship stale
-        Bearer tokens as "valid"; seeding the expiry (``HermesTokenStorage`` persists absolute
-        ``expires_at``) makes the SDK refresh first. Metadata is restored from disk, else discovered
-        pre-flight when we hold tokens but no metadata: otherwise ``_refresh_token`` guesses
-        ``{server_url}/token`` (wrong for split-origin providers), 404s, and we fall to browser reauth."""
-        await super()._initialize()  # HermesProviderMixin: restores metadata from disk, enforces issuer binding
-        tokens = self.context.current_tokens
-        if tokens is not None and tokens.expires_in is not None:
-            # The SDK maps a zero TTL to ``time.time()`` and accepts equality
-            # in ``is_token_valid()``.  On a cold load that same-tick boundary
-            # can send an already-expired access token instead of refreshing it.
-            if tokens.expires_in <= 0:
-                self.context.token_expiry_time = time.time() - 1
-            else:
+        def __init__(
+            self,
+            *args: Any,
+            server_name: str = "",
+            preregistered: bool = False,
+            token_user_agent: "str | None" = None,
+            **kwargs: Any,
+        ):
+            super().__init__(*args, **kwargs)
+            self._hermes_server_name = server_name
+            self._hermes_home = ""
+            # When the client_id comes from config.yaml (pre-registered), an
+            # invalid_client rejection means the *config* is wrong — deleting
+            # client.json would just be re-seeded from config and re-running
+            # registration can't help. Only auto-heal dynamically-registered
+            # clients. See _maybe_flag_poisoned_client.
+            self._hermes_preregistered = preregistered
+            # oauth.user_agent — stamped onto token-endpoint requests only;
+            # some authorization servers/WAFs reject httpx's default (#75576).
+            self._hermes_token_user_agent = token_user_agent
+
+        def _stamp_token_user_agent(self, request):
+            ua = getattr(self, "_hermes_token_user_agent", None)
+            if ua:
+                request.headers["User-Agent"] = ua
+            return request
+
+        def _coerce_client_secret_post(self) -> None:
+            """Use client_secret_post when dynamic registration returned a secret.
+
+            Some MCP OAuth providers, notably Supabase, return a
+            ``client_secret`` from dynamic client registration but omit
+            ``token_endpoint_auth_method``. The MCP SDK treats the missing
+            value as public-client auth (``none``), so token exchange omits the
+            secret and Supabase rejects it with ``Required parameter:
+            client_secret``. Coerce the in-memory client info before token and
+            refresh requests.
+            """
+            info = getattr(self.context, "client_info", None)
+            if not info or not getattr(info, "client_secret", None):
+                return
+            method = getattr(info, "token_endpoint_auth_method", None)
+            if method not in (None, "none", ""):
+                return
+            from mcp.shared.auth import OAuthClientInformationFull
+
+            data = info.model_dump(mode="json", exclude_none=True)
+            data["token_endpoint_auth_method"] = "client_secret_post"
+            self.context.client_info = OAuthClientInformationFull.model_validate(data)
+
+        async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
+            self._coerce_client_secret_post()
+            request = await super()._exchange_token_authorization_code(*args, **kwargs)
+            return self._stamp_token_user_agent(request)
+
+        async def _refresh_token(self):
+            self._coerce_client_secret_post()
+            request = await super()._refresh_token()
+            return self._stamp_token_user_agent(request)
+
+        async def _handle_token_response(self, response):
+            """Accept any 2xx token response and avoid leaking token bodies in errors."""
+            if 200 <= response.status_code < 300:
+                from mcp.client.auth.utils import handle_token_response_scopes
+                from mcp.client.auth.oauth2 import OAuthTokenError
+                from httpx import HTTPError
+
+                try:
+                    token_response = await handle_token_response_scopes(response)
+                except (HTTPError, OAuthTokenError):
+                    raise OAuthTokenError("Invalid token response") from None
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return
+
+            from mcp.client.auth.oauth2 import OAuthTokenError
+
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+
+        async def _handle_refresh_response(self, response) -> bool:
+            """Accept any 2xx refresh response and avoid logging token bodies."""
+            if not (200 <= response.status_code < 300):
+                logger.warning("Token refresh failed: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+            from mcp.shared.auth import OAuthToken
+            from httpx import HTTPError
+            from pydantic import ValidationError
+
+            try:
+                content = await response.aread()
+                token_response = OAuthToken.model_validate_json(content)
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return True
+            except (HTTPError, ValidationError):
+                logger.warning("Invalid refresh response: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+        async def _initialize(self) -> None:
+            """Load stored tokens + client info AND seed token_expiry_time.
+
+            Also eagerly fetches OAuth authorization-server metadata (PRM +
+            ASM) when we have stored tokens but no cached metadata, so the
+            SDK's ``_refresh_token`` can build the correct token_endpoint
+            URL on the preemptive-refresh path. Without this, the SDK
+            falls back to ``{mcp_server_url}/token`` (wrong for providers
+            whose AS is a different origin — BetterStack's MCP lives at
+            ``https://mcp.betterstack.com`` but its token endpoint is at
+            ``https://betterstack.com/oauth/token``), the refresh 404s, and
+            we drop through to full browser reauth.
+
+            The SDK's base ``_initialize`` populates ``current_tokens`` but
+            does NOT call ``update_token_expiry``, so ``token_expiry_time``
+            stays ``None`` and ``is_token_valid()`` returns True for any
+            loaded token regardless of actual age. After a process restart
+            this ships stale Bearer tokens to the server; some providers
+            return HTTP 401 (caught by the 401 handler), others return 200
+            with an app-level auth error (invisible to the transport layer,
+            e.g. BetterStack returning "No teams found. Please check your
+            authentication.").
+
+            Seeding ``token_expiry_time`` from the reloaded token fixes that:
+            ``is_token_valid()`` correctly reports False for expired tokens,
+            ``async_auth_flow`` takes the ``can_refresh_token()`` branch,
+            and the SDK quietly refreshes before the first real request.
+
+            Paired with :class:`HermesTokenStorage` persisting an absolute
+            ``expires_at`` timestamp (``mcp_oauth.py:set_tokens``) so the
+            remaining TTL we compute here reflects real wall-clock age.
+            """
+            await super()._initialize()
+            tokens = self.context.current_tokens
+            if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
@@ -98,19 +220,39 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 from tools.mcp_oauth_provider import enforce_refresh_token_issuer
                 enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
 
-    async def _prefetch_oauth_metadata(self) -> None:
-        """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
-        builders/response handlers so we track whatever the pinned SDK expects."""
-        # The SDK's httpx flavour, not Hermes': `create_oauth_metadata_request` returns *its* (httpx2) Request objects.
-        from tools.mcp_tool import sdk_httpx
-        httpx = sdk_httpx()
-        if httpx is None:  # pragma: no cover — SDK import would have failed
-            return
-        from mcp.client.auth.utils import (
-            build_oauth_authorization_server_metadata_discovery_urls,
-            build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
-            handle_auth_metadata_response, handle_protected_resource_response)
-        server_url = self.context.server_url
+                storage = self.context.storage
+                from tools.mcp_oauth import HermesTokenStorage
+
+                # When the rejected client_id was our Client ID Metadata
+                # Document URL, re-presenting it next flow would loop: the
+                # server has already fetched that document and refused it.
+                # Dropping the URL sends the retry down the DCR branch
+                # instead, and the marker on disk keeps the next process from
+                # walking back into the same refusal. `hermes mcp login`
+                # clears the marker, so a fixed document gets another chance.
+                cimd_url = getattr(self.context, "client_metadata_url", None)
+                rejected_id = getattr(self.context.client_info, "client_id", None)
+                if cimd_url and rejected_id == cimd_url:
+                    logger.warning(
+                        "MCP OAuth '%s': authorization server rejected our "
+                        "Client ID Metadata Document (%s) with invalid_client "
+                        "— falling back to dynamic client registration.",
+                        self._hermes_server_name, cimd_url,
+                    )
+                    self.context.client_metadata_url = None
+                    if isinstance(storage, HermesTokenStorage):
+                        storage.mark_cimd_rejected()
+
+                if isinstance(storage, HermesTokenStorage):
+                    storage.poison_client_registration()
+                # Drop the in-memory client so the SDK re-registers next flow.
+                self.context.client_info = None
+                self._initialized = False
+            except Exception as exc:  # pragma: no cover — defensive, must not throw
+                logger.debug(
+                    "MCP OAuth '%s': invalid_client detection failed (non-fatal): %s",
+                    self._hermes_server_name, exc,
+                )
 
         async def _send(client, url: str, label: str):
             try:
@@ -306,19 +448,72 @@ class MCPOAuthManager:
         if _HERMES_PROVIDER_CLS is None:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
             return None
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow  # lazy: circular at import time
-        from tools.mcp_oauth import _OAUTH_AVAILABLE, OAuthNonInteractiveError, _is_interactive
-        from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
+
+        # Local imports avoid circular deps at module import time.
+        from tools.mcp_oauth import (
+            HermesTokenStorage,
+            OAuthNonInteractiveError,
+            _OAUTH_AVAILABLE,
+            _build_client_metadata,
+            _configure_callback_port,
+            _is_interactive,
+            _maybe_preregister_client,
+            _make_callback_waiter,
+            _make_redirect_handler,
+            cimd_provider_kwargs,
+            token_request_user_agent,
+        )
+
         if not _OAUTH_AVAILABLE:
             return None
         cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
-                f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
-                f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
+                "MCP OAuth for "
+                f"'{server_name}': non-interactive environment and no "
+                "cached tokens found. Run `hermes mcp login "
+                f"{server_name}` interactively first to complete initial "
+                "authorization."
+            )
+
+        _configure_callback_port(cfg, storage)
+        client_metadata = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, client_metadata)
+
+        resolved_port = cfg.get("_resolved_port", 0)
+        redirect_handler = _make_redirect_handler(resolved_port)
+        # mcp 2.0 removed OAuthClientProvider's `timeout` argument, so the
+        # configured `oauth.timeout` now bounds the callback waiter's own poll
+        # loop instead — that is where the browser round-trip is awaited.
+        callback_handler = _make_callback_waiter(
+            resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
+        )
+
         return _HERMES_PROVIDER_CLS(
-            server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
-            **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
+            server_name=server_name,
+            preregistered=bool(cfg.get("client_id")),
+            server_url=entry.server_url,
+            client_metadata=client_metadata,
+            storage=storage,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
+            token_user_agent=token_request_user_agent(cfg),
+            **cimd_provider_kwargs(cfg),
+        )
+
+    def remove(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+    ) -> _ProviderEntry | None:
+        """Evict the provider from cache AND delete tokens from disk.
+
+        Called by ``hermes mcp remove <name>`` and (indirectly) by
+        ``hermes mcp login <name>`` during forced re-auth.
+        """
+        with self._entries_lock:
+            entry = self._entries.pop(self._key(server_name, hermes_home), None)
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk (``hermes mcp remove`` / forced re-auth)."""

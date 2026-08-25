@@ -29,29 +29,22 @@ _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-# Platform -> ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``. Shared with the pairing
-# store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
-_ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
-_ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
-_GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
-_ALLOW_BOTS_ENV = {
-    # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
-    # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
-    # Slack Workflow Builder posts arrive as subtype=bot_message with user=None -- so deferring past the
-    # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
-    Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-    Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-    Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
-    Platform.SLACK: "SLACK_ALLOW_BOTS",
-}
+def _platform_gate_env(name: str, default: str = "") -> str:
+    """Read a platform allow/deny gate env var with per-profile isolation.
 
-
-# Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
-from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
-from gateway.platforms._shared import extra_or_secret as _extra_or_secret  # noqa: E402
-from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
-
+    When a profile secret scope is installed AND multiplexing is active, a
+    key absent from the scope returns ``default`` instead of falling through
+    to ``os.environ``. Under multiplex the process env may hold ANOTHER
+    profile's first-writer-bridged value (the YAML→env bridges in the
+    Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
+    so falling through would leak profile A's allowlist into profile B
+    (issue #72348). Single-profile deployments — no scope installed, or
+    multiplex off — behave exactly like the legacy ``os.getenv`` read.
+    """
+    if not name:
+        return default
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
 
 def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
@@ -66,6 +59,19 @@ def _registry_entry(platform):
 
         return platform_registry.get(platform.value)
     return None
+
+
+def _auth_env(name: str, default: str = "") -> str:
+    """Read allowlist/auth env with per-profile isolation under multiplex.
+
+    Same rules as ``_platform_gate_env``: a scoped miss under multiplex
+    returns ``default`` and does not fall through to ``os.environ``. The
+    process env may hold another profile's first-writer-bridged value, so
+    a fallthrough would leak allowlists and allow-all flags across profiles
+    (issue #72348). Single-profile deployments keep the legacy
+    ``os.getenv`` read.
+    """
+    return _platform_gate_env(name, default)
 
 
 def _coerce_allow_set(raw) -> set[str]:

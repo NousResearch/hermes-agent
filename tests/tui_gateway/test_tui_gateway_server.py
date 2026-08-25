@@ -372,13 +372,6 @@ def test_prompt_submit_unknown_session_logs_warning(caplog):
         "session-scoped RPC rejected" in rec.message and "gone-sid" in rec.message
         for rec in caplog.records
     )
-    # The method name must be in the line. Without it this warning cannot
-    # identify WHICH client call is looping on a stale runtime id — the gap
-    # that made a 5s `process.list` poll storm (18,614 rejections against one
-    # id) unattributable from the logs alone.
-    assert any(
-        "method=prompt.submit" in rec.message for rec in caplog.records
-    )
 
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
@@ -5148,8 +5141,8 @@ def test_ws_disconnect_running_sidecar_still_closes_without_orphan_timer(monkeyp
     )
     monkeypatch.setattr(
         server,
-        "_teardown_popped_session",
-        lambda session, *, end_reason: closed.append((session["_sid"], end_reason)) or True,
+        "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
     )
     monkeypatch.setattr(
         server, "_schedule_ws_orphan_reap", lambda sid: scheduled.append(sid)
@@ -5418,62 +5411,27 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
 
 
 def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
-    """Closing a pop-out window's transport must leave the session with the
-    still-open window instead of stranding it on the drop sentinel (#83716).
-
-    The rebind #83716 added is gone; multi-client fan-out subsumes it. Both
-    windows are attached to the slot at once, so the pop-out is a fan-out peer
-    rather than a viewer waiting to be promoted, and closing it detaches that
-    peer while retaining the surviving ordered mailbox. This pins the same
-    guarantee through the mechanism that replaced the rebind: the session is
-    not parked, not reaped, not handed to the orphan reaper, and the surviving
-    window keeps receiving frames.
-    """
+    """Closing a pop-out window's transport must re-bind the session to a
+    still-open window instead of stranding it on the drop sentinel (#83716)."""
     reap_calls = []
     monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
 
     class _LiveTransport:
-        def __init__(self):
-            self.frames = []
-            self.received = threading.Event()
-
-        def write(self, obj=None, *a, **k):
-            self.frames.append(obj)
-            self.received.set()
+        def write(self, *a, **k):
             return True
 
     main = _LiveTransport()
     popout = _LiveTransport()
-    session = _session(transport=None, running=False)
-    # Build the state the way production does: every window that resumes goes
-    # through _live_session_payload, which attaches it into the slot and then
-    # stamps it into the viewers registry.
-    server._attach_session_transport(session, main)
-    server._attach_session_transport(session, popout)
+    session = _session(transport=popout, running=False)
     session["viewers"] = {main: 100.0, popout: 200.0}
     server._sessions["multi-sid"] = session
-    assert isinstance(session["transport"], server.FanoutTransport)
 
-    try:
-        reaped, detached = server._close_sessions_for_transport(popout)
+    reaped, detached = server._close_sessions_for_transport(popout)
 
-        assert reaped == 0 and detached == 0
-        assert server._session_transport_contains(session, main)
-        assert not server._session_transport_contains(session, popout)
-        assert "multi-sid" not in reap_calls
-        assert server._ws_session_is_orphaned(session) is False
-
-        # And it is still a working stream, not just a surviving reference.
-        server._emit("message.delta", "multi-sid", {"text": "still here"})
-        assert main.received.wait(timeout=5)
-        assert [(f.get("params") or {}).get("type") for f in main.frames] == [
-            "message.delta"
-        ]
-        assert popout.frames == []
-    finally:
-        # The fake slot must not outlive the test: _sessions is module state and
-        # later sweeps would walk it.
-        server._sessions.pop("multi-sid", None)
+    assert reaped == 0 and detached == 0
+    assert session["transport"] is main
+    assert "multi-sid" not in reap_calls
+    assert server._ws_session_is_orphaned(session) is False
 
 
 def test_close_transport_detaches_when_no_viewers_remain(monkeypatch):
@@ -5499,15 +5457,7 @@ def test_close_transport_detaches_when_no_viewers_remain(monkeypatch):
 
 
 def test_close_transport_skips_dead_remaining_viewers(monkeypatch):
-    """A viewer whose socket is already dead must not hold the session open.
-
-    #83716's rebind refused to hand the session to a dead viewer; fan-out
-    membership keeps that filter through _transport_is_live_peer, which is what
-    decides whether anything survives the departing client. Both windows are
-    ATTACHED here, which is the state production builds — a viewer that was
-    never attached leaves the slot single-client and exercises the ordinary park
-    path instead of this one.
-    """
+    """A viewer whose socket is already dead must not win the re-bind."""
     reap_calls = []
     monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
 
@@ -5516,25 +5466,17 @@ def test_close_transport_skips_dead_remaining_viewers(monkeypatch):
             return True
 
     dead = _LiveTransport()
-    popout = _LiveTransport()
-    session = _session(transport=None, running=False)
-    server._attach_session_transport(session, dead)
-    server._attach_session_transport(session, popout)
-    session["viewers"] = {dead: 100.0, popout: 200.0}
-    assert isinstance(session["transport"], server.FanoutTransport)
-    # The socket goes away without a disconnect reaching the gateway; the latch
-    # _transport_is_dead reads is the only trace it leaves behind.
     dead._closed = True
+    owner = _LiveTransport()
+    session = _session(transport=owner, running=False)
+    session["viewers"] = {dead: 100.0, owner: 200.0}
     server._sessions["dead-viewer-sid"] = session
 
-    try:
-        reaped, detached = server._close_sessions_for_transport(popout)
+    reaped, detached = server._close_sessions_for_transport(owner)
 
-        assert reaped == 0 and detached == 1
-        assert session["transport"] is server._detached_ws_transport
-        assert reap_calls == ["dead-viewer-sid"]
-    finally:
-        server._sessions.pop("dead-viewer-sid", None)
+    assert detached == 1
+    assert session["transport"] is server._detached_ws_transport
+    assert reap_calls == ["dead-viewer-sid"]
 
 
 def test_live_session_payload_registers_transport_as_viewer():
@@ -5614,7 +5556,7 @@ def test_resume_rebind_cancels_pending_ws_orphan_reap(monkeypatch):
 
 
 def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
-    """The winner's pending reap is cancelled only once guarded reuse is accepted."""
+    """A resume that reuses the live winner cancels the winner's pending reap."""
     cancelled = []
 
     class _Timer:
@@ -5647,17 +5589,6 @@ def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
         )
 
         assert live == ("winner-sid", winner)
-        assert "winner-sid" in server._pending_ws_reaps
-        assert cancelled == []
-        assert winner["transport"] is server._detached_ws_transport
-
-        transport = object()
-        monkeypatch.setattr(server, "current_transport", lambda: transport)
-        ctx = server._Resume(1, {"omit_messages": True}, "stored-claim")
-        response = server._resume_reuse_live(ctx, *live)
-
-        assert response["result"]["session_id"] == "winner-sid"
-        assert winner["transport"] is transport
         assert "winner-sid" not in server._pending_ws_reaps
         assert len(cancelled) == 1
     finally:
@@ -5719,7 +5650,7 @@ def test_superseded_runtime_finalized_without_reclaimed_broadcast(monkeypatch):
         # mark it finalized-for-lookup via a different stored key is wrong —
         # instead simulate the mint race by removing it from lookup).
         old["_finalized"] = False
-        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k, *_a: None)
+        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k: None)
 
         result = server._claim_or_reuse_live("new-sid", "stored-super", fresh, None)
 
@@ -19167,64 +19098,46 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server._sessions.clear()
 
 
-@pytest.mark.parametrize("close_on_disconnect", [True, False])
-def test_close_sessions_for_transport_skips_session_rebound_before_claim(
-    monkeypatch, close_on_disconnect
-):
-    """A resume between snapshot and claim keeps either session type alive."""
+def test_close_sessions_for_transport_skips_rebound_session(monkeypatch):
+    """Rebind-between-snapshot-and-stomp (#77129 concept salvage).
+
+    _close_sessions_for_transport snapshots owned sessions under
+    _sessions_lock, then parks each on the drop sentinel. A concurrent
+    session.resume that rebinds the session to a NEW live transport in
+    between must NOT be stomped back onto the sentinel — that knocks an
+    attached client into detached state and arms an orphan reap against a
+    session with a live owner. The stomp must revalidate ownership under
+    the lock and skip (park AND reap) when the transport already moved on.
+    """
     reaps = []
-    teardowns = []
     monkeypatch.setattr(
         server, "_schedule_ws_orphan_reap", lambda sid: reaps.append(sid)
     )
-    monkeypatch.setattr(
-        server,
-        "_teardown_popped_session",
-        lambda session, *, end_reason: teardowns.append((session, end_reason)) or True,
-    )
     old_transport = object()  # the disconnecting transport
     new_transport = object()  # live rebind target (no _closed attr → alive)
-    session = {"transport": old_transport, "close_on_disconnect": close_on_disconnect}
-    original_sessions_lock = server._sessions_lock
-    rebound = threading.Event()
 
-    class _SnapshotInterlock:
-        """Rebind in a second thread immediately after the ownership snapshot."""
+    class _RebindsOnStomp(dict):
+        """Simulates a session.resume landing between snapshot and stomp:
+        the first 'viewers' read inside the stomp loop (i.e. after the
+        snapshot already selected this session) rebinds the transport."""
 
-        def __init__(self):
-            self._snapshot_released = False
+        def get(self, key, default=None):
+            if key == "viewers" and not self.get("_rebound_flag"):
+                dict.__setitem__(self, "_rebound_flag", True)
+                dict.__setitem__(self, "transport", new_transport)
+            return dict.get(self, key, default)
 
-        def __enter__(self):
-            original_sessions_lock.acquire()
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            original_sessions_lock.release()
-            if not self._snapshot_released:
-                self._snapshot_released = True
-
-                def _resume_rebind():
-                    with server._session_resume_lock:
-                        session["transport"] = new_transport
-                    rebound.set()
-
-                thread = threading.Thread(target=_resume_rebind)
-                thread.start()
-                assert rebound.wait(timeout=1)
-                thread.join(timeout=1)
-            return False
-
-    monkeypatch.setattr(server, "_sessions_lock", _SnapshotInterlock())
+    session = _RebindsOnStomp(
+        {"transport": old_transport, "close_on_disconnect": False}
+    )
     server._sessions.clear()
     server._sessions["rebound"] = session
     try:
         reaped, detached = server._close_sessions_for_transport(old_transport)
         assert reaped == 0
-        assert detached == 0
-        assert server._sessions["rebound"] is session
-        assert session["transport"] is new_transport
-        assert teardowns == []
-        assert reaps == []
+        assert detached == 0  # skipped, not parked
+        assert session["transport"] is new_transport  # rebind preserved
+        assert reaps == []  # no orphan reap armed against the live owner
     finally:
         server._sessions.clear()
 

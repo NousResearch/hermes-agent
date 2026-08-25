@@ -112,22 +112,18 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         super().__init__(config, Platform.WECOM)
         extra = config.extra or {}
 
-        def _extra_float(key: str, default: float) -> float:
-            try:
-                return float(extra.get(key, default))
-            except (TypeError, ValueError):
-                return default
+        self._dm_policy = str(extra.get("dm_policy") or _get_scoped_secret("WECOM_DM_POLICY", "pairing")).strip().lower()
+        # dm_policy already honors WECOM_DM_POLICY, so the allowlist must honor
+        # WECOM_ALLOWED_USERS too. Without the env fallback an env-only setup
+        # (dm_policy=allowlist via env, no config extra) runs with an empty
+        # allowlist and drops every authorized DM at intake.
+        self._allow_from = _coerce_list(
+            extra.get("allow_from")
+            or extra.get("allowFrom")
+            or _get_scoped_secret("WECOM_ALLOWED_USERS", "")
+        )
 
-        def _setting(*keys: str, env: str = "", default: str = "") -> str:
-            return str(next((extra[k] for k in keys if extra.get(k)), None) or (_get_scoped_secret(env, default) if env else "")).strip()
-
-        self._bot_id = _setting("bot_id", env="WECOM_BOT_ID")
-        self._secret = _setting("secret", env="WECOM_SECRET")
-        self._ws_url = _setting("websocket_url", "websocketUrl", env="WECOM_WEBSOCKET_URL", default=DEFAULT_WS_URL) or DEFAULT_WS_URL
-        self._dm_policy = _setting("dm_policy", env="WECOM_DM_POLICY", default="pairing").lower()
-        # WECOM_ALLOWED_USERS fallback: env-only allowlist setups otherwise drop every DM at intake.
-        self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom") or _get_scoped_secret("WECOM_ALLOWED_USERS", ""))
-        self._group_policy = _setting("group_policy", env="WECOM_GROUP_POLICY", default="pairing").lower()
+        self._group_policy = str(extra.get("group_policy") or _get_scoped_secret("WECOM_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
         self._session = self._ws = self._http_client = self._listen_task = self._heartbeat_task = None
@@ -466,21 +462,19 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         else:
             await self.handle_message(event)
 
-    def _admit_inbound(self, is_group: bool, chat_id: str, sender_id: str) -> bool:
-        """Apply group_policy / dm_policy at intake; logs and returns False when dropped."""
-        if not is_group:
-            allowed = self._is_dm_intake_allowed(sender_id)
-            if not allowed:
-                logger.info("[%s] DM sender %s blocked by policy", self.name, sender_id)
-            return allowed
-        self._group_chat_ids.add(chat_id)
-        allowed = self._is_group_allowed(chat_id, sender_id)
-        if not allowed:
-            logger.info(
-                "[%s] Group message DROPPED by policy: chat=%s sender=%s group_policy=%r (set group_policy to 'open' or add to group_allow_from to receive)",
-                self.name, chat_id, sender_id, self._group_policy,
-            )
-        return allowed
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles WeCom client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
+        )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer + reset the flush timer; real text joining a buffered attachment promotes it to TEXT and inherits the quote context."""
@@ -523,8 +517,44 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             return MessageType.VOICE
         return MessageType.TEXT
 
-    def _entry_matches(self, entries: List[str], target: str) -> bool:
-        return _entry_matches(entries, target)
+    # ------------------------------------------------------------------
+    # Policy helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WeCom gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
+    def _open_dm_opted_in(self) -> bool:
+        # Scoped reads (#93522): the default profile's allow-all flag must
+        # not leak into a multiplexed secondary profile's admission gate.
+        if (_get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
+            return True
+        return (_get_scoped_secret("WECOM_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
+
+    def _is_dm_allowed(self, sender_id: str) -> bool:
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return _entry_matches(self._allow_from, sender_id)
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return _entry_matches(self._allow_from, principal)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
         """Per-group ``groups.<id>.allow_from`` restricts senders on top of the chat-level policy."""

@@ -147,9 +147,146 @@ def _resolve_explicit_openai() -> str:
     if not _HAS_OPENAI:
         logger.warning("STT provider 'openai' configured but no API key available")
         return "none"
-    # Resolved directly so a managed openai-audio gateway outage is logged with its real reason.
-    reason = _openai_audio_unavailable_reason()
-    if reason is None:
+
+    explicit = "provider" in stt_config
+    provider = stt_config.get("provider", DEFAULT_PROVIDER)
+
+    # The managed "Nous Subscription" selection (stt.provider: nous) is
+    # serviced by the OpenAI provider implementation, routed through the
+    # managed openai-audio gateway by _resolve_openai_audio_client_config.
+    if isinstance(provider, str) and provider.strip().lower() == "nous":
+        provider = "openai"
+
+    if explicit and provider == "local":
+        # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every
+        # install, so a merged-config "local" is not proof of a user pick.
+        # ``read_selection`` reads the raw config.yaml: when the raw file
+        # holds an stt selection (picker- or hand-written ``local``) it is
+        # honored; when the merged "local" came only from a legacy default
+        # merge, take the autodetect branch (which prefers local first
+        # anyway, so a genuine local user is unaffected when it's available).
+        try:
+            from tools.tool_backend_helpers import read_selection
+
+            if read_selection("stt") is None:
+                explicit = False
+        except Exception:  # pragma: no cover — helpers are in-repo
+            pass
+
+    # --- Explicit provider: respect the user's choice ----------------------
+
+    if explicit:
+        if provider == "local":
+            if _HAS_FASTER_WHISPER:
+                return "local"
+            if _has_local_command():
+                return "local_command"
+            # Try lazy-install before giving up
+            if _try_lazy_install_stt():
+                return "local"
+            logger.warning(
+                "STT provider 'local' configured but unavailable "
+                "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
+            )
+            return "none"
+
+        if provider == "local_command":
+            if _has_local_command():
+                return "local_command"
+            if _HAS_FASTER_WHISPER:
+                logger.info("Local STT command unavailable, using local faster-whisper")
+                return "local"
+            logger.warning(
+                "STT provider 'local_command' configured but unavailable"
+            )
+            return "none"
+
+        if provider == "groq":
+            if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
+                return "groq"
+            logger.warning(
+                "STT provider 'groq' configured but GROQ_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "openai":
+            if _HAS_OPENAI:
+                # Resolve directly instead of via the boolean probe: the
+                # probe flattens _resolve_openai_audio_client_config's
+                # selection-specific ValueError into False, so a managed
+                # openai-audio gateway outage would be logged as a generic
+                # "no API key" hint (#93045).
+                try:
+                    _resolve_openai_audio_client_config()
+                    return "openai"
+                except ValueError as exc:
+                    logger.warning(
+                        "STT provider 'openai' configured but unavailable: %s", exc
+                    )
+                    return "none"
+            logger.warning(
+                "STT provider 'openai' configured but no API key available"
+            )
+            return "none"
+
+        if provider == "mistral":
+            if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
+                return "mistral"
+            logger.warning(
+                "STT provider 'mistral' configured but mistralai package "
+                "not installed or MISTRAL_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "xai":
+            from tools.xai_http import resolve_xai_http_credentials
+
+            if resolve_xai_http_credentials().get("api_key"):
+                return "xai"
+            logger.warning(
+                "STT provider 'xai' configured but no xAI credentials are available"
+            )
+            return "none"
+
+        if provider == "elevenlabs":
+            if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
+                return "elevenlabs"
+            logger.warning(
+                "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "deepinfra":
+            if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
+                return "deepinfra"
+            logger.warning(
+                "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set "
+                "(or openai package missing)"
+            )
+            return "none"
+
+        return provider  # Unknown — let it fail downstream
+
+    # --- Auto-detect (no explicit provider):
+    #     local > groq > openai > mistral > xai > elevenlabs > deepinfra ---
+    # DeepInfra is tried LAST so adding DEEPINFRA_API_KEY (commonly set for the
+    # chat surface) never silently displaces an existing xAI/ElevenLabs STT
+    # auto-selection; a DeepInfra-only box still resolves to it. mistral is
+    # intentionally skipped while `mistralai` is quarantined on PyPI (malicious
+    # 2.4.6 release on 2026-05-12).
+
+    if _HAS_FASTER_WHISPER:
+        return "local"
+    if _has_local_command():
+        return "local_command"
+    # Try lazy-install before falling through to cloud providers
+    if _try_lazy_install_stt():
+        return "local"
+    if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
+        logger.info("No local STT available, using Groq Whisper API")
+        return "groq"
+    if _HAS_OPENAI and _has_openai_audio_backend():
+        logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
     logger.warning("STT provider 'openai' configured but unavailable: %s", reason)
     return "none"
@@ -486,19 +623,30 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
     provider_key = str(provider or "").strip().lower()
     if "provider" in stt_config and provider_key and provider_key not in BUILTIN_STT_PROVIDERS and provider_key != "none":
         return _unregistered_stt_provider_error(provider_key)
-    # An explicit openai selection flattened to "none" has a specific reason (e.g. managed gateway down).
-    # Surface it — with its `hermes tools` remediation — instead of the all-provider setup hint (#93045).
+
+    # An explicit openai selection flattened to "none" carries a
+    # selection-specific reason (e.g. the managed openai-audio gateway is
+    # unavailable). Surface it — with its `hermes tools` remediation —
+    # instead of the all-provider setup hint (#93045).
     if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _HAS_OPENAI:
-        reason = _openai_audio_unavailable_reason()
-        if reason is not None:
-            return _error_result(reason)
-    return _error_result(
-        "No STT provider available. Install faster-whisper for free local "
-        f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-        "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-        "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-        "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-        "or OPENAI_API_KEY for the OpenAI Whisper API.")
+        try:
+            _resolve_openai_audio_client_config()
+        except ValueError as exc:
+            return {"success": False, "transcript": "", "error": str(exc)}
+
+    # No provider available
+    return {
+        "success": False,
+        "transcript": "",
+        "error": (
+            "No STT provider available. Install faster-whisper for free local "
+            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "or OPENAI_API_KEY for the OpenAI Whisper API."
+        ),
+    }
 
 
 def transcribe_audio(
@@ -540,17 +688,89 @@ def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None)
     return _error_result("No installed local STT backend is available.", provider="local")
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import queue  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-from urllib.parse import urljoin  # noqa: F401,E402
+def _resolve_openai_audio_client_config() -> tuple[str, str]:
+    """Return ``(api_key, base_url)`` for the OpenAI STT client.
+
+    Strict selection semantics (switch on the stored ``stt`` provider
+    string; previously this resolver never read the stored gateway intent):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed gateway ONLY;
+      unentitled/unreachable is a selection-naming error (a direct
+      OPENAI_API_KEY must NOT override it).
+    - any other stored stt provider → direct credentials ONLY; missing
+      credentials is a selection-naming error — no silent managed fallback.
+    - never-configured stt section → legacy ladder: config key → local
+      base_url → env key → managed gateway.
+    """
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        read_selection,
+        selection_error,
+    )
+
+    stt_config = _load_stt_config()
+    openai_cfg = stt_config.get("openai") or {}
+    cfg_api_key = openai_cfg.get("api_key", "")
+    cfg_base_url = openai_cfg.get("base_url", "")
+
+    selected = read_selection("stt")
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed_gateway = resolve_managed_tool_gateway("openai-audio")
+        if managed_gateway is None:
+            raise ValueError(selection_error(
+                "stt",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return managed_gateway.nous_user_token, urljoin(
+            f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+        )
+
+    if selected is not None:
+        # Stored vendor selection: direct credentials only.
+        if cfg_api_key:
+            return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+        if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+            return "not-needed", cfg_base_url
+        direct_api_key = resolve_openai_audio_api_key()
+        if direct_api_key:
+            return direct_api_key, OPENAI_BASE_URL
+        raise ValueError(selection_error(
+            "stt",
+            selected,
+            "neither stt.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set",
+        ))
+
+    # Never-configured stt section: legacy credential ladder.
+    if cfg_api_key:
+        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+
+    # A local OpenAI-compatible server needs no key — send a placeholder so
+    # the SDK doesn't refuse to construct a client (#25193, credit @nnnet).
+    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+        return "not-needed", cfg_base_url
+
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, OPENAI_BASE_URL
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        message = "Neither stt.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
+        if managed_nous_tools_enabled():
+            message += (
+                ". "
+                + nous_tool_gateway_unavailable_message(
+                    "managed OpenAI audio for transcription",
+                )
+            )
+        raise ValueError(message)
+
+    return managed_gateway.nous_user_token, urljoin(
+        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    )
 
 
 _PLUGIN_COMPAT_LAZY = {

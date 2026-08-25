@@ -78,8 +78,32 @@ _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed e
 
 def _importable(importer: Callable[[], Any]) -> bool:
     try:
-        importer()
-        return True
+        from tools.tool_backend_helpers import resolve_provider_secret
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        return str(get_env_value(env_var) or "").strip()
+    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import (
+    NOUS_MANAGED_PROVIDER,
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    read_selection,
+    resolve_openai_audio_api_key,
+    selection_error,
+)
+from tools.xai_http import hermes_xai_user_agent
+
+# ---------------------------------------------------------------------------
+# Lazy imports -- providers are imported only when actually used to avoid
+# crashing in headless environments (SSH, Docker, WSL, no PortAudio).
+# ---------------------------------------------------------------------------
+
+def _import_edge_tts():
+    """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
     except ImportError:
         return False
 
@@ -138,10 +162,20 @@ def _load_tts_config() -> Dict[str, Any]:
 
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
-    """Configured provider or the free default (inference credentials never imply consent to paid
-    speech); ``nous`` is serviced by the OpenAI path through the managed openai-audio gateway."""
+    """Get the explicitly configured TTS provider or the free default.
+
+    Inference credentials do not imply consent to paid speech generation.
+    Users opt into cloud TTS by setting ``tts.provider`` (normally through
+    ``hermes tools``); otherwise the historical Edge backend remains active.
+
+    The managed "Nous Subscription" selection (``tts.provider: nous``) is
+    serviced by the OpenAI provider implementation, routed through the
+    managed openai-audio gateway by ``_resolve_openai_audio_client_config``.
+    """
     provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
-    return "openai" if provider == NOUS_MANAGED_PROVIDER else provider
+    if provider == NOUS_MANAGED_PROVIDER:
+        return "openai"
+    return provider
 
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
@@ -497,15 +531,94 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "kittentts": lambda: _check_kittentts_available(),
     "piper": lambda: _check_piper_available()}
 
+    ``is_managed`` is True when the config resolves to the Nous managed audio
+    gateway (a restricted proxy), so callers can coerce the request to what the
+    gateway supports.
 
-def check_tts_requirements() -> bool:
-    """Return whether the explicitly resolved TTS provider can run."""
+    Strict selection semantics (switch on the stored ``tts`` provider
+    string):
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed gateway ONLY;
+      unentitled/unreachable is a selection-naming error.
+    - any other stored tts provider → direct credentials ONLY
+      (``tts.openai.api_key`` then ``VOICE_TOOLS_OPENAI_KEY``/
+      ``OPENAI_API_KEY``); missing credentials is a selection-naming error —
+      no silent managed fallback.
+    - never-configured tts section → legacy ladder: config key → env key →
+      managed gateway.
+    """
     tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
-    if _resolve_command_provider_config(provider, tts_config) is not None:
+    openai_cfg = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+    cfg_api_key = openai_cfg.get("api_key") or ""
+    cfg_base_url = openai_cfg.get("base_url") or ""
+
+    selected = read_selection("tts")
+
+    if selected == NOUS_MANAGED_PROVIDER:
+        managed_gateway = resolve_managed_tool_gateway("openai-audio")
+        if managed_gateway is None:
+            raise ValueError(selection_error(
+                "tts",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return (
+            managed_gateway.nous_user_token,
+            urljoin(f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"),
+            True,
+        )
+
+    if selected is not None:
+        # Stored vendor selection: direct credentials only.
+        if cfg_api_key:
+            return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+        direct_api_key = resolve_openai_audio_api_key()
+        if direct_api_key:
+            return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+        raise ValueError(selection_error(
+            "tts",
+            selected,
+            "neither tts.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set",
+        ))
+
+    # Never-configured tts section: legacy credential ladder.
+    if cfg_api_key:
+        return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        message = (
+            "Neither tts.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
+        )
+        if managed_nous_tools_enabled():
+            message += (
+                ". "
+                + nous_tool_gateway_unavailable_message(
+                    "managed OpenAI audio for TTS",
+                )
+            )
+        raise ValueError(message)
+
+    return (
+        managed_gateway.nous_user_token,
+        urljoin(f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"),
+        True,
+    )
+
+
+def _has_openai_audio_backend() -> bool:
+    """Return True when the selected OpenAI audio route is usable."""
+    try:
+        _resolve_openai_audio_client_config()
         return True
-    check = _BUILTIN_REQUIREMENTS.get(provider)
-    return check() if check is not None else _plugin_provider_is_available(provider)
+    except ValueError:
+        return False
 
 
 # --- Registry ---

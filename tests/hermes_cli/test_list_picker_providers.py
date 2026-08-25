@@ -104,7 +104,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
-    result = model_switch_providers.list_picker_providers(
+    result = model_switch.list_picker_providers(
         current_provider="custom:ollama",
         current_base_url="http://localhost:11434/v1",
         current_model="glm-5.1",

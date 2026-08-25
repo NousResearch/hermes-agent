@@ -551,3 +551,151 @@ export interface SpawnTreeLoadResponse {
   started_at?: null | number
   subagents?: unknown[]
 }
+
+export type GatewayEvent =
+  | { payload?: { heartbeat?: boolean; skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
+  | { payload: SessionInfo; session_id?: string; type: 'session.info' }
+  | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
+  | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
+  | { payload?: undefined; session_id?: string; type: 'message.start' }
+  | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | {
+      payload?: {
+        id?: string
+        key?: string
+        kind?: 'sticky' | 'ttl'
+        level?: 'error' | 'info' | 'success' | 'warn'
+        text?: string
+        ttl_ms?: null | number
+      }
+      session_id?: string
+      type: 'notification.show'
+    }
+  | { payload?: { key?: string }; session_id?: string; type: 'notification.clear' }
+  | {
+      payload: { user_code?: string; verification_url: string }
+      session_id?: string
+      type: 'billing.step_up.verification'
+    }
+  | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
+  | {
+      payload?: { no_speech_limit?: boolean; stop_phrase?: boolean; text?: string; typed?: boolean }
+      session_id?: string
+      type: 'voice.transcript'
+    }
+  | {
+      payload?: { phrase?: string; profile?: null | string; start_new_session?: boolean }
+      session_id?: string
+      type: 'wake.detected'
+    }
+  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
+  | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
+  | { payload?: { attempt?: number; delay_ms?: number }; session_id?: string; type: 'gateway.reconnecting' }
+  | {
+      payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
+      session_id?: string
+      type: 'browser.progress'
+    }
+  | {
+      payload?: { cwd?: string; python?: string; stderr_tail?: string }
+      session_id?: string
+      type: 'gateway.start_timeout'
+    }
+  | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
+  | {
+      payload?: { text?: string; verbose?: boolean }
+      session_id?: string
+      type: 'reasoning.delta' | 'reasoning.available'
+    }
+  | {
+      payload: { count?: number; index?: number; label?: string; text?: string }
+      session_id?: string
+      type: 'moa.reference'
+    }
+  | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
+  | {
+      payload?: { label?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.progress'
+    }
+  | {
+      payload?: { aggregator?: string; phase?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.phase'
+    }
+  | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
+  | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
+  | {
+      payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      session_id?: string
+      type: 'tool.start'
+    }
+  | {
+      payload: {
+        duration_s?: number
+        error?: string
+        inline_diff?: string
+        name?: string
+        result_text?: string
+        summary?: string
+        tool_id: string
+        todos?: unknown[]
+      }
+      session_id?: string
+      type: 'tool.complete'
+    }
+  | {
+      payload: {
+        answers?: Record<string, string>
+        choices?: string[] | null
+        question?: string
+        questions?: { choices?: string[] | null; multi_select?: boolean; qid: string; question: string }[]
+        request_id: string
+      }
+      session_id?: string
+      type: 'clarify.request'
+    }
+  | {
+      payload: {
+        allow_permanent?: boolean
+        choices?: string[]
+        command: string
+        description: string
+        smart_denied?: boolean
+      }
+      session_id?: string
+      type: 'approval.request'
+    }
+  | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
+  | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
+  | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }
+  | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
+  | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.tool' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.progress' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
+  | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
+  | {
+      payload: { already_streamed?: boolean; text: string }
+      session_id?: string
+      type: 'message.interim'
+    }
+  | {
+      payload?: {
+        billing?: BillingBlock
+        failure_reason?: string
+        reasoning?: string
+        rendered?: string
+        response_previewed?: boolean
+        text?: string
+        usage?: Usage
+      }
+      session_id?: string
+      type: 'message.complete'
+    }
+  | { payload?: { usage?: Usage }; session_id?: string; type: 'session.usage' }
+  | { payload?: { message?: string }; session_id?: string; type: 'error' }

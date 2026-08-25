@@ -177,7 +177,9 @@ export function resolvePickerDefaultPath(
 
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
+  return value.startsWith('/') && !WIN_DRIVE_RE.test(value)
+    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
+    : defaultPath
 }
 
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
@@ -193,6 +195,6 @@ export function resolveLocalReadPath(dirPath: string, distro?: string, profile?:
   }
 
   return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
-    ? wslPosixToWindowsAccessible(value, distro)
+    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
     : value
 }

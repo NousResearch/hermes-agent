@@ -390,15 +390,10 @@ _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22")
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
-# Install tree root (this file lives at <install_root>/hermes_constants.py). Used by secure_parent_dir() to
-# skip chmod on the install dir — chmodding it 0700 breaks hermes-user traversal in Docker (UID 10000). See
-# #25821, #93050.
+# Install tree root (this file lives at <install_root>/hermes_constants.py).
+# Used by secure_parent_dir() to skip chmod on the install dir — chmodding it
+# 0700 breaks hermes-user traversal in Docker (UID 10000). See #25821, #93050.
 _INSTALL_ROOT = Path(__file__).resolve().parent
-
-
-def _is_executable_file(path: str) -> bool:
-    """``exists()`` follows symlinks, so a dangling link never spawns a probe."""
-    return os.path.exists(path) and os.access(path, os.X_OK)
 
 
 def node_tool_runnable(path: str | None) -> bool:
@@ -800,23 +795,43 @@ def profile_cli_selector() -> str:
 
 
 def secure_parent_dir(path: Path) -> None:
-    """Chmod ``0o700`` on *path*'s parent, refusing ``/`` and top-level dirs (misresolved HERMES_HOME)."""
+    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
+
+    Also refuses to chmod the hermes-agent install tree (the directory this
+    module lives in, and anything below it): restricting the install dir to
+    0700 locks the runtime user out of traversing it when it does not own
+    the dir, as in the Docker image. A warning is logged when this happens.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25821 and
+    https://github.com/NousResearch/hermes-agent/pull/93050.
+    """
     parent = path.parent.resolve()
     if parent == Path("/") or len(parent.parts) < 3:
         return
-    # Refuse the install tree: chmod 0700 breaks hermes-user traversal in Docker (UID 10000).
-    # A credential file here means HERMES_HOME misresolved; surface it (caused production lockouts).
-    # See #25821, #93050.
+    # Refuse the install tree root. chmodding it 0700 breaks hermes-user
+    # traversal in Docker (UID 10000) and any other install where the
+    # runtime user doesn't own the install dir. See #25821, #93050.
     if parent == _INSTALL_ROOT or _INSTALL_ROOT in parent.parents:
+        # A credential file inside the install tree usually means HERMES_HOME
+        # resolved somewhere unexpected — surface it instead of skipping
+        # silently, since this same misconfiguration previously caused
+        # production lockouts.
         import logging
 
         logging.getLogger(__name__).warning(
             "Not restricting permissions on %s: it is inside the "
             "hermes-agent install directory (%s). Credential files are "
-            "normally stored under the hermes home directory instead.", parent, _INSTALL_ROOT,
+            "normally stored under the hermes home directory instead.",
+            parent,
+            _INSTALL_ROOT,
         )
         return
-    with contextlib.suppress(OSError):
+    try:
         os.chmod(parent, 0o700)
 
 
@@ -1236,15 +1251,19 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
 
 
 def project_venv_dir(project_root) -> Path | None:
-    """The project's ``venv`` or ``.venv`` dir when one exists (``uv venv`` defaults to ``.venv``).
+    """The project's venv directory, ``venv`` or ``.venv``, when one exists.
 
-    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so both layouts are in the wild.
-    Call sites that only knew about ``venv`` silently no-oped on a ``.venv`` install — that is how the
-    Windows shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when both exist, matching
-    what the installers write.
+    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so
+    both layouts are in the wild. Call sites that only knew about ``venv``
+    silently no-oped on a ``.venv`` install — that is how the Windows
+    shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when
+    both exist, matching what the installers write.
     """
-    root = Path(project_root)
-    return next((root / n for n in ("venv", ".venv") if (root / n).is_dir()), None)
+    for name in ("venv", ".venv"):
+        candidate = Path(project_root) / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

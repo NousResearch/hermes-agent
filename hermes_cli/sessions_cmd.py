@@ -253,56 +253,631 @@ def _cmd_import(args):
         return 1
 
 
-# -- handlers that receive an open SessionDB ----------------------------------
-
-def _default_exclude(args):
-    """Hide third-party tool sessions by default, but honour explicit --source."""
-    return None if getattr(args, "source", None) else ["tool"]
-
-
-def _cmd_list(db, args):
-    from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
-
-    # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
-    _ws_filter = (getattr(args, "workspace", None) or "").strip()
-    if _ws_filter:
-        _needle = _ws_filter.lower()
-        keyed = ((s, (_ws_key(s) or "").lower()) for s in sessions)
-        sessions = [
-            s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
-        ]
-    if not sessions:
-        print("No sessions found.")
+        result = run_sessions_import(args)
+        # A path was explicitly given but nothing imported → real error (bad
+        # path, unknown source, no turns). Propagate a non-zero exit so
+        # scripts can detect the failure (SES-04/SES-10). An interactive
+        # picker cancel (no path) returning None is a normal no-op → exit 0.
+        if result is None and getattr(args, "path", None):
+            return 1
         return
 
     # Workspace column only when some session carries a key (or when filtering): unbound listings read as before.
     has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
     has_titles = any(s.get("title") for s in sessions)
 
-    def _ws(s):  # repo/dir basename, "—" when unbound
-        key = _ws_key(s)
-        return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
-    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
-    layouts = {  # (has_ws, has_titles): header, rule width, row formatter
-        (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
-                       lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
-        (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}", 100,
-                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {s['source']:<6} {s['id']}"),
-        (False, True): (f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}", 110,
-                        lambda s: f"{_title(s, 30):<32} {_preview(s, 38):<40} {_ago(s):<13} {s['id']}"),
-        (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}", 95,
-                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {s['source']:<6} {s['id']}"),
-    }
-    header, rule, fmt = layouts[(has_ws, has_titles)]
-    print(header + "\n" + "─" * rule)
-    for s in sessions:
-        print(fmt(s))
+        db = SessionDB()
+    except Exception as e:
+        print(f"Error: Could not open session database: {e}")
+        return 1
 
 
-# -- export -----------------------------------------------------------------
+    if action == "list":
+        from hermes_state import workspace_key as _ws_key
+
+        sessions = db.list_sessions_rich(
+            source=args.source, exclude_sources=_exclude, limit=args.limit
+        )
+
+        # Workspace filter: match a session by its workspace key (git repo
+        # root, else cwd) — path substring or exact basename.
+        _ws_filter = (getattr(args, "workspace", None) or "").strip()
+        if _ws_filter:
+            _needle = _ws_filter.lower()
+
+            def _in_workspace(s):
+                key = (_ws_key(s) or "").lower()
+                return bool(key) and (
+                    _needle in key or _needle == os.path.basename(key.rstrip("/\\"))
+                )
+
+            sessions = [s for s in sessions if _in_workspace(s)]
+
+        if not sessions:
+            print("No sessions found.")
+            return
+
+        # Short workspace label: the repo/dir basename, "—" when unbound. The
+        # Workspace column only appears once at least one session carries one
+        # (or when filtering), so all-unbound listings read as before.
+        def _ws_label(s):
+            key = _ws_key(s)
+            return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
+
+        has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
+        has_titles = any(s.get("title") for s in sessions)
+
+        if has_ws:
+            if has_titles:
+                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                print("─" * 110)
+            else:
+                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 100)
+            for s in sessions:
+                last_active = _relative_time(s.get("last_active"))
+                ws = _ws_label(s)[:16]
+                if has_titles:
+                    title = (s.get("title") or "—")[:26]
+                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                else:
+                    preview = s.get("preview", "")[:36]
+                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+            return
+
+        if has_titles:
+            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            print("─" * 110)
+        else:
+            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+            print("─" * 95)
+        for s in sessions:
+            last_active = _relative_time(s.get("last_active"))
+            preview = (
+                s.get("preview", "")[:38]
+                if has_titles
+                else s.get("preview", "")[:48]
+            )
+            if has_titles:
+                title = (s.get("title") or "—")[:30]
+                sid = s["id"]
+                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+            else:
+                sid = s["id"]
+                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+
+    elif action == "export":
+        from hermes_cli.session_filters import (
+            build_prune_filters,
+            describe_filters,
+        )
+
+        _filter_arg_names = (
+            "older_than", "newer_than", "before", "after",
+            "source", "title", "end_reason", "cwd",
+            "min_messages", "max_messages", "model", "provider",
+            "user", "chat_id", "chat_type", "branch",
+            "min_tokens", "max_tokens", "min_cost", "max_cost",
+            "min_tool_calls", "max_tool_calls",
+        )
+        _any_filters = any(
+            getattr(args, a, None) is not None for a in _filter_arg_names
+        )
+        filters = None
+        if _any_filters:
+            try:
+                filters = build_prune_filters(args)
+            except ValueError as e:
+                print(f"Error: {e}")
+                return
+            # Unlike prune/archive, export includes archived sessions.
+            filters["archived"] = None
+
+        def _redact(data):
+            if not args.redact or data is None:
+                return data
+            from hermes_cli.session_export_md import redact_session_data
+
+            return redact_session_data(data)
+
+        def _collect_sessions():
+            """Resolve --session-id / filters / bare export into a list
+            of redacted session dicts, or None after printing an error."""
+            if args.session_id:
+                resolved = db.resolve_session_id(args.session_id)
+                data = _redact(db.export_session(resolved)) if resolved else None
+                if not data:
+                    print(f"Session '{args.session_id}' not found.")
+                    return None
+                return [data]
+            if filters:
+                candidates = db.list_prune_candidates(**filters)
+                if args.dry_run:
+                    print(
+                        f"Would export {len(candidates)} session(s) "
+                        f"({describe_filters(filters)})."
+                    )
+                    for row in candidates[:100]:
+                        print(f"  {row.get('id')}  {row.get('source', '')}")
+                    if len(candidates) > 100:
+                        print(f"  ... {len(candidates) - 100} more")
+                    return None
+                return [
+                    s
+                    for s in (
+                        _redact(db.export_session(row["id"])) for row in candidates
+                    )
+                    if s
+                ]
+            if args.dry_run:
+                print("--dry-run requires at least one filter.")
+                return None
+            return [_redact(s) for s in db.export_all(source=None)]
+
+        # Prompt-only export (--only user-prompts): one prompt record per
+        # line (jsonl) or headed sections (md). Delegates rendering to
+        # hermes_cli.session_export.
+        if getattr(args, "only", None):
+            if args.format not in ("jsonl", "md"):
+                print("--only user-prompts supports --format jsonl or md.")
+                return
+            from hermes_cli.session_export import (
+                export_record_count,
+                render_sessions_export,
+            )
+
+            sessions = _collect_sessions()
+            if sessions is None:
+                db.close()
+                return
+            rendered = render_sessions_export(
+                sessions,
+                fmt="markdown" if args.format == "md" else "jsonl",
+                only=args.only,
+            )
+            if not args.output or args.output == "-":
+                sys.stdout.write(rendered)
+                db.close()
+                return
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(rendered)
+            count, noun = export_record_count(sessions, only=args.only)
+            suffix = "" if count == 1 else "s"
+            print(f"Exported {count} {noun}{suffix} to {args.output}")
+            db.close()
+            return
+
+        # Standalone HTML export: one self-contained file (single session
+        # or multi-session with sidebar navigation).
+        if args.format == "html":
+            if not args.output or args.output == "-":
+                print("HTML export requires an output file path.")
+                return
+            from hermes_cli.session_export_html import (
+                generate_html_export,
+                generate_multi_session_html_export,
+            )
+
+            sessions = _collect_sessions()
+            if sessions is None:
+                db.close()
+                return
+            if len(sessions) == 1:
+                content = generate_html_export(sessions[0])
+            else:
+                content = generate_multi_session_html_export(sessions)
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(content)
+            suffix = "" if len(sessions) == 1 else "s"
+            print(f"Exported {len(sessions)} session{suffix} to {args.output} (HTML)")
+            db.close()
+            return
+
+        # Claude Code JSONL trace export — local file or HF upload.
+        # Redaction is ON by default for traces (they leave the machine
+        # when --upload is used); --no-redact opts out after review.
+        if args.format == "trace":
+            if getattr(args, "only", None):
+                print("--only user-prompts supports --format jsonl or md.")
+                db.close()
+                return
+            session_id = args.session_id
+            if not session_id and not filters:
+                # Match the shell's common intent: "the last thing I did".
+                rows = db.list_sessions_rich(limit=1, order_by_last_active=True)
+                session_id = rows[0].get("id") if rows else None
+                if not session_id:
+                    print("No session found to export. Pass --session-id.")
+                    db.close()
+                    return
+            if session_id and not db.resolve_session_id(session_id):
+                print(f"Session '{session_id}' not found.")
+                db.close()
+                return
+
+            from agent.trace_upload import (
+                TraceRedactionError,
+                build_trace_jsonl,
+                upload_session_trace,
+            )
+
+            redact_trace = not getattr(args, "no_redact", False)
+
+            if getattr(args, "upload", False):
+                if not session_id:
+                    print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
+                    db.close()
+                    return
+                resolved = db.resolve_session_id(session_id)
+                db.close()
+                status = upload_session_trace(
+                    resolved,
+                    cwd="",
+                    redact=redact_trace,
+                    private=not getattr(args, "public", False),
+                )
+                print(status)
+                return
+
+            # Local trace file(s)
+            def _trace_ids():
+                if session_id:
+                    return [db.resolve_session_id(session_id)]
+                candidates = db.list_prune_candidates(**filters)
+                if args.dry_run:
+                    print(
+                        f"Would export {len(candidates)} session(s) "
+                        f"({describe_filters(filters)})."
+                    )
+                    for row in candidates[:100]:
+                        print(f"  {row.get('id')}  {row.get('source', '')}")
+                    if len(candidates) > 100:
+                        print(f"  ... {len(candidates) - 100} more")
+                    return None
+                return [row["id"] for row in candidates]
+
+            ids = _trace_ids()
+            if ids is None:
+                db.close()
+                return
+
+            def _render_trace(sid):
+                meta = db.get_session(sid) or {}
+                messages = db.get_messages_as_conversation(sid)
+                if not messages:
+                    return None
+                return build_trace_jsonl(
+                    messages,
+                    session_id=sid,
+                    model=meta.get("model") or "",
+                    cwd="",
+                    redact=redact_trace,
+                )
+
+            try:
+                if len(ids) == 1:
+                    jsonl = _render_trace(ids[0])
+                    if not jsonl:
+                        print(f"No transcript to export for session '{ids[0]}'.")
+                        db.close()
+                        return
+                    if not args.output or args.output == "-":
+                        sys.stdout.write(jsonl)
+                    else:
+                        with open(args.output, "w", encoding="utf-8") as f:
+                            f.write(jsonl)
+                        print(f"Exported 1 session trace to {args.output}")
+                else:
+                    out_dir = (
+                        Path(args.output).expanduser()
+                        if args.output and args.output != "-"
+                        else get_hermes_home() / "session-exports"
+                    )
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    exported = 0
+                    for sid in ids:
+                        jsonl = _render_trace(sid)
+                        if not jsonl:
+                            continue
+                        (out_dir / f"{sid}.trace.jsonl").write_text(
+                            jsonl, encoding="utf-8"
+                        )
+                        exported += 1
+                    print(f"Exported {exported} session trace(s) to {out_dir}")
+            except TraceRedactionError:
+                print("Redaction failed; refusing to export unredacted trace content.")
+            db.close()
+            return
+
+        if args.format == "jsonl":
+            if not args.output:
+                print("JSONL export requires an output path (use - for stdout).")
+                return
+            if args.session_id:
+                resolved_session_id = db.resolve_session_id(args.session_id)
+                if not resolved_session_id:
+                    print(f"Session '{args.session_id}' not found.")
+                    return
+                data = _redact(db.export_session(resolved_session_id))
+                if not data:
+                    print(f"Session '{args.session_id}' not found.")
+                    return
+                line = _json.dumps(data, ensure_ascii=False) + "\n"
+                if args.output == "-":
+
+                    sys.stdout.write(line)
+                else:
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(line)
+                    print(f"Exported 1 session to {args.output}")
+            else:
+                if filters:
+                    candidates = db.list_prune_candidates(**filters)
+                    if args.dry_run:
+                        print(
+                            f"Would export {len(candidates)} session(s) "
+                            f"({describe_filters(filters)})."
+                        )
+                        for row in candidates[:100]:
+                            print(f"  {row.get('id')}  {row.get('source', '')}")
+                        if len(candidates) > 100:
+                            print(f"  ... {len(candidates) - 100} more")
+                        return
+                    sessions = [
+                        s
+                        for s in (
+                            db.export_session(row["id"]) for row in candidates
+                        )
+                        if s
+                    ]
+                else:
+                    if args.dry_run:
+                        print("--dry-run requires at least one filter.")
+                        return
+                    sessions = db.export_all(source=None)
+                if args.output == "-":
+
+                    for s in sessions:
+                        sys.stdout.write(
+                            _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                        )
+                else:
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        for s in sessions:
+                            f.write(
+                                _json.dumps(_redact(s), ensure_ascii=False) + "\n"
+                            )
+                    print(f"Exported {len(sessions)} sessions to {args.output}")
+            return
+
+        # Markdown / QMD export
+        from hermes_cli.session_export_md import (
+            append_manifest_entry,
+            verify_export_file,
+            write_session_markdown,
+        )
+
+        if args.output == "-":
+            print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
+            db.close()
+            return
+        output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
+
+        def _export_one(session_id: str, *, include_lineage: bool = False):
+            data = (
+                db.export_session_lineage(session_id)
+                if include_lineage
+                else db.export_session(session_id)
+            )
+            if not data:
+                return None, None
+            data = _redact(data)
+            path = write_session_markdown(
+                data,
+                output_dir,
+                fmt=args.format,
+                force=args.force,
+            )
+            append_manifest_entry(output_dir, data, path, fmt=args.format)
+            return data, path
+
+        if args.delete_after_verified and not args.yes:
+            print("--delete-after-verified requires --yes.")
+            db.close()
+            return
+        if args.delete_after_verified and not args.session_id:
+            print("--delete-after-verified is only supported with --session-id.")
+            db.close()
+            return
+
+        lineage_is_logical = getattr(args, "lineage", "single") == "logical"
+
+        if args.session_id:
+            resolved_session_id = db.resolve_session_id(args.session_id)
+            if not resolved_session_id:
+                print(f"Session '{args.session_id}' not found.")
+                db.close()
+                return
+            delete_target_ids = [resolved_session_id]
+            if args.delete_after_verified:
+                delete_target_ids = db.get_session_delete_targets(
+                    resolved_session_id
+                )
+
+            exported_items = []
+            for target_id in delete_target_ids:
+                try:
+                    data, exported_path = _export_one(
+                        target_id,
+                        include_lineage=(
+                            target_id == resolved_session_id
+                            and lineage_is_logical
+                        ),
+                    )
+                except FileExistsError as e:
+                    print(
+                        f"Export already exists: {e}. "
+                        "Pass --force to overwrite."
+                    )
+                    db.close()
+                    return
+                if not data or not exported_path:
+                    print(
+                        f"Session '{target_id}' disappeared during export; "
+                        "nothing was deleted."
+                    )
+                    db.close()
+                    return
+                exported_items.append((data, exported_path))
+
+            message_count = sum(
+                len(data.get("messages") or [])
+                for data, _path in exported_items
+            )
+            suffix = "" if message_count == 1 else "s"
+            if len(exported_items) == 1:
+                print(
+                    f"Exported 1 session ({message_count} message{suffix}) "
+                    f"to {exported_items[0][1]}"
+                )
+            else:
+                print(
+                    f"Exported {len(exported_items)} sessions "
+                    f"({message_count} message{suffix}) to {output_dir}"
+                )
+            if args.delete_after_verified:
+                for data, exported_path in exported_items:
+                    ok, reason = verify_export_file(exported_path, data)
+                    if not ok:
+                        print(
+                            "Export verification failed; not deleting "
+                            f"session '{data.get('id')}': {reason}"
+                        )
+                        db.close()
+                        return
+                sessions_dir = get_hermes_home() / "sessions"
+                if db.delete_session(
+                    resolved_session_id,
+                    sessions_dir=sessions_dir,
+                    expected_delete_ids=delete_target_ids,
+                ):
+                    delegate_count = len(delete_target_ids) - 1
+                    delegate_suffix = (
+                        ""
+                        if not delegate_count
+                        else f" and {delegate_count} delegate session"
+                        f"{'' if delegate_count == 1 else 's'}"
+                    )
+                    print(
+                        f"Deleted exported session '{resolved_session_id}'"
+                        f"{delegate_suffix}."
+                    )
+                else:
+                    print(
+                        f"Exported, but session '{resolved_session_id}' was "
+                        "not deleted because its delegate set changed."
+                    )
+            db.close()
+            return
+
+        if not filters:
+            print(
+                "Refusing bulk export without a filter. Pass --session-id or "
+                "at least one filter (e.g. --older-than 90, --source telegram)."
+            )
+            db.close()
+            return
+        candidates = db.list_prune_candidates(**filters)
+        if args.dry_run:
+            print(
+                f"Would export {len(candidates)} session(s) "
+                f"({describe_filters(filters)})."
+            )
+            for row in candidates[:100]:
+                print(f"  {row.get('id')}  {row.get('source', '')}")
+            if len(candidates) > 100:
+                print(f"  ... {len(candidates) - 100} more")
+            db.close()
+            return
+        exported = 0
+        for row in candidates:
+            try:
+                data, exported_path = _export_one(
+                    row["id"],
+                    include_lineage=lineage_is_logical,
+                )
+            except FileExistsError as e:
+                print(f"Skipping existing export: {e}. Pass --force to overwrite.")
+                continue
+            if data and exported_path:
+                exported += 1
+        print(f"Exported {exported} session(s) to {output_dir}")
+
+    elif action == "delete":
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+        # Note when the explicit target is pinned — the user named this id
+        # directly so we honor the delete, but a pin is a "keep" flag and
+        # silently destroying it (round-3 QA SES-01) is surprising.
+        _get_session = getattr(db, "get_session", None)
+        _meta = (_get_session(resolved_session_id) or {}) if callable(_get_session) else {}
+        _pinned_note = " (this session is PINNED)" if _meta.get("pinned") else ""
+        if not args.yes:
+            if not _confirm_prompt(
+                f"Delete session '{resolved_session_id}'{_pinned_note} "
+                "and all its messages? [y/N] "
+            ):
+                print("Cancelled.")
+                return
+        elif _pinned_note:
+            print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
+        sessions_dir = get_hermes_home() / "sessions"
+        if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
+            print(f"Deleted session '{resolved_session_id}'.")
+        else:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+
+    elif action == "prune" and getattr(args, "never_active", False):
+        # Separate branch on purpose: the shared prune/archive selector is
+        # pinned to `ended_at IS NOT NULL`, so never-closed rows sit outside
+        # it by construction and cannot be expressed as one more filter.
+        _prune_never_active_keyed(db, args)
+
+    elif action in ("prune", "archive"):
+        from hermes_cli.session_filters import (
+            build_prune_filters,
+            describe_filters,
+            format_epoch,
+        )
+
+        # Preserve the historical default ONLY for a truly bare
+        # `hermes sessions prune`: no time window and no filters at all
+        # means "older than 90 days". ANY filter — including --source —
+        # suppresses the implicit cutoff, so `prune --source cron`
+        # matches ALL cron sessions regardless of age. The preview +
+        # confirmation below (count, oldest/newest) is the safety net.
+        _non_time_filters = any(
+            getattr(args, a, None) is not None
+            for a in (
+                "source", "title", "end_reason", "cwd",
+                "min_messages", "max_messages", "model", "provider",
+                "user", "chat_id", "chat_type", "branch",
+                "min_tokens", "max_tokens", "min_cost", "max_cost",
+                "min_tool_calls", "max_tool_calls",
+            )
+        )
+        if (
+            action == "prune"
+            and args.older_than is None
+            and args.newer_than is None
+            and args.before is None
+            and args.after is None
+            and not _non_time_filters
+        ):
+            args.older_than = "90"
 
 def _cmd_export(db, args):
     from hermes_cli.session_filters import build_prune_filters
@@ -312,9 +887,7 @@ def _cmd_export(db, args):
             filters = build_prune_filters(args)
         except ValueError as e:
             print(f"Error: {e}")
-            return
-        # Unlike prune/archive, export includes archived sessions.
-        filters["archived"] = None
+            return 1
 
     def _redact(data):
         if not args.redact or data is None:
@@ -322,17 +895,92 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    def _collect_sessions():
-        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
-        if args.session_id:
-            resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved)) if resolved else None
-            if not data:
-                _not_found(args.session_id)
-                return None
-            return [data]
-        if filters:
-            candidates = db.list_prune_candidates(**filters)
+        # Prune skips archived sessions unless --include-archived;
+        # archive only targets not-yet-archived rows (idempotent).
+        if action == "prune":
+            filters["archived"] = (
+                None if getattr(args, "include_archived", False) else False
+            )
+        else:
+            filters["archived"] = False
+
+        # Pinned sessions are excluded by default from bulk prune/archive
+        # (pin = durable keep). `prune --include-pinned` opts in; archive has
+        # no such flag, so archive always spares pinned rows. Surface a count
+        # of pinned matches being skipped so the user knows they were spared.
+        _include_pinned = getattr(args, "include_pinned", False)
+        filters["include_pinned"] = _include_pinned
+        _count_matches = getattr(db, "count_prune_matches", None)
+        if not _include_pinned and callable(_count_matches):
+            _base = {k: v for k, v in filters.items() if k != "include_pinned"}
+            try:
+                _with_pinned = int(_count_matches(**_base, include_pinned=True))
+                _without_pinned = int(_count_matches(**_base, include_pinned=False))
+                _pinned_skipped = max(_with_pinned - _without_pinned, 0)
+            except TypeError:
+                # A db double without include_pinned support — skip the note.
+                _pinned_skipped = 0
+            if _pinned_skipped:
+                _suffix = "" if _pinned_skipped == 1 else "s"
+                _verb_word = "deleted" if action == "prune" else "archived"
+                _optin = (
+                    "Pass --include-pinned to delete them anyway, or unpin "
+                    "first with `hermes sessions unpin <id>`."
+                    if action == "prune"
+                    else "Unpin first with `hermes sessions unpin <id>` to include them."
+                )
+                print(
+                    f"Note: {_pinned_skipped} pinned session{_suffix} also match "
+                    f"these filters but will NOT be {_verb_word} (pin is a keep "
+                    f"flag). {_optin}"
+                )
+
+        candidates = db.list_prune_candidates(**filters)
+        # Archive expands each selected row to its compression lineage, which
+        # can include open continuations; a direct-open count would therefore
+        # describe the eventual archive effect inaccurately.
+        skipped_open = (
+            db.count_open_prune_matches(**filters) if action == "prune" else 0
+        )
+        if skipped_open:
+            suffix = "" if skipped_open == 1 else "s"
+            print(
+                f"Note: {skipped_open} open session{suffix} also match these "
+                "filters but will be skipped because prune only deletes ended "
+                "sessions. Use `hermes sessions delete <id>` "
+                "to remove one explicitly."
+            )
+        verb = "Delete" if action == "prune" else "Archive"
+        if not candidates:
+            print(f"No sessions match ({describe_filters(filters)}).")
+            return
+
+        # Candidates are ordered by activity oldest-first. Surface that
+        # span so a long-lived but recently used conversation cannot look
+        # old merely because of its creation date.
+        _oldest = candidates[0].get("last_active")
+        _newest = candidates[-1].get("last_active")
+        _span = (
+            f"oldest activity {format_epoch(_oldest)}, "
+            f"newest activity {format_epoch(_newest)}"
+        )
+
+        if args.dry_run or not args.yes:
+            shown = candidates if args.dry_run else candidates[:15]
+            print(
+                f"{len(candidates)} session(s) match "
+                f"({describe_filters(filters)}; {_span}):"
+            )
+            for s in shown:
+                title = (s.get("title") or "")[:36]
+                model = (s.get("model") or "-").split("/")[-1][:24]
+                print(
+                    f"  {s['id']}  {format_epoch(s.get('last_active')):<17} "
+                    f"{s['source']:<10} {model:<24} "
+                    f"{s['message_count']:>4} msgs  {title}"
+                )
+            if len(candidates) > len(shown):
+                print(f"  … and {len(candidates) - len(shown)} more")
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
             return [s for s in (_redact(db.export_session(row["id"])) for row in candidates) if s]
@@ -452,49 +1100,31 @@ def _export_trace(db, args, filters):
     except TraceRedactionError:
         print("Redaction failed; refusing to export unredacted trace content.")
 
-
-def _export_markdown(db, args, filters, redact):
-    """Markdown / QMD export: one file per session plus a manifest entry."""
-    from hermes_cli.session_export_md import append_manifest_entry, write_session_markdown
-    if args.output == "-":
-        print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
-        return
-    output_dir = _export_dir(args.output)
-
-    def _export_one(session_id: str, *, include_lineage: bool = False):
-        data = db.export_session_lineage(session_id) if include_lineage else db.export_session(session_id)
-        if not data:
-            return None, None
-        data = redact(data)
-        path = write_session_markdown(data, output_dir, fmt=args.format, force=args.force)
-        append_manifest_entry(output_dir, data, path, fmt=args.format)
-        return data, path
-    if args.delete_after_verified and not args.yes:
-        print("--delete-after-verified requires --yes.")
-        return
-    if args.delete_after_verified and not args.session_id:
-        print("--delete-after-verified is only supported with --session-id.")
-        return
-    lineage_is_logical = getattr(args, "lineage", "single") == "logical"
-    if args.session_id:
-        return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
-    if not filters:
-        print("Refusing bulk export without a filter. Pass --session-id or "
-              "at least one filter (e.g. --older-than 90, --source telegram).")
-        return
-    candidates = db.list_prune_candidates(**filters)
-    if args.dry_run:
-        return _print_dry_run_preview(candidates, filters)
-    exported = 0
-    for row in candidates:
+    elif action == "rename":
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+        title = " ".join(args.title)
+        # Reject blank / whitespace-only / newline-bearing titles (SES-05):
+        # an empty title renders as "—" and embedded newlines corrupt the
+        # `list` table. length is validated in set_session_title; guard
+        # emptiness + control chars here.
+        if not title.strip():
+            print("Error: title cannot be empty or whitespace-only.")
+            return 1
+        if "\n" in title or "\r" in title:
+            print("Error: title cannot contain newlines.")
+            return 1
         try:
-            data, exported_path = _export_one(row["id"], include_lineage=lineage_is_logical)
-        except FileExistsError as e:
-            print(f"Skipping existing export: {e}. Pass --force to overwrite.")
-            continue
-        if data and exported_path:
-            exported += 1
-    print(f"Exported {exported} session(s) to {output_dir}")
+            if db.set_session_title(resolved_session_id, title):
+                print(f"Session '{resolved_session_id}' renamed to: {title}")
+            else:
+                print(f"Session '{args.session_id}' not found.")
+                return 1
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
 
 
 def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical):

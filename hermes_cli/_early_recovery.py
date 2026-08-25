@@ -32,33 +32,52 @@ LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = {
     "rich": "rich", "cryptography": "cryptography", "jwt": "PyJWT",
 }
 
-# ``hermes update`` renames the live ``hermes*.exe`` shims aside (``hermes.exe.old.<unix-ms>``) so
-# uv can write replacements. Putting them BACK is the safety-critical direction: losing that rename
-# leaves no ``hermes`` on PATH, and the command that would repair it IS ``hermes update``. The
-# updater, the early-recovery installer and the startup orphan sweep all restore through this one
-# stdlib-only helper so the retry ladder and the recovery wording cannot drift apart again.
-# --- Windows entry-point shim quarantine ----------------------------------- They used to be separate
-# one-shot renames with swallowed errors; the two that had messages had already drifted apart. The logic
-# lives here, in the one stdlib-only module all of them can import, so the ladder and the recovery wording
-# stay in lockstep. See #75584.
+
+# --- Windows entry-point shim quarantine -----------------------------------
+#
+# ``hermes update`` renames the live ``hermes*.exe`` shims aside
+# (``hermes.exe.old.<unix-ms>``) so uv can write replacements. Putting them BACK
+# is the safety-critical direction: losing that rename leaves the install with
+# no ``hermes`` on PATH, and the command that would repair it IS ``hermes
+# update`` (#75584).
+#
+# Three call sites restore a quarantined shim -- the updater, the
+# early-recovery installer, and the startup sweep's orphan rescue. They used to
+# be separate one-shot renames with swallowed errors; the two that had messages
+# had already drifted apart. The logic lives here, in the one stdlib-only module
+# all of them can import, so the ladder and the recovery wording stay in
+# lockstep.
+
 QUARANTINE_RESTORE_BACKOFF_MS: tuple[int, ...] = (0, 100, 250, 500, 1000)
 
 
 def restore_quarantined_shims(
-    moved: list[tuple[Path, Path]], *, stream=None,
+    moved: list[tuple[Path, Path]],
+    *,
+    stream=None,
     backoff_ms: tuple[int, ...] = QUARANTINE_RESTORE_BACKOFF_MS,
 ) -> list[tuple[Path, Path]]:
     """Rename quarantined shims back, retrying a lock instead of giving up.
 
-    A pair is not a failure when ``original`` already exists or ``quarantined`` has gone: the
-    installer wrote a fresh shim, or a concurrent sweep won the race. Both are silent, so two
-    processes sweeping the same orphan cannot produce a spurious error.
+    ``moved`` holds ``(original, quarantined)`` pairs. Returns the pairs that
+    could NOT be restored, and prints an actionable recovery command for each.
+
+    A pair is not a failure when ``original`` already exists or ``quarantined``
+    has gone: the installer wrote a fresh shim, or a concurrent sweep won the
+    race. Both are silent, so two processes sweeping the same orphan cannot
+    produce a spurious error.
+
+    Messages go to stderr by default -- the startup sweep runs on EVERY hermes
+    invocation, and ``hermes acp`` speaks JSON-RPC on stdout.
     """
     if stream is None:
         stream = sys.stderr
+
     failed: list[tuple[Path, Path]] = []
+
     for original, quarantined in moved:
         last_exc: OSError | None = None
+
         for delay_ms in backoff_ms:
             try:
                 if os.path.exists(original) or not os.path.exists(quarantined):
@@ -71,8 +90,11 @@ def restore_quarantined_shims(
                 break
             except OSError as exc:
                 last_exc = exc
+                continue
+
         if last_exc is None:
             continue
+
         failed.append((original, quarantined))
         name = os.path.basename(str(original))
         stem = name[:-4] if name.lower().endswith(".exe") else name
@@ -85,13 +107,16 @@ def restore_quarantined_shims(
             f'      move "{quarantined}" "{original}"',
             file=stream,
         )
+
     return failed
 
 
-# Set only when this process successfully finishes a deferred core install for an ``update``
-# invocation. The CLI import that follows must not resolve external secret sources: a configured
-# source can map cryptography._rust and immediately recreate the self-lock marker this fresh
-# process just consumed. Process-local on purpose so children do not inherit the exception.
+# Set only when this process successfully finishes a deferred core install for
+# an ``update`` invocation.  The normal CLI import that follows must not resolve
+# external secret sources: a configured source can map cryptography._rust and
+# immediately recreate the self-lock marker this fresh process just consumed.
+# Process-local state is intentional so child processes do not inherit the
+# bootstrap exception.
 _UPDATE_RETRY_RECOVERED = False
 
 

@@ -32,9 +32,24 @@ class TokenPrincipal:
 
 @dataclass(frozen=True)
 class LoginStart:
-    """First leg of the OAuth round trip: ``redirect_url`` is the IDP's authorize endpoint;
-    ``cookie_payload`` maps cookie name -> serialised PKCE/CSRF state that the auth route sets
-    (HttpOnly, Secure + ``SameSite=None`` over HTTPS, TTL <= 10 min; see ``set_pkce_cookie``)."""
+    """First leg of the OAuth round trip.
+
+    ``redirect_url`` is the URL the browser must navigate to (e.g. the
+    Portal's ``/oauth/authorize``). ``cookie_payload`` is a dict of cookie
+    name → serialised value that the auth route will ``Set-Cookie`` on the
+    response. Used for PKCE state, CSRF nonces, etc. Cookies set here MUST
+    be HttpOnly + Secure (when over HTTPS) with a TTL ≤ 10 minutes (the
+    login lifetime).
+
+    SameSite: use ``Lax`` by default. The one exception is the PKCE state
+    cookie, which is ``SameSite=None; Secure`` over HTTPS — it is set on
+    the ``/auth/login`` 302 and has to survive the cross-site redirect
+    chain back from the IDP, which Chromium drops intermittently under
+    ``Lax`` (crbug 40508226). Over plain HTTP it stays ``Lax``, since
+    ``SameSite=None`` requires ``Secure``. See
+    :func:`hermes_cli.dashboard_auth.cookies.set_pkce_cookie`.
+    """
+
     redirect_url: str
     cookie_payload: dict[str, str]
 

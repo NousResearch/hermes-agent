@@ -8,20 +8,33 @@ import re
 import tempfile
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable
+from typing import Any
 from urllib.parse import quote, unquote
 
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
 
-# Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...),
-# so every segment pattern has a quoted group and a slash group.
-_USERS_MEETING_RE = re.compile(r"(?i)(?:^|/)users(?:\('([^']+)'\)|/([^/'()]+))/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))")
-_COMM_MEETING_RE = re.compile(r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))")
+# Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...).
+_USERS_MEETING_RE = re.compile(
+    r"(?i)(?:^|/)users(?:\('([^']+)'\)|/([^/'()]+))/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
+)
+_COMM_MEETING_RE = re.compile(
+    r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
+)
 _TRANSCRIPT_RE = re.compile(r"(?i)/transcripts(?:\('([^']+)'\)|/([^/'?]+))")
 _RECORDING_RE = re.compile(r"(?i)/recordings(?:\('([^']+)'\)|/([^/'?]+))")
-# Collection function names that the meeting regex can capture in place of a real meeting id.
-_RESOURCE_SENTINELS = frozenset({"getalltranscripts", "getallrecordings", "transcripts", "recordings"})
+_RESOURCE_SENTINELS = frozenset(
+    {
+        "getalltranscripts",
+        "getallrecordings",
+        "transcripts",
+        "recordings",
+    }
+)
+
+
+class TeamsMeetingError(RuntimeError):
+    """Base class for Teams meeting pipeline failures."""
 
 
 class TeamsMeetingError(RuntimeError): """Base class for Teams meeting pipeline failures."""
@@ -51,16 +64,65 @@ def parse_graph_meeting_resource(resource: str) -> dict[str, str | None]:
         "recording_id": _match_id(_RECORDING_RE.search(text), 1, 2)}
 
 
+def parse_graph_meeting_resource(resource: str) -> dict[str, str | None]:
+    """Parse organizer, meeting, and artifact ids from a Graph resource or @odata.id."""
+
+    text = str(resource or "").strip()
+    organizer_user_id: str | None = None
+    meeting_id: str | None = None
+    transcript_id: str | None = None
+    recording_id: str | None = None
+
+    users_match = _USERS_MEETING_RE.search(text)
+    if users_match:
+        organizer_user_id = unquote(users_match.group(1) or users_match.group(2) or "").strip() or None
+        meeting_id = unquote(users_match.group(3) or users_match.group(4) or "").strip() or None
+
+    if not meeting_id:
+        comm_match = _COMM_MEETING_RE.search(text)
+        if comm_match:
+            meeting_id = unquote(comm_match.group(1) or comm_match.group(2) or "").strip() or None
+
+    if meeting_id and meeting_id.lower() in _RESOURCE_SENTINELS:
+        meeting_id = None
+
+    transcript_match = _TRANSCRIPT_RE.search(text)
+    if transcript_match:
+        transcript_id = unquote(transcript_match.group(1) or transcript_match.group(2) or "").strip() or None
+
+    recording_match = _RECORDING_RE.search(text)
+    if recording_match:
+        recording_id = unquote(recording_match.group(1) or recording_match.group(2) or "").strip() or None
+
+    return {
+        "organizer_user_id": organizer_user_id,
+        "meeting_id": meeting_id,
+        "transcript_id": transcript_id,
+        "recording_id": recording_id,
+    }
+
+
 def looks_like_transcript_id(value: str, *, odata_type: str | None = None) -> bool:
     """True when a Graph id is a callTranscript artifact rather than an onlineMeeting."""
+
     if "calltranscript" in str(odata_type or "").lower():
         return True
-    return "transcript" in str(value or "").lower() or "transcript" in _decoded_id_hint(str(value or ""))
+    text = str(value or "")
+    if "transcript" in text.lower():
+        return True
+    return "transcript" in _decoded_id_hint(text)
 
 
 def _decoded_id_hint(value: str) -> str:
-    """Best-effort base64 decode of a Graph id: getAllTranscripts ``resourceData.id`` blobs only carry
-    their ``-TranscriptV2`` marker in the *decoded* payload. Lowercase decoded text, or "" if undecodable."""
+    """Best-effort base64 decode of a Graph id for artifact-marker sniffing.
+
+    Graph transcript ids are base64url blobs whose *decoded* payload carries a
+    ``...-TranscriptV2`` suffix while the encoded form contains no readable
+    marker (this is exactly the id shape from getAllTranscripts
+    ``resourceData.id``). Returns lowercase decoded text, or "" when the value
+    does not decode.
+    """
+
     stripped = value.strip()
     if len(stripped) < 16:
         return ""
@@ -73,13 +135,19 @@ def _decoded_id_hint(value: str) -> str:
     return ""
 
 
-def _meetings_collection(organizer_user_id: str | None) -> str:
-    """Organizer-scoped collection when the organizer is known (required for app-only Graph access)."""
-    return f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings" if organizer_user_id else "/communications/onlineMeetings"
-
-
-def _meeting_path(meeting_ref: TeamsMeetingRef) -> str:
-    return f"{_meetings_collection(meeting_ref.organizer_user_id)}/{quote(meeting_ref.meeting_id, safe='')}"
+def _meeting_path(meeting_ref: TeamsMeetingRef | str) -> str:
+    if isinstance(meeting_ref, TeamsMeetingRef):
+        meeting_id = meeting_ref.meeting_id
+        organizer_user_id = meeting_ref.organizer_user_id
+    else:
+        meeting_id = str(meeting_ref)
+        organizer_user_id = None
+    encoded_meeting_id = quote(meeting_id, safe="")
+    if organizer_user_id:
+        return (
+            f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings/{encoded_meeting_id}"
+        )
+    return f"/communications/onlineMeetings/{encoded_meeting_id}"
 
 
 def _wrap_graph_error(exc: MicrosoftGraphAPIError, *, missing_message: str) -> TeamsMeetingError:
@@ -107,12 +175,36 @@ def _normalize_meeting_ref(payload: dict[str, Any], *, tenant_id: str | None = N
     metadata = {key: payload.get(key) for key in ("subject", "startDateTime", "endDateTime", "createdDateTime", "participants")
                 if payload.get(key) is not None}
     chat = payload.get("chatInfo")
-    thread_id = str(chat["threadId"]) if isinstance(chat, dict) and chat.get("threadId") else payload.get("threadId")
+    if isinstance(chat, dict):
+        thread_id = chat.get("threadId")
+        if thread_id:
+            return str(thread_id)
+    return payload.get("threadId")
+
+
+def _normalize_meeting_ref(
+    payload: dict[str, Any],
+    *,
+    tenant_id: str | None = None,
+    organizer_user_id: str | None = None,
+) -> TeamsMeetingRef:
+    metadata = {
+        key: payload.get(key)
+        for key in ("subject", "startDateTime", "endDateTime", "createdDateTime")
+        if payload.get(key) is not None
+    }
+    participants = payload.get("participants")
+    if participants is not None:
+        metadata["participants"] = participants
     return TeamsMeetingRef(
         meeting_id=str(payload.get("id") or "").strip(),
         organizer_user_id=organizer_user_id or _parse_organizer_user_id(payload),
-        join_web_url=payload.get("joinWebUrl"), calendar_event_id=payload.get("calendarEventId"),
-        thread_id=thread_id, tenant_id=tenant_id or payload.get("tenantId"), metadata=metadata)
+        join_web_url=payload.get("joinWebUrl"),
+        calendar_event_id=payload.get("calendarEventId"),
+        thread_id=_parse_thread_id(payload),
+        tenant_id=tenant_id or payload.get("tenantId"),
+        metadata=metadata,
+    )
 
 
 def _normalize_artifact(artifact_type: str, payload: dict[str, Any]) -> MeetingArtifact:
@@ -139,32 +231,64 @@ def _transcript_sort_key(artifact: MeetingArtifact) -> tuple[int, int, str]:
 
 
 async def resolve_meeting_reference(
-    client: MicrosoftGraphClient, *, meeting_id: str | None = None, join_web_url: str | None = None,
-    tenant_id: str | None = None, organizer_user_id: str | None = None) -> TeamsMeetingRef:
+    client: MicrosoftGraphClient,
+    *,
+    meeting_id: str | None = None,
+    join_web_url: str | None = None,
+    tenant_id: str | None = None,
+    organizer_user_id: str | None = None,
+) -> TeamsMeetingRef:
     if meeting_id and looks_like_transcript_id(meeting_id):
-        if not join_web_url:
-            raise TeamsMeetingError("Refusing to GET /communications/onlineMeetings/{id} with a transcript id. "
-                                    "Graph v1.0 does not support that id format; use the organizer-scoped meeting "
-                                    "id from the notification @odata.id, or a join URL.")
-        meeting_id = None
-    collection = _meetings_collection(organizer_user_id)
+        if join_web_url:
+            meeting_id = None
+        else:
+            raise TeamsMeetingError(
+                "Refusing to GET /communications/onlineMeetings/{id} with a transcript id. "
+                "Graph v1.0 does not support that id format; use the organizer-scoped meeting "
+                "id from the notification @odata.id, or a join URL."
+            )
     if meeting_id:
-        missing = f"Teams meeting not found: {meeting_id}"
-        path = f"{collection}/{quote(meeting_id, safe='')}"
-        payload = await _graph(client.get_json(path), missing_message=missing)
+        try:
+            payload = await client.get_json(
+                _meeting_path(
+                    TeamsMeetingRef(meeting_id=meeting_id, organizer_user_id=organizer_user_id)
+                )
+            )
+        except MicrosoftGraphAPIError as exc:
+            raise _wrap_graph_error(exc, missing_message=f"Teams meeting not found: {meeting_id}") from exc
         if not isinstance(payload, dict) or not payload.get("id"):
-            raise TeamsMeetingNotFoundError(missing)
-    elif join_web_url:
-        missing = f"Teams meeting not found for join URL: {join_web_url}"
-        params = {"$filter": f"JoinWebUrl eq '{join_web_url.replace(chr(39), chr(39) * 2)}'"}
-        listing = await _graph(client.get_json(collection, params=params), missing_message=missing)
-        candidates = listing.get("value") if isinstance(listing, dict) else None
+            raise TeamsMeetingNotFoundError(f"Teams meeting not found: {meeting_id}")
+        return _normalize_meeting_ref(
+            payload,
+            tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
+        )
+
+    if join_web_url:
+        escaped_join_url = join_web_url.replace("'", "''")
+        lookup_path = "/communications/onlineMeetings"
+        if organizer_user_id:
+            lookup_path = f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings"
+        try:
+            payload = await client.get_json(
+                lookup_path,
+                params={"$filter": f"JoinWebUrl eq '{escaped_join_url}'"},
+            )
+        except MicrosoftGraphAPIError as exc:
+            raise _wrap_graph_error(
+                exc,
+                missing_message=f"Teams meeting not found for join URL: {join_web_url}",
+            ) from exc
+        candidates = payload.get("value") if isinstance(payload, dict) else None
         if not isinstance(candidates, list) or not candidates:
-            raise TeamsMeetingNotFoundError(missing)
-        payload = candidates[0]
-    else:
-        raise ValueError("Either meeting_id or join_web_url is required.")
-    return _normalize_meeting_ref(payload, tenant_id=tenant_id, organizer_user_id=organizer_user_id)
+            raise TeamsMeetingNotFoundError(f"Teams meeting not found for join URL: {join_web_url}")
+        return _normalize_meeting_ref(
+            candidates[0],
+            tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
+        )
+
+    raise ValueError("Either meeting_id or join_web_url is required.")
 
 
 async def _list_artifacts(client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, *, artifact_type: str) -> list[MeetingArtifact]:

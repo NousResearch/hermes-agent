@@ -1,4 +1,3 @@
-export { hasAnsi, sanitizeAnsiForRender, stripAnsi } from './ansi'
 export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
 export {
   BILLING_REFUSAL_POLICY,
@@ -58,21 +57,11 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
-export { compactNumber } from './format'
-export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
-export * from './gateway-events'
 export {
-  applyDocumentLocale,
-  type EndonymLocale,
-  isRecord,
-  LOCALE_ENDONYMS,
-  mergeTranslations,
-  RTL_LOCALES,
-  type TranslationOverride
-} from './i18n'
-export {
-  DEFAULT_HEARTBEAT_DEADLINE_MS,
-  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  type ConnectionState,
+  type GatewayClientOptions,
+  type GatewayEvent,
+  type GatewayEventName,
   type GatewayRequestId,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
@@ -115,25 +104,6 @@ export {
   type SkinColors,
   type SkinColorToken
 } from './skin'
-export {
-  type AliasCommandDispatchResponse,
-  type CommandDispatchResponse,
-  type ExecCommandDispatchResponse,
-  looksLikeSlashCommand,
-  parseCommandDispatch,
-  type ParsedSlashCommand,
-  parseSlashCommand,
-  type PrefillCommandDispatchResponse,
-  type SendCommandDispatchResponse,
-  type SkillCommandDispatchResponse,
-  SLASH_COMMAND_RE
-} from './slash'
-export {
-  THEME_PRESET_PALETTES,
-  type ThemePresetColors,
-  type ThemePresetName,
-  type ThemePresetPalette
-} from './theme-presets'
 export {
   backgroundMaterialFor,
   clampIntensity,

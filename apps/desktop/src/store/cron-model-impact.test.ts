@@ -20,16 +20,6 @@ import {
 
 import { deferred } from '../test/deferred'
 
-async function waitForConfirmToast() {
-  return vi.waitFor(() => {
-    const toast = $notifications.get().find(item => item.id.startsWith('model-warning-confirm-'))
-
-    expect(toast).toBeDefined()
-
-    return toast!
-  })
-}
-
 function response(impact: ModelAssignmentResponse['cron_model_impact']): ModelAssignmentResponse {
   return {
     ok: true,

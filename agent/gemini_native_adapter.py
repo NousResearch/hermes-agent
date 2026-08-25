@@ -131,7 +131,11 @@ def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
 
 
 def probe_gemini_tier(
-    api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0
+    api_key: str,
+    base_url: str = DEFAULT_GEMINI_BASE_URL,
+    *,
+    model: str = "gemini-3.7-flash",
+    timeout: float = 10.0,
 ) -> str:
     """Probe a Google AI Studio key → ``"free"`` | ``"paid"`` | ``"unknown"`` (probe failed; callers proceed without blocking)."""
     key = (api_key or "").strip()
@@ -263,6 +267,33 @@ def _looks_like_json_schema(node: Any) -> bool:
     return isinstance(node, list) and any(_looks_like_json_schema(item) for item in node)
 
 
+def _looks_like_json_schema(node: Any) -> bool:
+    """True if a parsed value contains a JSON-Schema-style ``$ref`` pointer.
+
+    Gemini 3 resolves ``$ref``/``$defs`` references inside a
+    functionResponse.response payload and rejects unknown pointers with
+    HTTP 400 INVALID_ARGUMENT. A tool result that is itself a JSON Schema
+    (e.g. the output of ``tool_describe`` for an MCP tool) must therefore be
+    forwarded as opaque text rather than as a structured response.
+
+    Detection is deliberately structural, not semantic: any ``$ref`` value
+    shaped like a JSON pointer (``#/...``) demotes the whole result. Non-schema
+    data that happens to carry such a pointer is a false positive, but the raw
+    content is preserved verbatim either way, so the cost is fidelity-free.
+    The recursive walk is O(n) over the parsed value; tool-result payloads are
+    small, so this is negligible per turn.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+                return True
+            if _looks_like_json_schema(value):
+                return True
+    elif isinstance(node, list):
+        return any(_looks_like_json_schema(item) for item in node)
+    return False
+
+
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any], tool_name_by_call_id: Optional[Dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
 ) -> Dict[str, Any]:
@@ -276,12 +307,19 @@ def _translate_tool_result_to_gemini(
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
-    # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a functionResponse.response payload and rejects
-    # unknown references with HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match a
-    # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema (e.g. tool_describe
-    # output for an MCP tool) must therefore be forwarded as opaque text, not as a structured response.
-    structured = isinstance(parsed, dict) and not _looks_like_json_schema(parsed)
-    function_response: Dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
+    # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a
+    # functionResponse.response payload and rejects unknown references with
+    # HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match
+    # a display_name"; see vercel/ai#14369). A tool result that is itself a
+    # JSON Schema (e.g. tool_describe output for an MCP tool) must therefore
+    # be forwarded as opaque text, not as a structured response.
+    if isinstance(parsed, dict) and _looks_like_json_schema(parsed):
+        parsed = None
+    response = parsed if isinstance(parsed, dict) else {"output": content}
+    function_response: Dict[str, Any] = {
+        "name": name,
+        "response": response,
+    }
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
     # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.
@@ -729,9 +767,20 @@ class GeminiNativeClient:
         return (True, None) if chunk is _END else (False, chunk)
 
     def _create_chat_completion(
-        self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
-        tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        self,
+        *,
+        model: str = "gemini-3.7-flash",
+        messages: Optional[List[Dict[str, Any]]] = None,
+        stream: bool = False,
+        tools: Any = None,
+        tool_choice: Any = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        stop: Any = None,
+        extra_body: Optional[Dict[str, Any]] = None,
+        timeout: Any = None,
+        **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(

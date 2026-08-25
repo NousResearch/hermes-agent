@@ -210,6 +210,9 @@
   const elapsedText = s =>
     s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
 
+  const elapsedText = s =>
+    s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
+
   function settle(state) {
     settled = true
     window.cancelAnimationFrame(frame)

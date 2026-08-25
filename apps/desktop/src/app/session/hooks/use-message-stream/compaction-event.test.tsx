@@ -1,8 +1,6 @@
-import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -15,7 +13,7 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) {
+function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}) {
   act(() => stream.handleEvent({ payload, session_id: SID, type }))
 }
 

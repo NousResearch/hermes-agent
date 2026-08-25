@@ -1,10 +1,44 @@
-"""Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
-event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
-and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
-activates the bridge (the listing scales with budget, not activation); the catalog is
-stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
-silently drops tools); bridge calls route through ``model_tools.handle_function_call``."""
+"""Progressive tool disclosure ("tool search") for Hermes Agent.
+
+When enabled, MCP and non-core plugin tools are replaced in the model-visible
+tools array by three bridge tools — ``tool_search``, ``tool_describe``,
+``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
+
+Design constraints this module is built around (see ``openclaw-tool-search-report``
+for the full rationale):
+
+* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
+  Always-load means always-load. No exceptions.
+* Session-gated GUI toolsets (``desktop_ui``, ``project``) are also never
+  deferred. They stay off the core list so CLI and messaging never pay for
+  their schemas, but once a session enables them they stay in the
+  model-facing array. Tool Search is for MCP/plugin catalog bloat, not for
+  hiding the tools that define this session's surface.
+* Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
+  tools are present, they hide behind the bridge. What scales with catalog
+  size is the *listing*, not the activation decision:
+    - Tier 0 — no MCP/plugin tools: pure passthrough, everything eager.
+    - Tier 1 — deferred tools whose catalog listing fits the listing budget
+      (``min(threshold_pct`` of context — default 5% — ``, listing_max_tokens)``):
+      bridge + skills-style listing (name + short description per tool),
+      degrading to a names-only listing when the full form is over budget.
+    - Tier 2 — per-tool listing over budget even names-only (e.g.
+      Cloudflare's flat API surface, ~3,300 tools whose names alone are
+      ~32K tokens): bare bridge + a one-line-per-server summary (server
+      name + tool count) so the model still knows WHICH domains are
+      reachable; individual tools are discoverable only via ``tool_search``.
+* The catalog is stateless across turns and tools-array assemblies. It is
+  rebuilt from the current tool-defs list every time. This is the lesson
+  from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
+  catalog that drifts out of sync with the live tool registry produces
+  silent tool dropouts.
+* Bridge tools route through ``model_tools.handle_function_call`` exactly
+  like a direct call, so guardrails, plugin pre/post hooks, approval flows,
+  and tool-result truncation all fire identically.
+* Display and trajectory unwrap is implemented here so the user (CLI activity
+  feed, gateway, saved trajectories) always sees the underlying tool, not
+  the bridge.
+"""
 
 from __future__ import annotations
 
@@ -122,47 +156,50 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-# Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
-# their schema; once enabled they stay direct unless the deferral list names them.
+# Session-gated GUI toolsets. Off ``_HERMES_CORE_TOOLS`` so non-GUI clients
+# never pay their schema; once a session enables them they stay direct.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
-# Event-triggered core tools deferred BY DEFAULT (a catalog stub suffices); the ``defer``
-# config replaces this wholesale ([] = everything eager). POST-rename names. ``clarify``
-# is deliberately absent: A/B showed deferring it collapsed structured-clarify usage
-# (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
-_DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
-    # Desktop GUI surface (desktop_ui + project toolsets)
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "desktop_project", "close_terminal",
-    "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
 
+def is_deferrable_tool_name(name: str) -> bool:
+    """Return True if a tool with this name is *eligible* for deferral.
 
-def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
-    """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
-    user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    A tool is deferrable iff it is registered with an MCP toolset prefix
+    OR it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI
+    surface toolset. Core and direct surface tools are never deferred even
+    when their toolset is technically plugin-provided (this protects
+    against accidental shadowing).
+    """
     if name in BRIDGE_TOOL_NAMES:
         return False
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():
         return False
-    toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
-    return toolset is not None and (
-        toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+    # Check registry toolset for MCP prefix.
+    try:
+        from tools.registry import registry
+        entry = registry.get_entry(name)
+        if entry is None:
+            return False
+        if entry.toolset.startswith("mcp-"):
+            return True
+        if entry.toolset in _DIRECT_SURFACE_TOOLSETS:
+            return False
+        # Non-MCP, non-core → plugin tool, eligible.
+        return True
+    except Exception:
+        return False
 
 
 def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
     """Function names of a tool-defs list (``""`` for a nameless def)."""
     return (_fn(td).get("name", "") for td in tool_defs)
 
-
-def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
-                   ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
-    after classification)."""
+    ``visible`` retains every tool that must stay in the model-facing array:
+    every core tool, every session-gated GUI surface tool, plus any tool we
+    can't classify. ``deferrable`` is the candidate set for catalog entry.
+    """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):

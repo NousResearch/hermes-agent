@@ -121,25 +121,13 @@ Want to know if an update is available before pulling? Run `hermes update --chec
 
 ### Fleet preview: `hermes update --plan`
 
-Before updating a machine that runs several profiles or services, `hermes update --plan` prints the full update plan without changing anything: the install kind (git checkout, Docker image, Nix/apt managed), every running Hermes service across all profiles with its supervisor (systemd, launchd, manual) and the code version it is actually serving, and the restart mechanism each one will get. Manually-launched `hermes serve` / `hermes dashboard` backends appear too (from the spawn ledger), with their recorded bind endpoint and a "stop before code swap, relaunch with recorded launch args" restart mechanism. On image- or package-managed installs the plan reports that the install is not updatable in place and names the right update command instead. Read-only and safe on a live fleet.
+Before updating a machine that runs several profiles or services, `hermes update --plan` prints the full update plan without changing anything: the install kind (git checkout, Docker image, Nix/apt managed), every running Hermes service across all profiles with its supervisor (systemd, launchd, manual) and the code version it is actually serving, and the restart mechanism each one will get. On image- or package-managed installs the plan reports that the install is not updatable in place and names the right update command instead. Read-only and safe on a live fleet.
 
 The same inventory is embedded in every real update's receipt (`~/.hermes/logs/update_receipts/`), so after an update you can compare what the updater saw against what it did.
 
 ### Update receipts and the fleet version check
 
 Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
-
-### Interrupted gateway restarts
-
-If an earlier update pulled code but did not finish restarting the fleet, the next
-`hermes update` retries even when the checkout is already current. An empty process
-scan does not prove recovery: failed systemd units and installed launchd jobs may
-have no live PID. The pending restart marker is retained if supervisor discovery
-fails, a restart fails, or a requested service cannot be verified active. The update
-exits nonzero and reports the affected services; recover them with the printed
-commands and retry `hermes update`.
-
-A failed historical receipt does not by itself prove that gateways are still stale. Startup and gateway-status warnings, as well as update catch-up, check the live fleet before acting on receipt-only restart obligations. Every recorded gateway profile must have a live successor on the current checkout; an unrelated current gateway cannot stand in for a missing, down, unknown-version, or non-gateway runtime. A manual gateway restart can therefore settle the warning without rewriting a failed update as successful. A separate pending marker remains authoritative because it can belong to a newer interrupted update whose inventory never reached the receipt.
 
 ### Full pre-update backup: `--backup`
 

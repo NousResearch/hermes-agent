@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 # when using Codex with a ChatGPT account"), so listing them leaked dead picker choices. If
 # OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    # GPT-5.6 series (Sol/Terra/Luna). The public API exposes "-pro"
+    # variants, but the ChatGPT Codex OAuth backend rejects them with HTTP 400,
+    # so the curated offline fallback must not surface those dead choices.
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -68,13 +71,19 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
 
 
 def _add_context_variants(model_ids: List[str]) -> List[str]:
-    """Insert ``<slug>-900k`` large-context picker variants after eligible base slugs.
+    """Insert ``-900k`` large-context picker variants after eligible base slugs.
 
-    Base slugs keep the cheaper advertised 272K limit; the variant opts into the large window.
-    The suffix is Hermes-side only — stripped before the id hits the wire (agent/transports/codex.py,
-    agent/auxiliary_client.py).
+    The ChatGPT Codex backend advertises 272K for the gpt-5.4 / gpt-5.6
+    families but accepts ~911K (live-verified Aug 2026). The base slugs keep
+    the cheaper advertised 272K limit by default; each verified slug gets an
+    explicit ``<slug>-900k`` picker entry that opts into the large window.
+    The suffix is Hermes-side only — it is stripped before the model id hits
+    the wire (agent/transports/codex.py, agent/auxiliary_client.py).
     """
-    from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant
+    from agent.model_metadata import (
+        CODEX_CONTEXT_VARIANT_SUFFIX,
+        has_codex_context_variant,
+    )
 
     out: List[str] = []
     present = set(model_ids)
@@ -91,14 +100,6 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
 def _finalize_codex_models(model_ids: List[str]) -> List[str]:
     """Forward-compat synthesis + large-context variant synthesis."""
     return _add_context_variants(_add_forward_compat_models(model_ids))
-
-
-def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
-    """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
-    ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
-    from agent.reasoning_effort import is_astra_model
-
-    return [model for model in model_ids if not is_astra_model(model)]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -165,7 +166,27 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries))
+    sortable = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        slug = slug.strip()
+        # Codex CLI's catalog uses ``supported_in_api`` for the public OpenAI
+        # API, not for the OAuth-backed Codex backend that this provider uses.
+        # Some valid Codex CLI models (for example gpt-5.3-codex-spark) are
+        # marked false here but are still accepted by the Codex route.
+        visibility = item.get("visibility", "")
+        if isinstance(visibility, str) and visibility.strip().lower() in {"hide", "hidden"}:
+            continue
+        priority = item.get("priority")
+        rank = int(priority) if isinstance(priority, (int, float)) else 10_000
+        sortable.append((rank, slug))
+
+    sortable.sort(key=lambda x: (x[0], x[1]))
+    return _finalize_codex_models([slug for _, slug in sortable])
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -201,7 +222,18 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
             return _finalize_codex_models(api_models)
+
+    # Fall back to local sources
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
-        *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS])))
+    if default_model:
+        ordered.append(default_model)
+
+    for model_id in _read_cache_models(codex_home):
+        if model_id not in ordered:
+            ordered.append(model_id)
+
+    for model_id in DEFAULT_CODEX_MODELS:
+        if model_id not in ordered:
+            ordered.append(model_id)
+
+    return _finalize_codex_models(ordered)

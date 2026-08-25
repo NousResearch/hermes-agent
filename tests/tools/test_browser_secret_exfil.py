@@ -212,7 +212,7 @@ class TestBrowserSnapshotRedaction:
     def test_stored_snapshot_redacts_secrets(self):
         """Secrets in a snapshot must be masked in the stored full-text file."""
         from pathlib import Path
-        from tools.browser_tool_snapshot import _store_full_snapshot
+        from tools.browser_tool import _store_full_snapshot
 
         fake_key = "sk-" + "FAKESECRETVALUE1234567890ABCDEF"
         snapshot_with_secret = (

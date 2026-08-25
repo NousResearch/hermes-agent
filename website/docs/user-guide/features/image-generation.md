@@ -231,7 +231,7 @@ Two inputs drive the edit:
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
-| **OpenAI (Codex auth)** | ✓ | up to 16 | `POST /backend-api/codex/images/edits` with inline `images[]` data URLs (remote URLs are fetched client-side) |
+| **OpenAI (Codex auth)** | ✓ | up to 16 | Codex Responses `image_generation` tool with `input_image` content parts |
 | **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,

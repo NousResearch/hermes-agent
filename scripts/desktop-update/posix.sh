@@ -39,7 +39,6 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -245,11 +244,6 @@ start_ui() {
   fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
-  UI_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-ui-XXXXXXXX")" || {
-    UI_PROFILE_DIR=""
-    log "shim: could not allocate a browser profile; skipping UI"
-    return
-  }
   publish_stage ""
   # The Desktop's final teardown targets the updater process group.  Put both
   # UI processes in their own sessions so neither the HTTP server nor a Chrome
@@ -766,14 +760,14 @@ export PYTHONUNBUFFERED=1
 # know the flag and argparse would abort with exit 2, which collides with the
 # "close all Hermes windows" sentinel.
 KEEP_STASH=""
-if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
+if "$HERMES_BIN" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
   KEEP_STASH="--keep-stash"
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
+log "running: hermes update --yes --gateway $KEEP_STASH --branch $BRANCH"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -795,7 +789,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
@@ -807,7 +801,7 @@ trap 'on_signal TERM' TERM
 if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
-  "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
+  "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
     FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
     exit 6
   }

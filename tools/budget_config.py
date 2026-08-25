@@ -14,29 +14,46 @@ DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 
-# Tighter per-result default for ``mcp_`` tools: MCP servers routinely return
-# un-paginated 20-50K payloads that sail under the generic 100K threshold; spillover
-# keeps the full payload on disk. Config: ``tool_budget.mcp_result_size_chars``.
+# Tighter default per-result threshold for MCP tools (name prefix ``mcp_``).
+#
+# MCP servers routinely return un-paginated 20-50K-char payloads (tool
+# discovery catalogs, batched executions) that sail under the generic 100K
+# threshold and silently bloat context — in agentic evals this measurably
+# ballooned per-turn reasoning time on long conversations. Competitor
+# harnesses cap harder (OpenCode 50KB, pi 50KB, Claude Code 30K chars,
+# Codex ~10K tokens); 50K chars keeps parity with the strictest general-
+# purpose caps while spillover (unlike truncation) preserves the full
+# payload on disk. Overridable via ``tool_budget.mcp_result_size_chars``
+# in config.yaml.
 DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
-# Same prefix the untrusted-content wrapper keys on (agent/tool_dispatch_helpers.py).
+
+# Tool-name prefix that identifies MCP-served tools (same prefix the
+# untrusted-content wrapper keys on in agent/tool_dispatch_helpers.py).
 MCP_TOOL_PREFIX: str = "mcp_"
 
 
 def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
-    sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
-    Any error, missing key or non-positive value returns the built-in default.
+    """Read ``tool_budget.mcp_result_size_chars`` from the active config.
 
-    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
-    can merge without a key rename.
+    Goes through :func:`hermes_cli.config.load_config_readonly` (the
+    sanctioned read path — raw config.yaml parsing outside owner modules
+    is guarded by tests/hermes_cli/test_config_read_guard.py). Fully
+    guarded: any error, missing key, or non-positive value returns the
+    built-in default. The ``tool_budget:`` block name is shared with the
+    wider configurable-caps proposal (#80508) so the two can merge
+    without a key rename.
     """
     try:
         from hermes_cli.config import load_config_readonly
+
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None
-        raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None
-        if raw is not None and int(raw) > 0:
-            return int(raw)
+        if isinstance(block, dict):
+            raw = block.get("mcp_result_size_chars")
+            if raw is not None:
+                value = int(raw)
+                if value > 0:
+                    return value
     except Exception:
         pass
     return DEFAULT_MCP_RESULT_SIZE_CHARS
@@ -59,8 +76,22 @@ class BudgetConfig:
         are capped at ``default_result_size`` so a context-scaled budget for a small
         model still constrains tools registering a fixed 100K ``max_result_size_chars``.
 
-        For the default budget this is a no-op because both equal 100K; for a scaled-down budget it prevents
-        a per-tool registry value from re-inflating the cap past the model's window (#23767).
+        Priority: pinned -> tool_overrides -> mcp_ prefix -> registry
+        per-tool -> default.
+
+        MCP tools (``mcp_`` prefix) get a tighter default threshold
+        (``mcp_result_size``, 50K chars) because MCP servers return
+        un-paginated payloads with no per-tool registry entry to constrain
+        them. The value is additionally capped at ``default_result_size``
+        so a context-scaled budget for a small model still constrains MCP
+        results the same way it constrains registry values.
+
+        The registry per-tool value is capped at ``default_result_size`` so a
+        context-scaled budget (small model) actually constrains tools that
+        register a large fixed ``max_result_size_chars`` (web/terminal/x_search
+        all register 100K). For the default budget this is a no-op because both
+        equal 100K; for a scaled-down budget it prevents a per-tool registry
+        value from re-inflating the cap past the model's window (#23767).
         """
         if tool_name in PINNED_THRESHOLDS:
             return PINNED_THRESHOLDS[tool_name]
@@ -101,10 +132,12 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     oversized request (#23767).
     """
     mcp_result_size = _configured_mcp_result_size()
+
     if not context_length or context_length <= 0:
         if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
             return DEFAULT_BUDGET
         return BudgetConfig(mcp_result_size=mcp_result_size)
+
     window_chars = context_length * _CHARS_PER_TOKEN
     return BudgetConfig(
         default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),

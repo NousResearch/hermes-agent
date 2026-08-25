@@ -33,10 +33,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -57,13 +55,7 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
-import {
-  $activeConnectionId,
-  $connectionsRegistry,
-  $hasMultipleConnections,
-  selectConnection
-} from '@/store/connections'
-import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
+import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -95,10 +87,7 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
-import { ConnectionGlyph } from './connection-glyph'
-import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
-import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
@@ -134,17 +123,9 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
-// The active profile pops in its own color — the "where am I" cue.
-//
-// With one registered gateway this is the whole story. With several, the rail
-// becomes the FLEET rail: the active gateway's profiles stay exactly as they
-// are, and every other registered gateway follows on the same strip as an
-// at-rest group — a hairline, that gateway's kind glyph, its default home
-// square and its named squares, dimmed. Clicking an at-rest square performs
-// the same re-home the statusbar switcher does, landing on that exact
-// (gateway, profile); the workspace still lives on one gateway at a time, only
-// the picker spans the fleet. Groups keep registry order regardless of which
-// one is active, so a square never moves under the pointer that clicked it.
+// The active profile pops in its own color — the "where am I" cue. Gateway
+// identity lives in the statusbar, so this strip remains entirely available to
+// profiles regardless of how many backends are registered.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -155,9 +136,6 @@ export function ProfileRail() {
   const colors = useStore($profileColors)
   const remoteOverrides = useStore($profileRemoteOverrides)
   const multipleConnections = useStore($hasMultipleConnections)
-  const registry = useStore($connectionsRegistry)
-  const activeConnectionId = useStore($activeConnectionId)
-  const roster = useStore($fleetRoster)
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
@@ -393,29 +371,7 @@ export function ProfileRail() {
   )
 
   return (
-    // `data-tour` as well as `data-slot`: only the former is identity to the
-    // tour collector and the tip catalog, and the rail's one other durable
-    // handle is a TRANSLATED aria-label, which stops matching the moment the
-    // app isn't in English.
-    <div
-      aria-label={p.title}
-      className="flex min-w-0 items-center gap-0.5"
-      data-slot="profile-rail"
-      data-tip-region=""
-      data-tour="profile-rail"
-      role="group"
-    >
-      {/* Fleet: every gateway carries its own home square inside its group, so
-          the pinned pill is purely the "all profiles on this gateway" toggle. */}
-      {fleet && (
-        <ProfilePill
-          active={isAll}
-          glyph="layers"
-          label={p.fleet.allOnGateway}
-          onSelect={() => setShowAllProfiles(true)}
-        />
-      )}
-
+    <div aria-label={p.title} className="flex min-w-0 items-center gap-0.5" data-slot="profile-rail" role="group">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -465,18 +421,32 @@ export function ProfileRail() {
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           ref={scrollRef}
         >
-          {/* The active gateway's squares. In fleet mode they sit in the
-              gateway's registry slot with a home square at their head, so the
-              strip keeps one shape whichever gateway is active. */}
-          {fleet
-            ? fleetSequence.map((entry, index) =>
-                entry.kind === 'active' ? (
-                  <Fragment key="active">
-                    <FleetDivider
-                      connection={activeConnection}
-                      first={index === 0}
-                      label={activeConnection ? p.fleet.gateway(activeConnection.label) : null}
-                      reachable
+          {multiProfile && (
+            <DndContext
+              collisionDetection={closestCenter}
+              modifiers={[stepThroughCells]}
+              onDragEnd={handleDragEnd}
+              onDragOver={handleDragOver}
+              onDragStart={handleDragStart}
+              sensors={sensors}
+            >
+              <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+                {/* relative → the strip is the dragged square's offsetParent, so the
+                    clamp modifier bounds drags to the occupied cells (not the +). */}
+                <div className="relative flex items-center gap-1">
+                  {named.map(profile => (
+                    <ProfileSquare
+                      active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      color={resolveProfileColor(profile.name, colors)}
+                      key={profile.name}
+                      label={profileLabel(profile)}
+                      onConnectRemote={() => openRemoteOverrideDialog(profile.name)}
+                      onDelete={() => setPendingDelete(profile)}
+                      onEditSoul={() => setPendingSoul(profile.name)}
+                      onRecolor={color => setProfileColor(profile.name, color)}
+                      onRename={() => setPendingRename(profile)}
+                      onSelect={() => selectProfile(profile.name)}
+                      remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
                     />
                     <span
                       aria-label={activeConnection ? p.fleet.gateway(activeConnection.label) : undefined}
@@ -565,32 +535,6 @@ export function ProfileRail() {
       />
 
       <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
-
-      {/* Fleet-side dialogs: scoped to the at-rest square's owning gateway, and
-          they refresh the roster (not the active profile list) on success. */}
-      <RenameProfileDialog
-        currentName={pendingRestRename?.profile ?? ''}
-        onClose={() => setPendingRestRename(null)}
-        onRenamed={() => refreshFleetRoster({ force: true })}
-        open={pendingRestRename !== null}
-        scope={pendingRestRename ? restScope(pendingRestRename) : undefined}
-      />
-
-      <DeleteProfileDialog
-        gatewayLabel={pendingRestDelete?.connectionLabel}
-        onClose={() => setPendingRestDelete(null)}
-        onDeleted={() => refreshFleetRoster({ force: true })}
-        open={pendingRestDelete !== null}
-        profile={pendingRestDelete ? { name: pendingRestDelete.profile, path: pendingRestDelete.handle } : null}
-        scope={pendingRestDelete ? restScope(pendingRestDelete) : undefined}
-      />
-
-      <EditSoulDialog
-        gatewayLabel={pendingRestSoul?.connectionLabel}
-        onClose={() => setPendingRestSoul(null)}
-        profileName={pendingRestSoul?.profile ?? null}
-        scope={pendingRestSoul ? restScope(pendingRestSoul) : undefined}
-      />
 
       <ProfileRemoteOverrideDialog profileNames={profileNames} />
     </div>
@@ -798,34 +742,6 @@ function ProfileDropdown({
             />
           ))}
         </DropdownMenuRadioGroup>
-        {restGroups.map(group => (
-          <div data-connection-id={group.connectionId} data-slot="profile-dropdown-gateway" key={group.connectionId}>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
-              <ConnectionGlyph connection={group} />
-              <span className="truncate">{group.label}</span>
-              {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
-            </DropdownMenuLabel>
-            {[group.defaultAgent, ...group.named].map(agent => (
-              <DropdownMenuItem
-                aria-label={p.fleet.onGateway(agent.profile, group.label)}
-                className="min-w-0"
-                key={agent.profile}
-                onSelect={() => onSelectRest(agent)}
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <ProfileGlyph
-                    aria-hidden="true"
-                    color={resolveProfileColor(agent.profile, colors)}
-                    isDefault={agent.isDefault}
-                    name={agent.profile}
-                  />
-                  <span className="truncate">{agent.profile}</span>
-                </span>
-              </DropdownMenuItem>
-            ))}
-          </div>
-        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -1138,9 +1054,7 @@ interface ProfileSquareProps {
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
-  // Absent on multi-gateway setups: the legacy per-profile remote override
-  // is superseded by the fleet rail there.
-  onConnectRemote?: () => void
+  onConnectRemote: () => void
   onDelete: () => void
   // hostname[:port] of this profile's remote override, or null when the
   // profile runs locally. Drives the "remote" badge on the square.
@@ -1323,12 +1237,10 @@ function ProfileSquare({
             <Codicon name="package" size="0.875rem" />
             <span>{p.exportMenu}</span>
           </ContextMenuItem>
-          {onConnectRemote && (
-            <ContextMenuItem onSelect={onConnectRemote}>
-              <Codicon name="globe" size="0.875rem" />
-              <span>{remoteHost ? p.remoteOverride.badge(remoteHost) : p.remoteOverride.menuItem}</span>
-            </ContextMenuItem>
-          )}
+          <ContextMenuItem onSelect={onConnectRemote}>
+            <Codicon name="globe" size="0.875rem" />
+            <span>{remoteHost ? p.remoteOverride.badge(remoteHost) : p.remoteOverride.menuItem}</span>
+          </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
             onSelect={onDelete}

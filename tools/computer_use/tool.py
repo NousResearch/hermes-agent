@@ -568,96 +568,165 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
         v.elements_file and (f"full element tree with untruncated labels saved to {v.elements_file} — "
                              "read_file/search_files it if you need dropped label text or elements beyond the cap"),
     )
-    return [
-        f"capture mode={v.cap.mode} {v.width}x{v.height}"
-        + (f" app={v.cap.app}" if v.cap.app else "") + (f" window={v.cap.window_title!r}" if v.cap.window_title else ""),
-        f"{v.total} interactable element(s):",
-        *(f"  ({note})" for note in notes if note),
-        *_format_elements(v.visible),
-        *([f"  (screenshot omitted: {v.dims_omitted[0]}x{v.dims_omitted[1]} is below the "
-           f"{_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} provider minimum)"] if v.dims_omitted else []),
+    image_too_small = bool(
+        image_dimensions
+        and (
+            image_dimensions[0] < _MIN_PROVIDER_IMAGE_DIMENSION
+            or image_dimensions[1] < _MIN_PROVIDER_IMAGE_DIMENSION
+        )
+    )
+    screenshot_path = (
+        _persist_capture_image(cap)
+        if cap.png_b64 and cap.mode != "ax" and not image_too_small
+        else None
+    )
+
+    # Index only what's actually surfaced in the response — otherwise the
+    # human-readable summary references element indices the model cannot
+    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
+    # 40-line index window).
+    element_index = _format_elements(visible_elements)
+    summary_lines = [
+        f"capture mode={cap.mode} {response_width}x{response_height}"
+        + (f" app={cap.app}" if cap.app else "")
+        + (f" window={cap.window_title!r}" if cap.window_title else ""),
+        f"{total_elements} interactable element(s):",
     ]
+    if bounds_note:
+        summary_lines.append(f"  ({bounds_note})")
+    if screenshot_path:
+        summary_lines.append(
+            f"  (shareable screenshot saved to {screenshot_path})"
+        )
+    if cap.note:
+        summary_lines.append(f"  ({cap.note})")
+    if elements_file:
+        summary_lines.append(
+            f"  (full element tree with untruncated labels saved to "
+            f"{elements_file} — read_file/search_files it if you need "
+            "dropped label text or elements beyond the cap)"
+        )
+    if element_index:
+        summary_lines.extend(element_index)
+    # Multimodal and AX paths both reference `summary`; build it once up-front
+    # so the aux-vision routing branch (which fires before either path is
+    # selected) has a valid value to hand to _route_capture_through_aux_vision.
+    # The AX path appends the "truncated to N of M" note to summary_lines
+    # below and rebuilds; the multimodal path keeps this version untouched.
+    if image_too_small:
+        summary_lines.append(
+            f"  (screenshot omitted: {image_dimensions[0]}x{image_dimensions[1]} "
+            f"is below the {_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} "
+            "provider minimum)"
+        )
+    summary = "\n".join(summary_lines)
 
-def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[Dict[str, Any]] = None) -> str:
-    """JSON text payload shared by the AX, vision-unavailable and aux-vision branches. Key order is contract:
-    fixed fields, ``extra`` branch markers, then set optionals."""
-    return json.dumps({
-        "mode": v.cap.mode, "width": v.width, "height": v.height, "app": v.cap.app, "window_title": v.cap.window_title,
-        "elements": [_element_to_dict(e) for e in v.visible], "total_elements": v.total, "summary": summary,
-        **(extra or {}),
-        **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path,
-                   bounds_scale=v.bounds_scale),
-    })
-
-def _capture_digest(cap: CaptureResult) -> str:
-    return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
-                          + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
-
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
-                      session_id: Optional[str] = None) -> Any:
-    v = _capture_view(cap, max_elements)
-    lines = _capture_summary_lines(v)
-    summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
-    if v.has_image and session_id and _screenshot_dedup_check(
-            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
-        # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
-        # the text metadata is fresh and the note says which earlier result still applies.
-        lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
-                     "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
-                     "and remain the preferred way to act.)")
-        extra = {"screen_unchanged": True}
-    elif v.has_image:
-        # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
-        # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
-        if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
-            return {
-                "_multimodal": True,
-                "content": [{"type": "text", "text": summary},
-                            {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
-                "text_summary": summary,
-                "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
-                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
+    if cap.png_b64 and cap.mode != "ax" and not image_too_small:
+        # Decide whether to hand the screenshot to the auxiliary.vision
+        # pipeline (text-only result) or keep the multimodal envelope (main
+        # model handles vision natively). Issue #24015: previously the
+        # multimodal envelope was returned unconditionally, so non-vision
+        # main models tripped HTTP 404 / 400 at the provider boundary even
+        # when auxiliary.vision was explicitly configured to handle this.
+        if _should_route_through_aux_vision():
+            routed = _route_capture_through_aux_vision(
+                cap, summary,
+                visible_elements=visible_elements,
+                truncated_elements=truncated_elements,
+                elements_file=elements_file,
+                screenshot_path=screenshot_path,
+            )
+            if routed is not None:
+                return routed
+            # Aux routing was requested but failed (vision node down, aux call
+            # raised, empty analysis, etc.). Routing being requested means the
+            # main model may not be able to consume images; falling through to
+            # the multimodal envelope can break the capture with a provider
+            # error. Degrade to the AX/SOM text payload instead so element
+            # indices remain usable while vision is unavailable.
+            summary_lines.append(
+                "  (vision unavailable: the auxiliary vision model could not "
+                "be reached; screenshot omitted. Element-index actions still "
+                "work — drive via the element list above.)"
+            )
+            if truncated_elements:
+                summary_lines.append(
+                    f"  (response truncated to {len(visible_elements)} of "
+                    f"{total_elements} elements; raise max_elements or pass "
+                    "app= to narrow)"
+                )
+            payload = {
+                "mode": cap.mode,
+                "width": response_width,
+                "height": response_height,
+                "app": cap.app,
+                "window_title": cap.window_title,
+                "elements": [_element_to_dict(e) for e in visible_elements],
+                "total_elements": total_elements,
+                "summary": "\n".join(summary_lines),
+                "vision_unavailable": True,
             }
-        # Decide whether to hand the screenshot to the auxiliary.vision pipeline (text-only result) or keep
-        # the multimodal envelope (main model handles vision natively). Issue #24015: previously the
-        # multimodal envelope was returned unconditionally, so non-vision main models tripped HTTP 404 / 400
-        # at the provider boundary even when auxiliary.vision was explicitly configured to handle this.
-        routed = _route_capture_through_aux_vision(
-            cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
-            elements_file=v.elements_file, screenshot_path=v.screenshot_path)
-        if routed is not None:
-            return routed
-        # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could
-        # now break with a provider error, so degrade to text.
-        lines.append("  (vision unavailable: the auxiliary vision model could not be reached; screenshot "
-                     "omitted. Element-index actions still work — drive via the element list above.)")
-        extra = {"vision_unavailable": True}
-    if v.truncated:  # text paths carry the `elements` array, so the truncation note applies
-        lines.append(f"  (response truncated to {len(v.visible)} of {v.total} elements; the full tree is in "
-                     "elements_file — read_file/search_files it, or pass app= to narrow scope)")
-    return _text_capture_payload(v, "\n".join(lines), extra)
+            if truncated_elements:
+                payload["truncated_elements"] = truncated_elements
+            if elements_file:
+                payload["elements_file"] = elements_file
+            if screenshot_path:
+                payload["screenshot_path"] = screenshot_path
+            if bounds_scale:
+                payload["bounds_scale"] = bounds_scale
+            return json.dumps(payload)
 
-def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
-                          session_id: Optional[str] = None) -> Any:
-    # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
-    if not do_capture or not res.ok:
-        return _text_response(res)
-    try:
-        # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
-        # app-only recapture can switch targets.
-        exact = {k: (getattr(backend, "_last_target", None) or {}).get(k) for k in ("pid", "window_id")}
-        cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
-                                                            else {"app": getattr(backend, "_last_app", None)}))
-    except Exception as e:
-        logger.warning("follow-up capture failed: %s", e)
-        return _text_response(res)
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
-    if isinstance(resp, dict) and resp.get("_multimodal"):
-        # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
-        resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
-        resp["action_result"] = payload
-        return resp
-    return json.dumps({**json.loads(resp), **payload})  # text capture: merge the action payload in
+        # Prefer the explicit MIME type cua-driver attaches to its image
+        # parts (Surface 7 of NousResearch/hermes-agent#47072 — trycua/cua#1961
+        # made `mimeType` part of every MCP image-part response). Fall back
+        # to base64-prefix sniffing for older cua-driver builds that didn't
+        # carry the field. JPEG base64 starts with /9j/; PNG with iVBOR.
+        _mime = cap.image_mime_type
+        if not _mime:
+            _b64_prefix = cap.png_b64[:8]
+            _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
+        # The multimodal response carries the screenshot, not the AX
+        # elements array, so a "response truncated to N of M elements"
+        # note would be inaccurate — skip it on this branch.
+        return {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": summary},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{_mime};base64,{cap.png_b64}"}},
+            ],
+            "text_summary": summary,
+            "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
+                      "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                      **({"screenshot_path": screenshot_path} if screenshot_path else {}),
+                      **({"elements_file": elements_file} if elements_file else {}),
+                      **({"bounds_scale": bounds_scale} if bounds_scale else {})},
+        }
+    # AX-only (or image-missing fallback): text path actually carries the
+    # `elements` array, so the truncation note applies here.
+    if truncated_elements:
+        summary_lines.append(
+            f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
+            f"raise max_elements or pass app= to narrow)"
+        )
+    summary = "\n".join(summary_lines)
+    payload: Dict[str, Any] = {
+        "mode": cap.mode,
+        "width": response_width,
+        "height": response_height,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "elements": [_element_to_dict(e) for e in visible_elements],
+        "total_elements": total_elements,
+        "summary": summary,
+    }
+    if truncated_elements:
+        payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
+    if bounds_scale:
+        payload["bounds_scale"] = bounds_scale
+    return json.dumps(payload)
 
 # ── Cache files (screenshots, element spills, vision temps) ─────────────────
 def _cache_file(subdir: str, legacy: str, name: str, pattern: str = "", cap: int = 0):
@@ -758,11 +827,29 @@ _VISION_PROMPT = ("Describe what is visible in this desktop application screensh
                   "and any prominent text content the user would need to know about. Do not invent details that are not "
                   "actually visible.\n\nAX/SOM index for cross-reference:\n")
 
-def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visible_elements: Optional[List[UIElement]] = None,
-                                      truncated_elements: int = 0, elements_file: Optional[str] = None,
-                                      screenshot_path: Optional[str] = None) -> Optional[str]:
-    """Pre-analyse the capture via ``vision_analyze_tool`` (temp file under ``$HERMES_HOME/cache/vision/``) and merge
-    the description with the AX/SOM summary into one text payload. JSON, or None on any failure."""
+
+def _route_capture_through_aux_vision(
+    cap: CaptureResult,
+    summary: str,
+    *,
+    visible_elements: Optional[List[UIElement]] = None,
+    truncated_elements: int = 0,
+    elements_file: Optional[str] = None,
+    screenshot_path: Optional[str] = None,
+) -> Optional[str]:
+    """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
+
+    The captured base64 PNG is materialised to ``$HERMES_HOME/cache/vision/``
+    and handed to ``vision_analyze_tool`` with a generic describe prompt.
+    The resulting text description is merged into the existing AX/SOM
+    summary so the main model receives a single text payload that mentions
+    every interactable element AND a description of what the screenshot
+    looked like.
+
+    Returns:
+      A JSON-encoded text response on success.
+      ``None`` on failure (caller falls back to the multimodal envelope).
+    """
     if not cap.png_b64:
         return None
     problem, temp_image_path = "aux-vision import failed", None
@@ -804,7 +891,326 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
     return _text_capture_payload(view, summary, {"vision_analysis": analysis_text,
                                                  "vision_analysis_routed_via": "auxiliary.vision"})
 
-# ── Availability check (used by the tool registry check_fn) ─────────────────
+    # Respect the same element cap as every other capture branch. Before this,
+    # the aux-vision path dumped cap.elements in full — silently bypassing
+    # max_elements exactly when a non-vision main model was configured, so a
+    # dense Electron UI (Discord, Slack, IDEs) could blow the response budget
+    # on this branch alone.
+    elements_out = cap.elements if visible_elements is None else visible_elements
+    payload: Dict[str, Any] = {
+        "mode": cap.mode,
+        "width": cap.width,
+        "height": cap.height,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "elements": [_element_to_dict(e) for e in elements_out],
+        "total_elements": len(cap.elements),
+        "summary": summary,
+        "vision_analysis": analysis_text,
+        "vision_analysis_routed_via": "auxiliary.vision",
+    }
+    if truncated_elements:
+        payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
+    if screenshot_path:
+        payload["screenshot_path"] = screenshot_path
+    return json.dumps(payload)
+
+
+def _maybe_follow_capture(
+    backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+) -> Any:
+    if not do_capture:
+        return _text_response(res)
+    # Skip the follow-up capture when the action itself failed: showing a
+    # normal-looking screenshot after a failure misleads the model into thinking
+    # the action succeeded. Return the error text instead.
+    if not res.ok:
+        return _text_response(res)
+    try:
+        # Preserve the exact selected window when possible. Linux may expose a
+        # generic app name for several unrelated windows, so app-only recapture
+        # can silently switch targets after a successful action.
+        target = getattr(backend, "_last_target", None) or {}
+        pid = target.get("pid")
+        window_id = target.get("window_id")
+        mode = _capture_after_mode()
+        if pid is not None and window_id is not None:
+            cap = backend.capture(mode=mode, pid=pid, window_id=window_id)
+        else:
+            cap = backend.capture(mode=mode, app=getattr(backend, "_last_app", None))
+    except Exception as e:
+        logger.warning("follow-up capture failed: %s", e)
+        return _text_response(res)
+    # Combine action summary with the capture.
+    resp = _capture_response(cap)
+    if isinstance(resp, dict) and resp.get("_multimodal"):
+        # Keep the complete evidence/verdict contract visible when an image is
+        # attached; otherwise capture_after would accidentally discard the
+        # very signal that governs whether repeating input is allowed.
+        prefix = json.dumps(_action_payload(res))
+        resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
+        resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
+        resp["action_result"] = _action_payload(res)
+        return resp
+    # Fallback: action + text capture merged.
+    try:
+        data = json.loads(resp)
+    except (TypeError, json.JSONDecodeError):
+        data = {"capture": resp}
+    data.update(_action_payload(res))
+    return json.dumps(data)
+
+
+def _bounds_unknown(bounds) -> bool:
+    """True when the AX tree reported no real geometry for an element.
+
+    KDE/Qt apps commonly report ``[0, 0, 0, 0]`` for elements that are
+    perfectly clickable by index (live QA, Aug 2026: all of kcalc's radio
+    buttons). Serializing that as a plausible-looking rect invites a model
+    to derive ``coordinate=[0, 0]`` from it and click the screen corner.
+    """
+    try:
+        return all(int(v) == 0 for v in bounds)
+    except (TypeError, ValueError):
+        return False
+
+
+def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
+    out: List[str] = []
+    for e in elements[:max_lines]:
+        label = e.label.replace("\n", " ")[:60]
+        where = "@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}"
+        out.append(f"  #{e.index} {e.role} {label!r} {where}"
+                   + (f" [{e.app}]" if e.app else ""))
+    if len(elements) > max_lines:
+        out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
+    return out
+
+
+# Element labels come straight from the platform accessibility tree, which on
+# some apps (Discord/Slack via UIA, Electron chat clients generally) exposes
+# ENTIRE message bodies / document text as the accessible name of a node.
+# 100 elements x multi-KB labels made single capture responses exceed 170KB —
+# blowing the tool-result budget so the model never saw the elements it needed,
+# and leaking full private chat text into context. The summary line has always
+# truncated to 60 chars; this applies a (more generous) cap to the JSON
+# `elements` array too. Labels are for identifying a control, not for reading
+# page content — captures are not a text-extraction surface.
+_MAX_ELEMENT_LABEL_CHARS = 120
+
+# Keep at most this many spilled element-tree files in the cache dir. Each
+# capture of a dense UI can spill; without pruning the cache grows unbounded.
+_MAX_SPILL_FILES = 20
+
+# Keep user-shareable capture files bounded independently from the gateway's
+# periodic media-cache cleanup. CLI-only sessions may never start the gateway,
+# and capture_after can otherwise leave an unbounded screenshot trail.
+_MAX_CAPTURE_FILES = 20
+
+
+def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
+    """Save a capture in Hermes' media cache and return its absolute path.
+
+    Captures are normally embedded only in the model's tool context. Persisting
+    a bounded copy gives attachment-capable surfaces a real file to deliver
+    when the user explicitly asks for the screenshot. This is best-effort: an
+    unwritable cache must never break computer control.
+    """
+    if not cap.png_b64:
+        return None
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        raw = base64.b64decode(cap.png_b64, validate=False)
+        mime = str(cap.image_mime_type or "").lower()
+        ext = ".jpg" if mime == "image/jpeg" or (
+            not mime and cap.png_b64[:8].startswith("/9j/")
+        ) else ".png"
+
+        cache_dir = get_hermes_dir("cache/images", "image_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            captures = sorted(
+                cache_dir.glob("computer_use_*.*"),
+                key=lambda path: path.stat().st_mtime,
+            )
+            keep_before_write = max(0, _MAX_CAPTURE_FILES - 1)
+            for stale in captures[: max(0, len(captures) - keep_before_write)]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        path.write_bytes(raw)
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: screenshot persistence failed: %s", exc)
+        return None
+
+
+def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
+    """Write the FULL element tree (untruncated labels) to a cache file.
+
+    The in-context response caps labels at ``_MAX_ELEMENT_LABEL_CHARS`` and
+    the array at ``max_elements`` to protect the tool-result budget, but the
+    dropped text is sometimes exactly what the task needs (reading a chat
+    transcript or document text exposed through the AX tree). Spilling the
+    complete tree to disk gives the model an escape hatch — read_file /
+    search_files against the returned path — without paying the full tree
+    into context on every capture.
+
+    Returns the absolute path, or None on any failure (spilling is an
+    enhancement; a capture must never fail because the cache dir is
+    unwritable).
+    """
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        cache_dir = get_hermes_dir("cache/computer_use", "computer_use_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Prune oldest spills beyond the cap (best-effort).
+        try:
+            spills = sorted(
+                cache_dir.glob("elements_*.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for stale in spills[: max(0, len(spills) - (_MAX_SPILL_FILES - 1))]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+        path = cache_dir / f"elements_{_uuid.uuid4().hex}.json"
+        payload = {
+            "app": cap.app,
+            "window_title": cap.window_title,
+            "total_elements": len(cap.elements),
+            "elements": [
+                {
+                    "index": e.index,
+                    "role": e.role,
+                    "label": e.label,  # full, untruncated
+                    "bounds": list(e.bounds),
+                    "app": e.app,
+                }
+                for e in cap.elements
+            ],
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: element spill failed: %s", exc)
+        return None
+
+
+def _capture_lost_detail(
+    cap: CaptureResult, visible_elements: List[UIElement], truncated_elements: int,
+) -> bool:
+    """True when the in-context response drops information the full tree has."""
+    if truncated_elements:
+        return True
+    return any(
+        len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible_elements
+    )
+
+
+def _bounds_scale(
+    elements: List[UIElement], image_width: int, image_height: int,
+) -> Optional[float]:
+    """Estimated native-bounds → screenshot-pixel scale factor, or None.
+
+    Only meaningful when the two spaces diverge (same condition as
+    ``_bounds_space_note``). Uses the larger of the two axis ratios so the
+    estimate is driven by the axis with real extent data. Rounded to 2
+    decimals — this is a heuristic for mapping screenshot positions to
+    native coordinates, not display-metrics ground truth.
+    """
+    if not elements or image_width <= 0 or image_height <= 0:
+        return None
+    max_x = 0
+    max_y = 0
+    for e in elements:
+        try:
+            x, y, w, h = e.bounds
+        except (TypeError, ValueError):
+            continue
+        max_x = max(max_x, int(x) + int(w))
+        max_y = max(max_y, int(y) + int(h))
+    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+        return None
+    return round(max(max_x / image_width, max_y / image_height), 2)
+
+
+def _bounds_space_note(
+    elements: List[UIElement], image_width: int, image_height: int,
+) -> Optional[str]:
+    """Warn when element bounds live in a different coordinate space.
+
+    On HiDPI/scaled displays (common on Windows + macOS retina), cua-driver
+    reports AX element bounds in native desktop coordinates while the
+    screenshot is captured/downscaled to a smaller pixel grid. Nothing in the
+    response related the two, so models reading a position off the screenshot
+    and clicking by coordinate= missed by the scale factor (e.g. 2.6x on a
+    4K display with a 1455px-wide screenshot). Element bounds are what
+    click(coordinate=...) expects; the note makes that explicit whenever the
+    two spaces visibly diverge.
+    """
+    if not elements or image_width <= 0 or image_height <= 0:
+        return None
+    max_x = 0
+    max_y = 0
+    for e in elements:
+        try:
+            x, y, w, h = e.bounds
+        except (TypeError, ValueError):
+            continue
+        max_x = max(max_x, int(x) + int(w))
+        max_y = max(max_y, int(y) + int(h))
+    if max_x <= 0 and max_y <= 0:
+        return None
+    # 5% slack: window chrome can hang a few px past the captured frame
+    # without implying a different coordinate space.
+    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+        return None
+    return (
+        f"element bounds are in native desktop coordinates (extend to "
+        f"~{max_x}x{max_y}), NOT screenshot pixels ({image_width}x"
+        f"{image_height}). coordinate= clicks expect the native space — "
+        "derive click points from element bounds, or scale screenshot "
+        "positions up accordingly"
+    )
+
+
+def _element_to_dict(e: UIElement) -> Dict[str, Any]:
+    label = e.label
+    truncated = len(label) > _MAX_ELEMENT_LABEL_CHARS
+    if truncated:
+        label = label[:_MAX_ELEMENT_LABEL_CHARS]
+    out: Dict[str, Any] = {
+        "index": e.index,
+        "role": e.role,
+        "label": label,
+        # A zero rect is "geometry unknown", not a position — null it so no
+        # coordinate= is ever derived from it. The element index still works.
+        "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds),
+        "app": e.app,
+    }
+    if truncated:
+        out["label_truncated"] = True
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Availability check (used by the tool registry check_fn)
+# ---------------------------------------------------------------------------
+
 def check_computer_use_requirements() -> bool:
     """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
     if sys.platform not in ("darwin", "win32", "linux"):

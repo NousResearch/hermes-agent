@@ -10,7 +10,6 @@ Covers:
   the doctor state.db section prints from.
 """
 
-import hermes_state_dbfile
 import json
 import os
 import sqlite3
@@ -97,7 +96,7 @@ def test_collect_and_render_stale_fts_holder_deferral(populated_db):
     assert stats["fts_rebuild_deferral"]["attempts"] == 4
     assert stats["fts_rebuild_deferral"]["holder_pids"] == [4242]
 
-    from hermes_cli.doctor_state import _render_state_db_stats
+    from hermes_cli.doctor import _render_state_db_stats
 
     rendered = _render_state_db_stats(stats)
     warnings = [

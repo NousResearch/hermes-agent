@@ -37,8 +37,6 @@ export interface HudWindowingView {
   clientPlacement: boolean
   controlDrag: boolean
   nativeDrag: boolean
-  /** The OS window cannot punch click-through holes (Linux X11). */
-  solid: boolean
   workspaceTransfer: boolean
 }
 
@@ -130,7 +128,6 @@ export function hudWindowingView(windowing: HudWindowing): HudWindowingView {
     clientPlacement: windowing.clientPlacement,
     controlDrag: windowing.controlDrag,
     nativeDrag: windowing.move === 'native-drag',
-    solid: windowing.input === 'solid',
     workspaceTransfer: windowing.workspaceTransfer
   }
 }

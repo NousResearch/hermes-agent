@@ -2564,7 +2564,15 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(event.media_urls and event.message_type in batchable)
 
     def _media_batch_key(self, event: MessageEvent) -> str:
-        return f"{self._text_batch_key(event)}:media:{event.message_type.value}"
+        from gateway.session import build_session_key
+
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
+        )
+        return f"{session_key}:media:{event.message_type.value}"
 
     @staticmethod
     def _media_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
@@ -2805,7 +2813,21 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_rate_counts[rate_key] = (1, now)
         return True
 
-    # --- Text batching ---
+    # =========================================================================
+    # Text batching
+    # =========================================================================
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Return the session-scoped key used for Feishu text aggregation."""
+        from gateway.session import build_session_key
+
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
+        )
+
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
         """Only merge text events when reply/thread context is identical."""

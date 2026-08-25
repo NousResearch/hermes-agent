@@ -527,19 +527,6 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
-### Delivery failures are a distinct status
-
-Execution and delivery are tracked separately. When the agent run succeeds but
-the output never reaches the target (platform 5xx, rate limit, stale session,
-adapter returned no positive evidence of a send), the job records
-`last_status: delivery_failed` — never a plain `ok` — with the reason in
-`last_delivery_error`. `hermes cron list` shows it in yellow as
-`delivery_failed: <reason>`, `hermes cron doctor` reports it as a delivery
-issue, and a manual `cronjob run` reports `success: false` with the delivery
-error. A delivery failure does not count toward the job's `failure_streak`
-(the agent did its job); the next fully successful run returns the status to
-`ok`.
-
 ### Bot Chat delivery (`bot-chat`)
 
 `bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.
@@ -548,10 +535,6 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
-- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. If a CLI-only or older unsupported owner holds the chat, cron retains the never-started output under the sending profile's `cron/bot_chat_pending/<receipt-id>.json`. Later scheduler ticks deliver after that owner releases the chat, in admission order. Deferred work retains its admitted destination home and receipt ID even if the scheduler's launch root changes; a missing/renamed destination is not recreated or resolved to another profile. A `transferred` pending record points to the live-owner receipt, not a failed turn. Malformed JSON records are retained and logged without blocking other queued outputs. With no owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply). That child uses the exact destination home already checked by cron, including custom roots; inherited `HOME` or a changed active profile cannot redirect it. A missing destination directory is refused before launch, not recreated. A deferred request is claimed before launching that lane; interruption or an uncertain subprocess result never causes an automatic resend.
-- Never-started outputs have no TTL: if an unsupported owner never releases, they remain queued rather than being silently dropped. Receipts retain their payloads indefinitely. An unexpected delivery exception is logged and retained as `ambiguous`, without stopping sibling deliveries in that drain; claimed/ambiguous attempts are never automatically replayed.
-- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
-- Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
 

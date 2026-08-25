@@ -176,23 +176,24 @@ def _render_terminal(ctx):
                  "missing (install: pip install 'hermes-agent[vercel]')")
         _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")
         for line in auth_status.detail_lines:
-            _kv("Auth detail:", line)
-        _kv("Persistence:", 'snapshot filesystem' if persist_enabled else 'ephemeral filesystem')
-        _kv("Processes:", "live processes do not survive cleanup, snapshots, or sandbox recreation")
+            print(f"  Auth detail:  {line}")
+        print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
+        print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
     else:
-        # Plugin-registered terminal backends: show availability via the provider's doctor rows
-        # (fail-soft — never break `hermes status`).
+        # Plugin-registered terminal backends: show availability via the
+        # provider's doctor rows (fail-soft — never break `hermes status`).
         try:
             from hermes_cli.plugins import discover_plugins
+
             discover_plugins()
             from agent.terminal_env_registry import get_provider
-            provider = get_provider(terminal_env)
-            if provider is not None:
-                for ok, label, text in provider.doctor_checks():
-                    print(f"  {label}: {check_mark(bool(ok))} {text}")
+
+            _provider = get_provider(terminal_env)
+            if _provider is not None:
+                for _ok, _label, _detail in _provider.doctor_checks():
+                    print(f"  {_label}: {check_mark(bool(_ok))} {_detail}")
         except Exception:
             pass
-    _kv_flag("Sudo:", os.getenv("SUDO_PASSWORD", ""), "enabled", "disabled")
 
 
 def _render_platforms(ctx):

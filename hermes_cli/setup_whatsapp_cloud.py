@@ -95,8 +95,10 @@ def _prompt(message: str, default: Optional[str] = None, secret: bool = False) -
         suffix = f" [{default}]" if default else ""
         if secret and sys.stdin.isatty():
             import getpass
-            return getpass.getpass(f"{message}{suffix} (input hidden): ").strip()
-        return line_input(f"{message}{suffix}: ").strip()
+
+            raw = getpass.getpass(f"{message}{suffix} (input hidden): ").strip()
+        else:
+            raw = line_input(f"{message}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return ""

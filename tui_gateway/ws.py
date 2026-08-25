@@ -15,7 +15,6 @@ import time
 from typing import Any
 
 from tui_gateway import server
-from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
@@ -87,24 +86,69 @@ class WSTransport:
     socket (pool workers marshal onto the loop and block on the future); from the loop thread itself it would
     deadlock, so it detects that and fires-and-forgets. Loop-thread callers needing completion use ``write_async``."""
 
-    def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop, *, peer: str = "unknown",
-                 auth_identity: dict | None = None) -> None:
+    ``write`` is safe to call from any thread *other than* the event loop
+    thread that owns the socket. Pool workers (the only real caller) run in
+    their own threads, so marshalling onto the loop via
+    :func:`asyncio.run_coroutine_threadsafe` + ``future.result()`` is correct
+    and deadlock-free there.
+
+    When called from the loop thread itself (e.g. by ``handle_ws`` for an
+    inline response) the same call would deadlock: we'd schedule work onto
+    the loop we're currently blocking. We detect that case and fire-and-
+    forget instead. Callers that need to know when the bytes are on the wire
+    should use :meth:`write_async` from the loop thread.
+    """
+
+    def __init__(
+        self,
+        ws: Any,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        peer: str = "unknown",
+        auth_identity: dict | None = None,
+    ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
-        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
+        #: Server-verified identity carried from the WS-upgrade credential
+        #: (dashboard ticket / internal credential) — stamped by
+        #: ``hermes_cli.web_server._ws_auth_reason`` onto the WS object and
+        #: passed through ``handle_ws``. None for transports that
+        #: authenticated via the legacy token path or stdio. RPC params can
+        #: never populate this: it is the only identity authority for
+        #: browser-controller registration.
         self.auth_identity = auth_identity
         self._closed = False
-        # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
-        # calling write(); the timer handle is only ever touched on the loop thread.
+        self._last_inbound_at = time.monotonic()
+        # Token-coalescing buffer (CF-2). Streamed token frames land here and a
+        # short timer flushes the batch. The lock guards the buffer + the
+        # "armed" flag against the worker threads that call write(); the timer
+        # handle is only ever touched on the loop thread.
         self._token_lock = threading.Lock()
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def last_inbound_at(self) -> float:
+        return self._last_inbound_at
+
+    def mark_inbound(self) -> None:
+        self._last_inbound_at = time.monotonic()
+
+    @staticmethod
+    def _is_streaming_frame(obj: dict) -> bool:
+        """True for high-frequency per-token frames eligible for coalescing."""
+        params = obj.get("params") if isinstance(obj, dict) else None
+        if not isinstance(params, dict):
+            return False
+        return params.get("type") in _STREAMING_EVENT_TYPES
 
     def write(self, obj: dict) -> bool:
         if self._closed:
@@ -247,6 +291,10 @@ def _disable_nagle(ws: Any) -> None:
         sock = transport.get_extra_info("socket") if transport is not None else None
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Dead-peer detection: without keepalive a silently-dropped client
+            # (SSH tunnel reset, client sleep) leaves the TCP leg half-open
+            # forever, receive_text() blocks indefinitely, and the disconnect
+            # teardown (detach + orphan reap + resume replay) never runs.
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             if hasattr(socket, "TCP_KEEPIDLE"):  # Linux
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
@@ -258,16 +306,27 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-class _SendFailed(Exception):
-    """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
+async def handle_ws(
+    ws: Any,
+    *,
+    auth_identity: dict | None = None,
+    subprotocol: str | None = None,
+) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
 
-
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
-    ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
-    authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
-    peer, transport = _ws_peer_label(ws), None
-    messages = parse_errors = dispatch_crashes = send_failures = 0
+    *auth_identity* is the server-minted ``{user_id, provider}`` recorded at
+    WS-upgrade authentication (``hermes_cli.web_server._ws_auth_reason``); it
+    is stored on the transport as ``WSTransport.auth_identity`` and is the
+    only identity authority for browser-controller registration. Existing
+    callers (stdio-free harnesses, the embedded TUI child) omit it and get a
+    ``None`` transport identity — unchanged behaviour.
+    """
+    peer = _ws_peer_label(ws)
+    transport: WSTransport | None = None
+    messages = 0
+    parse_errors = 0
+    dispatch_crashes = 0
+    send_failures = 0
     disconnect_reason = "not_connected"
 
     async def _reply(frame: dict, reason: str, msg: str, *args: Any) -> None:
@@ -283,40 +342,66 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
 
     try:
-        await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
+        if subprotocol:
+            await ws.accept(subprotocol=subprotocol)
+        else:
+            await ws.accept()
         disconnect_reason = "connected"
         # Mark the client attached before the (possibly slow) ready/skin setup so scale-to-zero sees it.
         _note_dashboard_client_activity(force=True)
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
-        # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
+
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            auth_identity=auth_identity,
+        )
+
+        # resolve_skin() reads config + initializes the skin engine —
+        # synchronous I/O + CPU work that should not block the event loop
+        # during the cold-start window. Run it in the thread pool so the
+        # WS read loop stays free to drain the frontend's initial RPC
+        # burst (setup.status, session.list, ...) without a stall
+        # (#60800). The skin payload is small (a dict of strings/arrays),
+        # so the to_thread overhead is negligible.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
-        # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
-        # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
-        # their per-session seq watermarks (event_replay).
-        ready_ok = await transport.write_async({
-            "jsonrpc": "2.0", "method": "event",
-            "params": {"type": "gateway.ready", "payload": {
-                "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
-            }},
-        })
+        ready_ok = await transport.write_async(
+            {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                    "type": "gateway.ready",
+                    # change_events: this backend broadcasts pet.changed /
+                    # cron.changed / sessions.changed, so clients can demote
+                    # their legacy polls to slow backstops.
+                    "payload": {
+                        "skin": skin_payload,
+                        "change_events": True,
+                        "heartbeat": True,
+                        # Replay-contract process identity: lets reconnecting
+                        # clients detect a backend restart and reset their
+                        # per-session seq watermarks (see event_replay).
+                        "replay_epoch": replay_epoch(),
+                    },
+                },
+            }
+        )
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
             server.register_live_transport(transport)
-        # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
-        # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
-        # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
-        for start, what in (
-            (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
-            (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
-        ):
-            try:
-                start()
-            except Exception:
-                _log.warning("%s failed", what, exc_info=True)
+        # Same once-per-process startup pass for session rows orphaned by a
+        # previous gateway process (#65194): the desktop app and web dashboard
+        # reach the agent through this WS sidecar, not entry.main(). Idempotent
+        # + config-gated inside, so a stdio TUI that already scheduled is a
+        # no-op.
+        try:
+            server._schedule_startup_orphan_sweep()
+        except Exception:
+            _log.warning("startup orphan sweep scheduling failed", exc_info=True)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -337,6 +422,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             line = raw.strip()
             if not line:
                 continue
+            transport.mark_inbound()
             messages += 1
             try:
                 req = json.loads(line)
@@ -348,13 +434,22 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 continue
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
+
             if req_method == "gateway.ping":
-                await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
-                             "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
+                ok = await transport.write_async(
+                    {
+                        "jsonrpc": "2.0",
+                        "result": {"ok": True},
+                        "id": req_id,
+                    }
+                )
+                if not ok:
+                    disconnect_reason = "send_failed_after_heartbeat"
+                    send_failures += 1
+                    _log.warning("ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
+                    break
                 continue
-            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
-            # writes the response itself via transport.write (a separate thread, so that is the safe
-            # path). Inline handlers return the response dict, written here from the loop.
+
             try:
                 resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:
@@ -372,14 +467,28 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
-            # Owner-safely park browser controllers this transport registered (a same-identity reconnect may
-            # deliver a terminal result for in-flight work). Offloaded: disconnect takes the controller's
-            # send_lock, which a worker-thread dispatch may hold while blocking on THIS loop to transmit.
+
+            # Owner-safely park browser controllers this transport registered.
+            # A reconnect with the same stable identity may deliver a terminal
+            # result for work already in flight; no new dispatch is admitted
+            # while the controller is offline.
+            #
+            # Offloaded via to_thread: disconnect acquires the controller's
+            # send_lock, which a worker-thread dispatch may hold while blocking
+            # on THIS loop to transmit its frame (run_coroutine_threadsafe +
+            # result(timeout=10)). Acquiring it synchronously here would park
+            # the whole event loop behind that 10s send bridge.
             try:
-                from gateway.browser_control_broker import get_browser_control_broker
-                await asyncio.to_thread(get_browser_control_broker().disconnect_owner, transport)
+                from gateway.browser_control_broker import (
+                    get_browser_control_broker,
+                )
+
+                await asyncio.to_thread(
+                    get_browser_control_broker().disconnect_owner, transport
+                )
             except Exception:
                 _log.exception("ws browser-controller disconnect failed peer=%s", peer)
+
             transport.close()
             try:
                 await asyncio.to_thread(server._release_wake_for_transport, transport)

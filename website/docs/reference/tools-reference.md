@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~86 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 12 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour`, `tip` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~86 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -55,21 +55,6 @@ Per-surface behavior:
 - **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
 
 If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
-
-## `connections` toolset
-
-One tool for both kinds of external app. A target is a managed connector (`"gmail"` or
-`{"name": "gmail"}`, authorized through the Nous gateway) or a local MCP server
-(`{"name": "linear", "mcp": true}`, an entry in `mcp_servers`).
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `manage_connections` | Managed actions: `status`, `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). On the desktop every action shows a card and blocks until each target is connected, skipped, or the deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. On surfaces with no card (CLI, TUI, messaging) managed targets return a `connect_url` per app for the user to open, and MCP targets return `unavailable` with the `hermes mcp install <name>` / `hermes mcp login <name>` commands. Cannot disconnect or revoke an account. | — |
-
-The deadline for one call is five minutes, fixed by the backend when the call starts;
-reopening the chat or restarting the desktop never extends it. The tool is present only when the
-Nous Portal has enabled connectors for the signed-in account (the `managed_tools` claim on its
-token). Other sessions do not see it.
 
 ## `code_execution` toolset
 
@@ -220,7 +205,6 @@ messaging, and cron sessions.
 | `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
 | `tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane; `targets` discovers what's on screen, `show` narrates step-by-step, `start` hands the user Next/Prev controls. | — |
-| `tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. | — |
 
 ### Tours
 
@@ -267,34 +251,6 @@ startTour([
 `navigate` takes a route path and `pane` a desktop pane name. Both run as the step is entered, targets that mount late are waited for, and closing the tour — by any route, including Esc — returns to wherever it started.
 
 Pass `'preview'` as the second argument to run against the page in the preview pane instead of the app.
-
-### Tips
-
-A tip is a tour step without the production: one bubble, one arrow, no scrim and
-nothing to page through. It's the right weight for a sentence that would be
-clearer with a finger on the thing it's about — "the model name is a button" —
-where dimming the whole app would not be.
-
-The `tip` tool takes the same selectors `tour(action='targets')` reports, so
-discovery is one call for both, and the durable `data-tour` handles above name
-targets for either. One tip is on screen at a time; a new one replaces the last.
-
-The app can also show its own, walking a built-in catalog of app features in
-order, paced like a game's loading-screen tips rather than a notification: a few
-minutes into a launch at the earliest, then at most one every six hours, and
-only at a genuinely idle moment. A tip from Hermes shares that cooldown, so it
-also buys the user six hours of quiet from the rotation. The rotation is a single
-lap: each catalog tip shows once, whether it timed out or was closed with the ✕,
-and once every tip has had its turn the app goes quiet. The settings row starts
-the lap over.
-
-Both tips and tours are on by default and switched off in Settings → Appearance
-(`display.in_app_tips`, `display.in_app_tours`). Off covers Hermes as well as
-the app: the switch reaches the connected gateway's config and the tool leaves
-the model's schema, so the agent is never told about a surface it isn't allowed
-to use. Like every schema change, that lands on the next session — a running
-conversation keeps the toolset it started with, and the app declines the call in
-the meantime.
 
 ## `todo` toolset
 

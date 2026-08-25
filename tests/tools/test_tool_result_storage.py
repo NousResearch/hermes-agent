@@ -246,12 +246,10 @@ class TestMaybePersistToolResult:
         """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
-        # Readability probe fails -> falls back to the in-sandbox write,
-        # whose size probe returns unparseable output (best-effort success).
+        # Readability probe fails -> falls back to the in-sandbox write.
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
-            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
@@ -275,7 +273,6 @@ class TestMaybePersistToolResult:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
-            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
@@ -388,7 +385,7 @@ class TestSpillover:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         # Reset the once-per-process prune flag so each test is independent.
         import tools.tool_result_storage as trs
-        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
         yield
 
     def test_env_none_persists_to_spillover(self):
@@ -454,7 +451,6 @@ class TestSpillover:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},  # probe: not readable
             {"output": "", "returncode": 0},  # cat > sandbox path
-            {"output": "60000\n", "returncode": 0},  # wc -c verification
         ]
         env.get_temp_dir.return_value = "/tmp"
         content = "z" * 60_000
@@ -467,7 +463,7 @@ class TestSpillover:
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "/tmp/hermes-results/tc_remote_2.txt" in result
-        assert env.execute.call_count == 3
+        assert env.execute.call_count == 2
         # Host canonical copy exists regardless.
         assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
@@ -493,8 +489,8 @@ class TestSpillover:
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "old.txt"
         new = spill_dir / "new.txt"
-        old.write_text("old", encoding="utf-8")
-        new.write_text("new", encoding="utf-8")
+        old.write_text("old")
+        new.write_text("new")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
@@ -515,7 +511,7 @@ class TestSpillover:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
-        old.write_text("ancient", encoding="utf-8")
+        old.write_text("ancient")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 

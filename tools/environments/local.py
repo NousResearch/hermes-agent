@@ -206,7 +206,209 @@ def _apply_profile_home(env: dict) -> None:
     """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
     from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
     try:
-        if value := get_hermes_home_override():
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        for pconfig in PROVIDER_REGISTRY.values():
+            blocked.update(pconfig.api_key_env_vars)
+            if pconfig.auth_type == "aws_sdk":
+                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
+            if pconfig.base_url_env_var:
+                blocked.add(pconfig.base_url_env_var)
+    except ImportError:
+        pass
+
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        for name, metadata in OPTIONAL_ENV_VARS.items():
+            category = metadata.get("category")
+            if category in {"tool", "messaging"}:
+                blocked.add(name)
+            elif category == "setting" and metadata.get("password"):
+                blocked.add(name)
+    except ImportError:
+        pass
+
+    blocked.update({
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",
+        "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "LLM_MODEL",
+        "GOOGLE_API_KEY",
+        # Path to a GCP service-account JSON, not a bare key, so
+        # OPTIONAL_ENV_VARS marks it password=False and the loop above skips it.
+        "VERTEX_CREDENTIALS_PATH",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "DEEPSEEK_API_KEY",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "COHERE_API_KEY",
+        "FIREWORKS_API_KEY",
+        "XAI_API_KEY",
+        "HELICONE_API_KEY",
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "TELEGRAM_HOME_CHANNEL",
+        "TELEGRAM_HOME_CHANNEL_NAME",
+        "DISCORD_HOME_CHANNEL",
+        "DISCORD_HOME_CHANNEL_NAME",
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+        "SLACK_HOME_CHANNEL",
+        "SLACK_HOME_CHANNEL_NAME",
+        "SLACK_ALLOWED_USERS",
+        "WHATSAPP_ENABLED",
+        "WHATSAPP_MODE",
+        "WHATSAPP_ALLOWED_USERS",
+        "SIGNAL_HTTP_URL",
+        "SIGNAL_ACCOUNT",
+        "SIGNAL_ALLOWED_USERS",
+        "SIGNAL_GROUP_ALLOWED_USERS",
+        "SIGNAL_HOME_CHANNEL",
+        "SIGNAL_HOME_CHANNEL_NAME",
+        "SIGNAL_IGNORE_STORIES",
+        "HASS_TOKEN",
+        "HASS_URL",
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
+        "EMAIL_IMAP_HOST",
+        "EMAIL_SMTP_HOST",
+        "EMAIL_HOME_ADDRESS",
+        "EMAIL_HOME_ADDRESS_NAME",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
+        "GATEWAY_ALLOWED_USERS",
+        "GH_TOKEN",
+        "GITHUB_APP_ID",
+        "GITHUB_APP_PRIVATE_KEY_PATH",
+        "GITHUB_APP_INSTALLATION_ID",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "DAYTONA_API_KEY",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_DELIVERY_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+    })
+    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
+    # owned by the user's Claude Code install (subscription OAuth), not a
+    # Hermes-managed inference credential — Claude subscription auth is not a
+    # working Hermes provider path.  Stripping it broke agent-spawned
+    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
+    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
+    # logging the user out of their interactive Claude sessions (#55878).
+    # It arrives via the registry loop above (anthropic api_key_env_vars),
+    # so remove it explicitly.
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
+    return frozenset(blocked)
+
+
+_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+# Active-virtualenv markers that must NOT leak into terminal subprocesses.
+# The gateway runs inside its own venv, so its process environment carries
+# VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
+# agent runs against OTHER Python projects, tools like ``uv``/``poetry`` treat
+# the inherited value as the active environment and build/sync that other
+# project's dependencies into the Hermes venv path instead of the project's own
+# ``.venv`` — silently clobbering the Hermes environment (e.g. a project pinned
+# to a different Python version overwrites it and breaks the gateway). The
+# Hermes venv stays reachable via PATH (its bin dir is first), so stripping
+# these markers is safe and only prevents the cross-project clobber (#23473).
+#
+# PYTHONHOME is included because a gateway-inherited value redirects the
+# standard-library search of ANY child interpreter — including unrelated
+# system/venv Pythons — to the Hermes venv's stdlib, which crashes with
+# version-mismatch errors before a child script even imports a package
+# (#75018). Hermes itself treats PYTHONHOME as contamination in its own
+# child processes (managed_uv.py, sqlite_runtime.py), so stripping it from
+# subprocess envs is consistent. Users who need PYTHONHOME for a specific
+# child can set it explicitly in the command.
+#
+# PYTHONPATH is NOT included here — it's handled by
+# _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries,
+# preserving user-set paths.
+_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
+
+
+def _is_hermes_internal_secret(key: str) -> bool:
+    """Return True for Hermes-internal secrets injected under *dynamic* names.
+
+    ``_HERMES_PROVIDER_ENV_BLOCKLIST`` is name-based and derived from the
+    provider/tool registries, but the gateway and CLI also inject secrets into
+    ``os.environ`` at runtime under names no static registry knows about:
+
+    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
+      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
+      ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
+      compression, and any plugin-registered auxiliary task). These are
+      separate, often higher-spend API keys plus base URLs that may point at
+      private endpoints; a model-authored shell command must never see them.
+    - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /
+      ``GATEWAY_RELAY_*_TOKEN`` — relay-auth material provisioned by the
+      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+      These are Tier-1 gateway secrets, like the messaging bot tokens in
+      ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
+      (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
+      and remain visible.
+
+    ``code_execution_tool.py`` already catches these via substring matching on
+    ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
+    blocklist did not, which is the leak this predicate closes.
+
+    This is the single source of truth for "Hermes-internal dynamic secret"
+    across every spawn path — the terminal ``_make_run_env`` /
+    ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
+    non-terminal :func:`hermes_subprocess_env` helper all call it, so the
+    dynamic patterns are stripped **unconditionally** regardless of
+    ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
+    a model-driving CLI legitimately needs matches these patterns.
+    """
+    upper = key.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    if upper.startswith("GATEWAY_RELAY_") and (
+        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
+    ):
+        return True
+    return False
+
+
+def _plugin_terminal_env_strip_keys() -> frozenset:
+    """Credential env keys owned by plugin-registered terminal backends.
+
+    Computed at call time (not import time) because plugins register after
+    this module is imported. Treated as Tier-1: stripped from every spawned
+    subprocess unconditionally, exactly like MODAL_*/DAYTONA_API_KEY in
+    ``_ALWAYS_STRIP_KEYS``. Fail-soft to an empty set.
+    """
+    try:
+        from agent.terminal_env_registry import plugin_strip_env_keys
+
+        return plugin_strip_env_keys()
+    except Exception:
+        return frozenset()
+
+
+def _inject_context_hermes_home(env: dict) -> None:
+    """Bridge the context-local Hermes home override into subprocess env."""
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        value = get_hermes_home_override()
+        if value:
             env["HERMES_HOME"] = value
     except Exception:
         pass
@@ -293,10 +495,137 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment (background/PTY
-    spawn path, search workers, computer-use driver, user-script runners)."""
-    return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+    """Filter Hermes-managed secrets from a subprocess environment."""
+    try:
+        from tools.env_passthrough import (
+            is_env_passthrough as _is_passthrough,
+            resolve_passthrough_value as _resolve_passthrough_value,
+        )
+    except Exception:
+        _is_passthrough = lambda _: False  # noqa: E731
+        _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
+
+    sanitized: dict[str, str] = {}
+    _plugin_strip = _plugin_terminal_env_strip_keys()
+
+    for key, value in (base_env or {}).items():
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            continue
+        if _is_hermes_internal_secret(key):
+            continue
+        if key in _plugin_strip:
+            continue
+        passthrough = _is_passthrough(key)
+        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            continue
+        resolved = _resolve_passthrough_value(key, value) if passthrough else value
+        if resolved is not None:
+            sanitized[key] = resolved
+
+    for key, value in (extra_env or {}).items():
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_hermes_internal_secret(real_key):
+                continue
+            sanitized[real_key] = value
+        elif _is_hermes_internal_secret(key):
+            continue
+        elif key in _plugin_strip:
+            continue
+        else:
+            passthrough = _is_passthrough(key)
+            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+                continue
+            resolved = _resolve_passthrough_value(key, value) if passthrough else value
+            if resolved is not None:
+                sanitized[key] = resolved
+
+    _inject_context_hermes_home(sanitized)
+
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
+
+    # Same cross-session leak guard as _make_run_env, for the background/PTY
+    # spawn path (process_registry.spawn_local builds env via this function).
+    _inject_session_context_env(sanitized)
+
+    # Filter PYTHONPATH before removing VIRTUAL_ENV: legacy Windows launchers
+    # can run the gateway under a base interpreter while VIRTUAL_ENV identifies
+    # the separate Hermes runtime venv.  The filter validates that relationship
+    # against the repo layout before trusting it.
+    _strip_hermes_owned_pythonpath_and_runtime_markers(sanitized)
+
+    # Keep bare ``hermes`` invocations available to child jobs even when the
+    # gateway was launched by a service manager or cron without the console
+    # script's directory on PATH.  The terminal environment already applies
+    # this invariant; Cron scripts use this sanitizer directly (#92998).
+    path_key = _path_env_key(sanitized)
+    if path_key is not None:
+        sanitized[path_key] = _prepend_hermes_bin_dir(sanitized.get(path_key, ""))
+
+    _apply_windows_msys_bash_env_defaults(sanitized)
+
+    sanitized = _scrub_delegated_child_kanban_env(sanitized)
+
+    return sanitized
+
+
+def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            return scrub_kanban_env(env)
+    except Exception:
+        pass
+    return env
+
+
+# Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
+# even when the caller opts into credential inheritance for a model-driving
+# CLI (claude / codex / gemini).  These are not LLM provider credentials; no
+# legitimate child Hermes spawns needs them, and they are the highest-value
+# secrets to keep out of a compromised dependency's reach (gateway bot tokens,
+# GitHub auth, remote-compute tokens, dashboard session secret).  The set is a
+# narrow subset of _HERMES_PROVIDER_ENV_BLOCKLIST; provider keys are handled by
+# the conditional Tier-2 strip in hermes_subprocess_env().
+_ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
+    # GitHub auth
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_INSTALLATION_ID",
+    # Gateway / messaging bot tokens and access control
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    # Gateway relay auth — the ID/secret/delivery-key triplet the gateway
+    # provisions and persists to the 0600 .env. Stripped unconditionally on
+    # EVERY spawn surface (terminal + model-driving CLIs) so it can't drift
+    # between paths: _SECRET / _DELIVERY_KEY are also matched by
+    # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
+    # enumerated here to stay stripped on the inherit_credentials=True path
+    # (codex / copilot), which skips the Tier-2 blocklist.
+    "GATEWAY_RELAY_ID",
+    "GATEWAY_RELAY_SECRET",
+    "GATEWAY_RELAY_DELIVERY_KEY",
+    "HASS_TOKEN",
+    "EMAIL_PASSWORD",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Remote-compute / infrastructure secrets
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "DAYTONA_API_KEY",
+})
 
 
 def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
@@ -307,7 +636,23 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
     CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
     env = os.environ.copy()
-    strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
+
+    # Tier 1 — always strip.
+    for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+    for key in _plugin_terminal_env_strip_keys():
+        env.pop(key, None)
+    # Internal routing hints and Hermes-internal dynamic secrets
+    # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
+    # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
+    # regardless of ``inherit_credentials`` — a model-driving CLI has no
+    # legitimate use for them. See :func:`_is_hermes_internal_secret`.
+    for key in list(env):
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(key):
+            env.pop(key, None)
+
     if not inherit_credentials:
         strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
     for key in list(env):
@@ -846,9 +1191,93 @@ class LocalEnvironment(BaseEnvironment):
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
         try:
-            (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-        except OSError:  # ProcessLookupError / PermissionError included
-            with contextlib.suppress(Exception):
+            if _IS_WINDOWS:
+                try:
+                    from gateway.status import terminate_pid
+
+                    terminate_pid(proc.pid, force=True)
+                except Exception:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            else:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
+
+                # Snapshot the descendant set BEFORE the first signal: once
+                # the wrapper dies its children reparent to init and a parent
+                # walk finds nothing (same rationale as agent/deadline.py
+                # kill_process_tree).  A descendant that called ``setsid``
+                # escapes the process group entirely and would survive the
+                # group-kill below — the #71148 class, terminal flavor
+                # (issue #84967's local sibling).  The snapshot must never
+                # break the kill path, so any failure just yields an empty
+                # sweep set.
+                descendants: list = []
+                try:
+                    import psutil
+
+                    descendants = psutil.Process(proc.pid).children(recursive=True)
+                except Exception:
+                    descendants = []
+
+                def _sweep_escaped_descendants() -> None:
+                    """SIGKILL snapshotted survivors outside the (dead) group.
+
+                    Runs after the TERM→KILL group escalation so in-group
+                    members keep their SIGTERM grace window; only escapees
+                    (own setsid sessions) are force-killed.  psutil's
+                    identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
+                    """
+                    for child in descendants:
+                        try:
+                            if not child.is_running():
+                                continue
+                            try:
+                                if os.getpgid(child.pid) == pgid:
+                                    continue  # group-kill already covers it
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                            child.kill()
+                        except Exception:
+                            continue
+
+                try:
+                    os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
+                except ProcessLookupError:
+                    _sweep_escaped_descendants()
+                    return
+
+                # Wait on the process group, not just the shell wrapper. Under
+                # load the wrapper can exit before grandchildren do; returning
+                # at that point leaves orphaned process-group members behind.
+                if _wait_for_group_exit(pgid, 1.0):
+                    _sweep_escaped_descendants()
+                    return
+
+                try:
+                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
+                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
+                except ProcessLookupError:
+                    _sweep_escaped_descendants()
+                    return
+                _wait_for_group_exit(pgid, 2.0)
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                _sweep_escaped_descendants()
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
                 proc.kill()
 
     def _extract_cwd_from_output(self, result: dict):

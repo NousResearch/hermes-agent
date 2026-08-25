@@ -208,16 +208,6 @@ providers:
 
 With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
 
-**`openai_native_compaction`** — set this capability to `true` only for an OpenAI-compatible endpoint that you trust with conversation content. Native compaction sends its payload to that provider's configured `base_url`:
-
-```yaml
-providers:
-  trusted-proxy:
-    api: https://llm.internal.example.com/v1
-    capabilities:
-      openai_native_compaction: true
-```
-
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

@@ -302,8 +302,6 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
-        if not self.supports_model_listing:
-            return None
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (

@@ -1,31 +1,46 @@
 """Tavily web search + content extraction (``/search``, ``/extract``; sync httpx).
 
-Env: ``TAVILY_API_KEY`` (https://app.tavily.com/home, optional), ``TAVILY_BASE_URL``.
-Keyed requests use ``Authorization: Bearer``; without a key the request is
-keyless (``X-Tavily-Access-Mode: keyless``). Tavily is NOT in the zero-config
-keyless ring — keyless access is opt-in by selecting Tavily in ``hermes tools``.
+Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Two
+capabilities advertised:
+
+- ``supports_search()``  -> True (Tavily ``/search``)
+- ``supports_extract()`` -> True (Tavily ``/extract``)
+
+Both are sync — the underlying call is ``httpx.post(...)``.
+
+Config keys this provider responds to::
+
+    web:
+      search_backend: "tavily"     # explicit per-capability
+      extract_backend: "tavily"    # explicit per-capability
+      backend: "tavily"            # shared fallback for both
+
+Env vars::
+
+    TAVILY_API_KEY=...           # https://app.tavily.com/home (optional)
+    TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+
+Auth is header-based. A key uses ``Authorization: Bearer``; without a key
+the request is keyless (``X-Tavily-Access-Mode: keyless``). Both paths
+send ``X-Client-Name: hermes-agent``.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
 
-from plugins.web._common import (
-    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, extract_fail, http_status_detail, provider_env, run_extract,
-    run_search, search_fail, search_ok, setup_schema, title_hit, use_keyless,
-)
+from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
 _CLIENT_NAME = "hermes-agent"
 
-_SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
-
 
 def _tavily_headers(api_key: str) -> Dict[str, str]:
+    """Build Tavily request headers for keyed or keyless access."""
     headers = {"X-Client-Name": _CLIENT_NAME}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -34,19 +49,29 @@ def _tavily_headers(api_key: str) -> Dict[str, str]:
     return headers
 
 
-def _tavily_request(endpoint: str, payload: Dict[str, Any], *, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """POST to Tavily and return parsed JSON. ``api_key=None`` reads ``TAVILY_API_KEY``;
-    pass ``""`` to force the keyless header even when a key exists
-    (``web.provider_tier.tavily: free``). Non-2xx raises ValueError with the body so
-    Tavily's rate-limit/upgrade text reaches the model."""
-    if api_key is None:
-        api_key = provider_env("TAVILY_API_KEY")
-    base_url = provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
+_SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
+
+    Keyed when ``TAVILY_API_KEY`` is set (Bearer auth); otherwise keyless.
+    Non-2xx responses raise ``ValueError`` with the response body so Tavily's
+    keyless rate-limit / upgrade text reaches the model.
+    """
+    from agent.web_search_provider import get_provider_env
+
+    api_key = get_provider_env("TAVILY_API_KEY")
+    base_url = get_provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
-    response = httpx.post(url, json=payload, timeout=60, headers=_tavily_headers(api_key))
+
+    response = httpx.post(
+        url,
+        json=payload,
+        timeout=60,
+        headers=_tavily_headers(api_key),
+    )
     if response.status_code >= 400:
-        raise ValueError(http_status_detail(response))
+        body = (response.text or "").strip()
+        detail = body or f"HTTP {response.status_code}"
+        raise ValueError(detail)
     return response.json()
 
 
@@ -85,6 +110,20 @@ def _auth(action: str) -> tuple[Optional[str], Optional[str], str]:
         return None, _missing_key_error(action), ""
     return "" if force_keyless else api_key, None, "keyless " if force_keyless else ""
 
+    def is_keyless_available(self) -> bool:
+        """Tavily serves anonymous keyless requests (X-Tavily-Access-Mode).
+
+        Default-on ring member of the keyless free tier: fresh installs
+        rotate across Exa/Parallel/Tavily/Firecrawl/Keenable. False when
+        the user pinned ``web.provider_tier.tavily: paid`` — an explicit
+        paid selection opts the free endpoint out.
+        """
+        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+
+        return keyless_enabled() and provider_tier("tavily") != "paid"
+
+    def supports_search(self) -> bool:
+        return True
 
 class TavilyWebSearchProvider(BaseWebSearchProvider):
     """Tavily search + extract provider (keyed, or opt-in keyless)."""
@@ -104,7 +143,37 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
             payload = {"query": query, "max_results": min(limit, SEARCH_LIMIT_CAP), **_SEARCH_PAYLOAD}
             return _normalize_tavily_search_results(_tavily_request("search", payload, api_key=key))
 
-        return run_search("Tavily", logger, _body)
+            if is_interrupted():
+                return {"success": False, "error": "Interrupted"}
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import search_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info(
+                    "Tavily keyless search: '%s' (limit=%d)", query, limit
+                )
+                return search_with_failover("tavily", query, limit)
+
+            logger.info("Tavily search: '%s' (limit=%d)", query, limit)
+            raw = _tavily_request(
+                "search",
+                {
+                    "query": query,
+                    "max_results": min(limit, 20),
+                    "include_raw_content": False,
+                    "include_images": False,
+                },
+            )
+            return _normalize_tavily_search_results(raw)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 — including httpx errors
+            logger.warning("Tavily search error: %s", exc)
+            return {"success": False, "error": f"Tavily search failed: {exc}"}
 
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         def _body() -> List[Dict[str, Any]]:
@@ -115,32 +184,57 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
             raw = _tavily_request("extract", {"urls": urls, "include_images": False}, api_key=key)
             return _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
 
-        return run_extract("Tavily", logger, urls, _body)
+        Sync — the underlying call is httpx.post(...). Returns the legacy
+        list-of-results shape; per-URL failures become items with ``error``.
+        """
+        try:
+            from tools.interrupt import is_interrupted
+
+            if is_interrupted():
+                return [
+                    {"url": u, "error": "Interrupted", "title": ""} for u in urls
+                ]
+
+            from agent.web_search_provider import get_provider_env
+
+            from plugins.web.keyless_mcp import extract_with_failover, use_keyless
+
+            if use_keyless("tavily", get_provider_env("TAVILY_API_KEY")):
+                # Keyless free tier — ring dispatch with next-in-line
+                # failover on rate limits.
+                logger.info("Tavily keyless extract: %d URL(s)", len(urls))
+                return extract_with_failover("tavily", list(urls))
+
+            logger.info("Tavily extract: %d URL(s)", len(urls))
+            raw = _tavily_request(
+                "extract",
+                {
+                    "urls": urls,
+                    "include_images": False,
+                },
+            )
+            return _normalize_tavily_documents(
+                raw, fallback_url=urls[0] if urls else ""
+            )
+        except ValueError as exc:
+            return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Tavily extract error: %s", exc)
+            return [
+                {"url": u, "title": "", "content": "", "error": f"Tavily extract failed: {exc}"}
+                for u in urls
+            ]
 
     def get_setup_schema(self) -> Dict[str, Any]:
-        return setup_schema(
-            "Tavily", "free · key optional", "Search + extract. Opt-in keyless; set TAVILY_API_KEY for higher limits.",
-            "TAVILY_API_KEY", "Tavily API key (optional — keyless works when Tavily is selected)", "https://app.tavily.com/home",
-        )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+        return {
+            "name": "Tavily",
+            "badge": "free · key optional",
+            "tag": "Search + extract. Works keyless; set TAVILY_API_KEY for higher limits.",
+            "env_vars": [
+                {
+                    "key": "TAVILY_API_KEY",
+                    "prompt": "Tavily API key (optional — keyless works without it)",
+                    "url": "https://app.tavily.com/home",
+                },
+            ],
+        }

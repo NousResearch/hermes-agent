@@ -9,7 +9,6 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
-import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -31,7 +30,6 @@ import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
-import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -5770,117 +5768,5 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
     expect(
       (submitCalls[0]?.[1] as { truncate_before_user_ordinal?: unknown } | undefined)?.truncate_before_user_ordinal
     ).toBeUndefined()
-  })
-})
-
-describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', () => {
-  afterEach(() => {
-    cleanup()
-    clearNotifications()
-    setMessages([])
-    $busy.set(false)
-  })
-
-  it('restores the full transcript when regenerate is rejected', async () => {
-    $busy.set(false)
-
-    const seed = [
-      { id: 'u1', parts: [textPart('first')], role: 'user' as const, timestamp: 0 },
-      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
-      { id: 'u2', parts: [textPart('later')], role: 'user' as const, timestamp: 2 },
-      { id: 'a2', parts: [textPart('later reply')], role: 'assistant' as const, timestamp: 3 }
-    ]
-
-    setMessages(seed as never)
-
-    let latest: Record<string, unknown> | undefined
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'prompt.submit') {
-        throw new JsonRpcGatewayError('target user message is no longer in session history', {
-          code: 4018,
-          data: {
-            ordinal: 0,
-            prefix_user_count: 1,
-            segment_ordinal: -1,
-            user_turn_count: 2
-          }
-        })
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | undefined
-
-    await actRender(
-      <Harness
-        onReady={h => {
-          handle = h
-        }}
-        onSeedState={next => {
-          latest = next
-        }}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={seed}
-      />
-    )
-
-    await handle!.reloadFromMessage('u1')
-
-    const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
-
-    expect(rolledBack?.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
-    expect(rolledBack?.some(m => m.hidden)).toBe(false)
-    expect(latest?.busy).toBe(false)
-    expect(latest?.awaitingResponse).toBe(false)
-  })
-})
-
-describe('usePromptActions live-owner refusal (#106217)', () => {
-  afterEach(() => {
-    cleanup()
-    clearNotifications()
-  })
-
-  it('stamps the 4090 SESSION_NOT_OWNED refusal as a non-retryable gateway error surface', async () => {
-    // Another surface (TUI) holds the lease: the gateway refuses prompt.submit
-    // with the machine reason in error.data. The inline error bubble must
-    // carry that as a structured descriptor so the card can drop Retry and
-    // offer "Start new session" without sniffing the English prose.
-    let latest: Record<string, unknown> | undefined
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'prompt.submit') {
-        throw new JsonRpcGatewayError(
-          'Session 20260909_095312_6b93f5 already has a live owner (tui, pid 32977, lease age 22m).',
-          { code: 4090, data: { reason: 'SESSION_NOT_OWNED' } }
-        )
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        onSeedState={next => {
-          latest = next
-        }}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
-    )
-
-    expect(await handle!.submitText('continue here')).toBe(false)
-
-    const bubble = (latest?.messages as { error?: string; errorSurface?: Record<string, unknown> }[]).at(-1)
-
-    expect(bubble?.error).toMatch(/already has a live owner/)
-    expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false })
-    // Not a stale-runtime symptom: no resume/re-mint attempt hides the refusal.
-    expect(requestGateway.mock.calls.map(c => c[0])).toEqual(['prompt.submit'])
   })
 })

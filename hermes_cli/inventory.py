@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from contextvars import copy_context
 from dataclasses import dataclass, replace
-from threading import Lock, Thread, current_thread
 from typing import Any, Optional
 
 _pricing_prewarm_lock = Lock()
@@ -246,10 +245,14 @@ def format_aux_picker_entries(
 
 
 def _reasoning_catalog_reader(slug: str):
-    """Per-model reasoning-capability reader for aggregators that publish one. Cache-only — the picker
-    must never block on HTTP; a cold cache warms in the background and reports no restriction until then."""
+    """Per-model reasoning-capability reader for aggregators that publish one.
+
+    Cache-only — building the picker payload must never block on HTTP. A cold
+    cache warms in the background so the next open is accurate; until then the
+    model reports no restriction and the UI offers the full scale.
+    """
     try:
-        from hermes_cli.models_reasoning_caps import (
+        from hermes_cli.models import (
             nous_model_reasoning_capabilities,
             openrouter_model_reasoning_capabilities,
             warm_nous_reasoning_caps_async,
@@ -258,22 +261,38 @@ def _reasoning_catalog_reader(slug: str):
     except Exception:
         return None
 
-    readers = {
-        "nous": (warm_nous_reasoning_caps_async, nous_model_reasoning_capabilities),
-        "openrouter": (warm_openrouter_reasoning_caps_async, openrouter_model_reasoning_capabilities),
-    }
-    if slug not in readers:
-        return None
-    warm, read = readers[slug]
-    warm()
-    return read
+    if slug == "nous":
+        warm_nous_reasoning_caps_async()
+        return nous_model_reasoning_capabilities
+    if slug == "openrouter":
+        warm_openrouter_reasoning_caps_async()
+        return openrouter_model_reasoning_capabilities
+    return None
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
-    silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
-    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    """Attach a ``{model: {fast, reasoning, ...}}`` map to each provider row.
+
+    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+    enforces). `reasoning` comes from the models.dev catalog when known and
+    defaults to True otherwise — the effort dial is broadly accepted and a
+    no-op on models that ignore it, whereas hiding it from a capable-but-
+    uncatalogued model is the worse failure.
+
+    Aggregators that publish per-model reasoning detail add
+    `can_disable_reasoning`, False on reasoning-mandatory routes whose upstream
+    answers a disable with HTTP 400. Omitted when the catalog doesn't say,
+    which the UI reads as "no restriction known". Such a catalog also overrides
+    `reasoning` itself when it reports a route that takes no reasoning
+    parameter — a definitive negative from the provider actually serving the
+    model outranks the models.dev inference.
+
+    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
+    under-reports. The Portal accepts and honors levels a route doesn't
+    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
+    ``minimal`` at its lowest thinking), so filtering the picker by that list
+    would hide levels that demonstrably work.
+    """
     from hermes_cli.models import model_supports_fast_mode
 
     try:
@@ -296,7 +315,10 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            entry: dict[str, Any] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+            }
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -304,8 +326,9 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     detail = None
                 if detail and not detail.get("supports_reasoning"):
-                    # Aggregator catalog beats models.dev for a route it serves: no reasoning param
-                    # means no reasoning controls, so no disable to describe either.
+                    # For a route it serves, the aggregator's own catalog beats
+                    # models.dev: no reasoning parameter means no reasoning
+                    # controls, so there is no disable to describe either.
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
@@ -441,10 +464,54 @@ def _append_unconfigured_rows(
 
 
 def _anthropic_oauth_credentials_present() -> bool:
-    """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
-    login) — those leave no trace in active_provider / model.provider / API-key env vars."""
+    """True when the user explicitly authenticated Anthropic via OAuth.
+
+    Two deliberate flows leave no trace in active_provider /
+    model.provider / API-key env vars: Hermes' own Anthropic device flow
+    (token in auth.json) and a Claude Code login (~/.claude/.credentials.json).
+    ``list_authenticated_providers`` already accepts both readers as real
+    credentials when discovering rows; this mirrors that acceptance so the
+    desktop explicit-only filter does not silently drop a provider the user
+    deliberately signed into. Unlike ambient CLI tokens (gh -> copilot),
+    an OAuth access token only exists after an interactive login.
+    """
     try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
+
+        hermes_creds = read_hermes_oauth_credentials() or {}
+        if hermes_creds.get("accessToken"):
+            return True
+        cc_creds = read_claude_code_credentials() or {}
+        if cc_creds.get("accessToken"):
+            return True
+    except Exception:
+        return False
+    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are the
+    # canonical location for wired tokens and equally deliberate — the
+    # discovery side accepts them via pool.has_credentials(), so the filter
+    # must too or those rows are built and then silently dropped. Read-only
+    # dict access (no load_pool) so a picker open never mutates auth.json.
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH
+        from hermes_cli.auth import read_credential_pool
+
+        for entry in read_credential_pool("anthropic"):
+            if (
+                isinstance(entry, dict)
+                and entry.get("auth_type") == AUTH_TYPE_OAUTH
+                and str(entry.get("access_token") or "").strip()
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Keep only rows backed by explicit user configuration.
 
         readers = (read_hermes_oauth_credentials, read_claude_code_credentials)
         if any((read() or {}).get("accessToken") for read in readers):
@@ -482,31 +549,31 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
                 or row.get("source") == "local-runtime"):
             return True
         if slug == "moa":
-            # Virtual routing mode, not a configured provider: hide unless current (above) or the user
-            # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
-            return _raw_config_has_enabled_moa_preset()
-        return (
-            _provider_is_keyless(slug)  # zero-setup providers need no configuration at all
-            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
-            # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            or (slug == "anthropic" and _anthropic_oauth_credentials_present())
-            or _external_process_signed_in(slug)
-            or is_provider_explicitly_configured(slug)
-        )
-
-    return [row for row in rows
-            if (slug := str(row.get("slug", "")).strip().lower()) and _is_explicit(row, slug)]
-
-
-def _external_process_signed_in(slug: str) -> bool:
-    """True when an external-process provider has verified CLI credentials."""
-    try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
-        pconfig = PROVIDER_REGISTRY.get(slug)
-        return bool(pconfig and pconfig.auth_type == "external_process"
-                    and get_external_process_provider_status(slug).get("auth_verified"))
-    except Exception:
-        return False
+            # MoA is a virtual routing mode, not an independently configured
+            # provider. Hide it from explicit-only pickers unless it is the
+            # current provider (handled above) or the user explicitly wrote an
+            # enabled MoA preset into config.yaml. Use raw config so the
+            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
+            if _raw_config_has_enabled_moa_preset():
+                kept.append(row)
+            continue
+        if _provider_is_keyless(slug):
+            # Keyless providers (opencode-free) require no configuration at
+            # all — there is nothing to "explicitly configure", and hiding
+            # them would defeat their purpose (zero-setup discoverability).
+            kept.append(row)
+            continue
+        if slug == "anthropic" and _anthropic_oauth_credentials_present():
+            # Anthropic OAuth logins (Hermes device flow / Claude Code) are
+            # deliberate sign-ins that leave no trace in active_provider,
+            # model.provider, or API-key env vars. The strict gate below
+            # would drop the row even though list_authenticated_providers
+            # just accepted those same credentials when building it.
+            kept.append(row)
+            continue
+        if is_provider_explicitly_configured(slug):
+            kept.append(row)
+    return kept
 
 
 def _provider_is_keyless(slug: str) -> bool:
@@ -638,10 +705,15 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 "cache": _format_price_per_mtok(cache_raw) if cache_raw else None,
                 "free": inp == "free" and out in ("free", ""),  # both input and output cost nothing
             }
-            # Sale chrome is Nous Portal-only (other catalogs' nested pricing.original is ignored); free
-            # models get flat -100% chrome, was_* only when the gateway served an original.
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models get flat -100% chrome (was_* only when the gateway
+            # served an original).
             if slug == "nous":
-                sale = compute_sale_discount(inp_raw, out_raw, p.get("original"))
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
                 if sale is not None:
                     discount_percent, was_prompt_raw, was_out_raw = sale
                     entry["discount_percent"] = discount_percent

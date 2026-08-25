@@ -26,7 +26,6 @@ client-level limits when a custom transport is supplied.
 """
 
 import asyncio
-import socket
 from unittest.mock import MagicMock
 
 import httpx

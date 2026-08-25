@@ -436,8 +436,41 @@ def _build_pid_record() -> dict:
 
 
 def _get_code_identity_fields() -> dict[str, Any]:
-    """Code identity of THIS process for ``gateway_state.json`` (restart picked up new code?).
-    Lazy import keeps ``gateway.status`` free of ``hermes_cli`` at import time. Never raises.
+    """Code identity of THIS gateway process, for fleet version checks.
+
+    Lazy import so ``gateway.status`` keeps no import-time dependency on
+    ``hermes_cli``; the helper itself is cached per process. A gateway
+    keeps serving the module versions it imported at startup, so stamping
+    the identity into ``gateway_state.json`` lets `hermes update` (and the
+    dashboard) prove whether a running gateway actually picked up new code
+    after the restart phase — instead of assuming it did (#88654, #69754).
+    Never raises; degrades to absent fields.
+    """
+    try:
+        from hermes_cli.build_info import get_code_identity
+
+        identity = get_code_identity()
+        return {
+            "code_sha": identity.get("sha"),
+            "code_version": identity.get("version"),
+        }
+    except Exception:
+        return {}
+
+
+def _build_runtime_status_record() -> dict[str, Any]:
+    payload = _build_pid_record()
+    payload.update({
+        "gateway_state": "starting",
+        "exit_reason": None,
+        "restart_requested": False,
+        "active_agents": 0,
+        "platforms": {},
+        "session_store": {"status": "unknown"},
+        "updated_at": _utc_now_iso(),
+    })
+    payload.update(_get_code_identity_fields())
+    return payload
 
     A gateway keeps serving the module versions it imported at startup, so stamping the identity into
     ``gateway_state.json`` lets `hermes update` (and the dashboard) prove whether a running gateway actually
@@ -802,12 +835,20 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 
 
 def write_runtime_status(
-    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
-    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
-    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None,
+    *,
+    gateway_state: Any = _UNSET,
+    exit_reason: Any = _UNSET,
+    restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET,
+    platform: Any = _UNSET,
+    platform_state: Any = _UNSET,
+    error_code: Any = _UNSET,
+    error_message: Any = _UNSET,
+    needs_attention: Any = _UNSET,
+    retrying_since: Any = _UNSET,
+    served_profiles: Any = _UNSET,
+    session_store: Any = _UNSET,
+    clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
     removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
@@ -829,17 +870,32 @@ def write_runtime_status(
     # top-level record must describe the CURRENT writer.
     payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
     payload["updated_at"] = _utc_now_iso()
+    # Re-stamp code identity on every write: the file can outlive the process
+    # that created it, and the top-level record must always describe the
+    # CURRENT writer's code (per-process cached, so this is a dict copy).
     payload.update(_get_code_identity_fields())
-    _apply_set_fields(payload, (
-        ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
-        ("restart_requested", restart_requested, bool),
-        ("active_agents", active_agents, parse_active_agents),
-        # Named in-flight units (see GatewayShutdownMixin._describe_active_work); None clears.
-        ("active_work", active_work, lambda v: list(v) if v else None),
-        # Multiplexed profiles; absent/empty for a single-profile gateway.
-        ("served_profiles", served_profiles, lambda v: list(v or [])),
-        ("session_store", session_store, _coerce_session_store),
-    ))
+
+    if gateway_state is not _UNSET:
+        payload["gateway_state"] = gateway_state
+    if exit_reason is not _UNSET:
+        payload["exit_reason"] = exit_reason
+    if restart_requested is not _UNSET:
+        payload["restart_requested"] = bool(restart_requested)
+    if active_agents is not _UNSET:
+        payload["active_agents"] = parse_active_agents(active_agents)
+    if served_profiles is not _UNSET:
+        # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
+        # for a single-profile gateway. Lets `hermes status` show per-profile
+        # coverage without a second probe.
+        payload["served_profiles"] = list(served_profiles or [])
+    if session_store is not _UNSET:
+        state = "unknown"
+        if isinstance(session_store, dict):
+            candidate = str(session_store.get("status") or "unknown")
+            if candidate in {"ok", "unavailable", "retrying", "unknown"}:
+                state = candidate
+        payload["session_store"] = {"status": state}
+
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state == "connected":

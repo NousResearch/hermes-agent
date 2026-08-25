@@ -396,16 +396,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
         fname = filename or os.path.basename(file_path)
         try:
-            # httpx's async multipart iterator reads file objects through a sync chunk generator —
-            # read the bytes off the event-loop thread first.
+            # httpx's async multipart iterator reads file-like objects through
+            # a synchronous chunk generator. Read the file off the event-loop
+            # thread before handing bytes to the client.
             payload = await asyncio.to_thread(Path(file_path).read_bytes)
-            data: Dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
+            files = {"attachment": (fname, payload, "application/octet-stream")}
+            data: Dict[str, str] = {
+                "chatGuid": guid,
+                "name": fname,
+                "tempGuid": uuid.uuid4().hex,
+            }
             if is_audio_message:
                 data["isAudioMessage"] = "true"
-            res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
-                                         files={"attachment": (fname, payload, "application/octet-stream")})
+            res = await self.client.post(
+                self._api_url("/api/v1/message/attachment"),
+                files=files,
+                data=data,
+                timeout=120,
+            )
             res.raise_for_status()
             result = res.json()
+
             if caption:
                 await self.send(chat_id, caption)
             if result.get("status") == 200:

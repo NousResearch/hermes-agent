@@ -95,10 +95,16 @@ def _gh_cli_candidates() -> list[str]:
     return candidates
 
 
-# ``gh auth token`` cache (misses too). With no credential store the probe blocks its full 5s on
-# keyring / D-Bus, and provider inventory probes Copilot several times per request — an uncached
-# miss made one settings page a 4×5s stall past Desktop's 15s IPC budget. Short TTL keeps a
-# fresh ``gh auth login`` discoverable.
+# ``gh auth token`` result cache. The probe shells out to the gh CLI, and when
+# gh has no credential store for this HOME (fresh profile, desktop-spawned
+# backend, CI) it can block for its full 5s subprocess timeout — on keyring /
+# D-Bus prompts rather than returning immediately. Provider inventory builds
+# (``/api/model/options``, ``hermes tools``) probe Copilot auth several times
+# per request, so an uncached miss turns one settings-page load into a 4×5s
+# stall that exceeds the Desktop renderer's 15s IPC budget and paints an error
+# (observed Aug 2026: Models/Providers settings pages timing out on every
+# open). Successes and failures are both cached; a short TTL keeps a freshly
+# run ``gh auth login`` discoverable without restarting the backend.
 _GH_CLI_TOKEN_CACHE_TTL_SECONDS = 300.0
 _gh_cli_token_cache: tuple[float, Optional[str]] | None = None
 
@@ -120,22 +126,53 @@ def _try_gh_cli_token() -> Optional[str]:
     _gh_cli_token_cache = (now, token)
     return token
 
+    When COPILOT_GH_HOST is set, passes ``--hostname`` so gh returns the
+    correct host's token.  Also strips GITHUB_TOKEN / GH_TOKEN from the
+    subprocess environment so ``gh`` reads from its own credential store
+    (hosts.yml) instead of just echoing the env var back.
+
+    The result (including a miss) is cached for a short TTL — see the cache
+    comment above. Callers that just re-authenticated can call
+    ``_invalidate_gh_cli_token_cache()`` to re-probe immediately.
+    """
+    global _gh_cli_token_cache
+
+    now = time.monotonic()
+    if _gh_cli_token_cache is not None:
+        cached_at, cached_token = _gh_cli_token_cache
+        if now - cached_at < _GH_CLI_TOKEN_CACHE_TTL_SECONDS:
+            return cached_token
+
+    token = _probe_gh_cli_token()
+    _gh_cli_token_cache = (now, token)
+    return token
+
 
 def _probe_gh_cli_token() -> Optional[str]:
     """Uncached ``gh auth token`` subprocess probe (see ``_try_gh_cli_token``)."""
     hostname = os.getenv("COPILOT_GH_HOST", "").strip()
-    # gh must not short-circuit on GITHUB_TOKEN / GH_TOKEN, nor prompt from a backend process.
-    clean_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
+
+    # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
+    # Never let gh open an interactive prompt from a backend process.
     clean_env.setdefault("GH_PROMPT_DISABLED", "1")
     clean_env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
+
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     host_args = ["--hostname", hostname] if hostname else []
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token", *host_args]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
-                                    errors='replace', timeout=5, env=clean_env,
-                                    stdin=subprocess.DEVNULL, **_popen_kwargs)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=5,
+                env=clean_env,
+                stdin=subprocess.DEVNULL,
+                **_popen_kwargs,
+            )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
             continue

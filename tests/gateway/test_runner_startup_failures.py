@@ -173,6 +173,21 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
+    # Ownership guard (#89315): legitimate same-home replace fixture — the
+    # persisted record is bound to target pid 42 in this home.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     # _pid_exists never goes False — the force-kill did not take.
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)

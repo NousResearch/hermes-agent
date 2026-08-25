@@ -39,6 +39,11 @@ test('parseDefaultDistro strips the default-marker and blank lines', () => {
 
 // ── wslPosixToWindowsAccessible ──────────────────────────────────────
 
+test('wslPosixToWindowsAccessible maps a drvfs mount to its Windows drive', () => {
+  assert.equal(wslPosixToWindowsAccessible('/mnt/c/Users/alex', 'Ubuntu'), 'C:\\Users\\alex')
+  assert.equal(wslPosixToWindowsAccessible('/mnt/d', 'Ubuntu'), 'D:\\')
+})
+
 test('wslPosixToWindowsAccessible resolves a distro only for paths that need a UNC share', () => {
   let distroProbes = 0
 

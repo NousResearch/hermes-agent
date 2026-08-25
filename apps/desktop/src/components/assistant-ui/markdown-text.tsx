@@ -44,9 +44,7 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
-
-const onboardingEnabled = isOnboardingEnabled()
+import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -268,16 +266,6 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
     if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
-    }
-
-    // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
-    // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
-    // "Open <name>" anchor). Route through the preview pipeline instead —
-    // the same file card + "Open preview" the bare-path markdown-link
-    // branch below produces — so MEDIA: uniformly delivers the richest
-    // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
       return <PreviewAttachment source="tool-result" target={mediaPath} />
     }
 

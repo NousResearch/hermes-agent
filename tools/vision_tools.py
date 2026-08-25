@@ -247,18 +247,25 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 # Absolute hard ceiling for vision payloads (20 MB): no major provider accepts more.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
 
-# Proactive embed caps for history reuse: the native path bakes the data URL into the tool
-# result, re-sent every later turn (a 4 MB embed cost ~100-260K billed tokens). Anthropic
-# downsamples to a 1568px long edge anyway, so pixels past that cost wire bytes for no fidelity.
-# The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as safety nets; those are one-shot viewing
-# limits, not history-reuse sizes. A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
-# tokens per image (#92699), so we size for model reading instead: 256 KB keeps a 1568px screenshot cheap
-# enough to ride the session (PNGs that exceed it are downscaled further by the byte-budget ladder), well
-# under every provider's per-image limit.
+# Proactive embed cap for conversation-history reuse.  Native vision_analyze
+# bakes the data-URL into the tool result, which is re-sent on every later
+# turn.  The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as
+# safety nets; those are one-shot viewing limits, not history-reuse sizes.
+# A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
+# tokens per image (#92699), so we size for model reading instead: 256 KB
+# keeps a 1568px screenshot cheap enough to ride the session (PNGs that
+# exceed it are downscaled further by the byte-budget ladder), well under
+# every provider's per-image limit.
 _EMBED_TARGET_BYTES = 256 * 1024
+
+# Proactive embed dimension cap (px, longest side).  Anthropic still rejects
+# above 8000px independently of the byte cap, but its tokenizer downsamples
+# to a 1568px long edge — pixels past that cost wire bytes and never extra
+# model fidelity.  Cap at 1568 so history embeds match what the model sees.
 _EMBED_MAX_DIMENSION = 1568
 
-# Target when auto-resizing after a provider size rejection (retry once).
+# Target size when auto-resizing on API failure (5 MB).  After a provider
+# rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
 _SIZE_ERROR_HINTS = (
@@ -317,7 +324,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_dimension: Optional[int] = None,
                               scale_out: Optional[dict] = None,
                               force_jpeg: bool = False) -> str:
-    """Base64 data URL, progressively downscaled with Pillow while over budget.
+    """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
     quality ladder (85/70/50) per step. Without Pillow, or if it still doesn't fit, returns
@@ -326,11 +333,20 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     (Anthropic's 8000px cap is independent of bytes). ``force_jpeg``: re-encode PNG as JPEG
     when resizing — halving PNG dimensions destroys text legibility on dense screenshots.
 
-    Args: max_dimension: If set, images whose longest side exceeds this pixel count are forcibly downscaled
-    even if they're under the byte budget. Anthropic enforces an 8000 px per-side cap independently of the 5
-    MB byte cap. force_jpeg: Re-encode as JPEG even for PNG input when a resize is needed. History-reuse
-    embeds (#92699) opt in so a text-heavy screenshot keeps its readable resolution and shrinks via JPEG
-    quality instead. Images already under both caps are returned unchanged (still PNG).
+    Args:
+        max_dimension: If set, images whose longest side exceeds this pixel
+            count are forcibly downscaled even if they're under the byte
+            budget.  Anthropic enforces an 8000 px per-side cap independently
+            of the 5 MB byte cap.
+        force_jpeg: Re-encode as JPEG even for PNG input when a resize is
+            needed.  PNG has no quality ladder — its only shrink lever is
+            halving dimensions, which destroys text legibility on dense
+            screenshots.  History-reuse embeds (#92699) opt in so a text-heavy
+            screenshot keeps its readable resolution and shrinks via JPEG
+            quality instead.  Images already under both caps are returned
+            unchanged (still PNG).
+
+    Returns the base64 data URL string.
     """
     file_size = image_path.stat().st_size
     estimated_b64 = (file_size * 4) // 3 + 100  # base64 ~4/3 + data URL header
@@ -351,14 +367,30 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
                 max_base64_bytes / (1024 * 1024), max_dimension)
-    # JPEG for photos (smaller), PNG for transparency — unless force_jpeg.
-    is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and not force_jpeg
-    pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
+
+    mime = mime_type or _determine_mime_type(image_path)
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
+    # force_jpeg overrides for history-reuse embeds: a resize-needing PNG
+    # screenshot re-encodes as JPEG so the quality ladder can shrink bytes
+    # without halving resolution (text legibility, #92699).
+    if force_jpeg:
+        pil_format = "JPEG"
+    else:
+        pil_format = "PNG" if mime == "image/png" else "JPEG"
+    out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
+
     try:
         img = Image.open(image_path)
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
-        return _raw()
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # fall through to size-check in caller
+    # JPEG cannot encode alpha or palette/grayscale-alpha modes; normalize
+    # anything that isn't already plain RGB/grayscale.  force_jpeg newly
+    # routes PNG inputs here, so exotic modes (LA/PA) must not crash save().
+    if pil_format == "JPEG" and img.mode not in {"RGB", "L"}:
+        img = img.convert("RGB")
 
     # JPEG cannot encode alpha/palette modes (force_jpeg routes PNGs here).
     if not is_png and img.mode not in {"RGB", "L"}:
@@ -594,20 +626,33 @@ async def _vision_analyze_native(
         except _ImagePrepError as exc:
             return tool_error(str(exc), success=False)
         image_data_url = await _run_encode_on_cpu_executor(
-            _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
-        # Proactive embed cap: this image is re-sent on every later turn, so resize DOWN to the
-        # history-reuse target whenever the byte or long-edge cap is exceeded, not just at 20 MB.
-        _scale_info: dict = {}
-        # Anthropic still rejects >5 MB / >8000px with a non-retryable 400, but those are one-shot viewing
-        # limits — history embeds are sized smaller so repeated vision_analyze turns don't blow the context
-        # (#92699).
+            _image_to_base64_data_url,
+            temp_image_path, mime_type=detected_mime_type,
+        )
+
+        # Proactive embed cap: this image gets baked into conversation
+        # history and re-sent on every subsequent turn.  Resize DOWN to the
+        # history-reuse target whenever the payload exceeds either the byte
+        # or long-edge cap, not just at the 20 MB hard ceiling.  Anthropic
+        # still rejects >5 MB / >8000px with a non-retryable 400, but those
+        # are one-shot viewing limits — history embeds are sized smaller so
+        # repeated vision_analyze turns don't blow the context (#92699).
+        _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
         _over_dims = await _run_encode_on_cpu_executor(
-            _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
-        if len(image_data_url) > _EMBED_TARGET_BYTES or _over_dims:
-            image_data_url = await _resize_prepared(
-                prepared, _scale_info,
-                max_base64_bytes=_EMBED_TARGET_BYTES, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
-            # Reject rather than embed a session-wedging payload.
+            _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
+        )
+        if _over_bytes or _over_dims:
+            image_data_url = await _run_encode_on_cpu_executor(
+                _resize_image_for_vision,
+                temp_image_path, mime_type=detected_mime_type,
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                scale_out=_scale_info,
+                force_jpeg=True,
+            )
+            # If even resizing can't get under the absolute hard ceiling,
+            # there's nothing more we can do — reject rather than embed a
+            # session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
         return _build_native_vision_tool_result(

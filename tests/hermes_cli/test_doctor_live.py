@@ -51,6 +51,17 @@ class TestLiveFlagGating:
         args = parser.parse_args(["doctor", "--live"])
         assert args.live is True
 
+    def test_parser_has_offline_flag_default_false(self):
+        from hermes_cli.subcommands.doctor import build_doctor_parser
+
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        build_doctor_parser(sub, cmd_doctor=lambda a: None)
+        args = parser.parse_args(["doctor"])
+        assert args.offline is False
+        args = parser.parse_args(["doctor", "--offline"])
+        assert args.offline is True
+
     def test_no_live_flag_means_zero_probes(self, monkeypatch):
         called = []
         monkeypatch.setattr(

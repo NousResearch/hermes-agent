@@ -1,11 +1,43 @@
 """Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
 
-``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
-summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
-Deliberately narrow (live-verified): gpt-5.6 only (5.1/5.2 fail server-side with no
-structured rejection) on api.openai.com or the ChatGPT Codex backend. The local compressor
-stays armed as fallback (native threshold clamped below the local trigger); compaction items
-ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
+OpenAI's Responses API supports server-side compaction: include
+``context_management=[{"type": "compaction", "compact_threshold": N}]`` in a
+``/v1/responses`` request and, when the rendered input crosses N tokens, the
+server summarizes older context into an opaque ``compaction`` output item
+(``encrypted_content``, sealed to the issuing endpoint). Replaying that item
+as an input item on later requests stands in for the pruned history, so the
+model keeps long-horizon recall without the client ever seeing a summary.
+Docs: https://developers.openai.com/api/docs/guides/compaction
+
+Hermes' support is deliberately narrow (live verification, Aug 2026):
+
+* **gpt-5.6 family only.** gpt-5.6 and its variants compact correctly.
+  Sending the field to gpt-5.1 / gpt-5.2 reliably fails server-side —
+  HTTP 500 on the blocking path and a permanent stall on the streaming
+  path (90s watchdog x 3 retries = a dead turn). There is no structured
+  "unsupported" rejection to downgrade on, so the only safe gate is an
+  explicit model-family check.
+* **Direct OpenAI routes only:** api.openai.com (API key) or the ChatGPT
+  Codex backend (subscription OAuth). Every other Responses surface
+  (xAI, GitHub/Copilot, relays, local servers) never sees the field —
+  most would 400 on the unknown parameter, and none can mint or decrypt
+  the compaction blob.
+
+Ownership model: Hermes' local compression stays fully armed as the
+fallback owner. The native threshold is clamped safely below the local
+compressor's trigger so the server compacts first; if it doesn't (native
+disabled mid-session, provider hiccup, non-eligible route), the local
+summarizer fires exactly as before. There is no new custody state — the
+captured compaction items ride the existing ``codex_reasoning_items``
+sidecar, which already handles persistence (state.db), gateway session
+replay, cross-issuer stamping, and the encrypted-replay kill switch.
+
+This module stays free of transport/adapter dependencies so the transport,
+adapter, and conversation loop can share the gate without import cycles. The
+two exceptions — ``agent.context_compressor`` and ``agent.message_content`` —
+sit below this module in the dependency graph (neither imports
+``native_compaction``), so importing their provenance/text primitives here
+introduces no cycle.
 """
 
 from __future__ import annotations
@@ -19,7 +51,8 @@ from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
 
-# Native compaction fires this far below the local trigger so the server gets the first shot.
+# Native compaction fires this many tokens below the local compressor's
+# trigger so the server always gets the first shot at compaction.
 LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 # Fallback when automatic mode has no local trigger to follow.
 DEFAULT_COMPACT_THRESHOLD = 200_000
@@ -86,6 +119,33 @@ _checkpoint_suppression_logged = False
 
 
 def _warn_native_compaction_suppressed_by_checkpoint_gate() -> None:
+    """Log once per process that the checkpoint gate suppresses native compaction.
+
+    The suppression itself is re-evaluated per request; only the log line is
+    deduplicated so a long session does not repeat it on every API call.
+    """
+    global _checkpoint_suppression_logged
+    if _checkpoint_suppression_logged:
+        return
+    _checkpoint_suppression_logged = True
+    logger.warning(
+        "compression.checkpoint_required is enabled: server-side native "
+        "compaction (context_management) is disabled for this agent so the "
+        "checkpoint-aware Hermes compressor stays authoritative."
+    )
+
+
+def native_compaction_context_management(
+    agent: Any,
+    *,
+    is_codex_backend: bool,
+    is_xai_responses: bool = False,
+    is_github_responses: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return the ``context_management`` payload for this request, or None.
+
+
+def _warn_native_compaction_suppressed_by_checkpoint_gate() -> None:
     """Log once per process; the suppression itself is re-evaluated per request."""
     global _checkpoint_suppression_logged
     if not _checkpoint_suppression_logged:
@@ -110,11 +170,15 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     # compression.enabled: false disables ALL automatic compaction, native included.
     if not getattr(agent, "codex_responses_native_compaction", False) or not getattr(agent, "compression_enabled", True):
         return None
-    # Server-side compaction is a lossy boundary the provider owns (no pre-compress checkpoint
-    # can run first), so the checkpoint-aware compressor stays authoritative. Explicit-True
-    # matches compress_context().
+    # compression.checkpoint_required: server-side compaction is a lossy
+    # boundary the provider owns — no pre-compress checkpoint can run before
+    # the server replaces older context. Keep the checkpoint-aware Hermes
+    # compressor authoritative instead of silently letting the server
+    # compact. Explicit-True check matches the compress_context() gate.
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
+        return None
+    if is_xai_responses or is_github_responses:
         return None
     if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
         return None
@@ -130,7 +194,12 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
 
 # Retention budgets for plaintext user messages / local summaries carried across a native
 # compaction boundary (mirrors Codex CLI's RETAINED_MESSAGE_TOKEN_BUDGET).
+# Live verification (Aug 2026, gpt-5.6 @ api.openai.com): the server renders
 RETAINED_USER_MESSAGE_TOKEN_BUDGET = 64_000
+RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
+
+# Retention budget for local compression summary messages carried across a native
+# compaction boundary to prevent summary token inflation.
 RETAINED_SUMMARY_TOKEN_BUDGET = 32_000
 
 
@@ -141,88 +210,121 @@ def _approx_tokens(text: str) -> int:
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
-    """Measurable text from a Responses item (string/multipart/metadata), or None."""
+    """Extract measurable text from string, list content, output_text, or nested metadata text.
+
+    Returns None when the item carries no measurable text.
+    Handles string content, multipart lists (input_text/text/output_text), and fallback keys.
+    """
     if not isinstance(item, dict):
         return None
+
     content = item.get("content")
     if content is None and "output_text" in item:
         content = item.get("output_text")
+
     if isinstance(content, str):
         return content if content.strip() else None
-    if not isinstance(content, list):
-        return None
-    parts = []
-    for part in content:
-        candidates: tuple = (part,)  # non-str, non-dict parts filter out below
-        if isinstance(part, dict):
-            part_meta = part.get("metadata")
-            candidates = (part.get("text") or part.get("input_text") or part.get("output_text"),
-                          part_meta.get("text") if isinstance(part_meta, dict) else None)
-        parts.extend(c.strip() for c in candidates if isinstance(c, str) and c.strip())
-    text = " ".join(parts)
-    return text if text.strip() else None
+
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                if part.strip():
+                    parts.append(part.strip())
+            elif isinstance(part, dict):
+                part_text = part.get("text") or part.get("input_text") or part.get("output_text")
+                if isinstance(part_text, str) and part_text.strip():
+                    parts.append(part_text.strip())
+                part_meta = part.get("metadata")
+                if isinstance(part_meta, dict) and isinstance(part_meta.get("text"), str):
+                    if part_meta["text"].strip():
+                        parts.append(part_meta["text"].strip())
+        text = " ".join(parts)
+        return text if text.strip() else None
+
+    return None
 
 
-def _has_retainable_image_content(item: Any) -> bool:
-    """True for a converted Responses message with a valid ``input_image`` part (only the
-    adapter-owned shape counts, so empty multipart placeholders never become durable history)."""
-    content = item.get("content") if isinstance(item, dict) else None
-    return isinstance(content, list) and any(
-        isinstance(part, dict) and str(part.get("type") or "").strip().lower() == "input_image"
-        and isinstance(part.get("image_url"), str) and part["image_url"].strip() for part in content
-    )
+def _is_summary_item(item: Any) -> bool:
+    """True when *item* is a canonical Hermes compression-summary message.
 
+    Delegates entirely to
+    ``agent.context_compressor.is_compaction_summary_message`` — the single
+    authoritative provenance check already used by every other summary
+    consumer (memory providers, frontends, the compactor itself). It prefers
+    the exact, truthy ``COMPRESSED_SUMMARY_METADATA_KEY`` marker and falls
+    back to the canonical prefix classifier (``SUMMARY_PREFIX`` /
+    ``LEGACY_SUMMARY_PREFIX`` / historical prefixes, including the
+    merge-into-tail shape) for the case where the underscore-prefixed key
+    was already stripped by a wire sanitizer.
 
-# Canonical provenance check. Deliberately NOT a second heuristic (no underscore-key scan,
-# no ad-hoc headings) — either could promote adversarial content to durable history.
-_is_summary_item = is_compaction_summary_message
-
-
-def _is_compaction_item(item: Any) -> bool:
-    return isinstance(item, dict) and item.get("type") == "compaction"
+    Deliberately NOT a second heuristic: no arbitrary underscore-key scan, no
+    inference from a falsy or unrelated metadata key, and no matching on
+    ad-hoc content headings like ``"## Summary"`` in ordinary text — any of
+    those can promote a normal user/assistant message (or adversarial
+    content) to durable retained history (#90975 review).
+    """
+    return is_compaction_summary_message(item)
 
 
 def prune_pre_checkpoint_items(
     items: List[Dict[str, Any]],
     retained_user_token_budget: int = RETAINED_USER_MESSAGE_TOKEN_BUDGET,
     retained_summary_token_budget: int = RETAINED_SUMMARY_TOKEN_BUDGET,
-    enable_summary_retention: bool = True, item_sources: Optional[List[Any]] = None,
+    enable_summary_retention: bool = True,
+    item_sources: Optional[List[Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Restructure Responses input around the newest compaction checkpoint.
 
-    The server drops every input item preceding a replayed ``compaction`` item, erasing the
-    user's plaintext asks and any local-compression summary. Rebuild as::
+    The server drops every input item that precedes a replayed ``compaction``
+    item (live-verified Aug 2026), so sending pre-checkpoint history is dead
+    weight AND silently erases the user's plaintext asks — including any
+    local-compression summary the agent already produced, which previously
+    vanished here because it carries ``role="assistant"``, not ``"user"``
+    (#90975). When a checkpoint is present, rebuild the wire as::
 
         [checkpoint run] + [retained user & summary messages (newest-first budget)] + [post]
 
-    - The NEWEST contiguous run of checkpoints wins; relative order is preserved.
-    - User messages are kept verbatim within ``retained_user_token_budget``; the boundary
-      message is head-truncated when it only partially fits (string content only). A
-      recognized image-only user message is retained whole at one-token cost.
-    - Summaries are retained whole within ``retained_summary_token_budget``, never sliced
-      (framing would corrupt) and never duplicated.
-    - ``item_sources`` (parallel to ``items``) is the raw chat message each item came from.
-      Conversion can be lossy for summaries (merge-into-tail carrier → typed
-      ``function_call_output``; assistant carrier shadowed by a stale replay), so a source
-      that is itself a canonical summary carrier is read from the SOURCE and retained as a
-      synthesized ``role="assistant"`` message.
-    - ``enable_summary_retention`` is a test override, not a config surface.
-
-    The server drops every input item that precedes a replayed ``compaction`` item (live-verified Aug 2026),
-    so sending pre-checkpoint history is dead weight AND silently erases the user's plaintext asks —
-    including any local-compression summary the agent already produced, which previously vanished here
-    because it carries ``role="assistant"``, not ``"user"`` (#90975).
-    A summary is never byte/character-sliced: Hermes summaries carry structural framing (handoff prefix, end
-    marker, merge-into-tail delimiters) that a blind slice can corrupt, so one that doesn't fit whole is
-    dropped instead. A summary already retained once (identical text) is never duplicated, so repeated
-    checkpoints stay idempotent. - ``enable_summary_retention`` is a function-level override (used by tests
-    and callers that need the pre-#90975 behavior back); it is not wired to a user-facing config surface.
-    Without ``item_sources`` (default), retention only sees what survived conversion, matching pre-#90976
-    behavior (#90976).
+    - The NEWEST contiguous run of checkpoints wins.
+    - Retained user messages are kept verbatim within
+      ``retained_user_token_budget``; the boundary message is head-truncated
+      when it only partially fits (string content only) — goals are usually
+      stated up front, so the head is the valuable end.
+    - Compression summary messages (``_is_summary_item``, the canonical
+      ``agent.context_compressor`` provenance check) are retained whole
+      within ``retained_summary_token_budget``. A summary is never
+      byte/character-sliced: Hermes summaries carry structural framing
+      (handoff prefix, end marker, merge-into-tail delimiters) that a blind
+      slice can corrupt, so one that doesn't fit whole is dropped instead.
+      A summary already retained once (identical text) is never duplicated,
+      so repeated checkpoints stay idempotent.
+    - ``enable_summary_retention`` is a function-level override (used by
+      tests and callers that need the pre-#90975 behavior back); it is not
+      wired to a user-facing config surface.
+    - Original relative chronological order between user messages and
+      summaries is preserved.
+    - ``item_sources`` (optional, parallel to ``items``) is the raw chat
+      message each Responses item was converted from. By the time a summary
+      reaches this function as a converted ``item`` it can already be lossy:
+      a merge-into-tail tool-result carrier becomes a typed
+      ``function_call_output`` (no ``content``/``role`` survives the
+      conversion at all), and a merge-into-tail assistant carrier can be
+      shadowed by a stale exact ``codex_message_items`` replay captured
+      before the merge rewrote its content. When a source is provided and is
+      itself a canonical summary carrier (``is_compaction_summary_message``),
+      its content is read directly from the source — never from the
+      converted item — and it is retained as a synthesized
+      ``role="assistant"`` message regardless of what shape the original
+      item took. Without ``item_sources`` (default), retention only sees
+      what survived conversion, matching pre-#90976 behavior (#90976).
     """
     if not isinstance(items, list) or not items:
         return items
-    last_cp = max((i for i, item in enumerate(items) if _is_compaction_item(item)), default=None)
+
+    last_cp = None
+    for i, item in enumerate(items):
+        if isinstance(item, dict) and item.get("type") == "compaction":
+            last_cp = i
     if last_cp is None:
         return items
     first_cp = last_cp
@@ -233,72 +335,105 @@ def prune_pre_checkpoint_items(
     has_sources = isinstance(item_sources, list) and len(item_sources) == len(items)
     pre_sources: List[Any] = item_sources[:first_cp] if has_sources else [None] * len(pre)
 
+    if isinstance(item_sources, list) and len(item_sources) == len(items):
+        pre_sources: List[Any] = item_sources[:first_cp]
+    else:
+        pre_sources = [None] * len(pre)
+
     retained_reversed: List[Dict[str, Any]] = []
     user_remaining = max(0, int(retained_user_token_budget))
     summary_remaining = max(0, int(retained_summary_token_budget))
     seen_summary_texts: set = set()
 
-    def _retain_summary(text: Optional[str], retained_item: Dict[str, Any]) -> None:
-        """Retain a summary whole when it fits the budget and is not a duplicate (never sliced)."""
-        nonlocal summary_remaining
+    def _try_retain_summary(text: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Check budget/dedup/cost for a summary; return cost info or None."""
         if not text or summary_remaining <= 0 or text in seen_summary_texts:
-            return
+            return None
         cost = _approx_tokens(text)
-        if cost <= summary_remaining:
-            seen_summary_texts.add(text)
-            retained_reversed.append(retained_item)
-            summary_remaining -= cost
+        if cost > summary_remaining:
+            # Never byte-slice a summary's structural framing — drop it
+            # whole rather than corrupt the handoff prefix / end marker.
+            return None
+        seen_summary_texts.add(text)
+        return {"cost": cost}
 
     for item, source in zip(reversed(pre), reversed(pre_sources)):
         if not isinstance(item, dict):
             continue
-        # Source-based detection sees past a lossy conversion; it only fires
-        # when the source itself is a provenance-tagged summary carrier.
-        # Canonical source-based summary detection: reads the ORIGINAL chat message's own content, so it
-        # sees past a lossy conversion (a typed `function_call_output` wrapper, or a stale exact-replay
+
+        # Canonical source-based summary detection: reads the ORIGINAL chat
+        # message's own content, so it sees past a lossy conversion (a
+        # typed `function_call_output` wrapper, or a stale exact-replay
         # message) that erased the summary from `item` itself (#90976).
+        # This is never a heuristic promotion of arbitrary item content —
+        # it only fires when the source message itself is a canonical,
+        # provenance-tagged summary carrier.
         if enable_summary_retention and isinstance(source, dict) and _is_summary_item(source):
-            text = flatten_message_text(source.get("content"))
-            _src_role = source.get("role")
-            _retain_summary(text if text.strip() else None,
-                            {"role": _src_role if _src_role in ("user", "assistant") else "assistant", "content": text})
+            text = flatten_message_text(source.get("content")) if isinstance(source, dict) else ""
+            text = text if text.strip() else None
+            result = _try_retain_summary(text)
+            if result:
+                _src_role = source.get("role")
+                retained_reversed.append({
+                    "role": _src_role if _src_role in ("user", "assistant") else "assistant",
+                    "content": text,
+                })
+                summary_remaining -= result["cost"]
             continue
-        # Typed non-message items never carry role=user or a summary flag.
+
+        # Skip typed non-message items (function_call_output etc. never
+        # carry role=user or a summary flag, but stay defensive about
+        # future shapes).
         if "type" in item and item.get("type") != "message":
             continue
+
         is_summary = enable_summary_retention and _is_summary_item(item)
         is_user = item.get("role") == "user"
+
         if not is_user and not is_summary:
             continue
+
         text = _extract_item_text(item)
         if text is None:
-            if not (is_user and _has_retainable_image_content(item)):
-                continue
-            text = ""
+            continue
+        # Image-only user messages have empty text but non-empty content —
+        # main retains them at 1-token cost (images count as zero, matching
+        # Codex's retention accounting). Don't skip them just because text
+        # is falsy.
+        if not text and not is_user:
+            continue
+
         if is_summary:
-            _retain_summary(text, item)
-        elif user_remaining > 0:
+            result = _try_retain_summary(text)
+            if result:
+                retained_reversed.append(item)
+                summary_remaining -= result["cost"]
+        elif is_user:
+            if user_remaining <= 0:
+                continue
             cost = _approx_tokens(text)
             if cost <= user_remaining:
                 retained_reversed.append(item)
                 user_remaining -= cost
             elif isinstance(item.get("content"), str):
-                truncated = {**item, "content": item["content"][: user_remaining * 4]}
+                truncated = dict(item)
+                truncated["content"] = item["content"][: user_remaining * 4]
                 if truncated["content"].strip():
                     retained_reversed.append(truncated)
                 user_remaining = 0
 
-    result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]
-    logger.debug("Pruned pre-checkpoint items: %d input -> %d retained (user_rem=%d, summary_rem=%d)",
-                 len(items), len(result), user_remaining, summary_remaining)
+    retained_ordered = list(reversed(retained_reversed))
+    result = checkpoint_run + retained_ordered + post
+
+    logger.debug(
+        "Pruned pre-checkpoint items: %d input -> %d retained (user_rem=%d, summary_rem=%d)",
+        len(items),
+        len(result),
+        user_remaining,
+        summary_remaining,
+    )
+
     return result
-
-
-_REJECTION_MARKERS = (
-    "unknown", "unsupported", "invalid", "unexpected", "not permitted",
-    "not allowed", "unrecognized", "extra field", "no such", "bad request",
-    "not supported",
-)
 
 
 def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:

@@ -211,16 +211,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // to another chat.
       let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
 
-      // A read-only stored-transcript open (#94724: owner unresolvable under
-      // registry topology) has no routable live runtime — refuse the send
-      // with the explanation rather than minting a prompt on a backend that
-      // never owned the session.
-      if (isStoredTranscriptReadOnly(targetStoredSessionId)) {
-        notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
-
-        return false
-      }
-
       let targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
@@ -800,19 +790,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               onRecovered: recoveredId => {
                 if (onRuntimeRecovered) {
                   onRuntimeRecovered(recoveredId)
-                } else {
-                  // Publish stored-to-runtime ownership before retrying the
-                  // session-scoped request. The window router needs this
-                  // binding to keep a recovered remote runtime on the gateway
-                  // that owns its durable session.
-                  if (recoverStoredSessionId) {
-                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
-                  }
-
-                  if (targetIsCurrentView()) {
-                    activeSessionIdRef.current = recoveredId
-                    setActiveSessionId(recoveredId)
-                  }
+                } else if (targetIsCurrentView()) {
+                  activeSessionIdRef.current = recoveredId
+                  setActiveSessionId(recoveredId)
                 }
               }
             },

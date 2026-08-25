@@ -446,6 +446,83 @@ export interface ModelInfoResponse {
   provider: string
 }
 
+export interface ModelPricing {
+  /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
+  input: string
+  /** Formatted $/Mtok output price. */
+  output: string
+  /** Formatted $/Mtok cached-input price, or null when the model has none. */
+  cache: string | null
+  /** True when the model costs nothing (free tier eligible). */
+  free: boolean
+  /** Sale: rounded percent off list when gateway sends pricing.original. */
+  discount_percent?: number
+  /** Sale: formatted pre-discount input $/Mtok ("was"). */
+  was_input?: string
+  /** Sale: formatted pre-discount output $/Mtok ("was"). */
+  was_output?: string
+}
+
+export interface ModelOptionProvider {
+  is_current?: boolean
+  models?: string[]
+  name: string
+  slug: string
+  total_models?: number
+  warning?: string
+  /** Curated shortlist (one flagship per lab) the picker shows by default for
+   *  aggregator providers that serve dozens of models across many labs. Empty
+   *  for providers with no manifest entry — the picker falls back to top-N.
+   *  The rest of `models` stays reachable via search / Edit Models. */
+  featured_models?: string[]
+  /** True when the provider has usable credentials. False for canonical
+   *  providers surfaced by `include_unconfigured` that the user hasn't set up
+   *  yet — render these with a setup affordance instead of hiding them. */
+  authenticated?: boolean
+  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
+   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
+   *  the `hermes model` CLI / onboarding OAuth flow. */
+  auth_type?: string
+  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
+  key_env?: string
+  /** True for providers defined via the user's `providers:` config block. */
+  is_user_defined?: boolean
+  /** User-defined providers only: every accepted identity for this endpoint
+   *  (bare config key, `custom:<key>`, normalized display name, …). A session's
+   *  `model.options` reports the canonical `custom:<key>` form, so "is this row
+   *  the current provider?" must check membership here, not slug equality. */
+  aliases?: string[]
+  /** OpenAI-compatible endpoint for a user-defined provider. The backend
+   *  exposes this as `api_url`; model assignments send it back as `base_url`
+   *  so switching providers does not discard the selected local endpoint. */
+  api_url?: string
+  /** Per-model pricing keyed by model id (present when the picker requested
+   *  pricing and the provider supports live pricing). */
+  pricing?: Record<string, ModelPricing>
+  /** Nous only: whether the current account is on the free tier. */
+  free_tier?: boolean
+  /** Nous only: paid models a free-tier user cannot select (shown disabled). */
+  unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  /** False when the route rejects a reasoning disable ("mandatory" in the
+   *  provider catalog), so the Thinking toggle must not be offered. Absent
+   *  when the catalog doesn't say. */
+  can_disable_reasoning?: boolean
+  fast: boolean
+  reasoning: boolean
+}
+
+export interface ModelOptionsResponse {
+  model?: string
+  provider?: string
+  providers?: ModelOptionProvider[]
+}
+
 export interface PaginatedSessions {
   limit: number
   offset: number
@@ -676,13 +753,17 @@ export interface SessionResumeResult {
     request_id?: string
     smart_denied?: boolean
   }
-  // Server→client requests still unanswered for this session (clarify, sudo,
-  // vault prompts, …). The shared channel re-delivers them to the request
-  // handlers before this response resolves; listed here so resume can tell an
-  // authoritative "nothing pending" from a request the handler declined.
-  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
-  // The connection operation still blocking this session; resume restores the backend-owned card projection.
-  pending_connection?: ConnectionRequestPayload
+  // The clarify question still blocking this session, if any. Same replay
+  // class as pending_approval: emitted-while-detached prompts are restored
+  // from the resume snapshot instead of being lost until server-side timeout.
+  pending_clarify?: {
+    answers?: Record<string, unknown>
+    choices?: null | string[]
+    multi_select?: boolean
+    question?: string
+    questions?: unknown
+    request_id?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

@@ -186,32 +186,58 @@ _LOCAL_WHISPER_MODELS = frozenset({
 
 
 def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
-    # 13 → 14: legacy flat stt.model → provider section. A provider-agnostic `stt.model` fed
-    # OpenAI names to faster-whisper ("Invalid model size"). Only the raw (user-written) config
-    # decides; a nested model the user already set is never overwritten.
-    raw_stt = read_raw_config().get("stt", {})
-    if not (isinstance(raw_stt, dict) and "model" in raw_stt):
-        return
-    legacy_model = raw_stt["model"]
-    provider = raw_stt.get("provider", "local")
-    config = read_raw_config()
-    stt = config.get("stt", {})
-    stt.pop("model", None)
+    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
+    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
+    # that was provider-agnostic.  When the provider was "local" this caused
+    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
+    # crashing with "Invalid model size".  Move the value into the correct
+    # provider-specific section and remove the flat key.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
 
-    def _place(section: str) -> None:
-        existing = raw_stt.get(section, {})
-        if not isinstance(existing, dict) or "model" not in existing:
-            stt.setdefault(section, {})["model"] = legacy_model
-
-    if provider in {"local", "local_command"}:
-        # An OpenAI model name is dropped; the local section already defaults to "base".
-        if legacy_model in _LOCAL_WHISPER_MODELS:
-            _place("local")
-    else:
-        _place(provider)
-    config["stt"] = stt
-    _commit(
-        config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
+    # Read raw config (no defaults merged) to check what the user actually
+    # wrote, then apply changes to the merged config for saving.
+    raw = read_raw_config()
+    raw_stt = raw.get("stt", {})
+    if isinstance(raw_stt, dict) and "model" in raw_stt:
+        legacy_model = raw_stt["model"]
+        provider = raw_stt.get("provider", "local")
+        config = read_raw_config()
+        stt = config.get("stt", {})
+        # Remove the legacy flat key
+        stt.pop("model", None)
+        # Place it in the appropriate provider section only if the
+        # user didn't already set a model there
+        if provider in {"local", "local_command"}:
+            # Don't migrate an OpenAI model name into the local section
+            _local_models = {
+                "tiny.en", "tiny", "base.en", "base", "small.en", "small",
+                "medium.en", "medium", "large-v1", "large-v2", "large-v3",
+                "large", "distil-large-v2", "distil-medium.en",
+                "distil-small.en", "distil-large-v3", "distil-large-v3.5",
+                "large-v3-turbo", "turbo",
+            }
+            if legacy_model in _local_models:
+                # Check raw config — only set if user didn't already
+                # have a nested local.model
+                raw_local = raw_stt.get("local", {})
+                if not isinstance(raw_local, dict) or "model" not in raw_local:
+                    local_cfg = stt.setdefault("local", {})
+                    local_cfg["model"] = legacy_model
+            # else: drop it — it was an OpenAI model name, local section
+            # already defaults to "base" via DEFAULT_CONFIG
+        else:
+            # Cloud provider — put it in that provider's section only
+            # if user didn't already set a nested model
+            raw_provider = raw_stt.get(provider, {})
+            if not isinstance(raw_provider, dict) or "model" not in raw_provider:
+                provider_cfg = stt.setdefault(provider, {})
+                provider_cfg["model"] = legacy_model
+        config["stt"] = stt
+        _persist_migration(config)
+        if not quiet:
+            print("  ✓ Migrated legacy stt.model to provider-specific config")
 
 
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
@@ -589,16 +615,113 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
-#: Registry of (target_version, step), strictly ascending; simple default-flip steps are
-#: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
-#: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
-#: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
-#: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
-#: only added a schema default that runtime merging supplies without a write.
+def _migrate_to_37(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 36 → 37: raise the delegation concurrency default 3 → 10 ──
+    # delegation.max_concurrent_children caps how many children run in parallel
+    # per batch (and concurrent background delegation units). The old default of
+    # 3 needlessly serialized independent fan-outs (e.g. reviewing N PRs at
+    # once). The shipped default is now 10, which stays at/below the high-cost
+    # warning threshold. Configs still pinned at exactly the old default 3 —
+    # almost always the inherited default rather than a deliberate choice — are
+    # lifted to 10 so existing installs get the wider fan-out on update. Any
+    # OTHER explicit value (a deliberate override) is preserved; unset inherits
+    # 10 at read time.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_deleg = config.get("delegation")
+    if isinstance(raw_deleg, dict) and raw_deleg.get("max_concurrent_children") == 3:
+        raw_deleg["max_concurrent_children"] = 10
+        config["delegation"] = raw_deleg
+        _persist_migration(config)
+        results["config_added"].append("delegation.max_concurrent_children=10 (was: 3)")
+        if not quiet:
+            print(
+                "  ✓ Raised delegation.max_concurrent_children from 3 to 10 — "
+                "independent delegated children now fan out wider in parallel. "
+                "Each child consumes API tokens independently; set "
+                "delegation.max_concurrent_children back to 3 to restore the old cap."
+            )
+
+
+def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
+    # Version 37 → 38: the bundled observability/nemo_relay plugin was
+    # removed when Relay lifecycle ownership moved into the agent core.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
+
+    config = read_raw_config()
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        return
+    enabled = plugins.get("enabled")
+    removed = legacy_relay_plugin_keys(enabled)
+    if not removed or not isinstance(enabled, list):
+        return
+
+    plugins["enabled"] = [value for value in enabled if value not in removed]
+    config["plugins"] = plugins
+    _persist_migration(config)
+    message = (
+        "Removed legacy Relay plugin from plugins.enabled: "
+        f"{', '.join(removed)}. Configure native Relay plugins with "
+        "HERMES_NEMO_RELAY_PLUGINS_TOML."
+    )
+    results["warnings"].append(message)
+    if not quiet:
+        print(f"  ⚠ {message}")
+
+
+def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 38 → 39: remove the retired `bfl` toolset from saved lists ──
+    # The six bfl_flux3_* core tools shipped for a free FLUX 3 promotional
+    # period that has since ended server-side, leaving every Nous-signed-in
+    # install paying ~2.7K tokens of schema per API call for tools that can
+    # only refuse. They were removed in favor of the standard video_gen
+    # provider surface (`video_generate`, `hermes tools` → Video Generation).
+    # Strip the toolset key wherever the auto-backfill or a picker save wrote
+    # it, so stale config can't resurrect an unknown toolset.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    changed = False
+    for section in ("platform_toolsets", "known_builtin_toolsets"):
+        mapping = config.get(section)
+        if not isinstance(mapping, dict):
+            continue
+        for platform, toolsets in mapping.items():
+            if isinstance(toolsets, list) and "bfl" in toolsets:
+                mapping[platform] = [ts for ts in toolsets if ts != "bfl"]
+                changed = True
+        if changed:
+            config[section] = mapping
+    if changed:
+        _persist_migration(config)
+        results["config_added"].append("removed retired 'bfl' toolset from saved toolset lists")
+        if not quiet:
+            print(
+                "  ✓ Removed the retired BFL FLUX 3 toolset from saved toolset "
+                "lists — video generation now lives under `hermes tools` → "
+                "Video Generation (Nous Subscription or FAL)."
+            )
+
+
+#: Registry of (target_version, migration_fn), strictly ascending. The driver
+#: applies every entry whose target version is greater than the on-disk
+#: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
+    # v15 only added a schema default; runtime merging supplies it without a
+    # write. Registering a migration would falsely report or materialise it.
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (21, _migrate_to_21),
@@ -634,81 +757,11 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
         extra_guard=lambda raw: raw.get("verify_on_stop") is True)),
     (33, _migrate_to_33),
     (34, _migrate_to_34),
-    # 34 → 35: background_process_notifications 'all' (old implicit default, rarely chosen on
-    # purpose) → 'concise'. Explicit result/error/off choices are preserved.
-    (35, functools.partial(
-        _rewrite_key, section="display", key="background_process_notifications",
-        match=_lower_is("all"), new="concise",
-        added="display.background_process_notifications=concise (was: all)",
-        message=(
-            "  ✓ Background process notifications switched from 'all' to "
-            "'concise' — completions now show a one-line status message "
-            "instead of the raw output dump. Set "
-            "display.background_process_notifications: all to restore "
-            "the old behavior."))),
-    # 35 → 36: subagent iteration cap 50 → 250 (50 truncated substantial delegated work).
-    (36, _rewrite_stale_default(
-        section="delegation", key="max_iterations", old=50, new=250,
-        added="delegation.max_iterations=250 (was: 50)",
-        message=(
-            "  ✓ Raised delegation.max_iterations from 50 to 250 — subagents "
-            "now get a larger per-child tool-call budget so delegated work "
-            "finishes instead of truncating. Set delegation.max_iterations "
-            "back to 50 to restore the old cap."))),
-    # 36 → 37: delegation concurrency 3 → 10 (stays at/below the high-cost warning threshold).
-    (37, _rewrite_stale_default(
-        section="delegation", key="max_concurrent_children", old=3, new=10,
-        added="delegation.max_concurrent_children=10 (was: 3)",
-        message=(
-            "  ✓ Raised delegation.max_concurrent_children from 3 to 10 — "
-            "independent delegated children now fan out wider in parallel. "
-            "Each child consumes API tokens independently; set "
-            "delegation.max_concurrent_children back to 3 to restore the old cap."))),
+    (35, _migrate_to_35),
+    (36, _migrate_to_36),
+    (37, _migrate_to_37),
     (38, _migrate_to_38),
     (39, _migrate_to_39),
-    # 39 → 40: model_catalog.ttl_hours → ttl_minutes (default 20). Only the OLD default
-    # (ttl_hours: 1, written by v25) is dropped; any other explicit ttl_hours is still honoured.
-    (40, _rewrite_stale_default(
-        section="model_catalog", key="ttl_hours", old=1, new=None,
-        added="model_catalog.ttl_hours 1 → ttl_minutes 20 (default)",
-        message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
-        extra_guard=lambda raw: "ttl_minutes" not in raw)),
-    (41, _migrate_to_41),
-    # 41 → 42: cron.model_drift_guard is gone. Unpinned jobs now run on their creation snapshot
-    # instead of failing closed when the global model changes, so the toggle has nothing to gate.
-    (42, functools.partial(
-        _rewrite_key, section="cron", key="model_drift_guard", new=None,
-        match=lambda cur: cur is not None,
-        added="removed cron.model_drift_guard",
-        message=(
-            "  ✓ Removed cron.model_drift_guard — unpinned cron jobs now keep running on the "
-            "model/provider they were created under when the global default changes, instead "
-            "of being skipped. Pin a job or set cron.model to move it."))),
-    # 42 → 43: gateway.multiplex_profile_allowlist is gone. A multiplexing default gateway serves
-    # every live profile under profiles/; a profile that must not be served is archived or deleted.
-    (43, functools.partial(
-        _rewrite_key, section="gateway", key="multiplex_profile_allowlist", new=None,
-        match=lambda _cur: True,
-        added="removed gateway.multiplex_profile_allowlist",
-        message=(
-            "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
-            "every profile under profiles/. Delete or archive a profile you do not want served."),
-        extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
-    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
-    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
-    # defaults are rewritten; an explicit user value is preserved.
-    (44, _rewrite_stale_default(
-        section="curator", key="stale_after_days", old=30, new=14,
-        added="curator.stale_after_days=14 (was: 30)",
-        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
-    (44, _rewrite_stale_default(
-        section="curator", key="archive_after_days", old=90, new=30,
-        added="curator.archive_after_days=30 (was: 90)",
-        message=(
-            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
-            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
-    # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
-    (45, _migrate_to_45),
 )
 
 

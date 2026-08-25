@@ -428,7 +428,7 @@ class TestTeamsMeetingPipeline:
         assert summarize_calls == 1
         assert len(store.list_jobs()) == 1
         receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
-        assert store.record_notification_receipt(receipt_key) is False
+        assert store.has_notification_receipt(receipt_key) is True
 
 
 def test_parse_graph_meeting_resource_reads_quoted_users_transcript_path():

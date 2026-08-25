@@ -38,17 +38,30 @@ class CapabilityDescriptor:
     # (from_json drops unknown keys, so newer connectors are safe against older gateways).
     # Connector can supply surrounding channel/group CONTEXT for an addressed turn.
     supports_context: bool = False
-    # Platform can host a FLAT continuable cron surface (native Slack's
-    # ``cron_continuable_surface: in_channel``); the scheduler fails safe to
-    # thread mode when False (D6 gate).
+    # Whether the connector's platform can host a FLAT continuable cron
+    # surface (native Slack's ``cron_continuable_surface: in_channel``): the
+    # brief posts top-level in the channel/DM and a plain reply continues the
+    # job via the flat ``(platform, chat_id, None)`` session. The scheduler
+    # fails safe to thread mode when False (D6 gate), so an older connector
+    # that never sends this keeps today's thread behavior — additive within
+    # contract_version 1.
     supports_inchannel_continuable: bool = False
-    # Platform sender renders block-level formatting from raw markdown; when True
-    # AND the operator enables rich_blocks/markdown_blocks, the gateway stamps
-    # ``format_hints`` on outbound send/edit metadata.
+    # Whether the connector's platform sender can render block-level
+    # formatting from raw markdown (Slack: rich_text lists, Block Kit
+    # tables/markdown blocks). When True AND the operator enables the
+    # rich_blocks/markdown_blocks knobs, the gateway stamps ``format_hints``
+    # into outbound send/edit metadata; the connector renders blocks and
+    # keeps the plain text as fallback. Default False — old connectors never
+    # receive hints, old gateways never send them. Additive within
+    # contract_version 1.
     supports_block_formatting: bool = False
-    # Outbound op names the connector implements for this platform. Empty = the
-    # connector predates the field; callers MUST treat that as LEGACY_OPS, not
-    # "nothing supported". Tuple keeps the frozen dataclass hashable.
+    # Op-level capability discovery (Phase 1 parity): the outbound op names the
+    # connector's sender for this platform actually implements (e.g.
+    # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =
+    # the connector predates the field; callers MUST treat that as "legacy op
+    # set" (send/edit/typing/follow_up) rather than "nothing supported", so an
+    # old connector keeps working unchanged. Additive within contract_version 1.
+    # Stored as a tuple so the frozen dataclass stays hashable/immutable.
     supported_ops: tuple = ()
 
     # Assumed capability set when a legacy connector sends no supported_ops.

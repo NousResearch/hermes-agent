@@ -28,19 +28,45 @@ class DeepSeekProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        m = (model or "").strip().lower()
-        # v4+ only; v3 excluded. Version-less canonicals (``deepseek-flash``) carry the
-        # same thinking-mode contract but no ``v<N>`` prefix, so consult the id set too —
-        # missing them makes Hermes omit ``thinking``, so the server defaults to on and
-        # the user's thinking toggle / effort setting is silently ignored.
-        versioned_v4_plus = m.startswith("deepseek-v") and not m.startswith("deepseek-v3")
-        if not versioned_v4_plus and m not in _THINKING_CAPABLE_IDS:
-            return {}, {}
-        # Always set thinking explicitly (default enabled, matching the API default)
-        # to avoid the reasoning_content echo trap on subsequent turns.
-        return thinking_toggle_extras(
-            reasoning_config, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, always_emit_toggle=True
-        )
+        extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
+
+        if not _model_supports_thinking(model):
+            # V3 / unknown — leave wire format untouched, current behavior.
+            return extra_body, top_level
+
+        # Determine enabled/disabled.  Default is enabled to match DeepSeek's
+        # API default; the API requires this to be set explicitly to avoid the
+        # reasoning_content echo trap on subsequent turns.
+        enabled = True
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            enabled = False
+
+        extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+
+        if not enabled:
+            return extra_body, top_level
+
+        # Effort mapping via the shared vocabulary in agent.reasoning_effort
+        # (DeepSeek V4: low/medium/high/max, xhigh rounds up to max). When no
+        # effort is set we omit reasoning_effort so DeepSeek applies its
+        # server default (currently high).
+        if isinstance(reasoning_config, dict):
+            from agent.reasoning_effort import (
+                DEEPSEEK_V4_EFFORTS,
+                DEEPSEEK_V4_OVERRIDES,
+                clamp_effort,
+            )
+
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if effort and effort != "none":
+                clamped = clamp_effort(
+                    effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES
+                )
+                if clamped in DEEPSEEK_V4_EFFORTS:
+                    top_level["reasoning_effort"] = clamped
+
+        return extra_body, top_level
 
 
 deepseek = DeepSeekProfile(

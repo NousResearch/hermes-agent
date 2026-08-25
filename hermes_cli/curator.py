@@ -178,11 +178,31 @@ def _cmd_run(args) -> int:
         print("llm pass running in background — check `hermes curator status` later")
     if dry:
         print(
-            "dry-run: no changes applied. Read the report with "
-            "`hermes curator status` and run `hermes curator run` (no flag) to apply."
-            if synchronous else
-            "dry-run: no changes applied. When the report lands, read it with "
-            "`hermes curator status` and run `hermes curator run` (no flag) to apply.")
+            f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
+            "(only agent-created skills participate in curation)"
+        )
+        return 1
+    if not skill_usage.set_pinned(args.skill, True):
+        print(
+            f"curator: could not pin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external). "
+            "`hermes curator list-unmanaged` shows which skills the curator tracks."
+        )
+        return 1
+    if not skill_usage.is_curator_managed(args.skill):
+        # Unmanaged (pre-marker) skills are never touched by auto-transitions,
+        # so "will bypass auto-transitions" overstates what this pin does. The
+        # pin IS recorded (and now visible in `curator status`, #92993) but
+        # only becomes protective once the skill is adopted. Say so, and point
+        # at the handover command (#93002).
+        print(
+            f"curator: pinned '{args.skill}' (recorded; this skill is unmanaged "
+            "— auto-transitions never consider it. Run "
+            f"`hermes curator adopt {args.skill}` to put it under curator "
+            "management)"
+        )
+        return 0
+    print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 
 
@@ -223,13 +243,19 @@ def _set_pin(args, pinned: bool) -> int:
     if not skill_usage.is_agent_created(skill):
         print(f"curator: '{skill}' is bundled or hub-installed — {not_agent}")
         return 1
-    if not skill_usage.set_pinned(skill, pinned):
-        print("curator: " + not_eligible.replace("{skill}", skill))
+    if not skill_usage.set_pinned(args.skill, False):
+        print(
+            f"curator: could not unpin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external)."
+        )
         return 1
-    if not skill_usage.is_curator_managed(skill):
-        print("curator: " + unmanaged.replace("{skill}", skill))
+    if not skill_usage.is_curator_managed(args.skill):
+        print(
+            f"curator: unpinned '{args.skill}' (recorded; this skill is "
+            "unmanaged — it was never under auto-transitions to begin with)"
+        )
         return 0
-    print("curator: " + done.replace("{skill}", skill))
+    print(f"curator: unpinned '{args.skill}'")
     return 0
 
 

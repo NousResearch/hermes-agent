@@ -18,11 +18,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
-    TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
+    DEFAULT_AGENT_IDENTITY,
+    EXECUTION_GUIDANCE_MODELS,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
+    KANBAN_GUIDANCE,
+    MEMORY_GUIDANCE,
+    USER_PROFILE_GUIDANCE,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
+    PLATFORM_HINTS,
+    SESSION_SEARCH_GUIDANCE,
+    SKILLS_GUIDANCE,
+    STEER_CHANNEL_NOTE,
+    TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_RICH_MESSAGES_HINT,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
+    drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_context_cwd
@@ -269,21 +283,115 @@ def _profile_name_for_home(home: Path) -> str:
         return "default"
 
 
-def _tool_guidance_block(agent: Any) -> Optional[str]:
-    """Tool-aware behavioral guidance, injected only when the tools are loaded."""
-    names = agent.valid_tool_names
-    # With both memory stores disabled no store is built, so the full guidance
-    # would steer the model at a tool that always answers "Memory is not
-    # available"; with only USER.md enabled the narrower block is used.
-    memory_guidance = None
-    if "memory" in names:
-        memory_guidance = _pb.build_memory_guidance(
-            getattr(agent, "_memory_enabled", True),
-            getattr(agent, "_user_profile_enabled", True),
-            skill_manage_available="skill_manage" in names,
-        )
-    # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+    """Assemble the system prompt as three ordered cache tiers.
+
+    Returns a dict with three keys:
+      * ``stable``   — the cross-session-stable prefix, through the coding
+        operating brief when a workspace snapshot follows.
+      * ``context``  — the workspace snapshot followed by the remaining
+        session-stable guidance, context files, and caller-supplied
+        system_message.
+      * ``volatile`` — skills index, memory snapshot, user profile,
+        external memory provider block, timestamp line.
+
+    Joined into a single string by :func:`build_system_prompt` and
+    cached on ``agent._cached_system_prompt`` for the lifetime of the
+    AIAgent.  Hermes never re-renders parts of this string mid-
+    session — that's the only way to keep upstream prompt caches
+    warm across turns.
+    """
+    # Local import to avoid pulling model_tools at module load.  Tests
+    # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
+    # we resolve through ``_ra()`` to honor those patches.
+    _r = _ra()
+
+    # Resolve the model's context window once so context-file caps can scale
+    # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
+    # None falls back to the historical flat default. This value is stable for
+    # the life of the conversation, so it does not threaten prompt caching.
+    _ctx_len: Optional[int] = None
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None:
+        _cc_len = getattr(_cc, "context_length", None)
+        if isinstance(_cc_len, int) and _cc_len > 0:
+            _ctx_len = _cc_len
+
+    # ── Stable tier ────────────────────────────────────────────────
+    stable_parts: List[str] = []
+
+    # Try SOUL.md as primary identity unless the caller explicitly skipped it.
+    # Some execution modes (cron) still want HERMES_HOME persona while keeping
+    # cwd project instructions disabled.
+    _soul_loaded = False
+    if agent.load_soul_identity or not agent.skip_context_files:
+        # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
+        # ambient resolution on a thread that lost the HERMES_HOME ContextVar
+        # reads the launch profile's SOUL.md instead (#50233).
+        _soul_content = _r.load_soul_md(_ctx_len, home_override=_agent_home(agent))
+        if _soul_content:
+            stable_parts.append(_soul_content)
+            _soul_loaded = True
+
+    if not _soul_loaded:
+        # Fallback to hardcoded identity
+        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    # Pointer to the hermes-agent skill + docs for user questions about Hermes
+    # itself. When the session has no skill tools (Blank Slate with the skills
+    # toolset off), skill_view() would be a dangling reference — inject the
+    # docs-only variant instead. Toolset is fixed per-session, so cache-safe.
+    _has_skill_view = "skill_view" in (agent.valid_tool_names or set())
+    stable_parts.append(
+        HERMES_AGENT_HELP_GUIDANCE if _has_skill_view
+        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+    )
+
+    # Universal task-completion / no-fabrication guidance.  Applied to ALL
+    # models regardless of tool_use_enforcement gating — the failure modes
+    # this targets (stopping after a stub; fabricating output when a real
+    # path is blocked) are not model-family specific.  Gated only by
+    # config.yaml ``agent.task_completion_guidance`` (default True) so
+    # users who want a leaner prompt can turn it off.
+    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal parallel-tool-call guidance.  Tells the model to batch
+    # independent tool calls into one assistant turn rather than emitting one
+    # call per turn — the runtime already runs independent calls concurrently
+    # (read-only tools always; non-overlapping path-scoped file ops), so the
+    # only thing missing was steering the model to produce the batch.  Cuts
+    # round-trips and the resent-context cost that compounds over a long
+    # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
+    # (default True) and only injected when tools are actually loaded.
+    if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+
+    # Tool-aware behavioral guidance: only inject when the tools are loaded
+    tool_guidance = []
+    # MEMORY_GUIDANCE instructs the model to save facts to the built-in
+    # MEMORY.md/USER.md stores. With both disabled in config no store is built,
+    # so the guidance would steer the model at a tool whose every call returns
+    # "Memory is not available". Defaults to True for the rare code paths that
+    # build an agent view without going through agent_init.
+    # When only the user profile store is enabled, the narrower
+    # USER_PROFILE_GUIDANCE is injected instead — the full block instructs the
+    # model to write notes to a MEMORY.md store that does not exist.
+    _mem_enabled = getattr(agent, "_memory_enabled", True)
+    _profile_enabled = getattr(agent, "_user_profile_enabled", True)
+    if "memory" in agent.valid_tool_names:
+        if _mem_enabled:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        elif _profile_enabled:
+            tool_guidance.append(USER_PROFILE_GUIDANCE)
+    if "session_search" in agent.valid_tool_names:
+        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+    if "skill_manage" in agent.valid_tool_names:
+        tool_guidance.append(SKILLS_GUIDANCE)
+    # Kanban worker/orchestrator lifecycle — only present when the
+    # dispatcher spawned this process (kanban_show check_fn gates on
+    # HERMES_KANBAN_TASK env var). Normal chat sessions never see
+    # this block. Resolved once at __init__ (see _kanban_worker_guidance).
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance is None and "kanban_show" in names:
         _kanban_guidance = KANBAN_GUIDANCE
@@ -296,13 +404,228 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     return " ".join(g for g in tool_guidance if g) or None
 
 
-def _skills_prompt(agent: Any) -> str:
-    """Skills index (empty without skills tools).  Focus mode demotes non-coding
-    categories to names-only — never hidden, every name stays visible."""
-    if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
-        return ""
-    import model_tools
-    avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
+    # Computer-use — goes in as its own block rather than being merged into
+    # tool_guidance because the content is multi-paragraph. The guidance is
+    # rendered for the host platform so Windows/Linux hosts don't see
+    # macOS-only wording (Mac, Space, cmd+s).
+    if "computer_use" in agent.valid_tool_names:
+        from agent.prompt_builder import computer_use_guidance
+        stable_parts.append(computer_use_guidance())
+
+    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+    if nous_subscription_prompt:
+        stable_parts.append(nous_subscription_prompt)
+    # Tool-use enforcement: tells the model to actually call tools instead
+    # of describing intended actions.  Controlled by config.yaml
+    # agent.tool_use_enforcement:
+    #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
+    #   true  — always inject (all models)
+    #   false — never inject
+    #   list  — custom model-name substrings to match
+    if agent.valid_tool_names:
+        _enforce = agent._tool_use_enforcement
+        _inject = False
+        if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
+            _inject = True
+        elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
+            _inject = False
+        elif isinstance(_enforce, list):
+            model_lower = (agent.model or "").lower()
+            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+        else:
+            # "auto" or any unrecognised value — use hardcoded defaults
+            model_lower = (agent.model or "").lower()
+            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+        if _inject:
+            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            _model_lower = (agent.model or "").lower()
+            # Google model operational guidance (conciseness, absolute
+            # paths, parallel tool calls, verify-before-edit, etc.)
+            if "gemini" in _model_lower or "gemma" in _model_lower:
+                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+
+    # Execution-discipline guidance (tool persistence, mandatory tool use
+    # for arithmetic, external-write read-back, count reconciliation,
+    # literal preservation, verification-gated completion).  Historically
+    # nested inside the tool-use-enforcement branch and fenced to
+    # gpt/codex/grok; now an independent gate so DeepSeek/Kimi/Qwen-class
+    # models receive it even when tool_use_enforcement is off.  Controlled
+    # by config.yaml agent.execution_guidance:
+    #   "auto" (default) — matches EXECUTION_GUIDANCE_MODELS
+    #   true  — always inject (all models)
+    #   false — never inject
+    #   list  — custom model-name substrings to match
+    # Resolved once at session start keyed on the (fixed) model name, so
+    # the system prompt stays byte-stable for the life of the conversation.
+    if agent.valid_tool_names:
+        _exec_guidance = getattr(agent, "_execution_guidance", "auto")
+        _exec_inject = False
+        if _exec_guidance is True or (isinstance(_exec_guidance, str) and _exec_guidance.lower() in {"true", "always", "yes", "on"}):
+            _exec_inject = True
+        elif _exec_guidance is False or (isinstance(_exec_guidance, str) and _exec_guidance.lower() in {"false", "never", "no", "off"}):
+            _exec_inject = False
+        elif isinstance(_exec_guidance, list):
+            model_lower = (agent.model or "").lower()
+            _exec_inject = any(p.lower() in model_lower for p in _exec_guidance if isinstance(p, str))
+        else:
+            # "auto" or any unrecognised value — use hardcoded defaults
+            model_lower = (agent.model or "").lower()
+            _exec_inject = any(p in model_lower for p in EXECUTION_GUIDANCE_MODELS)
+        if _exec_inject:
+            from agent.prompt_builder import execution_guidance_text
+            stable_parts.append(execution_guidance_text(agent.valid_tool_names))
+
+    has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+    if has_skills_tools:
+        avail_toolsets = {
+            toolset
+            for toolset in (
+                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+            )
+            if toolset
+        }
+        # Focus mode (opt-in) demotes non-coding skill categories to
+        # names-only in the index (never hidden — skill_view/skills_list
+        # reach everything, and every name stays visible for recall). The
+        # default coding posture leaves the index untouched.
+        _compact_cats = frozenset()
+        try:
+            from agent.coding_context import coding_compact_skill_categories
+
+            _compact_cats = coding_compact_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _compact_cats = frozenset()
+        skills_prompt = _r.build_skills_system_prompt(
+            available_tools=agent.valid_tool_names,
+            available_toolsets=avail_toolsets,
+            compact_categories=_compact_cats or None,
+            skills_dir_override=_agent_skills_dir(agent),
+        )
+    else:
+        skills_prompt = ""
+
+    # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
+    # of the requested model. Inject explicit model identity into the system prompt
+    # so the agent can correctly report which model it is (workaround for API bug).
+    # Stable for the lifetime of an agent instance — model and provider are fixed
+    # at construction time.
+    if agent.provider == "alibaba":
+        _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
+        stable_parts.append(
+            f"You are powered by the model named {_model_short}. "
+            f"The exact model ID is {agent.model}. "
+            f"When asked what model you are, always answer based on this information, "
+            f"not on any model name returned by the API."
+        )
+
+    # Environment hints (WSL, Termux, etc.) — tell the agent about the
+    # execution environment so it can translate paths and adapt behavior.
+    # Stable for the lifetime of the process.
+    _env_hints = _r.build_environment_hints()
+    if _env_hints:
+        stable_parts.append(_env_hints)
+
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). Keep the operating brief in
+    # the cross-session-stable prefix, while placing the live git/workspace
+    # snapshot behind its own cache boundary. The post-snapshot blocks must
+    # stay in their historical position after the workspace snapshot.
+    coding_workspace_parts: List[str] = []
+    coding_trailing_parts: List[str] = []
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_prompt_parts
+
+            coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = coding_system_prompt_parts(
+                platform=agent.platform,
+                cwd=resolve_context_cwd(),
+                model=agent.model,
+                valid_tool_names=agent.valid_tool_names,
+            )
+            stable_parts.extend(coding_prefix_parts)
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
+    # Guidance assembled after the coding posture historically followed the
+    # workspace snapshot. With no snapshot, the coding tail instead remains
+    # directly after the coding prefix in the cacheable prefix.
+    if coding_workspace_parts:
+        post_workspace_parts: List[str] = []
+    else:
+        stable_parts.extend(coding_trailing_parts)
+        post_workspace_parts = stable_parts
+
+    # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
+    # something is non-default so the model can pick the right install
+    # strategy without discovering by failure.  Emits a single line; emits
+    # NOTHING when the environment is clean (no token cost).  Skipped
+    # entirely for remote terminal backends (the host's Python state is
+    # irrelevant when tools run inside docker/modal/ssh).  Gated by
+    # config.yaml ``agent.environment_probe`` (default True).
+    if getattr(agent, "_environment_probe", True):
+        try:
+            from tools.env_probe import get_environment_probe_line
+            _probe_line = get_environment_probe_line()
+            if _probe_line:
+                post_workspace_parts.append(_probe_line)
+        except Exception:
+            # Probe failure must never block prompt build.
+            pass
+
+    # Bot Mode teammate protocol — injected ONLY into a bot's canonical
+    # "Bot Chat" session (the conversation teammate bots message into via
+    # `hermes -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
+    # installs where Bot Mode manages profiles (ui_meta['hermes-bots']).
+    # Regular sessions never carry it — the desktop's composer middleware
+    # owns the @mention send path. Title is read once at first build and the
+    # rendered prompt is cached + DB-restored, so this is cache-safe.
+    # Gated by config.yaml ``agent.bot_mode_protocol`` (default True).
+    if getattr(agent, "_bot_mode_protocol", True):
+        try:
+            from tools.bot_mode_probe import (
+                BOT_CHAT_TITLE,
+                epoch_line,
+                get_bot_mode_protocol_section,
+            )
+            _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+            if not _title:
+                _sdb = getattr(agent, "_session_db", None)
+                _sid = getattr(agent, "session_id", None)
+                _title = str((_sdb.get_session_title(_sid) if (_sdb and _sid) else None) or "").strip()
+            if _title == BOT_CHAT_TITLE:
+                _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
+                if _bot_section:
+                    post_workspace_parts.append(_bot_section)
+                    # Eternal-session support: stamp the capability epoch so
+                    # the restore path can detect user-initiated capability
+                    # changes (skills/toolsets/MCP/SOUL/roster) and rebuild
+                    # ONCE per change instead of waiting for /new or
+                    # compression. Also marks this prompt as timeless — the
+                    # volatile timestamp line is omitted (see below), since a
+                    # birth date pinned in a session that lives for months is
+                    # misinformation.
+                    post_workspace_parts.append(epoch_line(_agent_home(agent)))
+                    agent._bot_chat_timeless_prompt = True
+        except Exception:
+            pass
+
+    # Active-profile hint — names the Hermes profile the agent is running
+    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
+    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
+    # for the lifetime of the agent — profile name doesn't change
+    # mid-session, so this doesn't break the prompt cache.
+    # See file_safety._resolve_active_profile_name + classify_cross_profile_target
+    # for the matching tool-side guard.
+    #
+    # Resolve from the agent's OWN home first (its session_db path), not the
+    # ambient HERMES_HOME: on a build thread that lost the ContextVar this
+    # line would otherwise print "default" for a bot profile — the same
+    # thread-fallback bug that leaked default's skills index.
+    _agent_home_path = _agent_home(agent)
+    active_profile = "default"
     try:
         from agent.coding_context import coding_compact_skill_categories
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
@@ -456,6 +779,57 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
         bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
     return bits
 
+    # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
+    volatile_parts: List[str] = []
+    # Skills are runtime-mutable: the agent adds and patches them across a
+    # session (SKILLS_GUIDANCE tells it to patch a skill the moment it goes
+    # stale). The built prompt is cached per session and only rebuilt on
+    # compaction/restore (see build_system_prompt), so a skill change is not
+    # byte-stable across rebuilds. With the index in the stable band, a rebuild
+    # that picked up a skill change would bust the cached prefix from the index
+    # down, taking the whole scaffold with it. Render it at the FRONT of the
+    # volatile band instead, ahead of the turn-varying memory/timestamp tail:
+    # on an implicit longest-prefix backend an unchanged index still falls
+    # inside the reused prefix, and a changed one only re-prefills from here on.
+    # (No effect for single-block cache_control backends, where the whole
+    # system message is one cache unit regardless of internal order.)
+    if skills_prompt:
+        volatile_parts.append(skills_prompt)
+
+    if agent._memory_store:
+        if agent._memory_enabled:
+            mem_block = agent._memory_store.format_for_system_prompt("memory")
+            if mem_block:
+                volatile_parts.append(mem_block)
+        # USER.md is always included when enabled.
+        if agent._user_profile_enabled:
+            user_block = agent._memory_store.format_for_system_prompt("user")
+            if user_block:
+                volatile_parts.append(user_block)
+
+    # External memory provider system prompt block (additive to built-in).
+    # Gated on the same check ``inject_memory_provider_tools`` uses so we
+    # never advertise provider tools that the agent's toolset configuration
+    # has already gated off (#81014).
+    if agent._memory_manager:
+        try:
+            from agent.memory_manager import memory_provider_tools_exposed as _mem_exposed
+        except Exception:
+            _mem_exposed = None
+        if _mem_exposed is None or _mem_exposed(agent):
+            try:
+                _ext_mem_block = agent._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    volatile_parts.append(_ext_mem_block)
+            except Exception:
+                pass
+
+    # Plugin sections are intentionally confined to one coarse anchor in the
+    # volatile tail. This preserves deterministic ordering and lets a resumed
+    # process reconstruct the stable cache prefix without re-running plugins.
+    volatile_parts.extend(
+        _plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory")
+    )
 
 def _timestamp_line(agent: Any) -> str:
     """Date-only so the prompt is byte-stable for the day; zone + offset so

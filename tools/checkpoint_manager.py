@@ -676,20 +676,40 @@ class CheckpointManager:
         return results
 
     def list_all_checkpoints(self) -> List[Dict]:
-        """Checkpoints across every registered project (most recent first), each tagged ``workdir``.
+        """List checkpoints across every registered project (most recent first).
 
-        Surgical reapply of PR #10633 by @nightq (#10505) onto the v2 single-store layout: iterate
-        ``projects/<hash>.json`` metadata via ``_list_projects`` instead of the pre-v2 per-shadow-dir scan.
-        Each entry carries the extra ``workdir`` key so callers can label which project a checkpoint belongs
-        to.
+        Surgical reapply of PR #10633 by @nightq (#10505) onto the v2
+        single-store layout: iterate ``projects/<hash>.json`` metadata via
+        ``_list_projects`` instead of the pre-v2 per-shadow-dir scan. Each
+        entry carries the extra ``workdir`` key so callers can label which
+        project a checkpoint belongs to.
         """
-        store = _store_path()
-        if not _store_has_head(store):
+        store = _store_path(CHECKPOINT_BASE)
+        if not (store / "HEAD").exists():
             return []
-        results = [{**entry, "workdir": workdir}
-                   for workdir in (meta.get("workdir") or "" for meta in _list_projects(store)) if workdir
-                   for entry in self.list_checkpoints(workdir)]
-        return sorted(results, key=lambda x: x.get("timestamp", ""), reverse=True)
+        results: List[Dict] = []
+        for meta in _list_projects(store):
+            workdir = meta.get("workdir") or ""
+            if not workdir:
+                continue
+            for entry in self.list_checkpoints(workdir):
+                entry["workdir"] = workdir
+                results.append(entry)
+        results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return results
+
+    @staticmethod
+    def _parse_shortstat(stat_line: str, entry: Dict) -> None:
+        """Parse git --shortstat output into entry dict."""
+        m = re.search(r'(\d+) file', stat_line)
+        if m:
+            entry["files_changed"] = int(m.group(1))
+        m = re.search(r'(\d+) insertion', stat_line)
+        if m:
+            entry["insertions"] = int(m.group(1))
+        m = re.search(r'(\d+) deletion', stat_line)
+        if m:
+            entry["deletions"] = int(m.group(1))
 
     def diff(self, working_dir: str, commit_hash: str) -> Dict:
         """Show diff between a checkpoint and the current working tree."""
@@ -949,9 +969,20 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
         tag = f"[{Path(workdir).name or workdir}]  " if workdir and directory == "all directories" else ""
         lines.append(f"  {i}. {cp['short_hash']}  {ts}  {tag}{cp['reason']}{stat}")
 
-    lines += ["\n  /rollback <N>             restore to checkpoint N",
-              "  /rollback diff <N>        preview changes since checkpoint N",
-              "  /rollback <N> <file>      restore a single file from checkpoint N"]
+        # Label per-project entries when showing the cross-project view
+        # (workdir key only present on list_all_checkpoints results).
+        workdir = cp.get("workdir", "")
+        if workdir and directory == "all directories":
+            workdir_short = Path(workdir).name or workdir
+            lines.append(
+                f"  {i}. {cp['short_hash']}  {ts}  [{workdir_short}]  {cp['reason']}{stat}"
+            )
+        else:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+
+    lines.append("\n  /rollback <N>             restore to checkpoint N")
+    lines.append("  /rollback diff <N>        preview changes since checkpoint N")
+    lines.append("  /rollback <N> <file>      restore a single file from checkpoint N")
     return "\n".join(lines)
 
 

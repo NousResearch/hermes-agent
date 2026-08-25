@@ -118,11 +118,6 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
-  // Same three canonical slots the backend serves but the list below used to
-  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
-  { key: 'triage_specifier' },
-  { key: 'kanban_decomposer' },
-  { key: 'profile_describer' },
   { key: 'curator' }
 ]
 
@@ -582,7 +577,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setConfig(next)
 
       try {
-        await saveHermesConfig(setNested({}, key, value), scopeProfile)
+        await saveHermesConfig(next, scopeProfile)
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)

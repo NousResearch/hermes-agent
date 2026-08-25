@@ -31,6 +31,7 @@ import {
   sessionApprovalInlineVisible,
   sessionApprovalRequest
 } from '@/store/prompts'
+import { requestForOwnedSession } from '@/store/session-states'
 
 import type { ToolPart } from './fallback-model'
 
@@ -42,7 +43,7 @@ import type { ToolPart } from './fallback-model'
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
 // tui_gateway/server.py::_on_tool_start), so we cannot join the approval to the
-// row by command string. an approval server request can fire from the command guards
+// row by command string. `approval.request` can fire from the command guards
 // and protected-instruction file writes. The agent thread blocks on exactly one
 // approval at a time, so the single pending row of those tools IS the row that
 // raised it. The command/description text comes from `$approvalRequest` (the
@@ -146,10 +147,22 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        // Live prompt: the response frame rides the socket the request came on
-        // (the owner backend by construction). Restored prompt: queue-level
-        // `approval.respond`, owner-routed (#91684 client half).
-        await answerApproval(gateway, request, choice)
+        // Route through the session's OWNER (tile route → known profile);
+        // ambient only when no owner is known. The ambient socket follows
+        // foreground focus, and for a cross-profile session it points at a
+        // backend that never held this approval (#91684 client half).
+        await requestForOwnedSession<{ resolved?: boolean }>(
+          request.sessionId,
+          // Bound (not wrapped) so the ambient fallback keeps the exact
+          // 2-arg call shape gateway.request callers assert on.
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'approval.respond',
+          {
+            choice,
+            request_id: request.requestId,
+            session_id: request.sessionId ?? undefined
+          }
+        )
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)
         void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)

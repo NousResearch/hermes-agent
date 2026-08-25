@@ -633,7 +633,27 @@ class CLICommandsMixin:
         restore_all = any(a.lower() in ("--all", "--force") for a in args)
         args = [a for a in args if a.lower() not in ("--all", "--force")]
         if not args:
-            # No checkpoints for this dir → cross-project view (writes may sit under the session cwd).
+            # List checkpoints — fall back to the cross-project view when the
+            # current directory has none (#10505, reapply of PR #10633 by
+            # @nightq). The Aug 2026 QA sweep hit this live: writes landed
+            # checkpoints under the session cwd (/tmp/qa-repo) while bare
+            # /rollback searched only TERMINAL_CWD's project and reported
+            # "No checkpoints found" despite fresh checkpoints existing.
+            checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                all_checkpoints = mgr.list_all_checkpoints()
+                if all_checkpoints:
+                    print(f"  No checkpoints for {cwd} — showing all directories.")
+                    print(format_checkpoint_list(all_checkpoints, "all directories"))
+                    return
+            print(format_checkpoint_list(checkpoints, cwd))
+            return
+
+        # Handle /rollback diff <N>
+        if args[0].lower() == "diff":
+            if len(args) < 2:
+                print("  Usage: /rollback diff <N>")
+                return
             checkpoints = mgr.list_checkpoints(cwd)
             if not checkpoints:
                 # List checkpoints — fall back to the cross-project view when the current directory has none
@@ -1338,8 +1358,12 @@ class CLICommandsMixin:
             target_id = _resolve_session_by_name_or_id(target) or target
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:
-            return _cp(f"  Session not found: {target}",
-                       "  Use /sessions or `hermes sessions list` to see available sessions.")
+            _cprint(f"  Session not found: {target}")
+            _cprint("  Use /sessions or `hermes sessions list` to see available sessions.")
+            return
+
+        # If the target is the empty head of a compression chain, redirect to
+        # the descendant that actually holds the transcript. See #15000.
         try:
             # If the target is the empty head of a compression chain, redirect to the descendant that
             # actually holds the transcript. See #15000.
@@ -1415,9 +1439,26 @@ class CLICommandsMixin:
 
     # ---- /worktree ------------------------------------------------------------------------
     def _handle_worktree_command(self, cmd_original: str) -> None:
-        """Handle /worktree [new [name]|list|prune [--dry-run]] — isolated git worktrees.
-        ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only with
-        unpushed commits); ``prune`` never deletes tracked changes, unique commits, or in-use trees."""
+        """Handle /worktree — inspect, create, or reclaim isolated git worktrees.
+
+        Syntax:
+            /worktree                  — show the active worktree (if any)
+            /worktree new [name]       — create a worktree and move this session into it
+            /worktree list             — list worktrees under the repo's .worktrees/
+            /worktree prune [--dry-run] — reclaim safe trees + merged branches
+
+        Inspired by Copilot CLI's ``/worktree new``: start isolated work in a
+        fresh worktree without leaving the session. Creating one retargets the
+        terminal/file tools (``TERMINAL_CWD`` + process cwd) at the new tree;
+        the launcher's exit cleanup applies (kept only when it has unpushed
+        commits, same as ``hermes -w``).
+
+        ``prune`` is the same attended reclaim as ``hermes worktree prune``
+        (hermes_cli/worktree_gc.py): never deletes tracked changes, unique
+        unpushed commits, or in-use trees; archives untracked-only scratch.
+        """
+        import subprocess
+
         import cli as _cli
         parts = cmd_original.split(None, 2)
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -1430,18 +1471,69 @@ class CLICommandsMixin:
             else:
                 print("  No active worktree for this session.")
             if repo_root:
-                _pr("  /worktree new [name] — create one and move this session into it",
-                    "  /worktree prune      — reclaim stale trees and merged branches")
+                print("  /worktree new [name] — create one and move this session into it")
+                print("  /worktree prune      — reclaim stale trees and merged branches")
             else:
                 print("  (not inside a git repository)")
             return
-        handler = _WORKTREE_SUBCOMMANDS.get(sub)
-        if handler is None:
-            return _pr(f"  Unknown /worktree subcommand: {sub}",
-                       "  Usage: /worktree [new [name] | list]")
-        if not repo_root:
-            print("  ❌ /worktree new requires being inside a git repository."
-                  if handler == "_worktree_new" else "  Not inside a git repository.")
+
+        if sub in {"prune", "gc", "clean"}:
+            if not repo_root:
+                print("  Not inside a git repository.")
+                return
+            rest = parts[2].strip().lower() if len(parts) > 2 else ""
+            dry_run = "--dry-run" in rest or "-n" in rest.split()
+            from hermes_cli import worktree_gc
+
+            active = _cli._active_worktree
+            tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False)
+            if active:
+                # Never reap the tree this very session is sitting in, even
+                # if a concurrent audit would judge it clean+merged.
+                active_path = str(active.get("path") or "")
+                tree_records = [
+                    record for record in tree_records
+                    if record.path != active_path
+                ]
+            actions = worktree_gc.reclaim_worktrees(
+                repo_root, dry_run=dry_run, records=tree_records
+            )
+            actions += worktree_gc.reclaim_branches(repo_root, dry_run=dry_run)
+            if actions:
+                for line in actions:
+                    print(f"  {line}")
+                print(f"  {len(actions)} action(s) {'planned' if dry_run else 'done'}.")
+            else:
+                print("  Nothing to reclaim — remaining trees/branches carry real work.")
+            kept = [
+                record for record in tree_records
+                if record.verdict == "keep"
+                and "kanban" not in record.reason and "in use" not in record.reason
+            ]
+            if kept:
+                print(f"  Preserved {len(kept)} tree(s) with real work:")
+                for record in kept:
+                    print(f"    {record.name}: {record.reason}")
+            return
+
+        if sub in {"list", "ls"}:
+            if not repo_root:
+                print("  Not inside a git repository.")
+                return
+            try:
+                result = subprocess.run(
+                    ["git", "worktree", "list"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=10, cwd=repo_root,
+                )
+                out = result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                out = ""
+            if out:
+                for line in out.splitlines():
+                    print(f"  {line}")
+            else:
+                print("  Could not list worktrees.")
             return
         getattr(self, handler)(repo_root, rest)
 
@@ -1592,18 +1684,24 @@ class CLICommandsMixin:
         from hermes_cli.pets import _set_active
         concept = _command_arg(cmd)
         if not concept:
-            # prompt_toolkit owns stdin on this daemon thread — raw input() never renders and eats
-            # keystrokes; prefer the thread-aware helper (None when prompting isn't safe).
-            # Bare /hatch is dispatched from the process_loop daemon thread while prompt_toolkit owns stdin
-            # — a raw input() here types into a prompt that never renders and swallows the next keystrokes
-            # (same class as #23185; found in the Aug 2026 full-surface CLI QA sweep: bare /hatch left the
-            # session eating input until Ctrl+C). Route through the thread-aware prompt helper, which uses
-            # run_in_terminal on the main thread and cancels cleanly (None) when prompting isn't safe.
+            # Bare /hatch is dispatched from the process_loop daemon thread
+            # while prompt_toolkit owns stdin — a raw input() here types into
+            # a prompt that never renders and swallows the next keystrokes
+            # (same class as #23185; found in the Aug 2026 full-surface CLI
+            # QA sweep: bare /hatch left the session eating input until
+            # Ctrl+C). Route through the thread-aware prompt helper, which
+            # uses run_in_terminal on the main thread and cancels cleanly
+            # (None) when prompting isn't safe.
             prompt_helper = getattr(self, "_prompt_text_input", None)
-            try:
-                concept = ((prompt_helper or input)("(o_o) Describe your pet: ") or "").strip()
-            except (EOFError, KeyboardInterrupt):
-                return print()
+            if callable(prompt_helper):
+                concept = (prompt_helper("(o_o) Describe your pet: ") or "").strip()
+            else:
+                try:
+                    concept = input("(o_o) Describe your pet: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return
+
         if not concept:
             return print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
         # A short, friendly display name from the first few words of the concept.
@@ -2229,14 +2327,200 @@ class CLICommandsMixin:
             f"any memory/skill updates will be reported when done.")
 
     def _handle_review_command(self, cmd: str) -> None:
-        """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and
-        spawn an independent reviewer subagent via async delegation; the review re-enters this
-        session as a normal delegation completion."""
-        prompt = _command_arg(cmd)
+        """Dispatch /review — spawn an independent reviewer subagent.
+
+        Snapshots the last N chat messages, wraps them (plus any argument
+        text as extra instructions) in a reviewer briefing, and dispatches a
+        full-privilege background subagent via the async delegation rail.
+        The review re-enters this session as a normal async-delegation
+        completion, addressed to the primary agent.
+        """
+        from cli import _DIM, _RST, _cprint
+
+        parts = (cmd or "").strip().split(None, 1)
+        prompt = parts[1].strip() if len(parts) > 1 else ""
+
         agent = getattr(self, "agent", None)
         if agent is None:
-            return _cp(_dim_line('Nothing to review yet — send a message first.'))
+            _cprint(f"  {_DIM}Nothing to review yet — send a message first.{_RST}")
+            return
+
         snapshot = list(getattr(self, "conversation_history", None) or [])
+        try:
+            from agent.review_engine import format_dispatch_note, start_review
+
+            result = start_review(agent, snapshot, prompt)
+        except ValueError as exc:
+            _cprint(f"  {_DIM}{exc}{_RST}")
+            return
+        except Exception as exc:
+            _cprint(f"  /review failed to start: {exc}")
+            return
+        _cprint(f"  {format_dispatch_note(result, prompt)}")
+
+    def _handle_goal_command(self, cmd: str) -> None:
+        """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""
+        from cli import _DIM, _RST, _cprint
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        lower = arg.lower()
+
+        # Bare /goal or /goal status → show current state
+        if not arg or lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        # /goal show → print the active goal's completion contract
+        if lower == "show":
+            _cprint(f"  {mgr.status_line()}")
+            _cprint(f"  {mgr.render_contract()}")
+            return
+
+        # /goal draft <objective> → expand plain text into a structured
+        # completion contract (outcome / verification / constraints /
+        # boundaries / stop_when) and set it as the active goal. Adapted
+        # from Codex's "let the agent draft the goal" guidance: the contract
+        # makes "done" evidence-based instead of a loose vibe check.
+        if lower.startswith("draft"):
+            objective = arg[len("draft"):].strip()
+            if not objective:
+                _cprint("  Usage: /goal draft <objective in plain language>")
+                return
+            self._handle_goal_draft(objective)
+            return
+
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            if state is None:
+                _cprint(f"  {_DIM}No goal set.{_RST}")
+            else:
+                _cprint(f"  ⏸ Goal paused: {state.goal}")
+            return
+
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cprint(f"  {_DIM}No goal to resume.{_RST}")
+            else:
+                _cprint(f"  ▶ Goal resumed: {state.goal}")
+                # Resume must restart work, not just flip persisted state
+                # (#75362): queue the canonical continuation prompt the same
+                # way /goal <text> queues its kickoff, so the loop takes the
+                # next step without the user sending another message.
+                prompt = mgr.next_continuation_prompt()
+                queued = False
+                if prompt:
+                    try:
+                        self._pending_input.put(prompt)
+                        queued = True
+                    except Exception:
+                        pass
+                if queued:
+                    _cprint(f"  {_DIM}Continuing now — taking the next step.{_RST}")
+                else:
+                    _cprint(
+                        f"  {_DIM}Send any message to kick off the next step.{_RST}"
+                    )
+            return
+
+        if lower in {"clear", "stop", "done"}:
+            had = mgr.has_goal()
+            mgr.clear()
+            if had:
+                _cprint("  ✓ Goal cleared.")
+            else:
+                _cprint(f"  {_DIM}No active goal.{_RST}")
+            return
+
+        # /goal wait <pid> [reason] — park the loop on a background process so
+        # it stops re-poking the agent every turn while it waits on CI / a
+        # build / a long job. The barrier auto-clears when the PID exits.
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg[len("wait"):].strip()
+            if not wait_arg:
+                _cprint("  Usage: /goal wait <pid> [reason]")
+                return
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                _cprint("  /goal wait: <pid> must be an integer process id.")
+                return
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                _cprint(f"  /goal wait: {exc}")
+                return
+            rtxt = f" ({reason})" if reason else ""
+            _cprint(f"  ⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.")
+            return
+
+        # /goal unwait — drop the wait barrier and resume normal looping.
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
+            else:
+                _cprint(f"  {_DIM}No wait barrier set.{_RST}")
+            return
+
+        # /goal gate ... — manage deterministic quality gates. A gate is a
+        # shell command that must pass before the judge may declare the goal
+        # done; a failing gate's output becomes the continuation prompt.
+        if lower == "gate" or lower.startswith("gate "):
+            gate_arg = arg[len("gate"):].strip()
+            gate_lower = gate_arg.lower()
+            if not gate_arg or gate_lower == "list":
+                for line in mgr.render_gates().splitlines():
+                    _cprint(f"  {line}")
+                return
+            if gate_lower.startswith("add "):
+                command = gate_arg[len("add"):].strip()
+                try:
+                    gate = mgr.add_gate(command)
+                except (RuntimeError, ValueError) as exc:
+                    _cprint(f"  /goal gate add: {exc}")
+                    return
+                _cprint(
+                    f"  ⚿ Gate added: $ {gate.command} "
+                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
+                    f"It must pass before the goal can complete."
+                )
+                return
+            if gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
+                idx_text = gate_arg.split(None, 1)[1].strip()
+                try:
+                    removed = mgr.remove_gate(int(idx_text))
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    _cprint(f"  /goal gate remove: {exc}")
+                    return
+                _cprint(f"  ✓ Gate removed: $ {removed}")
+                return
+            if gate_lower == "clear":
+                try:
+                    prev = mgr.clear_gates()
+                except RuntimeError as exc:
+                    _cprint(f"  /goal gate clear: {exc}")
+                    return
+                _cprint(f"  ✓ Cleared {prev} gate{'s' if prev != 1 else ''}.")
+                return
+            _cprint("  Usage: /goal gate [list | add <command> | remove <N> | clear]")
+            return
+
+        # Otherwise treat the arg as the goal text. Inline `field: value`
+        # lines (verify:, constraints:, boundaries:, stop when:) are parsed
+        # into a completion contract; the remaining prose is the headline.
+        # A plain free-form goal with no such lines behaves exactly as before.
+        from hermes_cli.goals import parse_contract
+
+        headline, contract = parse_contract(arg)
+        goal_text = headline or arg
         try:
             from agent.review_engine import format_dispatch_note, start_review
             result = start_review(agent, snapshot, prompt)

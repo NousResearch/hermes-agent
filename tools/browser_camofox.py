@@ -93,20 +93,35 @@ def _config_cdp_url() -> str:
 def is_camofox_mode() -> bool:
     """True when the Camofox backend is selected and no CDP override is active.
 
-    Selection is ``browser.cloud_provider: camofox``; ``CAMOFOX_URL`` is only the address
-    and never overrides a different stored selection (legacy: with no selection ever
-    written, a set ``CAMOFOX_URL`` still activates Camofox). A CDP override (``BROWSER_CDP_URL``
-    env or ``browser.cdp_url``, same precedence as ``browser_tool_cdp._get_cdp_override()``) wins.
+    Camofox is a selection: ``browser.cloud_provider: camofox`` (set via
+    ``hermes tools``). ``CAMOFOX_URL`` is the server ADDRESS only — its
+    presence no longer selects the backend when a different
+    ``browser.cloud_provider`` is stored. Legacy read-time interpretation:
+    when NO cloud provider selection was ever written, a set ``CAMOFOX_URL``
+    keeps activating Camofox exactly as before (nothing is migrated/written
+    to config).
+
+    A CDP override takes priority over Camofox so the browser tools operate on
+    the real CDP browser (and a CDP backend is treated as non-local for SSRF
+    checks) instead of being silently routed to Camofox. The override may come
+    from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
+    persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
+    ``browser_tool._get_cdp_override()``'s precedence.
     """
     if os.getenv("BROWSER_CDP_URL", "").strip() or _config_cdp_url():
         return False
     try:
         from tools.tool_backend_helpers import read_selection
+
         selected = read_selection("browser")
     except Exception:  # pragma: no cover — helpers are in-repo
         selected = None
+    if selected == "camofox":
+        return True
     if selected is not None:
-        return selected == "camofox"
+        # An explicit different browser selection wins: CAMOFOX_URL is just
+        # an address, not a choice.
+        return False
     return bool(get_camofox_url())
 
 
@@ -408,10 +423,27 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         vnc = get_vnc_url()
         if vnc:
             result["vnc_url"] = vnc
-            result["vnc_hint"] = ("Browser is visible via VNC. "
-                                  "Share this link with the user so they can watch the browser live.")
-        try:  # Auto-take a compact snapshot so the model can act immediately.
-            result["snapshot"], result["element_count"] = _fetch_snapshot(session)
+            result["vnc_hint"] = (
+                "Browser is visible via VNC. "
+                "Share this link with the user so they can watch the browser live."
+            )
+
+        # Auto-take a compact snapshot so the model can act immediately
+        try:
+            snap_data = _get(
+                f"/tabs/{session['tab_id']}/snapshot",
+                params={"userId": session["user_id"]},
+            )
+            snapshot_text = snap_data.get("snapshot", "")
+            from tools.browser_tool import (
+                get_browser_snapshot_threshold,
+                _truncate_snapshot,
+            )
+            threshold = get_browser_snapshot_threshold()
+            if len(snapshot_text) > threshold:
+                snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
+            result["snapshot"] = snapshot_text
+            result["element_count"] = snap_data.get("refsCount", 0)
         except Exception:
             pass  # Navigation succeeded; snapshot is a bonus
         return json.dumps(result)
@@ -445,22 +477,43 @@ def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str],
         f"({blocked_url}). Refusing to {action} on this page in this browser mode.")}, ensure_ascii=False)
 
 
-def _require_tab(task_id: Optional[str], action: Optional[str] = None) -> tuple[Dict[str, Any], Optional[str]]:
-    """Return ``(session, error_payload)``: error when no tab exists or, if ``action`` given, the page is private."""
-    session = _get_session(task_id)
-    if not session["tab_id"]:
-        return session, tool_error(_NO_SESSION_ERROR, success=False)
-    return session, (_camofox_private_page_block(session, task_id, action) if action is not None else None)
+def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
+                     user_task: Optional[str] = None) -> str:
+    """Get accessibility tree snapshot from Camofox.
 
-
-def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[Dict[str, Any]], str]) -> str:
-    """Require a tab (+ private-page guard when ``guard_action`` is set), then run ``body(session)``;
-    any exception becomes a ``tool_error``."""
+    ``user_task`` is deprecated and ignored — oversized snapshots always
+    truncate-and-store (no LLM summarization), same as the main browser tool.
+    """
     try:
         session, blocked = _require_tab(task_id, guard_action)
         if blocked:
             return blocked
-        return body(session)
+
+        data = _get(
+            f"/tabs/{session['tab_id']}/snapshot",
+            params={"userId": session["user_id"]},
+        )
+
+        snapshot = data.get("snapshot", "")
+        refs_count = data.get("refsCount", 0)
+
+        # Same truncate-and-store handling as the main browser tool: cut at
+        # line boundaries, store the full tree to cache/web, append a
+        # read_file pointer.
+        from tools.browser_tool import (
+            get_browser_snapshot_threshold,
+            _truncate_snapshot,
+        )
+
+        threshold = get_browser_snapshot_threshold()
+        if len(snapshot) > threshold:
+            snapshot = _truncate_snapshot(snapshot, max_chars=threshold)
+
+        return json.dumps({
+            "success": True,
+            "snapshot": snapshot,
+            "element_count": refs_count,
+        })
     except Exception as e:
         return tool_error(str(e), success=False)
 
@@ -598,4 +651,7 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     return json.dumps({
         "success": True, "console_messages": [], "js_errors": [], "total_messages": 0, "total_errors": 0,
         "note": "Console log capture is not available with the Camofox backend. "
-                "Use browser_snapshot or browser_vision to inspect page state."})
+                "Use browser_snapshot or browser_vision to inspect page state.",
+    })
+
+

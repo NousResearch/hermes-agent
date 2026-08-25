@@ -22,17 +22,43 @@ class OllamaCloudProfile(ProviderProfile):
         ``thinking`` capability) so non-thinking models get no meaningless field."""
         if not supports_reasoning or not reasoning_config or not isinstance(reasoning_config, dict):
             return {}, {}
-        # Ollama Cloud defaults to thinking ON and ignores extra_body.thinking
-        # (verified live); top-level reasoning_effort:"none" is the ONLY off switch.
-        effort = (reasoning_config.get("effort") or "").strip().lower()
-        if reasoning_config.get("enabled", True) is False or effort == "none":
-            return {}, {"reasoning_effort": "none"}
-        if not effort:
-            return {}, {}  # let the server default (thinking ON) apply
-        # "minimal" 400s -> clamps to low; xhigh rounds up to max. Bespoke
-        # levels outside the ladder are omitted rather than risking a 400.
-        clamped = clamp_effort(effort, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES)
-        return {}, {"reasoning_effort": clamped} if clamped in OLLAMA_CLOUD_EFFORTS else {}
+
+        if reasoning_config and isinstance(reasoning_config, dict):
+            enabled = reasoning_config.get("enabled", True)
+            if enabled is False:
+                # Ollama Cloud defaults to thinking ON, and ignores the
+                # extra_body.thinking:{type:disabled} shape (verified live).
+                # The ONLY way to actually suppress thinking on its
+                # /v1/chat/completions endpoint is top-level
+                # reasoning_effort:"none" — omitting the field leaves
+                # thinking on.
+                return {}, {"reasoning_effort": "none"}
+
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if not effort:
+                # No explicit effort requested — let the model decide
+                # (Ollama Cloud's server default is thinking ON).
+                return {}, {}
+            if effort == "none":
+                return {}, {"reasoning_effort": "none"}  # explicit off switch
+            # Accepted set {none, low, medium, high, max} is declared in
+            # agent.reasoning_effort ("minimal" is rejected with HTTP 400 →
+            # clamps to low; xhigh rounds up to max). Bespoke levels outside
+            # the ladder are omitted so the model applies its own default
+            # rather than triggering a hard 400.
+            from agent.reasoning_effort import (
+                OLLAMA_CLOUD_EFFORTS,
+                OLLAMA_CLOUD_OVERRIDES,
+                clamp_effort,
+            )
+
+            clamped = clamp_effort(
+                effort, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES
+            )
+            if clamped in OLLAMA_CLOUD_EFFORTS:
+                top_level["reasoning_effort"] = clamped
+
+        return {}, top_level
 
 
 ollama_cloud = OllamaCloudProfile(

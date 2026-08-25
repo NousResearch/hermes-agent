@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { isSubmitEnter } from '@/lib/ime'
 import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
@@ -198,8 +197,7 @@ function ConfigSettingsInner({
       // has fully resolved.
       saveQueueRef.current = saveQueueRef.current.then(async () => {
         try {
-          const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
-          const result = await saveHermesConfig(patch, scopeProfile)
+          const result = await saveHermesConfig(config, scopeProfile)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)

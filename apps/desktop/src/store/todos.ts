@@ -70,33 +70,8 @@ export function todosForHydration(todos: readonly TodoItem[] | null): TodoItem[]
 const FINISHED_LINGER_MS = 4_000
 const clearTimers = keyedTimeouts()
 
-function acceptRevision(sid: string, revision?: null | number): boolean {
-  const revisions = $todoRevisionsBySession.get()
-  const current = revisions[sid]
-
-  // tool.start has no revision. Apply the merge locally and leave the
-  // watermark alone so a later todo.updated / tool.complete can still win.
-  if (revision == null) {
-    return true
-  }
-
-  if (current != null && revision < current) {
-    return false
-  }
-
-  if (current !== revision) {
-    $todoRevisionsBySession.set({ ...revisions, [sid]: revision })
-  }
-
-  return true
-}
-
 export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null | number) {
   if (!sid) {
-    return
-  }
-
-  if (!acceptRevision(sid, revision)) {
     return
   }
 
@@ -104,32 +79,21 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
   $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
 
   if (!todoListActive(todos)) {
-    clearTimers.schedule(sid, FINISHED_LINGER_MS, () => dropSessionTodos(sid, false))
-  }
-}
-
-function dropSessionTodos(sid: string, forgetRevision: boolean) {
-  clearTimers.cancel(sid)
-
-  const map = $todosBySession.get()
-
-  if (sid in map) {
-    const { [sid]: _drop, ...rest } = map
-    $todosBySession.set(rest)
-  }
-
-  if (forgetRevision) {
-    const revisions = $todoRevisionsBySession.get()
-
-    if (sid in revisions) {
-      const { [sid]: _drop, ...rest } = revisions
-      $todoRevisionsBySession.set(rest)
-    }
+    clearTimers.schedule(sid, FINISHED_LINGER_MS, () => clearSessionTodos(sid))
   }
 }
 
 export function clearSessionTodos(sid: string) {
-  dropSessionTodos(sid, true)
+  clearTimers.cancel(sid)
+
+  const map = $todosBySession.get()
+
+  if (!(sid in map)) {
+    return
+  }
+
+  const { [sid]: _drop, ...rest } = map
+  $todosBySession.set(rest)
 }
 
 // Drop a still-active todo list (any pending/in_progress item) — used at turn

@@ -152,7 +152,7 @@ class TestConfig:
         mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
 
         with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
-            with patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/out.png"):
+            with patch("plugins.image_gen.xai.save_b64_image", return_value="/tmp/out.png"):
                 provider = XAIImageGenProvider()
                 result = provider.generate(prompt="test", model="grok-imagine-image-quality")
 

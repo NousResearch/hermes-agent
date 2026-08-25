@@ -15,16 +15,6 @@ import {
 } from './rich-editor'
 import { placeCaretAtEnd } from './test-utils'
 
-beforeEach(() => {
-  rememberDesktopCommandsCatalog({
-    commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
-  })
-})
-
-afterEach(() => {
-  rememberDesktopCommandsCatalog(undefined)
-})
-
 describe('renderComposerContents', () => {
   it('renders refs and raw text without interpreting user text as HTML', () => {
     const editor = document.createElement('div')

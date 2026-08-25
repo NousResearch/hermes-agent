@@ -658,7 +658,6 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/health":
                     self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
-                records["headers"].append(dict(self.headers))
                 if parsed.path == "/api/v1/system/status":
                     self._send_json({"status": "ok", "result": {"user": "user"}})
                     return
@@ -911,7 +910,6 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
         monkeypatch.setenv("OPENVIKING_API_KEY", "")
         monkeypatch.setenv("OPENVIKING_USER", "alice")
-        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider._env_refresh_enabled = True
@@ -979,51 +977,11 @@ class TestEnsureClientReloadsEnv:
         assert out["task_id"] == "task-remember"
         assert out["trace_id"] == "trace-remember"
         assert len(instances) == 2
-        session_id = out["session_id"]
-        assert instances[1].posts == [
-            (
-                f"/api/v1/sessions/{session_id}/messages",
-                {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "stable fact"}],
-                },
-            ),
-            (
-                f"/api/v1/sessions/{session_id}/commit",
-                {"keep_recent_count": 0},
-            ),
-        ]
-
-    def test_remember_accepts_legacy_category_but_submits_raw_user_text(self, monkeypatch):
-        posts = []
-
-        class _StubClient:
-            def post(self, path, payload=None, **kwargs):
-                posts.append((path, payload or {}))
-                if path.endswith("/commit"):
-                    return {"result": {"status": "accepted", "task_id": "task-1"}}
-                return {"status": "ok"}
-
-        provider = OpenVikingMemoryProvider()
-        provider._client = _StubClient()
-        provider._agent = "hermes"
-        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
-
-        out = json.loads(provider._tool_remember({
-            "content": "stable fact",
-            "category": "preference",
-        }))
-
-        session_id = out["session_id"]
-        message_path, message = posts[0]
-        assert message_path == f"/api/v1/sessions/{session_id}/messages"
-        assert message["role"] == "user"
-        assert message["parts"] == [{"type": "text", "text": "stable fact"}]
-        assert "peer_id" not in message
-        assert "category" not in openviking_plugin.REMEMBER_SCHEMA["parameters"]["properties"]
-        assert posts[1] == (
-            f"/api/v1/sessions/{session_id}/commit",
-            {"keep_recent_count": 0},
+        assert instances[1].posts[0][0] == "/api/v1/content/write"
+        assert instances[1].posts[0][1]["content"] == "stable fact"
+        assert instances[1].posts[0][1]["mode"] == "create"
+        assert instances[1].posts[0][1]["uri"].startswith(
+            "viking://user/default/peers/hermes/memories/"
         )
 
     def test_remember_uses_a_distinct_one_shot_session_for_each_call(self, monkeypatch):

@@ -29,16 +29,33 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-// Row geometry lives in `row-geometry.ts` — see that file for why each class
-// belongs to the box it belongs to. Re-exported here because this module is
-// where callers already look for row chrome.
-export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
+// ── Row geometry (session row is canonical — everything composes these) ─────
+//
+// Height lives ONLY on SidebarRowShell (min-h-[1.625rem]). Inset children
+// stretch to fill the cell and center content internally — never items-center
+// on the shell grid, or short clusters (projects) float 1–2px off sessions.
+//
+// `rowPadX` is the BODY's padding: the lead's inset, plus the gap the label
+// keeps from the actions column, both inside the row's click target.
+// `rowPadTrail` is the row's own trailing inset and belongs to the SHELL — the
+// only box containing both the actions column AND the card's in-body cluster,
+// so one class insets every trailing thing a row can render. Owned anywhere
+// else, the age / chips / kebab sit flush on the border box, which is exactly
+// where a working row paints its arc (`.arc-row` has zero standoff) — the ring
+// ran through the text.
 
-// The section header's "+" button, hover-revealed (group/section lives on
-// SidebarSectionHeader), mirroring the artifacts/file browser header
-// affordances. focus-visible keeps them keyboard-reachable.
-const HEADER_ACTION_BTN =
-  'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100'
+const rowMinH = 'min-h-[1.625rem]'
+const rowPadX = 'pl-2 pr-2'
+const rowPadTrail = 'pr-2'
+const rowGap = 'gap-1.5'
+const rowLead = 'grid size-3.5 shrink-0 place-items-center'
+const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
+// `truncate` is overflow:hidden. `leading-none` (line-height: 1) makes the
+// line box equal the em-square, so glyph ink that sticks out — Segoe UI on
+// Windows is ~1.33em — gets shaved. 1.35 leaves room; the shell still owns
+// row height, so the extra leading just centers.
+export const SIDEBAR_TRUNCATED_LEADING = 'leading-[1.35]' as const
+const rowLabel = cn('min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary)', SIDEBAR_TRUNCATED_LEADING)
 
 // The sessions section header's "+" — the flat list's top-level new-session
 // control. Also a drag source, the same gesture as the nav's "New session"
@@ -183,12 +200,7 @@ export function SidebarRowShell({
 }: React.ComponentProps<'div'> & { actions?: React.ReactNode; actionsClassName?: string }) {
   return (
     <div
-      className={cn(
-        SIDEBAR_ROW_MIN_H,
-        SIDEBAR_ROW_PAD_TRAIL,
-        'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
-        className
-      )}
+      className={cn(rowMinH, rowPadTrail, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)}
       {...props}
     >
       {children}

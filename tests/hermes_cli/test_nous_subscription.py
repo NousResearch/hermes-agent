@@ -398,7 +398,7 @@ def test_prompt_enable_tool_gateway_choosing_declined_tool_clears_decline(monkey
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     """apply_nous_managed_defaults must store the managed 'nous' selection
     when a Nous subscriber selects video_gen without a direct FAL_KEY."""
-    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
     monkeypatch.setattr(

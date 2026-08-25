@@ -1,9 +1,6 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
-import type { HermesNotification } from '../electron/notification-types'
-import type { PoolLimits } from '../electron/pool-limits'
-
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -148,15 +145,12 @@ declare global {
           clientPlacement: boolean
           controlDrag: boolean
           nativeDrag: boolean
-          solid: boolean
           workspaceTransfer: boolean
         }
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
-        beginMove: () => void
-        endMove: () => void
-        moveBy: (delta: { width: number; height: number }) => void
+        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
         setWorkspaceTransfer?: (transferring: boolean) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
         resetLayout: () => Promise<{ ok: boolean }>
@@ -302,7 +296,6 @@ declare global {
         connectionId?: null | string
         path: string
         profile?: null | string
-        sessionId?: string
         suggestedName?: string
       }) => Promise<{
         canceled?: boolean
@@ -326,14 +319,7 @@ declare global {
       onContextMenuSpellcheck?: (
         callback: (payload: { misspelledWord: string; suggestions: string[] }) => void
       ) => () => void
-      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string, name?: string) => Promise<string>
-      /** Crop the in-app browser guest. `rect` is CSS pixels in the page viewport. */
-      capturePreview?: (payload: {
-        rect?: { height: number; width: number; x: number; y: number }
-        viewport?: { height: number; width: number }
-        webContentsId: number
-      }) => Promise<string>
-      savePastedText: (text: string) => Promise<string>
+      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
@@ -350,16 +336,6 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
-      /** Launch flag: the app was started with --local, enabling the
-       *  local-models GUI surfaces. Absent/false = every local surface hides. */
-      localModelsEnabled?: boolean
-      /** Launch flag: the Nous free tier is on for this launch
-       *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
-       *  main process also stamps onto every backend it spawns. */
-      guestOnboardingEnabled?: boolean
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
@@ -416,8 +392,11 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
       logsRoot?: () => Promise<string>
-      /** Re-copy unified packages' desktop halves into the app-level root; returns touched paths. */
-      reconcileDesktopPlugins?: () => Promise<string[]>
+      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
+      // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
+      // so one agent-plugin package can ship a desktop UI half. Optional:
+      // older Electron shells predate it — the scanner then skips this root.
+      agentPluginsRoot?: () => Promise<string>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -501,13 +480,6 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
-      setActiveConnectionRoute?: (
-        route: {
-          connectionId?: null | string
-          profile?: string
-          registryScoped?: boolean
-        } | null
-      ) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
@@ -1294,11 +1266,23 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-  // Passive background read that must never cold-start a pooled backend (#103375).
-  // When true and the target profile has no warm pool entry, the main process
-  // fails fast without spawning a child or consuming a pool slot, so background
-  // tile reconciles cannot starve interactive opens.
-  passive?: boolean
+}
+
+export interface HermesNotification {
+  title?: string
+  body?: string
+  silent?: boolean
+  kind?: string
+  sessionId?: string
+  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
+  tag?: string
+  /** Absolute icon path for Electron `Notification`. */
+  icon?: string
+  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
+  activate?: string
+  /** Renderer handle for onActivate / onAction callbacks. */
+  notifyId?: string
+  actions?: { id: string; text: string; activate?: string }[]
 }
 
 export interface HermesPreviewTarget {

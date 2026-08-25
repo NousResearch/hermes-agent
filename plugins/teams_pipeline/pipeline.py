@@ -24,7 +24,8 @@ from plugins.teams_pipeline.meetings import (
     list_recording_artifacts,
     looks_like_transcript_id,
     parse_graph_meeting_resource,
-    resolve_meeting_reference)
+    resolve_meeting_reference,
+)
 from plugins.teams_pipeline.models import (
     MeetingArtifact, TeamsMeetingPipelineJob, TeamsMeetingRef, TeamsMeetingSummaryPayload)
 from plugins.teams_pipeline.store import TeamsPipelineStore
@@ -201,10 +202,15 @@ class TeamsMeetingPipeline:
             job_id=f"teams-job-{uuid.uuid4().hex[:12]}", event_id=event_id, dedupe_key=event_id, status="received",
             source_event_type=str(notification.get("changeType") or "graph.notification"),
             meeting_ref=TeamsMeetingRef(
-                meeting_id=str(meeting_id), organizer_user_id=organizer_user_id,
+                meeting_id=str(meeting_id),
+                organizer_user_id=organizer_user_id,
                 tenant_id=resource_data.get("tenantId") or notification.get("tenantId"),
-                metadata={"notification": dict(notification), "join_web_url": resource_data.get("joinWebUrl"),
-                          "call_record_id": resource_data.get("callRecordId") or notification.get("callRecordId"), **extra_metadata},
+                metadata={
+                    "notification": dict(notification),
+                    "join_web_url": resource_data.get("joinWebUrl"),
+                    "call_record_id": resource_data.get("callRecordId") or notification.get("callRecordId"),
+                    **extra_metadata,
+                },
             ),
         )
         self.store.upsert_job(job.job_id, job.to_dict())
@@ -224,8 +230,64 @@ class TeamsMeetingPipeline:
             raise TeamsPipelineError(f"Job {job.job_id} has no meeting_ref.")
         artifacts: list[MeetingArtifact] = []
         try:
-            job, resolved_meeting, notification = await self._resolve_meeting(job, meeting_ref)
-            job, transcript_text = await self._obtain_transcript(job, resolved_meeting, artifacts)
+            job = self._persist_job(job, status="resolving_meeting")
+            notification = meeting_ref.metadata.get("notification") if isinstance(meeting_ref.metadata, dict) else {}
+            meeting_id = meeting_ref.meeting_id
+            organizer_user_id = meeting_ref.organizer_user_id
+            if isinstance(notification, dict) and notification:
+                parsed_id, parsed_org, _extra = _meeting_ids_from_notification(notification)
+                if parsed_org:
+                    organizer_user_id = organizer_user_id or parsed_org
+                if parsed_id and not looks_like_transcript_id(parsed_id):
+                    meeting_id = parsed_id
+            resolved_meeting = await resolve_meeting_reference(
+                self.graph_client,
+                meeting_id=meeting_id,
+                join_web_url=meeting_ref.join_web_url or meeting_ref.metadata.get("join_web_url"),
+                tenant_id=meeting_ref.tenant_id,
+                organizer_user_id=organizer_user_id,
+            )
+            if meeting_ref.metadata:
+                resolved_meeting.metadata = {**meeting_ref.metadata, **resolved_meeting.metadata}
+            if not resolved_meeting.organizer_user_id:
+                resolved_meeting.organizer_user_id = meeting_ref.organizer_user_id
+            job.meeting_ref = resolved_meeting
+            job = self._persist_job(job, meeting_ref=resolved_meeting.to_dict())
+
+            transcript_text: str | None = None
+            if self.config.transcript_preferred:
+                job = self._persist_job(job, status="fetching_transcript")
+                transcript_artifact, transcript_text = await fetch_preferred_transcript_text(
+                    self.graph_client, resolved_meeting
+                )
+                if transcript_artifact and transcript_text:
+                    artifacts.append(transcript_artifact)
+                    if len(transcript_text.strip()) < self.config.transcript_min_chars:
+                        transcript_text = None
+
+            if not transcript_text:
+                if self.config.transcript_required:
+                    raise TeamsPipelineRetryableError(
+                        f"Transcript unavailable for meeting {resolved_meeting.meeting_id}."
+                    )
+                if not self.config.transcription_fallback:
+                    raise TeamsPipelineArtifactNotFoundError(
+                        "No transcript available and transcription fallback disabled "
+                        f"for {resolved_meeting.meeting_id}."
+                    )
+                job = self._persist_job(job, status="downloading_recording")
+                recordings = await list_recording_artifacts(self.graph_client, resolved_meeting)
+                if not recordings:
+                    raise TeamsPipelineRetryableError(
+                        f"Recording unavailable for meeting {resolved_meeting.meeting_id}."
+                    )
+                recording = recordings[0]
+                artifacts.append(recording)
+                transcript_text = await self._transcribe_recording(job, resolved_meeting, recording)
+                job = self._persist_job(job, selected_artifact_strategy="recording_stt_fallback")
+            else:
+                job = self._persist_job(job, selected_artifact_strategy="transcript_first")
+
             call_record_id = notification.get("callRecordId") or (meeting_ref.metadata or {}).get("call_record_id")
             call_record = await enrich_meeting_with_call_record(self.graph_client, resolved_meeting, call_record_id=call_record_id)
             if call_record is not None:
@@ -402,6 +464,95 @@ def _collect_participants(meeting_ref: TeamsMeetingRef) -> list[str]:
 
 def _odata_field(payload: dict[str, Any], name: str) -> Any:
     return payload.get(f"@{name}") or payload.get(name)
+
+
+def _organizer_user_id_from_payload(payload: dict[str, Any]) -> str | None:
+    organizer = payload.get("meetingOrganizer") or payload.get("organizer")
+    if isinstance(organizer, dict):
+        identity = organizer.get("identity")
+        user = organizer.get("user")
+        if user is None and isinstance(identity, dict):
+            user = identity.get("user")
+        if isinstance(user, dict) and user.get("id"):
+            return str(user["id"]).strip() or None
+    return (
+        str(payload.get("organizerUserId") or payload.get("organizer_user_id") or "").strip() or None
+    )
+
+
+def _resource_data_id_is_artifact(notification: dict[str, Any], resource_data: dict[str, Any]) -> bool:
+    odata_type = str(_odata_field(resource_data, "odata.type") or "")
+    if "calltranscript" in odata_type.lower() or "callrecording" in odata_type.lower():
+        return True
+    resource = str(notification.get("resource") or "").lower()
+    if "getalltranscripts" in resource or "getallrecordings" in resource:
+        return True
+    if "/transcripts" in resource or "/recordings" in resource:
+        return True
+    return looks_like_transcript_id(str(resource_data.get("id") or ""), odata_type=odata_type)
+
+
+def _meeting_ids_from_notification(notification: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
+    resource_data = notification.get("resourceData") or {}
+    if not isinstance(resource_data, dict):
+        resource_data = {}
+
+    parsed_paths = [
+        parse_graph_meeting_resource(str(_odata_field(resource_data, "odata.id") or "")),
+        parse_graph_meeting_resource(str(notification.get("resource") or "")),
+        parse_graph_meeting_resource(str(resource_data.get("transcriptContentUrl") or "")),
+    ]
+
+    organizer_user_id = next(
+        (parsed["organizer_user_id"] for parsed in parsed_paths if parsed.get("organizer_user_id")),
+        None,
+    ) or _organizer_user_id_from_payload(resource_data) or _organizer_user_id_from_payload(notification)
+
+    meeting_id = next(
+        (parsed["meeting_id"] for parsed in parsed_paths if parsed.get("meeting_id")),
+        None,
+    ) or (
+        str(resource_data.get("meetingId") or notification.get("meetingId") or "").strip() or None
+    )
+
+    transcript_id = next(
+        (parsed["transcript_id"] for parsed in parsed_paths if parsed.get("transcript_id")),
+        None,
+    )
+    recording_id = next(
+        (parsed["recording_id"] for parsed in parsed_paths if parsed.get("recording_id")),
+        None,
+    )
+
+    resource_data_id = str(resource_data.get("id") or "").strip() or None
+    if resource_data_id and not _resource_data_id_is_artifact(notification, resource_data):
+        meeting_id = meeting_id or resource_data_id
+    elif resource_data_id and not transcript_id and looks_like_transcript_id(
+        resource_data_id, odata_type=str(_odata_field(resource_data, "odata.type") or "")
+    ):
+        transcript_id = resource_data_id
+
+    meeting_id = (
+        meeting_id
+        or _extract_meeting_id_from_resource(str(notification.get("resource") or ""))
+        or transcript_id
+        or recording_id
+        or TeamsPipelineStore.build_notification_receipt_key(notification)
+    )
+
+    extra_metadata = {
+        key: value
+        for key, value in {
+            "transcript_id": transcript_id,
+            "recording_id": recording_id,
+        }.items()
+        if value
+    }
+    return str(meeting_id), organizer_user_id, extra_metadata
+
+
+def _extract_meeting_id_from_resource(resource: str) -> str | None:
+    return parse_graph_meeting_resource(resource).get("meeting_id")
 
 
 def _organizer_user_id_from_payload(payload: dict[str, Any]) -> str | None:

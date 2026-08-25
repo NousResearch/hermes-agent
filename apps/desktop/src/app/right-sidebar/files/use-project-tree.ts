@@ -182,11 +182,7 @@ async function fallbackRootFor(cwd: string, sourceIsRemote: boolean): Promise<st
 
 async function loadRoot(
   cwd: string,
-  {
-    connectionKey = desktopFsCacheKey(),
-    force = false,
-    reset = false
-  }: { connectionKey?: string; force?: boolean; reset?: boolean } = {}
+  { connectionKey = desktopFsCacheKey(), force = false }: { connectionKey?: string; force?: boolean } = {}
 ) {
   if (!cwd) {
     clearProjectTree()
@@ -479,9 +475,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
 
     if (connectionChanged) {
       clearProjectDirCache()
-      // Same path, different machine: what is on screen was read from the old
-      // backend, so it has to go even though the cwd string is unchanged.
-      void loadRoot(cwd, { connectionKey, force: true, reset: true })
+      void loadRoot(cwd, { connectionKey, force: true })
 
       return
     }

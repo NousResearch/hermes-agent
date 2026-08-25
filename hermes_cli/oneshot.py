@@ -88,6 +88,38 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
         return set(), set()
 
 
+def _normalize_skills(skills: object = None) -> list[str]:
+    """Normalize repeated/comma-separated skill flags and preserve order."""
+    normalized = _normalize_toolsets(skills) or []
+    return list(dict.fromkeys(normalized))
+
+
+def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
+    """Load requested skills using the same partial-success contract as CLI chat."""
+    parsed_skills = _normalize_skills(skills)
+    if not parsed_skills:
+        return None
+
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+        parsed_skills
+    )
+    if missing_skills:
+        missing_display = ", ".join(missing_skills)
+        if loaded_skills:
+            logging.warning(
+                "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
+                "List available skills with `hermes skills list`.",
+                missing_display,
+                ", ".join(loaded_skills),
+            )
+        else:
+            raise ValueError(f"Unknown skill(s): {missing_display}")
+
+    return skills_prompt or None
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -172,10 +204,20 @@ def run_oneshot(
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
-    Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
-    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    Args:
+        prompt: The user message to send.
+        model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
+            env var, then config.yaml's model.default / model.model.
+        provider: Optional provider override. Falls back to config.yaml's
+            model.provider, then "auto".
+        toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional repeated/comma-separated skill identifiers to preload.
+        usage_file: Optional path; when set, a JSON usage report (estimated
+            cost, token counts, model, api_calls) is written there after the
+            run — even when the run fails — so pipelines can account for
+            spend per invocation.
+
+    Returns the exit code.  The caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -214,7 +256,27 @@ def run_oneshot(
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
-    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+    try:
+        with redirect_stdout(devnull), redirect_stderr(devnull):
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                    skills=skills,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything that escapes the agent (including OSError
+                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                # the real stderr instead of crashing past the redirect with a
+                # traceback that the caller never sees. A silent exit in a
+                # cron / SSH / subprocess context is the worst failure mode.
+                # See #30623.
+                failure = exc
+    finally:
         try:
             response, result = _run_agent(
                 prompt,
@@ -255,6 +317,16 @@ def run_oneshot(
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+
+    # Provider failures often include a human-readable final_response (for
+    # example an HTTP 400 model error). Preserve that text on stdout, but do
+    # not let automation interpret the run as successful merely because the
+    # error was printable.
+    if result.get("failed"):
+        return 2
+
+    if result.get("partial") and not (response or "").strip():
+        return 2
 
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
@@ -416,8 +488,6 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
-    resume: Optional[str] = None,
-    reasoning: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -470,8 +540,11 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
-    # The try spans agent construction (not just ``chat``) so the store is always closed, even when
-    # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
+    session_db = _create_session_db_for_oneshot()
+    # The try spans agent construction (not just ``chat``) so the SQLite store
+    # opened above is always closed — including when ``AIAgent(...)`` itself
+    # raises on a provider/config error. The one-shot exit path hard-exits via
+    # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
         agent = AIAgent(
@@ -487,12 +560,19 @@ def _run_agent(
             session_db=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
-            fallback_model=get_fallback_chain(cfg) or None,
+            fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
-            reasoning_config=reasoning_config,
-            # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
-            # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
-            # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
+            # Interactive callbacks are intentionally NOT wired beyond this
+            # one.  In oneshot mode there's no user sitting at a terminal:
+            #   - clarify  → returns a synthetic "pick a default" instruction
+            #                so the agent continues instead of stalling on
+            #                the tool's built-in "not available" error
+            #   - sudo password prompt → terminal_tool gates on
+            #                HERMES_INTERACTIVE which we never set
+            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
+            #                (set above); also falls back to deny on non-tty
+            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
+            #   - skill secret capture → returns gracefully when no callback set
             clarify_callback=_oneshot_clarify_callback,
         )
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
@@ -503,42 +583,42 @@ def _run_agent(
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         return (result.get("final_response") or "", result)
     finally:
-        _close_agent(agent, session_db)
+        # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
+        # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
+        # close the agent explicitly because the hard-exit path skips finalizers.
+        if agent is not None:
+            # Linger (bounded) for background processes this turn spawned with
+            # notify_on_complete=true BEFORE agent.close(): close() calls
+            # process_registry.kill_all(task_id) and the dying parent owns the
+            # children's stdout pipes, so exiting now destroys in-flight
+            # deliveries — including Bot Mode handoff replies dispatched from
+            # a short-lived recipient (#90879).
+            try:
+                from tools.process_registry import process_registry
 
-
-def _quietly(what: str, fn) -> None:
-    """Run a cleanup step, logging (never raising) on failure."""
-    try:
-        fn()
-    except Exception:
-        logging.debug("oneshot %s failed", what, exc_info=True)
-
-
-def _linger_for_background_completions() -> None:
-    # Linger (bounded) for background processes this turn spawned with notify_on_complete=true BEFORE
-    # agent.close(): close() calls process_registry.kill_all(task_id) and the dying parent owns the
-    # children's stdout pipes, so exiting now destroys in-flight deliveries — including Bot Mode handoff
-    # replies dispatched from a short-lived recipient (#90879).
-    from tools.process_registry import process_registry
-
-    process_registry.wait_for_pending_completions(None)
-
-
-def _close_agent(agent, session_db) -> None:
-    """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
-    oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
-    if agent is not None:
-        # Linger (bounded) for notify_on_complete background processes BEFORE agent.close():
-        # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
-        # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
-        _quietly("background completion wait", _linger_for_background_completions)
-        session_messages = getattr(agent, "_session_messages", None)
-        memory_args = (session_messages,) if isinstance(session_messages, list) else ()
-        _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))
-        _quietly("agent cleanup", lambda: agent.close())
-    # agent.close() ends the session but leaves the connection open; close it to checkpoint the WAL.
-    if session_db is not None:
-        _quietly("session store cleanup", lambda: session_db.close())
+                process_registry.wait_for_pending_completions(None)
+            except Exception:
+                logging.debug("oneshot background completion wait failed", exc_info=True)
+            try:
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+            except Exception:
+                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
+            try:
+                agent.close()
+            except Exception:
+                logging.debug("oneshot agent cleanup failed", exc_info=True)
+        # agent.close() calls session_db.end_session() but leaves the connection
+        # open; close it here to checkpoint the WAL before os._exit skips
+        # finalizers.
+        if session_db is not None:
+            try:
+                session_db.close()
+            except Exception:
+                logging.debug("oneshot session store cleanup failed", exc_info=True)
 
 
 def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:

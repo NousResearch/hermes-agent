@@ -30,7 +30,160 @@ from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
 logger = logging.getLogger(__name__)
-# cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
+
+_MISSING = object()
+
+
+def _mcp_field(obj, snake: str, camel: str, default=None):
+    """Read an MCP model field across the 1.x -> 2.x field rename.
+
+    mcp 2.0 renamed model fields to snake_case, keeping camelCase only as a
+    serialization alias that pydantic does not expose to attribute access. A
+    plain ``getattr(result, "isError", False)`` therefore reads False for
+    *every* result on 2.x — a denied or failed cua-driver call would be
+    treated as a success. Reading both spellings keeps this correct on either
+    SDK generation.
+
+    Deliberately duplicated from ``tools.mcp_tool.mcp_field`` rather than
+    imported: computer_use talks to cua-driver over its own stdio client and
+    does not otherwise load the (much larger) config-driven MCP client module.
+    """
+    value = getattr(obj, snake, _MISSING)
+    if value is not _MISSING:
+        return value
+    value = getattr(obj, camel, _MISSING)
+    return default if value is _MISSING else value
+
+
+def _action_result_from(
+    name: str,
+    ok: bool,
+    message: str,
+    meta: Dict[str, Any],
+    structured: Dict[str, Any],
+    *,
+    requested_delivery: Optional[str] = None,
+) -> ActionResult:
+    """Build an ActionResult, lifting cua-driver's structured verdict.
+
+    All structured fields are additive: a driver that omits
+    ``structuredContent`` (or any individual field) leaves the corresponding
+    ActionResult attribute ``None``, so callers and tests see unchanged
+    behavior on old drivers. See the action response shape in
+    cua-driver's mcp-tool-notes and NousResearch/hermes-agent#67052.
+    """
+    sc = structured if isinstance(structured, dict) else {}
+
+    def _pick(key: str) -> Any:
+        # structuredContent is canonical; fall back to a flattened meta copy.
+        if key in sc:
+            return sc.get(key)
+        return meta.get(key)
+
+    verified = _pick("verified")
+    if not isinstance(verified, bool):
+        verified = None
+    effect = _pick("effect")
+    if not isinstance(effect, str):
+        effect = None
+    escalation = _pick("escalation")
+    if not isinstance(escalation, dict):
+        escalation = None
+    path = _pick("path")
+    if not isinstance(path, str):
+        path = None
+    degraded = _pick("degraded")
+    if not isinstance(degraded, bool):
+        degraded = None
+    # Refusal/limitation code — drivers spell it "code" or "reason_code".
+    code = _pick("code") or _pick("reason_code")
+    if not isinstance(code, str):
+        code = None
+    # Echo the delivery mode the caller actually requested (the driver's
+    # `path` records the rung that ran; this records what we asked for).
+    delivery_mode = requested_delivery if isinstance(requested_delivery, str) else None
+
+    return ActionResult(
+        ok=ok,
+        action=name,
+        message=message,
+        meta=meta,
+        verified=verified,
+        effect=effect,
+        escalation=escalation,
+        path=path,
+        degraded=degraded,
+        delivery_mode=delivery_mode,
+        code=code,
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Update checking
+# ---------------------------------------------------------------------------
+#
+# cua-driver ships a native `check-update` verb (and a `check_for_update` MCP
+# tool) that compares the installed binary against the latest GitHub release —
+# the source of truth — and caches the result (~20h). We prefer that over a
+# hardcoded version floor, which would rot and can't know what "latest" is.
+#
+# There is intentionally no version *pin* knob: the upstream installer always
+# fetches the latest release, so a `HERMES_CUA_DRIVER_VERSION` env var would
+# only have *looked* like it pinned. For a reproducible version, point
+# `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
+
+_CUA_DRIVER_CMD_ENV = "HERMES_CUA_DRIVER_CMD"
+_CUA_DRIVER_DEFAULT_CMD = "cua-driver"
+_CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
+                            # driver doesn't expose `manifest` — see
+                            # `_resolve_mcp_invocation` below)
+
+# Whole-screen / desktop capture. cua-driver is a window-oriented driver —
+# its `get_window_state` / `screenshot` tools capture a single window (by
+# pid + window_id), and there is no MCP tool that captures the entire virtual
+# desktop or an arbitrary monitor as one image. But the OS shell surfaces
+# themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
+# that show up in `list_windows`, so "click the taskbar" is reachable by
+# targeting those windows.
+#
+# Two distinct whole-screen intents, two lanes:
+#   * app="screen" (or "fullscreen"/"full screen"/"all") → a real composited
+#     capture of everything currently displayed, via cua-driver's
+#     `get_desktop_state`. Pixels only — no element tree.
+#   * app="desktop" → the OS shell/desktop window (wallpaper + icons) resolved
+#     through list_windows, WITH interactable elements (desktop icons).
+_FULL_SCREEN_SENTINELS = {"screen", "fullscreen", "full screen", "all"}
+_DESKTOP_SHELL_SENTINELS = {"desktop"}
+# Backwards-compatible union — membership means "some whole-screen intent".
+_SCREEN_CAPTURE_SENTINELS = _FULL_SCREEN_SENTINELS | _DESKTOP_SHELL_SENTINELS
+
+# Known shell/desktop window identifiers across platforms. Matched
+# case-insensitively as a substring against both the window's app_name and
+# its title (cua-driver surfaces the Win32 class name / app name here).
+#   Windows: Progman / WorkerW back the desktop; Shell_TrayWnd is the taskbar.
+#   macOS:   Finder owns the desktop; the menu bar / Dock are the shell.
+_DESKTOP_WINDOW_NAMES = (
+    "progman", "workerw", "program manager",  # Windows desktop
+    "shell_traywnd", "taskbar",               # Windows taskbar
+    "finder", "desktop", "dock",              # macOS desktop / shell
+)
+
+# Linux/X11 can surface GNOME Shell / desktop backdrop windows before real app
+# windows and cua-driver 0.6.x currently does not assign a useful z-order for
+# them. These windows are targetable X11 windows but do not produce screenshots
+# through get_window_state, so default app capture must skip them.
+_NON_APP_WINDOW_TITLE_PREFIXES = (
+    "@!",          # GNOME Shell background/monitor helper windows
+    "Desktop",
+    "gnome-shell",
+    "GNOME Shell",
+)
+
+
+# Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
+# Setting it to "0" disables telemetry; absence => the binary's own default
+# (telemetry ON upstream).
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
@@ -214,7 +367,1299 @@ def _maybe_nudge_update() -> None:
     threading.Thread(target=_run, name="cua-driver-update-check", daemon=True).start()
 
 
-class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
+def cua_driver_install_hint() -> str:
+    if sys.platform == "win32":
+        installer = (
+            '  irm https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.ps1 | iex'
+        )
+    else:
+        installer = (
+            '  /bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.sh)"'
+        )
+    return (
+        "cua-driver is not installed. Install with one of:\n"
+        "  hermes computer-use install\n"
+        "Or run the upstream installer directly:\n"
+        f"{installer}\n"
+        "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
+    )
+
+
+def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
+    """Parse UIElement list from get_window_state AX tree markdown.
+
+    Last-resort fallback for cua-driver builds that don't carry the
+    canonical ``structuredContent.elements`` array (see
+    ``_parse_elements_from_structured`` — Surface 2 of #47072 prefers
+    that path).
+
+    Captures the label whichever form cua-driver used: ``= "value"``,
+    ``"quoted"``, ``(parenthesised)``, or ``id=Label``. Bounds always
+    come back ``(0, 0, 0, 0)`` because the markdown surface doesn't
+    carry them — yet another reason to prefer the structured path;
+    element-index clicks don't need them (the driver resolves the index
+    to a frame internally).
+    """
+    elements = []
+    for m in _ELEMENT_LINE_RE.finditer(markdown):
+        # groups 3-6: value / quoted / paren / id= label (first non-None wins)
+        label = m.group(3) or m.group(4) or m.group(5) or m.group(6) or ""
+        elements.append(UIElement(
+            index=int(m.group(1)),
+            role=m.group(2),
+            label=label,
+            bounds=(0, 0, 0, 0),
+        ))
+    return elements
+
+
+def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
+    """Surface 2 of NousResearch/hermes-agent#47072: read the canonical
+    ``structuredContent.elements`` array cua-driver-rs emits on every
+    ``get_window_state`` response (trycua/cua#1961).
+
+    Each entry has at minimum ``element_index``, ``role``, ``label``;
+    ``frame`` (``{x, y, w, h}``) is included whenever the AT-SPI /
+    AXFrame call returned usable bounds. Older code parsed the same
+    information out of the markdown tree via a regex (lossy: bounds
+    were always ``(0, 0, 0, 0)``) — this path preserves the real
+    frame so downstream consumers (e.g. ``UIElement.center()``) work
+    against pixel coordinates instead of just the index lookup.
+
+    Unknown / malformed entries are skipped rather than failing the
+    whole walk — the wrapper degrades to "fewer elements" rather than
+    "no elements" on a bad row.
+    """
+    elements: List[UIElement] = []
+    for raw in raw_elements:
+        if not isinstance(raw, dict):
+            continue
+        idx = raw.get("element_index")
+        if not isinstance(idx, int):
+            continue
+        role = raw.get("role") if isinstance(raw.get("role"), str) else ""
+        label = raw.get("label") if isinstance(raw.get("label"), str) else ""
+        frame = raw.get("frame") if isinstance(raw.get("frame"), dict) else None
+        bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        if frame:
+            try:
+                bounds = (
+                    int(frame.get("x", 0)),
+                    int(frame.get("y", 0)),
+                    int(frame.get("w", 0)),
+                    int(frame.get("h", 0)),
+                )
+            except (TypeError, ValueError):
+                bounds = (0, 0, 0, 0)
+        # Surface 6: opaque element_token. cua-driver-rs format is
+        # `s{snapshot_hex}:{index}`. We treat it as a black-box string —
+        # the driver owns the parse + LRU semantics.
+        raw_token = raw.get("element_token")
+        token = raw_token if isinstance(raw_token, str) and raw_token else None
+        elements.append(UIElement(
+            index=idx,
+            role=role,
+            label=label,
+            bounds=bounds,
+            element_token=token,
+        ))
+    return elements
+
+
+def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
+    """Best-effort PNG/JPEG dimension sniffing without extra dependencies."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        if width > 0 and height > 0:
+            return width, height
+
+    if raw.startswith(b"\xff\xd8"):
+        i = 2
+        n = len(raw)
+        while i + 9 < n:
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            marker = raw[i + 1]
+            i += 2
+            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                continue
+            if i + 2 > n:
+                break
+            segment_len = int.from_bytes(raw[i:i + 2], "big")
+            if segment_len < 2 or i + segment_len > n:
+                break
+            if marker in {
+                0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+            }:
+                if segment_len >= 7:
+                    height = int.from_bytes(raw[i + 3:i + 5], "big")
+                    width = int.from_bytes(raw[i + 5:i + 7], "big")
+                    if width > 0 and height > 0:
+                        return width, height
+                break
+            i += segment_len
+
+    return 0, 0
+
+
+def _split_tree_text(full_text: str) -> Tuple[str, str]:
+    """Split get_window_state text into (summary_line, tree_markdown)."""
+    lines = full_text.split("\n", 1)
+    summary = lines[0]
+    tree = lines[1] if len(lines) > 1 else ""
+    return summary, tree
+
+
+def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
+    """Parse a key string like 'cmd+s' into (key, modifiers).
+
+    Returns (key, modifiers) where key is the non-modifier key and modifiers
+    is a list of modifier names (cmd, shift, option, ctrl).
+    """
+    MODIFIER_NAMES = {"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"}
+    KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
+
+    parts = [p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()]
+    modifiers = []
+    key = None
+    for part in parts:
+        normalized = KEY_ALIASES.get(part, part)
+        if normalized in MODIFIER_NAMES:
+            modifiers.append(normalized)
+        else:
+            key = part  # last non-modifier wins
+    return key, modifiers
+
+
+# ---------------------------------------------------------------------------
+# Asyncio bridge — one long-lived loop on a background thread
+# ---------------------------------------------------------------------------
+
+class _AsyncBridge:
+    """Runs one asyncio loop on a daemon thread; marshals coroutines from the caller."""
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._ready = threading.Event()
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._ready.clear()
+
+        def _run() -> None:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._ready.set()
+            try:
+                self._loop.run_forever()
+            finally:
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
+
+        self._thread = threading.Thread(target=_run, daemon=True, name="cua-driver-loop")
+        self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise RuntimeError("cua-driver asyncio bridge failed to start")
+
+    def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
+        from agent.async_utils import safe_schedule_threadsafe
+        if not self._loop or not self._thread or not self._thread.is_alive():
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            raise RuntimeError("cua-driver bridge not started")
+        fut = safe_schedule_threadsafe(coro, self._loop)
+        if fut is None:
+            raise RuntimeError("cua-driver bridge not started")
+        return fut.result(timeout=timeout)
+
+    def stop(self) -> None:
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._loop = None
+
+
+# ---------------------------------------------------------------------------
+# MCP session (lazy, shared across tool calls)
+# ---------------------------------------------------------------------------
+
+class _CuaDriverSession:
+    """Holds the mcp ClientSession. Spawned lazily; re-entered on drop.
+
+    Lifecycle ownership: a single long-running coroutine
+    (`_lifecycle_coro`) opens both the stdio_client and ClientSession
+    contexts, populates capabilities, sets `_ready_event`, and then waits
+    on `_shutdown_event`. When shutdown is signalled the same coroutine
+    closes the contexts — keeping anyio's cancel-scope task-identity
+    invariant intact (the bridge schedules each `bridge.run(coro)` as a
+    NEW task, so opening contexts in one and closing them in another
+    raises "Attempted to exit cancel scope in a different task").
+    Tool calls run in their own short-lived tasks; they only touch the
+    session object, never the surrounding contexts.
+    """
+
+    def __init__(
+        self,
+        bridge: _AsyncBridge,
+        embedded_daemon: Optional[_EmbeddedCuaDaemon] = None,
+    ) -> None:
+        self._bridge = bridge
+        self._embedded_daemon = embedded_daemon
+        self._session = None
+        self._lock = threading.Lock()
+        self._started = False
+        # Surface 4 of NousResearch/hermes-agent#47072: per-tool
+        # capability-token sets, populated from `tools/list` at session
+        # init. Keys are tool names (e.g. "click", "get_window_state");
+        # values are sets of capability strings (e.g.
+        # "accessibility.element_tokens", "input.keyboard.type.terminal_safe").
+        # Empty until the session starts; consumers should call
+        # `supports_capability` rather than reading directly.
+        self._capabilities: Dict[str, set] = {}
+        # Raw input schemas are the compatibility source of truth for action
+        # properties.  cua-driver 0.9-era builds advertise delivery_mode in
+        # inputSchema while intentionally omitting the old, fabricated
+        # ``input.delivery_mode`` capability token.
+        self._tool_schemas: Dict[str, Dict[str, Any]] = {}
+        self._capability_version: str = ""
+        # Lifecycle plumbing — see class docstring above.
+        self._ready_event = threading.Event()
+        self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
+        self._lifecycle_future = None  # concurrent.futures.Future
+        self._setup_error: Optional[BaseException] = None
+        # Stable driver-side identity declared through start_session.
+        # Used to revive a logical ended-session rejection without
+        # recursive call_tool re-entry or backend-owned state (#71166).
+        self._declared_session_id: Optional[str] = None
+        # A macOS standard-mode launch grant belongs to the app daemon that
+        # receives it. Select and own a private endpoint so an existing
+        # default daemon cannot reject or silently miss the requested grant.
+        self._owned_standard_runtime_socket: Optional[str] = None
+        self._transport_generation = 0
+        self._transport_reset_callback: Optional[Any] = None
+
+    def _require_started(self) -> None:
+        if not self._started:
+            raise RuntimeError("cua-driver session not started")
+
+    async def _lifecycle_coro(self) -> None:
+        """Long-lived owner of the stdio MCP contexts. Opens, signals
+        ready, blocks on shutdown, then cleans up. enter + exit happen
+        in the SAME asyncio task, so anyio's cancel-scope invariant
+        holds — fixing the "Attempted to exit cancel scope in a
+        different task than it was entered in" warning emitted by the
+        previous _aenter/_aexit split.
+        """
+        import time as _time
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from tools.environments.local import _sanitize_subprocess_env
+
+        # Build the shutdown event on the loop's thread so the asyncio
+        # primitive belongs to the correct loop.
+        self._shutdown_event = asyncio.Event()
+        _t0 = _time.monotonic()
+        # Phase marker surfaced by the ready-timeout error (issue #57025):
+        # when startup wedges, the caller reports HOW FAR it got instead of
+        # an opaque "never reached ready".
+        self._startup_phase = "binary-check"
+
+        try:
+            driver_cmd = resolve_cua_driver_cmd()
+            if not driver_cmd:
+                raise RuntimeError(cua_driver_install_hint())
+
+            # Surface 8: ask cua-driver itself which subcommand spawns
+            # the MCP server, instead of hardcoding ["mcp"]. Falls back
+            # transparently for older drivers / any discovery failure.
+            self._startup_phase = "manifest-discovery"
+            if self._embedded_daemon is not None:
+                command, args = self._embedded_daemon.proxy_invocation()
+                child_env = self._embedded_daemon.child_env()
+            else:
+                command, args = _resolve_mcp_invocation(driver_cmd)
+                args, owned_socket = _standard_runtime_launch_args(
+                    args,
+                    grant_existing_profile=_cua_grant_existing_profile(),
+                    platform=sys.platform,
+                    socket_path=self._owned_standard_runtime_socket,
+                )
+                self._owned_standard_runtime_socket = owned_socket
+                child_env = cua_driver_child_env()
+            _t_manifest = _time.monotonic()
+            params = StdioServerParameters(
+                command=command,
+                args=args,
+                # Apply the telemetry policy first (default: disabled), then
+                # sanitize Hermes-managed secrets out of the child env.
+                env=_sanitize_subprocess_env(child_env),
+            )
+
+            async with stdio_client(params) as (read, write):
+                self._startup_phase = "mcp-initialize"
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    _t_init = _time.monotonic()
+                    # Populate capabilities + capability_version BEFORE
+                    # exposing the session to callers, so the first
+                    # tool call already sees them.
+                    self._startup_phase = "capability-discovery"
+                    await self._populate_capabilities(session)
+                    self._session = session
+                    self._startup_phase = "ready"
+                    self._ready_event.set()
+                    logger.info(
+                        "cua-driver session ready in %.1fs "
+                        "(manifest=%.1fs, mcp_init=%.1fs)",
+                        _time.monotonic() - _t0,
+                        _t_manifest - _t0,
+                        _t_init - _t_manifest,
+                    )
+                    # Hold the contexts open until stop() / restart asks
+                    # us to wind down. Tool calls run as their own tasks
+                    # on the same loop and touch self._session directly.
+                    await self._shutdown_event.wait()
+        except BaseException as e:
+            # Capture both ordinary errors and anyio CancelledError.
+            # The caller (start()) inspects this to surface setup
+            # failures to the synchronous world.
+            self._setup_error = e
+            self._ready_event.set()
+            raise
+        finally:
+            # Clearing _session before the contexts unwind would let a
+            # racing call_tool see None during teardown — but the
+            # outer context-manager exits AFTER this block, so set to
+            # None here is fine: stop() has already flipped _started.
+            self._session = None
+            # Reset _started so a session that dies for ANY reason (MCP
+            # connection drop, driver crash, unexpected coro exit) is
+            # re-enterable: the next start()/call sees _started False and
+            # rebuilds the session instead of hanging forever on a dead one
+            # via _require_started(). On the normal stop() path this is a
+            # harmless idempotent no-op (stop() already set it False). A
+            # plain bool write is atomic in CPython, so this is safe from
+            # the bridge-loop thread without taking self._lock (which stop()
+            # may hold while awaiting this coro's future). See #55048 Bug 1.
+            self._started = False
+
+    async def _populate_capabilities(self, session: Any) -> None:
+        """Surface 4: cache per-tool capability sets + capability_version
+        from tools/list. Soft prerequisite — discovery failure leaves
+        the map empty and supports_capability degrades to False."""
+        self._capabilities = {}
+        self._tool_schemas = {}
+        self._capability_version = ""
+        try:
+            tools_list = await session.list_tools()
+            for tool in getattr(tools_list, "tools", []) or []:
+                tool_name = getattr(tool, "name", None)
+                if not isinstance(tool_name, str):
+                    continue
+                caps = getattr(tool, "capabilities", None)
+                if caps is None:
+                    # Some MCP SDKs forward custom fields via
+                    # `model_extra` (Pydantic v2) instead of attributes.
+                    extra = getattr(tool, "model_extra", None) or {}
+                    caps = extra.get("capabilities")
+                if isinstance(caps, list):
+                    self._capabilities[tool_name] = {
+                        c for c in caps if isinstance(c, str)
+                    }
+                else:
+                    self._capabilities[tool_name] = set()
+                schema = _mcp_field(tool, "input_schema", "inputSchema")
+                if schema is None:
+                    schema = (getattr(tool, "model_extra", None) or {}).get(
+                        "inputSchema"
+                    )
+                self._tool_schemas[tool_name] = (
+                    dict(schema) if isinstance(schema, dict) else {}
+                )
+            # capability_version is a top-level sibling of `tools` on the
+            # tools/list response. cua-driver-core/src/tool.rs:354 emits
+            # it; cua-driver-core/src/protocol.rs:150 leaves it OUT of
+            # initialize — so we discover here, not there.
+            cv = getattr(tools_list, "capability_version", None)
+            if cv is None:
+                extra = getattr(tools_list, "model_extra", None) or {}
+                cv = extra.get("capability_version")
+            if isinstance(cv, str):
+                self._capability_version = cv
+        except Exception as e:
+            logger.debug("cua-driver tools/list capability discovery failed: %s", e)
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            # A previous transport may have died without taking down its
+            # private app daemon. Stop that exact endpoint before relaunching
+            # with --grant; grants cannot modify an already-running runtime.
+            if self._owned_standard_runtime_socket is not None:
+                self._stop_owned_standard_runtime_locked()
+            self._bridge.start()
+            try:
+                self._start_lifecycle_locked()
+            except Exception:
+                self._stop_owned_standard_runtime_locked()
+                raise
+            self._started = True
+
+    def _start_lifecycle_locked(self) -> None:
+        """Spawn the lifecycle owner and wait for it to reach ready.
+        Caller must hold self._lock."""
+        # Reset per-session state.
+        self._ready_event = threading.Event()
+        self._setup_error = None
+        self._shutdown_event = None
+        # Fire-and-forget schedule on the bridge loop. The future tracks
+        # completion of the WHOLE lifecycle (open → wait → close), not
+        # just the open step — start() waits on _ready_event separately.
+        loop = self._bridge._loop
+        if loop is None:
+            raise RuntimeError("cua-driver bridge not started")
+        self._lifecycle_future = asyncio.run_coroutine_threadsafe(
+            self._lifecycle_coro(), loop
+        )
+        if not self._ready_event.wait(timeout=30.0):
+            # Best-effort: signal shutdown if the future is still alive.
+            self._signal_shutdown_locked()
+            # Surface which startup phase wedged (issue #57025) — "doctor
+            # passes but the wrapper times out" reports are undiagnosable
+            # from a bare "never reached ready".
+            phase = getattr(self, "_startup_phase", "unknown")
+            from hermes_constants import display_hermes_home
+            raise RuntimeError(
+                "cua-driver session never reached ready (timeout 30s; "
+                f"stuck in phase: {phase}). "
+                "Run `hermes computer-use doctor` and check "
+                f"{display_hermes_home()}/logs/agent.log for the phase timings."
+            )
+        # If setup failed, the lifecycle coroutine set _setup_error
+        # before setting _ready_event. Re-raise it on the caller's thread.
+        if self._setup_error is not None:
+            raise RuntimeError(
+                f"cua-driver session setup failed: {self._setup_error}"
+            ) from self._setup_error
+        self._transport_generation += 1
+        if self._transport_generation > 1:
+            self._notify_transport_reset()
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._started:
+                self._stop_owned_standard_runtime_locked()
+                return
+            self._started = False
+            self._stop_lifecycle_locked()
+            self._stop_owned_standard_runtime_locked()
+
+    def set_transport_reset_callback(self, callback: Any) -> None:
+        """Register a synchronous cache invalidation hook for transport swaps."""
+        self._transport_reset_callback = callback
+
+    def _notify_transport_reset(self) -> None:
+        callback = getattr(self, "_transport_reset_callback", None)
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            logger.debug("cua-driver transport reset callback failed: %s", exc)
+
+    def _stop_owned_standard_runtime_locked(self) -> None:
+        """Stop the exact private macOS app daemon launched for a grant."""
+        socket_path = getattr(self, "_owned_standard_runtime_socket", None)
+        if not socket_path:
+            return
+        self._owned_standard_runtime_socket = None
+        driver_command = resolve_cua_driver_cmd()
+        if driver_command:
+            from tools.environments.local import _sanitize_subprocess_env
+
+            try:
+                subprocess.run(
+                    [driver_command, "stop", "--socket", socket_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3.0,
+                    creationflags=windows_hide_flags(),
+                    env=_sanitize_subprocess_env(cua_driver_child_env()),
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if os.path.exists(socket_path):
+            try:
+                os.remove(socket_path)
+            except OSError:
+                pass
+
+    def _stop_lifecycle_locked(self) -> None:
+        """Signal shutdown + wait for the lifecycle coroutine to unwind.
+        Caller must hold self._lock."""
+        self._signal_shutdown_locked()
+        fut = self._lifecycle_future
+        if fut is None:
+            return
+        try:
+            # 5s budget for context unwind (stdio_client teardown).
+            fut.result(timeout=5.0)
+        except concurrent.futures.TimeoutError:
+            logger.warning("cua-driver session shutdown timed out (5s)")
+        except Exception as e:
+            # Real shutdown errors (not the previous cancel-scope race
+            # which is now structurally impossible) still get surfaced.
+            logger.warning("cua-driver shutdown error: %s", e)
+        finally:
+            self._lifecycle_future = None
+
+    def _signal_shutdown_locked(self) -> None:
+        """Set the asyncio shutdown event from the caller's thread."""
+        loop = self._bridge._loop
+        event = self._shutdown_event
+        if loop is not None and event is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                # Loop closed — nothing to signal.
+                pass
+
+    async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        result = await self._session.call_tool(name, args)
+        return _extract_tool_result(result)
+
+    # ── Capability detection (Surface 4 of #47072) ────────────────────
+    def supports_capability(self, capability: str, tool: Optional[str] = None) -> bool:
+        """Return True when the connected cua-driver advertises the given
+        capability token (trycua/cua#1961 capability vocabulary).
+
+        When ``tool`` is given, scope the check to that specific tool's
+        advertised capability set. When omitted, return True if ANY tool
+        advertises the capability — useful for "is this feature available
+        anywhere on the driver" probes.
+
+        Always returns False before the session is started (so consumers
+        on a dead/uninitialised wrapper degrade rather than crash).
+        """
+        if tool is not None:
+            return capability in self._capabilities.get(tool, set())
+        return any(capability in caps for caps in self._capabilities.values())
+
+    def _has_tool(self, name: str) -> bool:
+        """Return True when ``tools/list`` advertised a tool by this name.
+
+        Used to route capture(): cua-driver dropped the standalone
+        ``screenshot`` tool and folded full-window PNG capture into
+        ``get_window_state`` (whose own description notes it "Also captures
+        a PNG screenshot of the specified window"). Older drivers that still
+        expose ``screenshot`` keep using it; newer ones fall through to
+        ``get_window_state``.
+
+        Returns False when discovery hasn't populated the map yet — callers
+        treat that as "unknown" and probe defensively rather than trusting it.
+        """
+        return name in self._capabilities
+
+    def supports_input_property(self, tool: str, property_name: str) -> bool:
+        """Return whether a live action schema accepts ``property_name``.
+
+        This deliberately inspects tools/list rather than guessing from the
+        package version or requiring a capability token the driver never
+        shipped.  A missing/invalid schema fails closed.
+        """
+        schema = getattr(self, "_tool_schemas", {}).get(tool, {})
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        return isinstance(properties, dict) and property_name in properties
+
+    @property
+    def capabilities_discovered(self) -> bool:
+        """True once ``tools/list`` populated the per-tool map. When False,
+        ``_has_tool`` answers are not trustworthy (discovery failed or the
+        session hasn't started) and capture() should probe defensively."""
+        return bool(self._capabilities)
+
+    @property
+    def capability_version(self) -> str:
+        """Driver-advertised capability vocabulary version (empty string
+        when the driver predates the field — older builds had no version)."""
+        return self._capability_version
+
+    @staticmethod
+    def _logical_error_text(result: Dict[str, Any]) -> str:
+        """Flatten a logical MCP error into text for narrow classification."""
+        chunks: List[str] = []
+        for value in (result.get("data"), result.get("structuredContent")):
+            if isinstance(value, str):
+                chunks.append(value)
+            elif value is not None:
+                try:
+                    chunks.append(json.dumps(value, sort_keys=True))
+                except (TypeError, ValueError):
+                    chunks.append(str(value))
+        return "\n".join(chunks)
+
+    @classmethod
+    def _is_ended_session_result(cls, result: Any) -> bool:
+        """Recognise cua-driver's explicit recoverable ended-session result."""
+        if not isinstance(result, dict) or result.get("isError") is not True:
+            return False
+        message = cls._logical_error_text(result).lower()
+        return (
+            "session" in message
+            and ("has ended" in message or "session ended" in message)
+            and "start_session" in message
+        )
+
+    def _revive_declared_session_once(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        first_result: Dict[str, Any],
+        timeout: float,
+    ) -> Dict[str, Any]:
+        """Revive the stable session and replay one rejected tool call once."""
+        session_id = self._declared_session_id
+        if not session_id or name in self._LIFECYCLE_CALLS:
+            return first_result
+
+        logger.warning(
+            "cua-driver session %s ended during %s; reviving and retrying once",
+            session_id,
+            name,
+        )
+        revive_result = self._bridge.run(
+            self._call_tool_async("start_session", {"session": session_id}),
+            timeout=timeout,
+        )
+        if revive_result.get("isError") is True:
+            logger.warning(
+                "cua-driver session %s could not be revived: %s",
+                session_id,
+                self._logical_error_text(revive_result),
+            )
+            return first_result
+
+        # Return the second result as-is. A second rejection is surfaced; no loop.
+        return self._bridge.run(
+            self._call_tool_async(name, args),
+            timeout=timeout,
+        )
+
+    def _restore_declared_session_after_transport_reset(self, timeout: float) -> None:
+        """Re-attach the public label inside a replacement private lifecycle."""
+        session_id = getattr(self, "_declared_session_id", None)
+        if not session_id:
+            return
+        result = self._bridge.run(
+            self._call_tool_async("start_session", {"session": session_id}),
+            timeout=timeout,
+        )
+        if result.get("isError") is True:
+            logger.warning(
+                "cua-driver public session label %s could not be restored: %s",
+                session_id,
+                self._logical_error_text(result),
+            )
+
+    @staticmethod
+    def _is_closed_session_error(exc: Exception) -> bool:
+        """Return True for MCP/stdio failures that are recoverable by reconnecting."""
+        name = exc.__class__.__name__
+        module = getattr(exc.__class__, "__module__", "")
+        return (
+            name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+            or (module.startswith("anyio") and "Resource" in name)
+            or isinstance(exc, (BrokenPipeError, EOFError))
+        )
+
+    @staticmethod
+    def _is_transient_daemon_error(exc: Exception) -> bool:
+        """Return True for the cua-driver daemon-proxy EAGAIN congestion error.
+
+        On macOS the ``cua-driver mcp`` bridge forwards calls to the CuaDriver
+        daemon over a non-blocking unix socket. Heavier ops (notably
+        ``get_window_state``, which walks the AX tree and captures a PNG) can
+        come back as an ``MCPError`` carrying ``Resource temporarily
+        unavailable (os error 35)`` — POSIX EAGAIN — when the socket buffer is
+        momentarily full. This is transient by definition: the same call
+        succeeds when retried after a short pause (which is why spaced-out
+        single calls work while rapid/large ones intermittently fail). Detect
+        it by message so we can retry with backoff rather than surfacing an
+        empty 0x0 capture to the model. See the EAGAIN diagnosis in
+        references/catalog-add-troubleshooting (apple-music skill) and the
+        cua-driver daemon-proxy note.
+        """
+        msg = str(exc)
+        return (
+            "Resource temporarily unavailable" in msg
+            or "os error 35" in msg
+            or "daemon transport error" in msg
+            or "daemon proxy" in msg
+        )
+
+    def _restart_session_locked(self) -> None:
+        """Recreate the MCP session after the daemon/stdin transport was closed.
+        Caller must hold self._lock (the reconnect-once retry path holds it)."""
+        if self._started:
+            try:
+                self._stop_lifecycle_locked()
+            except Exception as e:
+                logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
+        self._started = False
+        self._stop_owned_standard_runtime_locked()
+        # Clear stale capability state; the next start populates from scratch.
+        self._capabilities = {}
+        self._tool_schemas = {}
+        self._capability_version = ""
+        self._start_lifecycle_locked()
+        self._started = True
+
+    def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
+        subprocess instead of going through the stdio MCP bridge.
+
+        The ``cua-driver mcp`` stdio bridge can persistently fail to forward
+        heavier calls (notably ``get_window_state``) to the daemon with POSIX
+        EAGAIN, while the plain ``cua-driver call`` path — which talks to the
+        daemon over its own socket — keeps working. When the MCP path gives up,
+        we retry over the CLI and remap the JSON into the same dict shape that
+        ``_extract_tool_result`` produces, so callers (capture(), _action(),
+        list_windows parsing) are transport-agnostic.
+
+        For ``get_window_state`` we route the screenshot to a temp file via
+        ``screenshot_out_file`` so the daemon returns a tiny JSON body (a path)
+        instead of a multi-megabyte base64 blob — the large payload is what
+        congests the daemon socket and triggers EAGAIN in the first place. We
+        read the PNG back from disk and base64-encode it ourselves. The CLI
+        call is itself retried a few times with backoff, since the underlying
+        daemon socket can still be momentarily busy.
+        """
+        import subprocess as _subprocess
+        import tempfile as _tempfile
+        import time as _time
+        from tools.environments.local import _sanitize_subprocess_env
+
+        call_args = dict(args)
+        shot_file: Optional[str] = None
+        if name == "get_window_state" and "screenshot_out_file" not in call_args:
+            fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
+            os.close(fd)
+            call_args["screenshot_out_file"] = shot_file
+
+        driver_command = resolve_cua_driver_cmd()
+        if not driver_command:
+            raise RuntimeError(cua_driver_install_hint())
+        child_env = cua_driver_child_env()
+        socket_args: List[str] = []
+        embedded_daemon = getattr(self, "_embedded_daemon", None)
+        if embedded_daemon is not None:
+            driver_command = embedded_daemon.proxy_invocation()[0]
+            child_env = embedded_daemon.child_env()
+            socket_args = ["--socket", embedded_daemon.socket_path]
+        cmd = [
+            driver_command,
+            "call",
+            name,
+            json.dumps(call_args),
+            *socket_args,
+        ]
+        attempts = 4
+        backoff = 0.5
+        parsed: Any = None
+        last_err = ""
+        try:
+            for attempt in range(attempts):
+                try:
+                    proc = _subprocess.run(
+                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=max(15.0, timeout),
+                        creationflags=windows_hide_flags(),
+                        env=_sanitize_subprocess_env(child_env),
+                    )
+                except Exception as e:  # pragma: no cover - subprocess spawn failure
+                    raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
+
+                out = (proc.stdout or "").strip()
+                last_err = out[:200] or (proc.stderr or "")[:200]
+                # "daemon is not running" is a PERMANENT condition for this
+                # invocation (`cua-driver call` requires the machine-wide
+                # daemon socket, which Linux installs typically never start —
+                # Hermes talks to the direct `cua-driver mcp` runtime
+                # instead). Retrying with backoff burns ~3.5s of sleeps per
+                # fallback for an outcome that cannot change; fail fast so
+                # callers surface a diagnosable error immediately.
+                if "daemon is not running" in out or "daemon is not running" in (proc.stderr or ""):
+                    raise RuntimeError(
+                        f"cua-driver CLI fallback for {name} unavailable: the "
+                        "machine-wide cua-driver daemon is not running (the "
+                        "CLI transport requires it; the MCP runtime does not)."
+                    )
+                start = min(
+                    (i for i in (out.find("{"), out.find("[")) if i != -1),
+                    default=-1,
+                )
+                if start != -1:
+                    try:
+                        candidate = json.loads(out[start:])
+                    except json.JSONDecodeError:
+                        candidate = None
+                    if candidate is not None:
+                        parsed = candidate
+                        break
+                # No JSON (EAGAIN warning / empty) — retry with backoff.
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "cua-driver CLI fallback for %s got no JSON "
+                        "(attempt %d/%d); retrying in %.1fs",
+                        name, attempt + 1, attempts, backoff,
+                    )
+                    _time.sleep(backoff)
+                    backoff *= 2
+
+            if parsed is None:
+                raise RuntimeError(
+                    f"cua-driver CLI fallback for {name} returned no JSON after "
+                    f"{attempts} attempts: {last_err}"
+                )
+
+            # Remap structured JSON into {data, images, structuredContent, isError}.
+            images: List[str] = []
+            data: Any = None
+            structured: Optional[Dict] = parsed if isinstance(parsed, dict) else None
+            is_error = False
+            if isinstance(parsed, dict):
+                # Current cua-driver CLI responses may report logical failures
+                # in-band even when the subprocess itself exits successfully.
+                # Preserve that bit so stateful callers can fail closed.
+                is_error = parsed.get("isError") is True or parsed.get("is_error") is True
+                shot = parsed.get("screenshot_png_b64")
+                if not shot:
+                    # Screenshot was routed to a file (ours or the daemon's choice).
+                    fpath = parsed.get("screenshot_file_path") or shot_file
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            with open(fpath, "rb") as fh:
+                                shot = base64.b64encode(fh.read()).decode("ascii")
+                        except Exception as e:
+                            logger.debug("cua-driver CLI fallback: failed reading %s: %s", fpath, e)
+                if shot:
+                    images.append(shot)
+                tree = parsed.get("tree_markdown")
+                if tree is not None:
+                    ec = parsed.get("element_count")
+                    summary = f"{ec} elements" if ec is not None else ""
+                    data = f"{summary}\n{tree}" if summary else tree
+            return {
+                "data": data,
+                "images": images,
+                "structuredContent": structured,
+                "isError": is_error,
+            }
+        finally:
+            if shot_file and os.path.exists(shot_file):
+                try:
+                    os.remove(shot_file)
+                except OSError:
+                    pass
+
+    # Lifecycle handshake calls issued BY start()/stop() themselves — these
+    # must not trigger the auto-restart guard below, or start() would recurse
+    # into start() when the session-start hasn't flipped _started yet.
+    _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
+
+    # Retrying these calls after a broken transport is safe. The first call
+    # either had no side effect or is explicitly idempotent. Mutations stay
+    # out of this set because a lost response does not prove they failed.
+    _TRANSPORT_REPLAY_SAFE_TOOLS = frozenset({
+        "get_cursor_position",
+        "get_displays",
+        "get_screen_size",
+        "get_window_state",
+        "list_apps",
+        "list_windows",
+    })
+
+    # Set when an MCP call timed out (#74799): a timed-out session is
+    # wedged for all later calls, so it is torn down and recreated before
+    # the next non-lifecycle call_tool. Class-level default so tests that
+    # bypass __init__ see a healthy (non-suspect) session.
+    _timeout_suspect = False
+
+    @classmethod
+    def _transport_replay_is_safe(cls, name: str) -> bool:
+        return name in cls._TRANSPORT_REPLAY_SAFE_TOOLS
+
+    @staticmethod
+    def _unknown_transport_outcome(name: str, exc: Exception) -> Dict[str, Any]:
+        message = (
+            f"cua-driver transport failed during {name}; the action outcome is "
+            "unknown, so Hermes did not replay it. Take fresh state before "
+            "deciding whether to act again."
+        )
+        return {
+            "data": message,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": {
+                "ok": False,
+                "code": "transport_outcome_unknown",
+                "message": message,
+                "operation": name,
+                "next_step": "fresh_state",
+                "detail": str(exc),
+            },
+            "isError": True,
+        }
+
+    @staticmethod
+    def _timeout_outcome(name: str, exc: Exception) -> Dict[str, Any]:
+        """Fail-closed result for an MCP call that hit its deadline (#74799).
+
+        The action MAY have taken effect on the remote screen before the
+        response was lost — the same effect_disposition=unknown principle as
+        ``_unknown_transport_outcome`` — so the timed-out call is never
+        silently replayed here; the caller decides after taking fresh state.
+        """
+        message = (
+            f"cua-driver MCP call {name} timed out; the action outcome is "
+            "unknown and may still have taken effect on the remote screen. "
+            "The session has been marked suspect and will be recreated before "
+            "the next computer-use call. Take fresh state before deciding "
+            "whether to act again."
+        )
+        return {
+            "data": message,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": {
+                "ok": False,
+                "code": "timeout_outcome_unknown",
+                "message": message,
+                "operation": name,
+                "next_step": "fresh_state",
+                "detail": str(exc),
+            },
+            "isError": True,
+        }
+
+    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior MCP timeout (#74799) marks the session suspect: it may be
+        # wedged for every later call. Recreate it before this call so a
+        # single timeout never poisons the rest of the computer-use session.
+        # Healthy sessions (flag clear) are never restarted here.
+        if self._timeout_suspect and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session suspect after earlier MCP timeout; "
+                "recreating before %s",
+                name,
+            )
+            with self._lock:
+                self._restart_session_locked()
+            self._timeout_suspect = False
+            self._restore_declared_session_after_transport_reset(timeout)
+
+        # A prior session may have died (MCP drop / driver crash): its
+        # lifecycle coro reset _started to False in its finally (#55048).
+        if not self._started and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session not active on %s; (re)starting before call", name
+            )
+            self.start()
+            self._restore_declared_session_after_transport_reset(timeout)
+        self._require_started()
+
+        try:
+            result = self._bridge.run(
+                self._call_tool_async(name, args),
+                timeout=timeout,
+            )
+        except Exception as e:
+            if isinstance(e, concurrent.futures.TimeoutError):
+                # MCP deadline hit (#74799): the session is suspect and must
+                # be recreated before the next call. Fail closed — the action
+                # may have taken effect on the remote screen, so never replay
+                # it here; surface the uncertainty instead (#74799).
+                self._timeout_suspect = True
+                logger.warning(
+                    "cua-driver MCP timed out on %s; marking session suspect "
+                    "for recreation before the next call",
+                    name,
+                )
+                return self._timeout_outcome(name, e)
+            if self._is_transient_daemon_error(e):
+                if not self._transport_replay_is_safe(name):
+                    self._notify_transport_reset()
+                    return self._unknown_transport_outcome(name, e)
+                logger.warning(
+                    "cua-driver MCP transport failed on %s (%s); "
+                    "falling back to CLI transport", name, e,
+                )
+                return self._call_tool_via_cli(name, args, timeout)
+            if not self._is_closed_session_error(e):
+                raise
+            logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
+            with self._lock:
+                self._restart_session_locked()
+            self._restore_declared_session_after_transport_reset(timeout)
+            if not self._transport_replay_is_safe(name):
+                return self._unknown_transport_outcome(name, e)
+            result = self._bridge.run(
+                self._call_tool_async(name, args),
+                timeout=timeout,
+            )
+
+        # Remember only a successfully declared stable identity. Failed
+        # start_session calls must not leave stale recovery state behind.
+        if name == "start_session" and result.get("isError") is not True:
+            declared_id = args.get("session")
+            if isinstance(declared_id, str) and declared_id:
+                self._declared_session_id = declared_id
+
+        if self._is_ended_session_result(result):
+            result = self._revive_declared_session_once(name, args, result, timeout)
+
+        if (
+            name == "end_session"
+            and result.get("isError") is not True
+            and args.get("session") == self._declared_session_id
+        ):
+            self._declared_session_id = None
+        return result
+
+
+def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
+    """Convert an mcp CallToolResult into a plain dict.
+
+    cua-driver returns a mix of text parts, image parts, and structuredContent.
+    We flatten into:
+      {
+        "data": <text or parsed json>,
+        "images": [b64, ...],
+        "image_mime_types": [mime, ...],   # parallel to `images`, "" when absent
+        "structuredContent": <dict|None>,
+        "isError": bool,
+      }
+    structuredContent is populated from the MCP result's structuredContent field
+    (MCP spec §2024-11-05+) and takes precedence for structured data like
+    list_windows window arrays.
+
+    `image_mime_types` is the explicit `mimeType` cua-driver emits on every
+    image part as of trycua/cua#1961 (Surface 7 of
+    NousResearch/hermes-agent#47072). Each entry corresponds index-for-index
+    with `images`; an empty string entry signals the part carried no
+    mimeType (older cua-driver build), and the caller should fall back to
+    base64-prefix sniffing.
+    """
+    data: Any = None
+    images: List[str] = []
+    image_mime_types: List[str] = []
+    # Use identity, not truthiness: unittest mocks and proxy objects commonly
+    # synthesize truthy attributes that were never present in the real result.
+    is_error = _mcp_field(mcp_result, "is_error", "isError", False) is True
+    structured: Optional[Dict] = (
+        _mcp_field(mcp_result, "structured_content", "structuredContent") or None
+    )
+    text_chunks: List[str] = []
+    for part in getattr(mcp_result, "content", []) or []:
+        ptype = getattr(part, "type", None)
+        if ptype == "text":
+            text_chunks.append(getattr(part, "text", "") or "")
+        elif ptype == "image":
+            b64 = getattr(part, "data", None)
+            if b64:
+                images.append(b64)
+                mime = _mcp_field(part, "mime_type", "mimeType") or ""
+                image_mime_types.append(mime)
+    if text_chunks:
+        joined = "\n".join(t for t in text_chunks if t)
+        try:
+            data = json.loads(joined) if joined.strip().startswith(("{", "[")) else joined
+        except json.JSONDecodeError:
+            data = joined
+    return {
+        "data": data,
+        "images": images,
+        "image_mime_types": image_mime_types,
+        "structuredContent": structured,
+        "isError": is_error,
+    }
+
+
+def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Pull a (png_b64, mime_type) pair out of a flattened tool result.
+
+    cua-driver delivers window screenshots in two shapes depending on tool +
+    transport:
+
+      * As an MCP ``image`` content part — surfaced by ``_extract_tool_result``
+        in ``out["images"]`` with a parallel ``image_mime_types`` entry. This
+        is what ``get_window_state`` emits over the stdio MCP transport.
+      * As a base64 field inside ``structuredContent`` —
+        ``screenshot_png_b64`` (+ ``screenshot_mime_type``). This is what
+        ``get_window_state`` returns when its structured payload carries the
+        image instead of a content part (newer driver builds; also the shape
+        seen via the ``cua-driver call`` CLI surface).
+
+    Checking both makes capture() robust to either delivery shape, so the
+    image never silently drops just because the driver moved it between the
+    content list and structuredContent. Returns ``(None, None)`` when neither
+    location carries an image.
+    """
+    images = out.get("images") or []
+    if images and images[0]:
+        mimes = out.get("image_mime_types") or []
+        mime = mimes[0] if mimes and mimes[0] else None
+        return images[0], mime
+
+    structured = out.get("structuredContent") or {}
+    b64 = structured.get("screenshot_png_b64") or structured.get("png_b64")
+    if b64:
+        mime = (
+            structured.get("screenshot_mime_type")
+            or structured.get("mime_type")
+            or None
+        )
+        return b64, mime
+
+    return None, None
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    """Return a positive integer, rejecting booleans and malformed values."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _is_placeholder_id(value: Any) -> bool:
+    """True when *value* is a schema-filler id rather than a real target.
+
+    Several providers emit every declared schema property on every tool call,
+    filling unused optional integers with ``0``. A non-positive id cannot name
+    a window, so treating it as a targeting request drops the caller's ``app=``
+    and fails the capture. Malformed non-numeric values are deliberately NOT
+    placeholders: those still reach the existing validation error rather than
+    being silently ignored.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return False
+    try:
+        return int(value) <= 0
+    except ValueError:
+        return False
+
+
+def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
+
+    Every downstream operation needs both an integer ``pid`` (for
+    get_window_state / action tools) and ``window_id`` (for screenshot /
+    element clicks), so a window missing either is uncapturable.
+
+    Crucially, on X11 a window's PID comes from the *optional*
+    ``_NET_WM_PID`` property — the desktop root, panels, and
+    override-redirect popups routinely omit it, so the driver reports
+    ``pid: null`` for them. Coercing every entry unconditionally
+    (``int(w["pid"])``) let one such window abort enumeration of the real,
+    targetable windows. We skip the unusable entries instead so capture()
+    and focus_app() still find the windows that matter.
+
+    ``z_index`` follows CUA Driver semantics: higher = closer to front.
+    Wayland may return ``z_index: null`` (undefined stacking order); we
+    treat null as the lowest priority so real windows still sort above
+    desktop/root windows, and the backmost never ends up selected as the
+    capture target.
+    """
+    windows: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        # Compatibility envelopes are untrusted input: skip non-dict members
+        # instead of raising AttributeError on one malformed record.
+        if not isinstance(w, dict):
+            continue
+        pid_int = _positive_int(w.get("pid"))
+        window_id_int = _positive_int(w.get("window_id"))
+        if pid_int is None or window_id_int is None:
+            continue
+        z_raw = w.get("z_index")
+        z_index = z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0
+        app_name = w.get("app_name", "")
+        title = w.get("title", "")
+        windows.append({
+            "app_name": app_name if isinstance(app_name, str) else "",
+            "pid": pid_int,
+            "window_id": window_id_int,
+            # cua-driver 0.6.x on Linux may return JSON null here.
+            # Only explicit False means off-screen; null means unknown.
+            "off_screen": w.get("is_on_screen") is False,
+            "title": title if isinstance(title, str) else "",
+            "z_index": z_index,
+        })
+    return windows
+
+
+def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return list_windows payloads across cua-driver result shapes."""
+    structured = out.get("structuredContent")
+    if isinstance(structured, dict):
+        windows = structured.get("windows")
+        if isinstance(windows, list) and windows:
+            return windows
+
+    data = out.get("data")
+    if isinstance(data, dict):
+        windows = data.get("windows")
+        if isinstance(windows, list) and windows:
+            return windows
+        legacy_windows = data.get("_legacy_windows")
+        if isinstance(legacy_windows, list) and legacy_windows:
+            return legacy_windows
+
+    windows = out.get("windows")
+    if isinstance(windows, list) and windows:
+        return windows
+    legacy_windows = out.get("_legacy_windows")
+    if isinstance(legacy_windows, list) and legacy_windows:
+        return legacy_windows
+    return []
+
+
+def _apps_from_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    apps: List[Dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for summary in _ingest_windows(windows):
+        name = summary["app_name"]
+        if not name:
+            continue
+        key = (name, summary["pid"])
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({"name": name, "pid": summary["pid"]})
+    return apps
+
+
+# ---------------------------------------------------------------------------
+# The backend itself
+# ---------------------------------------------------------------------------
+
+class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
@@ -310,7 +1755,388 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
 
-    def _set_active_target(self, target: Dict[str, Any]) -> None:
+    def _failed_capture(self, mode: str, message: str = "") -> CaptureResult:
+        """Return an empty capture after disarming any prior target context."""
+        self._clear_active_target()
+        return CaptureResult(
+            mode=mode,
+            width=0,
+            height=0,
+            png_b64=None,
+            elements=[],
+            app="",
+            window_title=message,
+            png_bytes_len=0,
+        )
+
+    def _call_capture_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Call a capture-stage tool and disarm state on transport or logical failure."""
+        try:
+            out = self._session.call_tool(name, args)
+        except Exception:
+            self._clear_active_target()
+            raise
+        if out.get("isError") is True:
+            message = out.get("data")
+            self._clear_active_target()
+            raise RuntimeError(
+                f"cua-driver {name} failed"
+                + (f": {message}" if isinstance(message, str) and message else "")
+            )
+        return out
+
+    def _load_windows(self) -> List[Dict[str, Any]]:
+        """Load normalized visible windows, with the shared CLI recovery path.
+
+        Windows are sorted by ``z_index`` **descending**: CUA Driver
+        defines higher values as closer to the front, so the frontmost
+        window ends up at index 0 — which is what ``capture()`` and
+        ``focus_app()`` pick as the default target.  ``_ingest_windows``
+        already normalised null ``z_index`` (Wayland) to 0, so those
+        windows sort to the back.
+        """
+        out = self._call_capture_tool(
+            "list_windows",
+            {"on_screen_only": True, "session": self._session_id},
+        )
+        windows = _ingest_windows(_windows_from_tool_result(out))
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
+        if windows:
+            return windows
+
+        logger.warning(
+            "cua-driver list_windows returned no windows over MCP; "
+            "re-fetching via CLI transport",
+        )
+        try:
+            cli_out = self._session._call_tool_via_cli(
+                "list_windows",
+                {"on_screen_only": True, "session": self._session_id},
+                20.0,
+            )
+        except Exception as exc:
+            logger.error("cua-driver CLI re-fetch for list_windows failed: %s", exc)
+            return []
+        if cli_out.get("isError") is True:
+            logger.error("cua-driver CLI re-fetch for list_windows returned an error")
+            self._clear_active_target()
+            return []
+        windows = _ingest_windows(_windows_from_tool_result(cli_out))
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
+        return windows
+
+    def _match_windows_for_app(
+        self, windows: List[Dict[str, Any]], app: str
+    ) -> List[Dict[str, Any]]:
+        """Resolve ``app=`` through exact names before convenience substrings.
+
+        Linux ``list_windows`` can omit an app name while ``list_apps`` retains
+        name/bundle-ID metadata. Exact direct names and exact metadata aliases
+        must win over substring matches: querying ``Code`` must not silently
+        select ``Visual Studio Code`` merely because it is frontmost.
+        """
+        app_lower = app.strip().lower()
+        if not app_lower:
+            return []
+
+        direct_exact = [
+            w for w in windows
+            if app_lower == str(w.get("app_name", "")).strip().lower()
+        ]
+        if direct_exact:
+            return direct_exact
+
+        try:
+            running_apps = self.list_apps()
+        except Exception as exc:
+            # A title can still be the only usable identity on X11 when app
+            # enumeration is unavailable, so retain the constrained title
+            # fallback below instead of treating this as a hard no-match.
+            logger.debug("computer_use list_apps fallback failed for %r: %s", app, exc)
+            running_apps = []
+
+        exact_pids: set[int] = set()
+        partial_pids: set[int] = set()
+        for raw_app in running_apps:
+            if not isinstance(raw_app, dict) or raw_app.get("running") is False:
+                continue
+            raw_pid = raw_app.get("pid")
+            if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, str)):
+                continue
+            try:
+                pid = int(raw_pid)
+            except ValueError:
+                continue
+            if pid <= 0:
+                continue
+
+            aliases = {
+                value.strip().lower()
+                for key in ("bundle_id", "bundleId", "name", "app_name", "display_name")
+                if isinstance((value := raw_app.get(key)), str) and value.strip()
+            }
+            if app_lower in aliases:
+                exact_pids.add(pid)
+            elif any(app_lower in alias for alias in aliases):
+                partial_pids.add(pid)
+
+        metadata_exact = [w for w in windows if w.get("pid") in exact_pids]
+        if metadata_exact:
+            return metadata_exact
+
+        direct_partial = [
+            w for w in windows
+            if app_lower in str(w.get("app_name", "")).lower()
+        ]
+        if direct_partial:
+            return direct_partial
+
+        metadata_partial = [w for w in windows if w.get("pid") in partial_pids]
+        if metadata_partial:
+            return metadata_partial
+
+        # Some X11 backends expose a title but no app name. Restrict this final
+        # fallback to nameless rows so a localized app name is not overridden
+        # merely because its title happens to be in the caller's language.
+        return [
+            w for w in windows
+            if not str(w.get("app_name", "")).strip()
+            and app_lower in str(w.get("title", "")).lower()
+        ]
+
+    def _capture_full_screen(self, mode: str) -> CaptureResult:
+        """Capture the whole displayed screen via cua-driver's desktop lane.
+
+        Uses `get_desktop_state` — a composited grab of everything currently
+        on screen (like PrtScn) — instead of resolving a single window through
+        `list_windows`. This is what "screenshot my screen" means: previously
+        the `screen` sentinel resolved to the OS shell window (Progman /
+        WorkerW on Windows), which is the wallpaper + icons layer and never
+        shows the windows stacked above it.
+
+        Bonus resilience (2ndNatureAI, #60081): this lane works even when
+        Windows UIA enumeration (`list_windows` / `list_apps`) hangs
+        (trycua/cua#2110/#2113), because it never enumerates.
+
+        Returns pixels only — a composited image has no single accessibility
+        tree, so `elements` is always empty regardless of requested mode. The
+        result carries a `note` telling the model how to reach the
+        interactive lanes.
+        """
+        self._clear_active_target()
+        previous_scope: Optional[str] = None
+        try:
+            cfg = self._session.call_tool(
+                "get_config", {"session": self._session_id}, timeout=10.0,
+            )
+            sc = cfg.get("structuredContent") or {}
+            if isinstance(sc, dict):
+                val = sc.get("capture_scope")
+                if isinstance(val, str):
+                    previous_scope = val
+        except Exception as e:
+            logger.debug("cua-driver get_config before full-screen capture failed: %s", e)
+
+        try:
+            if previous_scope != "desktop":
+                self._session.call_tool(
+                    "set_config",
+                    {"key": "capture_scope", "value": "desktop",
+                     "session": self._session_id},
+                    timeout=10.0,
+                )
+            out = self._call_capture_tool(
+                "get_desktop_state", {"session": self._session_id},
+            )
+        finally:
+            if previous_scope and previous_scope != "desktop":
+                try:
+                    self._session.call_tool(
+                        "set_config",
+                        {"key": "capture_scope", "value": previous_scope,
+                         "session": self._session_id},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.debug("cua-driver restore capture_scope failed: %s", e)
+
+        png_b64, image_mime_type = _image_from_tool_result(out)
+        if not png_b64:
+            return self._failed_capture(
+                mode,
+                "<get_desktop_state returned no image; the driver may "
+                "predate the desktop capture lane — try "
+                "capture(app='<AppName>') for a specific window>",
+            )
+        structured = out.get("structuredContent") or {}
+        width = int(structured.get("screenshot_width")
+                    or structured.get("screen_width") or 0)
+        height = int(structured.get("screenshot_height")
+                     or structured.get("screen_height") or 0)
+        png_bytes_len = 0
+        try:
+            raw = base64.b64decode(png_b64, validate=False)
+            png_bytes_len = len(raw)
+            detected_width, detected_height = _image_dimensions_from_bytes(raw)
+            if detected_width and detected_height:
+                width = detected_width
+                height = detected_height
+        except Exception:
+            png_bytes_len = len(png_b64) * 3 // 4
+        return CaptureResult(
+            mode="vision",
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=[],
+            app="screen",
+            window_title="Full screen (composited)",
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+            note=(
+                "full-screen capture has no interactable elements; to act on "
+                "what you see, call capture(app='<AppName>') for that app's "
+                "clickable element list, or capture(app='desktop') for the "
+                "desktop shell (wallpaper icons / taskbar) with elements"
+            ),
+        )
+
+    # ── Capture ────────────────────────────────────────────────────
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        """Capture the frontmost on-screen window or an exact known target.
+
+        Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
+        `get_window_state` (ax/som) or `screenshot` (vision).
+        """
+        # Step 1: enumerate on-screen windows to find target pid/window_id.
+        # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
+        # `structuredContent.windows` array directly. Pre-fix the wrapper
+        # also kept a text-line regex (`_WINDOW_LINE_RE`) as a fallback for
+        # cua-driver builds that predated structuredContent; the supersede
+        # PR's effective minimum (trycua/cua#1961 + #1908) is well past
+        # that, so the fallback is gone — the wrapper now treats the
+        # structured shape as the only contract.
+        # Drop schema-filler ids before they can be read as a targeting
+        # request, so `capture(app=...)` and frontmost capture still work for
+        # models that emit every optional property zero-filled.
+        if _is_placeholder_id(pid):
+            pid = None
+        if _is_placeholder_id(window_id):
+            window_id = None
+        # Step 0: explicit full-screen capture — a composited grab of
+        # everything displayed, via get_desktop_state. Bypasses window
+        # enumeration entirely (also keeps screenshots working when Windows
+        # UIA enumeration hangs — trycua/cua#2110/#2113, #60081).
+        # app='desktop' intentionally does NOT take this lane: it resolves to
+        # the shell/desktop window below so desktop icons stay clickable.
+        if (
+            pid is None
+            and window_id is None
+            and app
+            and app.strip().lower() in _FULL_SCREEN_SENTINELS
+        ):
+            return self._capture_full_screen(mode)
+        # An exact pid/window pair is both the stable capture_after target and
+        # the escape hatch when app/window discovery is unavailable on X11.
+        if pid is not None or window_id is not None:
+            if pid is None or window_id is None:
+                return self._failed_capture(
+                    mode, "<capture targeting requires both pid and window_id>",
+                )
+            target_pid = _positive_int(pid)
+            target_window_id = _positive_int(window_id)
+            if target_pid is None or target_window_id is None:
+                return self._failed_capture(
+                    mode, "<capture targeting requires positive integer pid and window_id>",
+                )
+            windows = [{
+                "app_name": app or "",
+                "pid": target_pid,
+                "window_id": target_window_id,
+                "off_screen": False,
+                "title": "",
+                "z_index": 0,
+            }]
+        else:
+            try:
+                windows = self._load_windows()
+            except Exception:
+                self._clear_active_target()
+                raise
+            if not windows:
+                # Diagnose instead of returning a bare 0x0: the dominant
+                # real-world cause on Linux is a locked desktop session.
+                return self._failed_capture(mode, _empty_discovery_reason())
+
+        # Filter by app name (case-insensitive substring) if requested.
+        # When the filter matches nothing, surface that explicitly instead of
+        # silently capturing the frontmost window — on macOS the `app_name`
+        # returned by list_windows is the localized name (e.g. "計算機"), so
+        # `app="Calculator"` legitimately matches no windows on a non-English
+        # system and the caller needs to retry with the localized name.
+        if pid is None and window_id is None and app and app.strip().lower() in _DESKTOP_SHELL_SENTINELS:
+            # Desktop-shell request (app='desktop'): resolve to the OS
+            # shell/desktop window (the desktop backdrop or the
+            # taskbar/menu-bar) via list_windows. Unlike the full-screen lane
+            # above, this carries the shell's interactable elements (desktop
+            # icons), so "click the taskbar" / "open the recycle bin" work.
+            def _is_desktop_window(w: Dict[str, Any]) -> bool:
+                haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)
+
+            desktop = [w for w in windows if _is_desktop_window(w)]
+            if not desktop:
+                return self._failed_capture(
+                    mode,
+                    (
+                        f"<no desktop/shell window found for app={app!r}; "
+                        f"cua-driver captures one window at a time and exposes "
+                        f"no whole-virtual-desktop or per-monitor capture. "
+                        f"Call list_apps / capture(app='<AppName>') to target a "
+                        f"specific window instead. On Windows the taskbar is "
+                        f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
+                    ),
+                )
+            # Prefer the desktop backdrop (Progman/WorkerW/Finder) over the
+            # taskbar when both are present, so a bare "screen" capture shows
+            # the full desktop rather than just the task strip.
+            windows = sorted(
+                desktop,
+                key=lambda w: 0 if any(
+                    n in f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                    for n in ("progman", "workerw", "program manager", "finder", "desktop")
+                ) else 1,
+            )
+        elif pid is None and window_id is None and app:
+            filtered = self._match_windows_for_app(windows, app)
+            if not filtered:
+                return self._failed_capture(
+                    mode,
+                    (
+                        f"<no on-screen window matched app={app!r}; "
+                        f"call list_apps to see available app names or bundle IDs "
+                        f"(macOS reports localized names, e.g. '計算機' "
+                        f"instead of 'Calculator'; some Linux/Qt apps only "
+                        f"resolve via list_apps metadata)>"
+                    ),
+                )
+            windows = filtered
+
+        # Pick first on-screen window (sorted by z_index / z-order above).
+        # On Linux, unqualified default captures skip desktop/shell helper
+        # windows and, with tied/unknown z_index, may additionally consult
+        # _NET_ACTIVE_WINDOW (#58026).
+        target = _select_capture_target(
+            windows,
+            app_requested=bool(app),
+            exact_target=pid is not None or window_id is not None,
+        )
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them

@@ -351,19 +351,14 @@ def _a2a_tools_available() -> bool:
 
 
 def register_tools(ctx) -> None:
-    """Register the client tools in the ``a2a`` toolset (config-gated)."""
-    for name, (handler, description, properties, required) in _TOOLS.items():
-        parameters: dict[str, Any] = {"type": "object", "properties": properties}
-        if required:
-            parameters["required"] = required
-        ctx.register_tool(name=name, toolset="a2a", handler=handler, description=description,
-                          schema={"name": name, "description": description, "parameters": parameters},
-                          emoji="\U0001f9e9", check_fn=_a2a_tools_available)  # puzzle piece
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import TypedDict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
+    """Register the client tools in the ``a2a`` toolset."""
+    for name, schema in _SCHEMAS.items():
+        function_schema = schema["function"]
+        ctx.register_tool(
+            name=name,
+            toolset="a2a",
+            schema=function_schema,
+            handler=_HANDLERS[name],
+            description=function_schema["description"],
+            emoji="\U0001f9e9",  # puzzle piece
+        )

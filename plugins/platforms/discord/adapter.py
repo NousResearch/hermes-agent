@@ -168,7 +168,9 @@ _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_SELECT_MAX_OPTIONS = 25
 _DISCORD_SELECT_MAX_ROWS = 5
 # Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
-_DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELECT_MAX_OPTIONS
+_DISCORD_MODEL_SELECT_CAPACITY = (
+    _DISCORD_SELECT_MAX_ROWS - 2
+) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
@@ -5933,6 +5935,95 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await self.handle_message(event)
         return True
 
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Discord client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching.
+
+        Passes ``event.source.profile`` through so routed messages batch
+        under the same namespace the agent run will use (e.g.
+        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
+        the batch key would always land in ``agent:main`` even when the
+        routed profile differs.
+        """
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When Discord splits a long user message at 2000 chars, the chunks
+        arrive within a few hundred milliseconds.  This merges them into
+        a single event before dispatching.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text.
+
+        Uses a longer delay when the latest chunk is near Discord's 2000-char
+        split point, since a continuation chunk is almost certain.
+        """
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Discord] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            # Shield the downstream dispatch so that a subsequent chunk
+            # arriving while handle_message is mid-flight cannot cancel
+            # the running agent turn.  _enqueue_text_event always cancels
+            # the prior flush task when a new chunk lands; without this
+            # shield, CancelledError would propagate from our task down
+            # into handle_message → the agent's streaming request,
+            # aborting the response the user was waiting on.  The new
+            # chunk is handled by the fresh flush task regardless.
+            await asyncio.shield(self.handle_message(event))
+        except asyncio.CancelledError:
+            # Only reached if cancel landed before the pop — the shielded
+            # handle_message is unaffected either way.  Let the task exit
+            # cleanly so the finally block cleans up.
+            pass
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
 
 # ---------------------------------------------------------------------------
 # Discord UI Components (outside the adapter class)
@@ -6284,16 +6375,25 @@ def _define_discord_view_classes() -> None:
                 ))
             if not options:
                 return
-            self._add_select(
-                "Choose a provider...", options[:_DISCORD_SELECT_MAX_OPTIONS], "model_provider_select",
-                self._on_provider_selected,
+
+            select = discord.ui.Select(
+                placeholder="Choose a provider...",
+                options=options[:_DISCORD_SELECT_MAX_OPTIONS],
+                custom_id="model_provider_select",
             )
             self._add_button("Cancel", discord.ButtonStyle.red, "model_cancel", self._on_cancel)
 
         def _build_model_select(self, provider_slug: str):
-            """Model dropdown(s) for one provider.
-            Select caps at 25 options and View at 5 rows (2 reserved for Back/Cancel), so models are
-            partitioned across up to 3 selects (75) rather than truncated (tail entries would vanish)."""
+            """Build the model dropdown(s) for a specific provider.
+
+            Discord caps each ``discord.ui.Select`` at 25 options and a View at
+            5 action rows. We keep 2 rows for Back/Cancel, so partition the
+            model list across up to 3 select menus (75 slots) instead of
+            truncating at 25. This matters for providers like Nous whose
+            curated + Portal free-recommendation list exceeds 25 entries — the
+            tail (typically the ``:free`` Portal picks) was previously dropped
+            on Discord, so free-tier models never surfaced there.
+            """
             self.clear_items()
             provider = next((p for p in self.providers if p["slug"] == provider_slug), None)
             if not provider:
@@ -6301,24 +6401,58 @@ def _define_discord_view_classes() -> None:
             models = provider.get("models", [])
             if not models:
                 return
+
+            # Slice the model list into <= 25-option chunks across (up to) 3
+            # select rows: 3 selects + Back/Cancel = 5 rows, Discord's View cap.
+            # Providers past that would still clip, but none currently do.
             chunks = [
-                models[i : i + _DISCORD_SELECT_MAX_OPTIONS]
+                models[
+                    i : i + _DISCORD_SELECT_MAX_OPTIONS
+                ]
                 for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
-            ][: _DISCORD_SELECT_MAX_ROWS - 2]
+            ][
+                : _DISCORD_SELECT_MAX_ROWS - 2
+            ]  # keep 2 rows for Back/Cancel
+
             placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
             for idx, chunk in enumerate(chunks):
-                options = [
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(model_id.split("/")[-1], _DISCORD_SELECT_FIELD_LIMIT),
-                        value=_truncate_discord_component_text(model_id, _DISCORD_SELECT_FIELD_LIMIT),
+                options = []
+                for model_id in chunk:
+                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    options.append(
+                        discord.SelectOption(
+                            label=_truncate_discord_component_text(
+                                short,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                            value=_truncate_discord_component_text(
+                                model_id,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                        )
                     )
-                    for model_id in chunk
-                ]
                 suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
-                self._add_select(
-                    f"{placeholder_base}{suffix}...", options, f"model_model_select_{idx}", self._on_model_selected)
-            self._add_button("◀ Back", discord.ButtonStyle.grey, "model_back", self._on_back)
-            self._add_button("Cancel", discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
+                select = discord.ui.Select(
+                    placeholder=f"{placeholder_base}{suffix}...",
+                    options=options,
+                    custom_id=f"model_model_select_{idx}",
+                )
+                # All model selects resolve through the same handler — the
+                # selected value is the model id, identical across rows.
+                select.callback = self._on_model_selected
+                self.add_item(select)
+
+            back_btn = discord.ui.Button(
+                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
+            )
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel2"
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
 
         def _build_expensive_confirm(self, model_id: str):
             """Build confirmation buttons for unusually expensive models."""
@@ -6346,9 +6480,16 @@ def _define_discord_view_classes() -> None:
             provider = next((p for p in self.providers if p["slug"] == provider_slug), None)
             pname = provider.get("name", provider_slug) if provider else provider_slug
             self._build_model_select(provider_slug)
-            # `shown` counts models actually rendered across the partitioned selects (≤ 75).
+
+            # `shown` counts models actually rendered across the partitioned
+            # select menus (up to 3×25 = 75); the old code hard-capped at 25
+            # and silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY) if provider else 0
+            shown = (
+                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
+                if provider
+                else 0
+            )
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
             await self._edit(interaction, f"Provider: **{pname}**\nSelect a model:{extra}")
 
@@ -6419,8 +6560,22 @@ def _define_discord_view_classes() -> None:
     class ChoicePickerView(_HermesView):
         """Flat single-select picker for finite-choice commands (/reasoning, /fast); 2-minute timeout."""
 
-        def __init__(self, choices: list, on_choice_selected, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-            super().__init__(allowed_user_ids, allowed_role_ids, timeout=120)
+    class ChoicePickerView(discord.ui.View):
+        """Flat select-menu view for finite-choice commands (/reasoning, /fast).
+
+        One dropdown, one selection, done — the generic single-level companion
+        to ``ModelPickerView``. Auth gating mirrors ``ExecApprovalView``.
+        Times out after 2 minutes.
+        """
+
+        def __init__(
+            self,
+            choices: list,
+            on_choice_selected,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=120)
             self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
             options = []

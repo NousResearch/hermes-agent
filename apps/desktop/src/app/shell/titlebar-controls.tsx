@@ -12,6 +12,7 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -25,7 +26,6 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
-import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
@@ -140,7 +140,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
-  const appActionsSide = useStore($titlebarAppActionsSide)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
@@ -162,12 +161,37 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
-  const sidebarTool: TitlebarTool = {
-    actionId: 'view.toggleSidebar',
-    badge: panesFlipped ? undefined : unreadBadge,
-    icon: <TitlebarIcon name="layout-sidebar-left" />,
-    id: 'sidebar',
-    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+  const leftToolbarTools: TitlebarTool[] = [
+    {
+      actionId: 'view.toggleSidebar',
+      badge: panesFlipped ? undefined : unreadBadge,
+      icon: <TitlebarIcon name="layout-sidebar-left" />,
+      id: 'sidebar',
+      label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+      onSelect: () => {
+        triggerHaptic('tap')
+        leftEdge.toggle()
+      }
+    },
+    {
+      actionId: 'view.flipPanes',
+      icon: <TitlebarIcon name="arrow-swap" />,
+      id: 'flip-panes',
+      label: t.titlebar.swapSidebarSides,
+      onSelect: () => {
+        triggerHaptic('tap')
+        togglePanesFlipped()
+      }
+    },
+    ...leftTools
+  ]
+
+  const rightSidebarTool: TitlebarTool = {
+    actionId: 'view.toggleRightSidebar',
+    badge: panesFlipped ? unreadBadge : undefined,
+    icon: <TitlebarIcon name="layout-sidebar-right" />,
+    id: 'right-sidebar',
+    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
       leftEdge.toggle()

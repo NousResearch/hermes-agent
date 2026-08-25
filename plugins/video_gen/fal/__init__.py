@@ -227,27 +227,45 @@ def _load_fal_client() -> Any:
 
 
 def _resolve_managed_fal_video_gateway():
-    """Resolve the FAL video route from the stored ``video_gen`` selection: ``"nous"`` → managed only (unentitled ⇒
-    selection-naming error); other stored provider → direct only (missing FAL_KEY ⇒ error); never-configured → autodetect."""
+    """Resolve the FAL video route from the stored selection.
+
+    Plain switch on the stored ``video_gen`` provider string — mirrors the
+    image FAL resolver: ``"nous"`` (or legacy ``use_gateway: true``) →
+    managed only (unentitled ⇒ selection-naming error); any other stored
+    provider → direct only (missing FAL_KEY ⇒ selection-naming error);
+    never-configured category → legacy credential autodetect.
+    """
     from tools.managed_tool_gateway import resolve_managed_tool_gateway
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured, read_selection, selection_error
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        fal_key_is_configured,
+        read_selection,
+        selection_error,
+    )
+
     selected = read_selection("video_gen")
     if selected == NOUS_MANAGED_PROVIDER:
         gateway = resolve_managed_tool_gateway("fal-queue")
         if gateway is None:
-            raise ValueError(selection_error("video_gen", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)"))
+            raise ValueError(selection_error(
+                "video_gen",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
         return gateway
     if selected is not None:
         if not fal_key_is_configured():
-            raise ValueError(selection_error("video_gen", selected, "FAL_KEY is not set"))
+            raise ValueError(selection_error(
+                "video_gen",
+                selected,
+                "FAL_KEY is not set",
+            ))
         return None
-    return None if fal_key_is_configured() else resolve_managed_tool_gateway("fal-queue")
-
-
-def _fal_video_available() -> bool:
-    """True if the selected (or, never-configured, any) FAL backend is reachable; raises on a stored-but-broken selection."""
-    from tools.tool_backend_helpers import fal_key_is_configured
-    return _resolve_managed_fal_video_gateway() is not None or fal_key_is_configured()
+    # Never-configured category: legacy credential autodetect (do NOT persist).
+    if fal_key_is_configured():
+        return None
+    return resolve_managed_tool_gateway("fal-queue")
 
 
 def _get_managed_fal_video_client(managed_gateway):
@@ -286,7 +304,38 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
         raise
 
 
-# ByteDance SeedVR2 on FAL: $0.001/megapixel of output; a 5s 720p→1440p 2x pass is roughly $0.44.
+def _check_fal_video_available() -> bool:
+    """True if the FAL video backend selected via `hermes tools` (or, on a
+    never-configured install, any FAL backend) is reachable.
+
+    Never raises — a stored-but-broken selection reports False here; the
+    honest selection-naming error surfaces at call time from
+    ``_resolve_managed_fal_video_gateway``.
+    """
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from tools.tool_backend_helpers import (
+        NOUS_MANAGED_PROVIDER,
+        fal_key_is_configured,
+        read_selection,
+    )
+
+    selected = read_selection("video_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return resolve_managed_tool_gateway("fal-queue") is not None
+    if selected is not None:
+        return fal_key_is_configured()
+    if fal_key_is_configured():
+        return True
+    return resolve_managed_tool_gateway("fal-queue") is not None
+
+
+# ---------------------------------------------------------------------------
+# Upscaler (SeedVR2 — video upscale pass)
+# ---------------------------------------------------------------------------
+
+# ByteDance SeedVR2 on FAL: $0.001/megapixel of output video. A 5s 720p→1440p
+# 2x pass is roughly $0.44. Faithful restoration-style upscaler (the same
+# model family Krea exposes as its "SeedVR2" video enhancer).
 UPSCALER_ENDPOINT = "fal-ai/seedvr/upscale/video"
 UPSCALER_FACTOR = 2
 
@@ -372,11 +421,32 @@ class FALVideoGenProvider(VideoGenProvider):
         duration: Optional[int] = None, aspect_ratio: str = "16:9", resolution: str = "720p", negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None, seed: Optional[int] = None, upscale: Optional[bool] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
-        try:  # a stored selection that cannot run gets the honest selection-naming error from the strict resolver
-            if not _fal_video_available():
-                return _fal_error(_NO_BACKEND_MSG, "auth_required", prompt)
-        except ValueError as exc:
-            return _fal_error(str(exc), "auth_required", prompt)
+        if not _check_fal_video_available():
+            from tools.tool_backend_helpers import read_selection
+
+            if read_selection("video_gen") is not None:
+                # A stored selection that cannot run gets the honest
+                # selection-naming error from the strict resolver.
+                try:
+                    _resolve_managed_fal_video_gateway()
+                except ValueError as exc:
+                    return error_response(
+                        error=str(exc),
+                        error_type="auth_required",
+                        provider="fal",
+                        prompt=prompt,
+                    )
+            return error_response(
+                error=(
+                    "No FAL backend available. Either set FAL_KEY "
+                    "(run `hermes tools` → Video Generation → FAL to configure) "
+                    "or sign in to Nous (`hermes setup`) for managed gateway access."
+                ),
+                error_type="auth_required",
+                provider="fal",
+                prompt=prompt,
+            )
+
         try:
             _load_fal_client()
         except ImportError:

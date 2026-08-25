@@ -107,8 +107,8 @@ def test_show_session_status_includes_reasoning_approvals_context():
         "context_tokens": 50000, "context_length": 200000, "context_percent": 25,
     }
 
-    with patch("hermes_constants.display_hermes_home", return_value="~/.hermes"), \
-         patch("tools.approval_context._get_approval_mode", return_value="manual"), \
+    with patch("cli.display_hermes_home", return_value="~/.hermes"), \
+         patch("tools.approval._get_approval_mode", return_value="manual"), \
          patch("tools.approval.is_approval_bypass_active_for_session", return_value=False):
         cli_obj._show_session_status()
 

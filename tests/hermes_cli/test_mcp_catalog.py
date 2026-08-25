@@ -421,24 +421,6 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
-    def test_empty_discovery_reinstall_keeps_explicit_empty_include(self, catalog_dir, monkeypatch):
-        """A probe that succeeds with zero tools must not widen a deliberate ``include: []``
-        to "all tools" (#12865): the block-all choice survives until the user changes it."""
-        import hermes_cli.mcp_catalog as mc
-        from hermes_cli.config import load_config, save_config
-
-        monkeypatch.setattr(mc, "_probe_tools", lambda name: [])
-        _write_manifest(catalog_dir, "demo", _basic_manifest())
-        cfg = load_config()
-        cfg.setdefault("mcp_servers", {})["demo"] = {
-            "command": "npx", "args": ["-y", "demo-mcp"], "enabled": True, "tools": {"include": []},
-        }
-        save_config(cfg)
-
-        mc.install_entry(_entry("demo"), enable=True)
-
-        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == []
-
     def test_probe_fail_reinstall_preserves_manual_exclude(self, catalog_dir):
         """A failed probe during reinstall keeps a hand-written
         tools.exclude on a manifest with no tool defaults, instead of

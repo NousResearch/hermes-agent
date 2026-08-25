@@ -61,7 +61,70 @@ def _hermes_root(home: Path) -> Path:
 
 
 def _profile_name(home: Path) -> str:
-    return home.name if home.parent.name == "profiles" else "default"
+    if home.parent.name == "profiles":
+        return home.name
+    return "default"
+
+
+def _is_bot_managed(profile_dir: Path) -> bool:
+    """True when profile.yaml carries a ui_meta['hermes-bots'] block.
+
+    Cheap substring check before the YAML parse keeps the silent path fast.
+    """
+    meta = profile_dir / "profile.yaml"
+    try:
+        if not meta.is_file():
+            return False
+        raw = meta.read_text(encoding="utf-8", errors="replace")
+        if "hermes-bots" not in raw:
+            return False
+        import yaml
+
+        data = yaml.safe_load(raw)
+        ui_meta = data.get("ui_meta") if isinstance(data, dict) else None
+        return isinstance(ui_meta, dict) and isinstance(ui_meta.get("hermes-bots"), dict)
+    except Exception:
+        return False
+
+
+def _roster(root: Path) -> list[tuple[str, Path]]:
+    """(name, dir) for the default profile + every named profile."""
+    entries: list[tuple[str, Path]] = [("default", root)]
+    try:
+        profiles = root / "profiles"
+        if profiles.is_dir():
+            for child in sorted(profiles.iterdir()):
+                if child.is_dir():
+                    entries.append((child.name, child))
+    except Exception:
+        pass
+    return entries
+
+
+def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
+    """True when ANY profile on this install is Bot-Mode-managed.
+
+    The tool-injection gate for ``message_agent`` — deliberately independent
+    of :func:`get_bot_mode_protocol_section`'s emptiness: a profile whose
+    SOUL.md carries the legacy plugin-appended protocol gets an empty
+    section (text dedupe) but must still get the tool. Never raises.
+    """
+    try:
+        resolved = Path(
+            str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        )
+        root = _hermes_root(resolved)
+        return any(_is_bot_managed(d) for _n, d in _roster(root))
+    except Exception:
+        return False
+
+
+def _soul_has_protocol(profile_dir: Path) -> bool:
+    try:
+        soul = profile_dir / "SOUL.md"
+        return soul.is_file() and _PROTOCOL_HEADING in soul.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
 
 
 def _handle(name: str) -> str:
@@ -69,11 +132,53 @@ def _handle(name: str) -> str:
     return "hermes" if name == "default" else name
 
 
-def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
-    profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
-    return [("default", root), *named]
+def _profile_role(profile_dir: Path) -> str:
+    """A teammate's role line: Bot Mode title, else profile description.
+
+    The ui_meta['hermes-bots'].title is the name the user gave the bot in
+    Bot Mode; profile.yaml's description is the profile's stated purpose.
+    Either one tells a teammate WHO to message for a given job. Bounded and
+    single-line; empty when neither exists. Never raises.
+    """
+    meta = profile_dir / "profile.yaml"
+    try:
+        if not meta.is_file():
+            return ""
+        raw = meta.read_text(encoding="utf-8", errors="replace")
+        import yaml
+
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            return ""
+        parts = []
+        ui_meta = data.get("ui_meta")
+        if isinstance(ui_meta, dict) and isinstance(ui_meta.get("hermes-bots"), dict):
+            title = str(ui_meta["hermes-bots"].get("title") or "").strip()
+            if title:
+                parts.append(title)
+        description = str(data.get("description") or "").strip()
+        if description:
+            parts.append(description)
+        line = " — ".join(parts)
+        return " ".join(line.split())[:160]
+    except Exception:
+        return ""
+
+
+def _roster_lines(root: Path, me: str) -> list[str]:
+    """One '- `@handle` — role' line per teammate (excluding ``me``)."""
+    lines = []
+    for name, profile_dir in _roster(root):
+        if name == me:
+            continue
+        role = _profile_role(profile_dir)
+        handle = _handle(name)
+        lines.append(f"- `@{handle}`" + (f" — {role}" if role else ""))
+    return lines
+
+
+def _peers(root: Path) -> list[str]:
+    """Registered peer gateway names (``hermes peer``), for the protocol text.
 
 
 def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
@@ -176,6 +281,38 @@ def _remote_paragraph(root: Path) -> str:
     )
 
 
+def _remote_paragraph(root: Path) -> str:
+    """Protocol addendum for agents on OTHER connected machines.
+
+    Fed by the Desktop relay roster (``tools/bot_relay.py``) — every gateway
+    connected to the user's Desktop (local, remote URL, SSH, Hermes Cloud,
+    docker) syncs its agents here, so bots can DM across machines with the
+    same message_agent tool. Only rendered when the relay roster is
+    non-empty.
+    """
+    try:
+        from tools.bot_relay import read_remote_roster, remote_target_forms
+
+        roster = read_remote_roster(root)
+    except Exception:
+        return ""
+    if not roster:
+        return ""
+    lines = []
+    for row, form in zip(roster, remote_target_forms(roster)):
+        where = row["connection_label"] or row["connection_id"]
+        role = " — ".join(p for p in (row["title"], row["description"]) if p)
+        lines.append(
+            f"- `@{form}` — on {where}" + (f" — {role}" if role else "")
+        )
+    return (
+        "\n\nTeammates on OTHER connected machines (reachable through the "
+        "Desktop relay — message them with message_agent exactly like local "
+        "teammates; replies arrive as completion notifications the same "
+        "way):\n" + "\n".join(lines)
+    )
+
+
 def _peer_paragraph(root: Path) -> str:
     """Addendum for cross-machine DMs — only when peers exist."""
     peers = _peers(root)
@@ -197,8 +334,14 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
-    roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
+    # An older plugin build may have appended the protocol to SOUL.md
+    # already — never double it up.
+    my_dir = home if me == "default" else root / "profiles" / me
+    if _soul_has_protocol(my_dir):
+        return ""
+
+    handle = _handle(me)
+    roster_block = "\n".join(_roster_lines(root, me)) or "- (no teammates yet)"
 
     return (
         f"{_PROTOCOL_HEADING}\n"
@@ -221,7 +364,7 @@ def _build_section(home: Path) -> str:
         "concisely via message_agent to their handle, and if it is a pure FYI "
         "with nothing to add, staying silent is fine — never ping-pong "
         "acknowledgements.\n"
-        f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
+        f"You are `@{handle}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
         + _remote_paragraph(root)
@@ -294,26 +437,44 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     surface["soul"] = _swallow(_soul, "")
     surface["skills"] = _swallow(_skills, [])
     try:
-        roster = _roster(root)
-        surface["roster"] = sorted(n for n, d in roster if _is_bot_managed(d))
-        # Roles are part of the messaging surface: renaming a bot or editing a
-        # description must refresh the roster block teammates pick recipients from.
-        surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in roster)
+        root = _hermes_root(resolved)
+        surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
+        # Roles are part of the messaging surface: renaming a bot or editing
+        # a profile description must refresh eternal Bot Chat prompts so the
+        # roster block teammates pick recipients from stays current.
+        surface["roster_roles"] = sorted(
+            f"{n}:{_profile_role(d)}" for n, d in _roster(root)
+        )
     except Exception:
         surface["roster"] = []
-    # Protocol-text version salt: bumping it refreshes every eternal Bot Chat
-    # prompt ONCE so existing bots adopt a new protocol section.
+    # Protocol-text version salt: bumping this refreshes every eternal Bot
+    # Chat prompt ONCE so existing bots adopt a new protocol section (e.g.
+    # the v2 message_agent tool replacing the shellout instructions).
     surface["protocol_version"] = 2
-    # Peer gateways and the Desktop relay roster are part of the messaging
-    # surface too: registering a peer or (dis)connecting a machine must show up.
-    surface["peers"] = _peers(root)
-    surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(root)
-    )
-    return _swallow(
-        lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],
-        "unavailable",
-    )
+    try:
+        # Peer gateways are part of the messaging surface: registering one
+        # must refresh eternal Bot Chat prompts so the cross-machine DM
+        # paragraph appears on the next message.
+        surface["peers"] = _peers(_hermes_root(resolved))
+    except Exception:
+        surface["peers"] = []
+    try:
+        # The Desktop relay roster is part of the messaging surface too:
+        # connecting/disconnecting a machine, or agents appearing on one,
+        # must refresh eternal Bot Chat prompts the same way.
+        from tools.bot_relay import read_remote_roster
+
+        surface["remote_roster"] = sorted(
+            f"{r['connection_id']}:{r['profile']}:{r['title']}"
+            for r in read_remote_roster(_hermes_root(resolved))
+        )
+    except Exception:
+        surface["remote_roster"] = []
+    try:
+        blob = json.dumps(surface, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:12]
+    except Exception:
+        return "unavailable"
 
 
 def epoch_line(home: str | os.PathLike | None = None) -> str:

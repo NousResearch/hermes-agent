@@ -808,9 +808,9 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         from run_agent import AIAgent
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -834,7 +834,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
 
         import agent.agent_runtime_helpers as _arh
 
-        from tests.agent.test_run_agent import _mock_response
+        from tests.run_agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [
@@ -900,7 +900,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         from agent.conversation_loop import _clone_message_for_send  # noqa: F401
         from unittest.mock import patch
 
-        from tests.agent.test_run_agent import _mock_response
+        from tests.run_agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [

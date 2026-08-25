@@ -129,18 +129,20 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
-    def test_text_to_image_posts_generations_with_no_host_model(self, provider, codex_backend, tmp_path):
-        result = provider.generate("a cat", aspect_ratio="portrait")
+
+    def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: {"b64": _b64_png(), "source": "final"})
+
+        result = provider.generate("a cat", aspect_ratio="landscape")
 
         assert result["success"] is True
         assert result["model"] == "gpt-image-2-medium"
         assert result["provider"] == "openai-codex"
         assert result["quality"] == "medium"
-        assert result["pixel_size"] == "1x1"
-        # Backend-reported values travel separately from what we asked for (#107233).
-        assert result["reported_quality"] == "low"
-        assert result["reported_size"] == "1254x1254"
-        assert result["imagegen_request_id"] == "req_abc"
+        assert result.get("image_source") == "final"
+        assert result.get("pixel_size") == "1x1"
+
         saved = Path(result["image"])
         assert saved.exists() and saved.parent == tmp_path / "cache" / "images"
         assert saved.name.startswith("openai_codex_")
@@ -162,7 +164,14 @@ class TestGenerate:
         local.write_bytes(_png_bytes())
         data_url = "data:image/png;base64," + _b64_png()
 
-        result = provider.generate("edit these", image_url=str(local), reference_image_urls=[data_url])
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return {"b64": _b64_png(), "source": "final"}
 
         assert result["success"] is True
         assert result["modality"] == "image"
@@ -178,11 +187,16 @@ class TestGenerate:
             httpx, "get",
             lambda url, **kw: httpx.Response(200, content=_png_bytes(), request=httpx.Request("GET", url)))
 
-        result = provider.generate("edit", image_url="https://example.com/ref.png")
-
-        assert result["success"] is True
-        body = json.loads(codex_backend["requests"][0].content)
-        assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
+        tool = captured["tools"][0]
+        assert tool["type"] == "image_generation"
+        assert tool["model"] == "gpt-image-2"
+        assert tool["quality"] == "medium"
+        assert tool["size"] == "1024x1536"
+        assert tool["output_format"] == "png"
+        assert tool["background"] == "opaque"
+        # Progressive previews disabled: partial frames were being saved as
+        # finals and presented as smeared/unfinished images.
+        assert tool["partial_images"] == 0
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
@@ -200,7 +214,193 @@ class TestGenerate:
         assert "not a supported image" in result["error"]
         assert codex_backend["requests"] == []
 
-    def test_http_error_message_surfaces_verbatim_and_bounded(self, provider, codex_backend):
+
+    def test_partial_image_event_used_when_done_missing(self):
+        """Extractor may surface partial b64 when no final exists (fallback only)."""
+        payload = {
+            "type": "response.image_generation_call.partial_image",
+            "partial_image_b64": _b64_png(),
+        }
+        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+        result, partial = codex_plugin._extract_image_candidates(payload)
+        assert result is None
+        assert partial == _b64_png()
+
+    def test_final_result_wins_over_coexisting_partial_in_same_payload(self):
+        """Blind spot that shipped the smear bug: both fields in one payload.
+
+        partial_image_b64 must never overwrite image_generation_call.result
+        when they coexist in the same event tree.
+        """
+        final = _b64_png()
+        # Distinct non-empty stand-in so equality proves which field won.
+        partial = "cGFydGlhbC1vbmx5LW5vdC1hLXJlYWwtZmluYWw="
+        payload = {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "image_generation_call",
+                "status": "completed",
+                "result": final,
+                "partial_image_b64": partial,
+            },
+        }
+        assert codex_plugin._extract_image_b64(payload) == final
+        result, got_partial = codex_plugin._extract_image_candidates(payload)
+        assert result == final
+        assert got_partial == partial
+
+    def test_nested_final_wins_over_sibling_partial(self):
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "result": _b64_png(),
+                }],
+            },
+            "partial_image_b64": "cGFydGlhbC1zaWJsaW5n",
+        }
+        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+
+    def test_sse_parser_handles_event_and_data_lines(self):
+        class _Response:
+            def iter_lines(self):
+                return iter([
+                    "event: response.output_item.done",
+                    'data: {"item": {"type": "image_generation_call", "result": "abc"}}',
+                    "",
+                ])
+
+        events = list(codex_plugin._iter_sse_json(_Response()))
+        assert events == [{
+            "type": "response.output_item.done",
+            "item": {"type": "image_generation_call", "result": "abc"},
+        }]
+
+    def test_final_response_sweep_recovers_image(self):
+        """Completed response output is found by recursive payload scanning."""
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "id": "ig_final",
+                    "result": _b64_png(),
+                }],
+            },
+        }
+        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+
+    def test_partial_only_stream_fails_closed_after_retry(self, provider, monkeypatch):
+        """Partial-only streams must not return success:true with a smear frame."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        calls = {"n": 0}
+
+        def _partial_only(*args, **kwargs):
+            calls["n"] += 1
+            return {"b64": _b64_png(), "source": "partial"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _partial_only)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "incomplete_image"
+        assert "partial" in result["error"].lower()
+        # One initial attempt + one content-agnostic retry.
+        assert calls["n"] == codex_plugin._NONFINAL_RETRIES + 1
+
+    def test_empty_stream_retries_then_fails(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        calls = {"n": 0}
+
+        def _empty(*args, **kwargs):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _empty)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+        assert calls["n"] == codex_plugin._NONFINAL_RETRIES + 1
+
+    def test_partial_then_final_on_retry_succeeds(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        calls = {"n": 0}
+
+        def _then_final(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"b64": _b64_png(), "source": "partial"}
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _then_final)
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result.get("image_source") == "final"
+        assert calls["n"] == 2
+
+    def test_empty_then_final_on_retry_succeeds(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        calls = {"n": 0}
+
+        def _then_final(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _then_final)
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result.get("image_source") == "final"
+        assert calls["n"] == 2
+
+    def test_empty_response_returns_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_NONFINAL_RETRIES", 0)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
+    def test_stream_exception_returns_api_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("cloudflare 403")
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "cloudflare 403" in result["error"]
+
+    def test_tool_choice_400_surfaces_verbatim_not_as_capability_error(
+        self, provider, monkeypatch
+    ):
+        """The tool_choice 400 must NOT be reported as an account limitation.
+
+        Regression for #19505 / #49008 / #31335: a previous version classified
+        this exact request-shape rejection as "Image generation is not enabled
+        for the current Codex account", telling every affected user to abandon
+        Codex over a bug in our own payload. The wire error must reach the user
+        unedited so it stays diagnosable.
+
+        Drives the REAL httpx boundary (not a mocked ``_collect_image_b64``) so
+        the classification path is actually exercised — mocking the collector
+        would skip the code under test entirely.
+        """
+        import httpx
+
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
         body = json.dumps({
             "metadata": "x" * 600,
             "error": {"message": "Missing required parameter: 'prompt'.", "type": "invalid_request_error"},

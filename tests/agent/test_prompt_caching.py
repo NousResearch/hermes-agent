@@ -184,7 +184,7 @@ class TestPromptCachePlan:
             native_anthropic=True,
             direct_native_tool_cache=True,
         )
-        assert _count_cache_markers(plan.messages, plan.tools) == 3
+        assert plan.marker_count == 3
         assert len(plan.tools) == 0
 
 
@@ -650,6 +650,8 @@ class TestApplyIdempotency:
 
         assert caller_history == snapshot
         assert _count_cache_markers(result, []) <= 4
+
+
 
 
 

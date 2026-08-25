@@ -46,7 +46,7 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
     fake_root.mkdir()
 
     from hermes_cli import main as hermes_main
-    from hermes_cli.update_cmd import _update_via_zip
+    from hermes_cli.main import _update_via_zip
 
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
 

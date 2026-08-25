@@ -45,7 +45,6 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
-  ensureGatewayForProfile,
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,

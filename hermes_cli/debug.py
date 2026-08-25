@@ -561,17 +561,21 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
         sys.exit(1)
     view_url = res.get("viewUrl") or res.get("view_url")
     expires_at = res.get("expiresAt") or res.get("expires_at")
-    print("\nDebug bundle uploaded to Nous (private):")
-    print(f"  View URL  {view_url}" if view_url
-          else f"  (no view URL returned; upload id: {res.get('id', '?')})")
-    print(f"\n⏱  Auto-deletes at {expires_at} (14-day retention)." if expires_at
-          else "\n⏱  Auto-deletes after 14 days.")
-    print("\nShare this private link with the Nous team — only Nous staff "
-          "(via Google login) can open it.\n"
-          "\nPick up the discussion in:\n"
-          "  GitHub Issues        https://github.com/NousResearch/hermes-agent/issues\n"
-          "  Nous Portal Support  https://portal.nousresearch.com/help\n"
-          "  Discord              https://discord.gg/NousResearch")
+    if expires_at:
+        print(f"\n⏱  Auto-deletes at {expires_at} (14-day retention).")
+    else:
+        print("\n⏱  Auto-deletes after 14 days.")
+
+    print(
+        "\nShare this private link with the Nous team — only Nous staff "
+        "(via Google login) can open it."
+    )
+    print(
+        "\nPick up the discussion in:\n"
+        "  GitHub Issues        https://github.com/NousResearch/hermes-agent/issues\n"
+        "  Nous Portal Support  https://portal.nousresearch.com/help\n"
+        "  Discord              https://discord.gg/NousResearch"
+    )
 
 
 def run_debug_delete(args):

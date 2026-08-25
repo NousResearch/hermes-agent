@@ -501,11 +501,6 @@ export const ja = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
-      appActionsTitle: 'アプリ操作',
-      appActionsDesc:
-        '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
-      appActionsLeft: '左',
-      appActionsRight: '右',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -540,8 +535,6 @@ export const ja = defineLocale({
       },
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
-      userBubbleTitle: 'メッセージの吹き出し',
-      userBubbleDesc: '自分のメッセージの透け具合。0 で不透明、100 で枠線だけが残ります。',
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
       reactionsTitle: 'メッセージリアクション',
@@ -1165,9 +1158,6 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
-        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
-        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
-        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -3293,11 +3283,7 @@ export const ja = defineLocale({
         streaming: 'ストリーミング接続のエラー'
       },
       errorRetry: '再試行',
-      errorStartNewSession: '新しいセッションを開始',
       errorSwitchProvider: 'プロバイダーを切り替え',
-      errorSignInAgain: provider => `${provider} に再度サインイン`,
-      errorOauthExpired: provider =>
-        `${provider} のサインインが期限切れか取り消されました。続けるには再度サインインしてください。`,
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
       errorOpenDesktopLogs: 'デスクトップのログを開く',

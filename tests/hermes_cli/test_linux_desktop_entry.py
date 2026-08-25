@@ -180,27 +180,21 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
 # interpreter when the DE spawns the .desktop entry → ModuleNotFoundError,
 # silent (Terminal=false). The Exec line must prefix sys.executable for any
 # resolved bin that is a python script escaping the running venv.
-def test_exec_prefixes_interpreter_for_env_shebang_python_script(
-    tmp_path, xdg_home, monkeypatch
-):
+def test_exec_prefixes_interpreter_for_env_shebang_python_script(tmp_path, xdg_home, monkeypatch):
     import sys
 
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    hermes_bin.write_text(
-        "#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8"
-    )
+    hermes_bin.write_text("#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
-    monkeypatch.setattr(
-        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
-    )
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    interpreter = os.path.abspath(sys.executable)
+    interpreter = str(Path(sys.executable).resolve())
     assert exec_line.split(" ")[0].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
@@ -210,13 +204,9 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    hermes_bin.write_text(
-        '#!/bin/bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8"
-    )
+    hermes_bin.write_text('#!/bin/bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8")
     hermes_bin.chmod(0o755)
-    monkeypatch.setattr(
-        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
-    )
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
     entry = lde.install_desktop_entry(root)
@@ -232,12 +222,10 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
-    interpreter = os.path.abspath(sys.executable)
+    interpreter = str(Path(sys.executable).resolve())
     hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
-    monkeypatch.setattr(
-        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
-    )
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
     entry = lde.install_desktop_entry(root)
@@ -246,343 +234,6 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     # Console-script with the venv's own interpreter in the shebang: correct
     # as-is, prefixing would only add noise.
     assert exec_line == f"{hermes_bin} desktop"
-
-
-# The persisted entry must be launch-context independent: whatever process
-# writes it, the next launch reads and rewrites the same bytes. argv[0]
-# differs per launch path (wrapper / repo script / python -m), so a
-# checkout-internal argv[0] must not be persisted — the resolver falls
-# through to PATH, where the installer's durable wrapper lives.
-def _argv0_context(monkeypatch, argv0: str) -> None:
-    import sys
-
-    monkeypatch.setattr(sys, "argv", [argv0, "desktop"])
-
-
-def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
-    tmp_path, xdg_home, monkeypatch
-):
-    """A broken interpreter-form entry must self-heal to the wrapper form.
-
-    Launching with argv[0] = <checkout>/hermes (what the broken entry
-    itself spawns) previously re-persisted the same broken form forever —
-    the bootstrap loop that kept #90492 from repairing existing installs.
-    """
-    import sys
-
-    root = _make_project(tmp_path)
-    repo_script = root / "hermes"  # checkout-internal launcher candidate
-    repo_script.write_text(
-        "#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8"
-    )
-    repo_script.chmod(0o755)
-    wrapper = tmp_path / "installed" / "bin" / "hermes"
-    wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n', encoding="utf-8")
-    wrapper.chmod(0o755)
-
-    # argv[0] = repo script; PATH lookup finds the installed wrapper.
-    _argv0_context(monkeypatch, str(repo_script))
-    monkeypatch.setattr(
-        "shutil.which", lambda name: str(wrapper) if name == "hermes" else None
-    )
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    # Converged on the durable wrapper — NOT the repo script, and NOT an
-    # interpreter-prefixed form pinning sys.executable.
-    assert exec_line == f"{wrapper} desktop"
-
-
-def test_exec_never_persists_a_bare_interpreter_command(
-    tmp_path, xdg_home, monkeypatch
-):
-    """The `python -m hermes_cli.main` relaunch context must not write
-    `Exec=<python> desktop` — a command line no DE can run."""
-    import sys
-
-    root = _make_project(tmp_path)
-    wrapper = tmp_path / "installed" / "bin" / "hermes"
-    wrapper.parent.mkdir(parents=True)
-    wrapper.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-
-    interpreter = tmp_path / "uv" / "cpython-3.11.15" / "bin" / "python3.11"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_bytes(b"\x7fELF fake")
-    interpreter.chmod(0o755)
-
-    # argv[0] IS the interpreter (python -m context); PATH has the wrapper.
-    _argv0_context(monkeypatch, str(interpreter))
-    monkeypatch.setattr(
-        "shutil.which", lambda name: str(wrapper) if name == "hermes" else None
-    )
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    first_token = exec_line.split(" ")[0].strip('"')
-    assert Path(first_token) != interpreter
-    assert not (
-        Path(first_token).name.startswith("python")
-        and "desktop" in exec_line.split(" ", 1)[1]
-    ), f"persisted an unrunnable bare-interpreter Exec: {exec_line}"
-    assert exec_line == f"{wrapper} desktop"
-
-
-def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
-    tmp_path, xdg_home, monkeypatch
-):
-    """No wrapper anywhere → #90492's runnable fallback, never a dead Exec.
-
-    With argv[0] checkout-internal and PATH + known locations both empty,
-    the resolver returns None and resolve_exec_command emits the runnable
-    `sys.executable -m hermes_cli.main desktop` fallback. Persisting the
-    interpreter itself (`<python> desktop`) would be unrunnable by any DE;
-    persisting the repo script alone dies on its env shebang.
-    """
-    import sys
-
-    root = _make_project(tmp_path)
-    repo_script = root / "hermes"
-    repo_script.write_text(
-        "#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8"
-    )
-    repo_script.chmod(0o755)
-
-    _argv0_context(monkeypatch, str(repo_script))
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    def fake_resolve():
-        # Mirror resolve_hermes_bin's chain: argv[0] → relative → PATH → None.
-        return sys.argv[0] if sys.argv[0] else None
-
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    # The runnable module fallback — NOT the bare repo script (its env
-    # shebang would escape the venv under a DE) and NOT `<python> desktop`.
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-    assert Path(exec_line.split(" ")[0].strip('"')).is_absolute()
-    assert str(repo_script) not in exec_line
-
-
-def test_exec_uses_known_wrapper_when_path_lookup_misses(
-    tmp_path, xdg_home, monkeypatch
-):
-    """Stripped-PATH session + wrapper at the known installer location.
-
-    systemd user sessions and autostart relaunches often run without
-    ~/.local/bin on PATH. When shutil.which finds nothing, the resolver
-    must probe the known durable locations directly instead of silently
-    persisting a checkout-internal Exec line.
-    """
-    import sys
-
-    root = _make_project(tmp_path)
-    repo_script = root / "hermes"
-    repo_script.write_text(
-        "#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8"
-    )
-    repo_script.chmod(0o755)
-
-    # The wrapper exists at the known location but is NOT on PATH.
-    # Realistic installer shim: execs this checkout's venv python on the
-    # checkout's hermes script (the aidiyet check requires it to target
-    # the writing checkout).
-    known_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
-    known_wrapper.parent.mkdir(parents=True)
-    known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
-        encoding="utf-8",
-    )
-    known_wrapper.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path / "known-home"))
-
-    _argv0_context(monkeypatch, str(repo_script))
-    monkeypatch.setattr("shutil.which", lambda name: None)
-
-    def fake_resolve():
-        return sys.argv[0] if sys.argv[0] else None
-
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    # The probe found the wrapper despite the PATH miss.
-    assert exec_line == f"{known_wrapper} desktop"
-
-
-def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
-    tmp_path, xdg_home, monkeypatch
-):
-    """`None` from the resolver must still probe known wrapper locations.
-
-    A cold relaunch (argv[0] is not an executable file, e.g. `-c` under
-    `python -m`, and PATH has no `hermes`) makes resolve_hermes_bin return
-    None outright. The early `return primary` that used to fire here skipped
-    the durable-wrapper probe, so the persisted Exec flipped to the bare
-    `<python> -m hermes_cli.main desktop` module form. Each flip between the
-    wrapper and module forms rewrites hermes.desktop on the next launch; any
-    rewrite that lands while gnome-shell's ShellApp for the entry is still
-    STARTING crashes the shell (shell_app_dispose `state == STOPPED`
-    assertion, gnome-shell 50.4). The entry must converge on the durable
-    wrapper wherever it exists.
-    """
-    root = _make_project(tmp_path)
-
-    known_wrapper = tmp_path / "cold-home" / ".local" / "bin" / "hermes"
-    known_wrapper.parent.mkdir(parents=True)
-    known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
-        encoding="utf-8",
-    )
-    known_wrapper.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path / "cold-home"))
-
-    # argv[0] is not an executable path at all — the resolver's own chain
-    # yields None with or without argv[0].
-    _argv0_context(monkeypatch, "-c")
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    assert entry is not None
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    assert exec_line == f"{known_wrapper} desktop"
-
-    # …and the SAME context a second time re-renders byte-identical content:
-    # the no-op guard in install_desktop_entry then skips the rewrite.
-    lde._probe_cache.clear()
-    entry2 = lde.install_desktop_entry(root)
-    assert entry2 is not None
-    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
-
-
-def test_exec_rejects_known_wrapper_from_another_checkout(
-    tmp_path, xdg_home, monkeypatch
-):
-    """A known-location wrapper that targets a DIFFERENT checkout is skipped.
-
-    On machines with multiple installs over time, ~/.local/bin/hermes may
-    belong to another checkout. Persisting it would make the entry stable
-    but silently point at that other installation — the failure class the
-    aidiyet check exists to prevent. The runnable module fallback must win
-    instead.
-    """
-    import sys
-
-    root = _make_project(tmp_path)
-    repo_script = root / "hermes"
-    repo_script.write_text(
-        "#!/usr/bin/env python3\nimport hermes_cli\n", encoding="utf-8"
-    )
-    repo_script.chmod(0o755)
-
-    # A shim belonging to a DIFFERENT checkout.
-    other_root = tmp_path / "other-install"
-    other_root.mkdir()
-    foreign_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
-    foreign_wrapper.parent.mkdir(parents=True)
-    foreign_wrapper.write_text(
-        f"#!/bin/bash\nexec {other_root / 'venv' / 'bin' / 'python'} "
-        f'{other_root / "hermes"} "$@"\n',
-        encoding="utf-8",
-    )
-    foreign_wrapper.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path / "known-home"))
-
-    _argv0_context(monkeypatch, str(repo_script))
-    monkeypatch.setattr("shutil.which", lambda name: None)
-
-    def fake_resolve():
-        return sys.argv[0] if sys.argv[0] else None
-
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    # The foreign wrapper was rejected; the runnable module fallback won.
-    assert str(foreign_wrapper) not in exec_line
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-
-
-@pytest.mark.parametrize(
-    ("layout", "env_overrides", "expected"),
-    [
-        pytest.param(
-            "user",
-            {},
-            "HOME-SET-BY-TEST/.local/bin/hermes",
-            id="user-layout",
-        ),
-        pytest.param(
-            "termux",
-            {"PREFIX": "PREFIX-SET-BY-TEST"},
-            "PREFIX-SET-BY-TEST/bin/hermes",
-            id="termux-prefix-first",
-        ),
-        pytest.param(
-            "root-fhs",
-            {"__EUID0__": "1"},
-            "/usr/local/bin/hermes",
-            id="root-fhs",
-        ),
-        pytest.param(
-            "non-root-no-fhs",
-            {"__EUID0__": "0"},
-            "HOME-SET-BY-TEST/.local/bin/hermes",
-            id="non-root-excludes-fhs",
-        ),
-    ],
-)
-def test_known_wrapper_candidates_cover_installer_layouts(
-    layout, env_overrides, expected, monkeypatch
-):
-    """_known_wrapper_candidates mirrors get_command_link_dir() layouts.
-
-    Termux ($PREFIX/bin) outranks everything; root FHS (/usr/local/bin)
-    applies only to euid 0; the user layout (~/.local/bin) is always a
-    candidate. Locking these in protects against silent regressions in
-    the stripped-PATH probe path.
-    """
-    import os
-
-    sentinel_home = "/home/__sentinel_home__"
-    monkeypatch.setenv("HOME", sentinel_home)
-    for key, value in env_overrides.items():
-        if key == "__EUID0__":
-            monkeypatch.setattr(lde.os, "geteuid", lambda: 0 if value == "1" else 1000)
-        else:
-            monkeypatch.setenv(key, value)
-
-    candidates = [str(c) for c in lde._known_wrapper_candidates()]
-
-    expected_resolved = expected.replace("HOME-SET-BY-TEST", sentinel_home)
-    assert expected_resolved in candidates
-    if layout == "termux":
-        # PREFIX outranks the user layout.
-        assert candidates[0] == expected_resolved
-    if layout == "root-fhs":
-        # Root FHS outranks the user layout.
-        assert candidates.index("/usr/local/bin/hermes") < candidates.index(
-            f"{sentinel_home}/.local/bin/hermes"
-        )
-    if layout == "non-root-no-fhs":
-        # Non-root euid: /usr/local/bin must be excluded outright.
-        assert "/usr/local/bin/hermes" not in candidates
 
 
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):

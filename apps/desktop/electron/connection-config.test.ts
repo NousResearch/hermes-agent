@@ -528,14 +528,6 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
     }),
     '/api/fs/download?path=%2Fsrv%2Freport.pdf'
   )
-  assert.equal(
-    pathForRegistryBackendRequest(
-      '/api/profiles/sessions/sidebar?recents_profile=research&recents_exclude=cron%2Cdesktop',
-      'research',
-      { remoteProfile: 'remote-research' }
-    ),
-    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
-  )
 })
 
 // --- pathWithGlobalRemoteProfile ---
@@ -800,26 +792,6 @@ test('resolveProfileApiRequest scopes complete safe families according to their 
       backendProfile: null,
       requestPath: '/api/profiles/worker'
     }
-  )
-})
-
-test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with the profile scope', () => {
-  // A local sub-profile's gateway verbs must reach a backend that (a) receives
-  // `?profile=X` so the handler can answer "served by the multiplexer" (409 /
-  // restart the multiplexer) and (b) is the backend the gateway-restart status
-  // poll asks. A pooled `--profile X serve` gets neither: unscoped, it spawned a
-  // `-p X gateway restart` that exited 78 while the primary-routed poll read
-  // "no such action" as success.
-  for (const verb of ['restart', 'start', 'stop']) {
-    assert.deepEqual(resolveProfileApiRequest('iris', `/api/gateway/${verb}`, { requestMethod: 'POST' }), {
-      backendProfile: null,
-      requestPath: `/api/gateway/${verb}?profile=iris`
-    })
-  }
-
-  assert.deepEqual(
-    resolveProfileApiRequest('iris', '/api/actions/gateway-restart/status?lines=200', { requestMethod: 'GET' }),
-    { backendProfile: null, requestPath: '/api/actions/gateway-restart/status?lines=200&profile=iris' }
   )
 })
 
@@ -1399,35 +1371,4 @@ test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => 
   assert.equal(wrapped.message, 'auth message')
   assert.equal((wrapped as any).needsOauthLogin, true)
   assert.equal((wrapped as any).statusCode, 401)
-})
-
-test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequired so startHermes latches it', () => {
-  for (const statusCode of [401, 403]) {
-    const source = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
-    const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any
-
-    assert.equal(wrapped.message, 'auth copy')
-    assert.equal(wrapped.needsOauthLogin, true)
-    assert.equal(wrapped.isReauthRequired, true, `a ${statusCode} mint rejection cannot self-heal`)
-    assert.equal(wrapped.statusCode, statusCode)
-  }
-
-  // A pre-tagged rejection (needsOauthLogin from an upstream classifier) is
-  // confirmed the same way.
-  const tagged = gatewayTicketFailure({ needsOauthLogin: true }, 'auth copy', 'transport copy') as any
-  assert.equal(tagged.isReauthRequired, true)
-})
-
-test('FIX #95701: transport and server failures at the ticket mint stay retryable — never reauth', () => {
-  for (const source of [
-    Object.assign(new Error('503: unavailable'), { statusCode: 503 }),
-    new Error('Timed out connecting to Hermes backend after 8000ms'),
-    Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
-  ]) {
-    const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any
-
-    assert.equal(wrapped.message, 'transport copy')
-    assert.equal(wrapped.needsOauthLogin, undefined)
-    assert.equal(wrapped.isReauthRequired, undefined)
-  }
 })

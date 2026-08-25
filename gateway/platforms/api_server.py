@@ -33,25 +33,38 @@ _PROFILE_REJECTED = object()
 
 
 def _prefix_names_served_profile(profile: str) -> bool:
-    """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
-    single-profile gateway answering /p/<x>/ served the owner's toolsets under another URL."""
+    """True when a /p/<profile>/ prefix names the profile this gateway serves.
+
+    Single-profile (non-multiplex) gateways historically ignored the prefix
+    and answered every /p/<x>/ request from their own profile's config —
+    which silently served the gateway owner's toolsets/capabilities under
+    another profile's URL (#91583 defect 2). Only a self-referential prefix
+    may fall through; anything else must be rejected. Fail closed.
+    """
     try:
         from hermes_cli.profiles import profile_matches_home
+
         return profile_matches_home(profile)
     except Exception:
         return False
 
-
-# Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
+# Profile selected by the /p/<profile>/ URL prefix for the current request.
+# Set by the profile-prefix middleware; read by handlers / _run_agent.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
-    "api_server_request_profile", default=None)
+    "api_server_request_profile", default=None
+)
 _api_request_browser_control_principal: ContextVar[str] = ContextVar(
-    "api_server_browser_control_principal", default="")
+    "api_server_browser_control_principal", default=""
+)
 _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
-    "api_server_browser_control_transport_family", default="")
+    "api_server_browser_control_transport_family", default=""
+)
 
+#: Minimal scope shape accepted by :func:`gateway.browser_control_artifacts
+#: .artifact_scope_key`: principal + session + transport family.  The API
+#: server authenticates the caller itself, so the facade carries only the
+#: server-derived principal and the loopback/remote family.
 class _ArtifactScopeFacade:
-    """Minimal scope for ``artifact_scope_key``: server-derived principal + session + transport family."""
     __slots__ = ("principal_id", "session_id", "transport_family")
 
     def __init__(self, principal_id: str, *, session_id: str = "", transport_family: str = ""):
@@ -59,53 +72,27 @@ class _ArtifactScopeFacade:
         self.session_id = session_id
         self.transport_family = transport_family
 
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_ArtifactScopeFacade(principal={self.principal_id!r})"
 
-# Advertised in capabilities and echoed in registration responses; validated by the broker.
+#: Browser-extension control protocol version advertised in capabilities and
+#: echoed in registration responses. Strict validation is centralized in the
+#: broker's ``browser_control_protocol_supported`` helper.
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
-
-# /v1/capabilities static feature flags (order is part of the JSON shape).
-_STATIC_FEATURE_FLAGS = {
-    "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
-    "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
-    "session_resources": True, "model_options": True, "session_chat": True,
-    "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
-    "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
-# /v1/capabilities "endpoints" table: name -> (method, path).
-_CAPABILITY_ENDPOINTS = (
-    ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
-    ("models", ("GET", "/v1/models")), ("model_options", ("GET", "/api/model/options")),
-    ("chat_completions", ("POST", "/v1/chat/completions")),
-    ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
-    ("run_status", ("GET", "/v1/runs/{run_id}")),
-    ("run_events", ("GET", "/v1/runs/{run_id}/events")),
-    ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
-    ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
-    ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
-    ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
-    ("session_create", ("POST", "/api/sessions")),
-    ("session", ("GET", "/api/sessions/{session_id}")),
-    ("session_update", ("PATCH", "/api/sessions/{session_id}")),
-    ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
-    ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
-    ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
-    ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
-    ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
-    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
-    ("browser_control_register", ("POST", "/v1/browser-control/register")),
-    ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
-    ("artifact_upload", ("POST", "/v1/artifacts/upload")),
-    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")))
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
 
-def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
+def _approval_event_choices(
+    *, smart_denied: bool, allow_session: bool, allow_permanent: bool
+) -> list[str]:
     if smart_denied or not allow_session:
         return ["once", "deny"]
-    return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
+    return (
+        ["once", "session", "always", "deny"]
+        if allow_permanent
+        else ["once", "session", "deny"]
+    )
 
 
 try:
@@ -128,12 +115,25 @@ from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
 from gateway.browser_control_artifacts import (
-    ArtifactError, ArtifactRateLimiter, ArtifactStore, ArtifactTooLarge, DEFAULT_ALLOWED_MIME_TYPES,
-    DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ARTIFACT_TTL_SECONDS)
+    ArtifactError,
+    ArtifactRateLimiter,
+    ArtifactStore,
+    ArtifactTooLarge,
+    DEFAULT_ALLOWED_MIME_TYPES,
+    DEFAULT_MAX_ARTIFACT_BYTES,
+    DEFAULT_ARTIFACT_TTL_SECONDS,
+)
 from gateway.browser_control_broker import (
-    BROWSER_CONTROL_ARTIFACT_CAPABILITIES, BROWSER_CONTROL_CAPABILITIES, BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
-    ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
-    browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
+    BROWSER_CONTROL_ARTIFACT_CAPABILITIES,
+    BROWSER_CONTROL_CAPABILITIES,
+    BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
+    ControllerScope,
+    ControllerTicketInvalid,
+    browser_control_developer_mode,
+    browser_control_protocol_supported,
+    filter_browser_control_capabilities,
+    get_browser_control_broker,
+)
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -144,6 +144,42 @@ logger = logging.getLogger(__name__)
 
 def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
     """Return a loop-aware broker sender for one aiohttp controller socket.
+
+    A wait timeout means the coroutine is still in flight on a live loop, not
+    that the frame was rejected. Keep the broker command pending and let its
+    own deadline/cancel path decide; a real send exception still propagates.
+    """
+
+    def send(frame: dict) -> None:
+        if ws.closed:
+            raise ConnectionError("browser-control websocket is closed")
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            loop.create_task(ws.send_json(frame))
+            return
+        future = asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        try:
+            future.result(timeout=wait_timeout)
+        except concurrent.futures.TimeoutError:
+            if future.done():
+                raise
+
+            def observe_late_send(completed):
+                try:
+                    completed.result()
+                except Exception:
+                    logger.exception("browser-controller websocket send failed after wait timeout")
+
+            future.add_done_callback(observe_late_send)
+
+    return send
+
+
+def _hermes_version() -> str:
+    """Return the canonical Hermes Agent version string.
 
     A wait timeout means the coroutine is still in flight, not that the frame was rejected:
     keep the broker command pending (its own deadline decides); a real send error propagates.
@@ -248,9 +284,15 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
 
 
 _REQUEST_OPTION_MISSING = object()
-# Full internal ladder + "none" (what /reasoning and config.yaml accept); provider
-# vocabulary clamping happens downstream in agent.reasoning_effort.
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
+# Full internal ladder + "none": the API server accepts what /reasoning and
+# config.yaml accept (hermes_constants.VALID_REASONING_EFFORTS); wire-level
+# clamping to each provider's vocabulary happens downstream in the
+# transports/profiles via agent.reasoning_effort. Rejecting "max"/"ultra"
+# here made API/browser clients second-class citizens of the ladder
+# (#78216's api_server observation).
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
@@ -346,33 +388,39 @@ def _request_agent_overrides(
     return overrides
 
 
-def _request_relay_metadata(body: Any) -> Dict[str, Any]:
-    """Extract Relay metadata from an OpenAI request body."""
-    if not isinstance(body, dict):
-        return {}
-    metadata = body.get("metadata")
-    if not isinstance(metadata, dict):
-        return {}
-    return dict(metadata)
-
-
 def _is_compressed_summary_message(message: Any) -> bool:
-    """Recognize every compaction carrier shape via the compressor's own classifier
-    (SessionDB drops the in-process marker; a prefix scan misses merge-into-tail carriers)."""
+    """Recognize every model-side compaction carrier shape.
+
+    SessionDB does not persist the in-process metadata marker, so client
+    projections must share the compressor's content classifier rather than a
+    prefix-only approximation that misses merge-into-tail carriers.
+    """
     if not isinstance(message, dict):
         return False
     from agent.context_compressor import is_compaction_summary_message
+
     return is_compaction_summary_message(message)
 
 
 def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip compaction scaffolding: standalone handoffs become hidden empty rows (stable
-    ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
+    """Remove model-only compaction scaffolding from a client message.
+
+    Standalone handoffs have no transcript content and remain as hidden empty
+    rows so clients can reconcile stable message identities. Merged handoffs
+    preserve only the real prior-tail content that precedes the internal
+    summary delimiter. Tool calls are dropped from both shapes because a
+    carrier's inherited calls are historical context, not live client output.
+    """
     from agent.compaction_display import (
-        _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+        _COMPACTION_INTERNAL_FIELDS,
+        project_compaction_message_for_display,
+    )
+
     projected = project_compaction_message_for_display(message)
     if projected is None:
-        projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
+        projected = message.copy()
+        for internal_key in _COMPACTION_INTERNAL_FIELDS:
+            projected.pop(internal_key, None)
         projected["content"] = ""
         projected["display_kind"] = "hidden"
     return projected
@@ -1179,9 +1227,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
-        # Shared broker; this adapter maps HTTP registration + controller WS onto it.
+        # Browser-control broker core: transport-neutral ticket, controller,
+        # and command lifecycle shared with the dashboard Gateway transport. This adapter only maps HTTP registration and the
+        # controller WebSocket onto the broker; it owns no broker state.
         self._browser_control_broker = get_browser_control_broker()
-        # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
+        # One-shot artifact transport (Phase 8 Task 29). Lazy per-profile
+        # stores + limiter are created on first authenticated artifact use;
+        # tests inject their own store/limiter via
+        # _inject_browser_control_artifacts().
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
@@ -1456,15 +1509,36 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
     def _resolve_request_profile(self, request: "web.Request"):
-        """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
-        off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
+        """Resolve + validate the /p/<profile>/ URL prefix on an API request.
+
+        Returns:
+          - ``None`` when no profile prefix is present, or when multiplexing
+            is off and the prefix names this gateway's own profile (the
+            request is handled as the serving profile).
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured, or names a profile this single-profile
+            gateway does not serve (handler/middleware returns 404).
+        """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
         cfg = getattr(self.gateway_runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
+            # Prefix supplied but multiplexing is off. Only a self-referential
+            # prefix (naming the profile this gateway already serves) may fall
+            # through to the bare route. Silently ignoring ANY prefix served
+            # the gateway owner's config/toolsets/capabilities under another
+            # profile's URL — cross-profile capability leakage (#91583
+            # defect 2) and silently misdelivered peer DMs (observed live:
+            # `hermes peer dm mini/researcher` answered by the mini's default
+            # agent) — so anything else fails closed as unknown.
+            return (
+                None
+                if _prefix_names_served_profile(profile)
+                else _PROFILE_REJECTED
+            )
         try:
             from hermes_cli.profiles import profiles_to_serve
             served = {name for name, _ in profiles_to_serve(multiplex=True)}
@@ -1514,9 +1588,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 with self._profile_scope(profile):
                     resolved_profile = profile or "default"
                     principal_token = _api_request_browser_control_principal.set(
-                        self._derive_browser_control_principal(resolved_profile))
+                        self._derive_browser_control_principal(resolved_profile)
+                    )
                     family_token = _api_request_browser_control_transport_family.set(
-                        self._browser_control_transport_family(request))
+                        self._browser_control_transport_family(request)
+                    )
                     try:
                         return await handler(request)
                     finally:
@@ -1536,10 +1612,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
-            # Browser-control (gated on browser.extension_control.enabled + API key): POST
-            # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
+            # Authenticated browser-control surface: POST registration
+            # mints a short-lived ticket; the controller then opens the WS with
+            # that ticket. Both are gated on browser.extension_control.enabled
+            # and API-key auth (see the handlers for the exact status ladder).
             ("POST", "/v1/browser-control/register", self._handle_browser_control_register),
             ("GET", "/v1/browser-control/ws", self._handle_browser_control_ws),
+            # One-shot artifact transport (Phase 8 Task 29): bounded, SHA-256
+            # validated HTTPS upload/download bound to a browser-control
+            # scope. Gated identically to registration (feature flag + API
+            # key) plus per-principal rate limits.
             ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
             ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
@@ -2282,7 +2364,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
                 "cors": bool(self._cors_origins),
-                # Always advertised for feature-detection; enabled follows config.
+                # Browser-extension control is always advertised so clients
+                # can feature-detect it, but remains disabled until
+                # browser.extension_control.enabled is explicitly set.
                 "browser_extension_control": {
                     "enabled": self._browser_control_enabled(),
                     "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
@@ -2293,18 +2377,686 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "artifact_transport": {
                         "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
                         "download": {
-                            "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
+                            "method": "GET",
+                            "path": "/v1/artifacts/download/{artifact_id}",
+                        },
                         "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
                         "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
+                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES),
+                    },
                     "real_browser_actions": True,
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
-            "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
+                        "cloud": "authenticated-gateway-rpc",
+                    },
+                },
+            },
+            "endpoints": {
+                "health": {"method": "GET", "path": "/health"},
+                "health_detailed": {"method": "GET", "path": "/health/detailed"},
+                "models": {"method": "GET", "path": "/v1/models"},
+                "model_options": {"method": "GET", "path": "/api/model/options"},
+                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+                "responses": {"method": "POST", "path": "/v1/responses"},
+                "runs": {"method": "POST", "path": "/v1/runs"},
+                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
+                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "skills": {"method": "GET", "path": "/v1/skills"},
+                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+                "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_create": {"method": "POST", "path": "/api/sessions"},
+                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
+                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
+                "browser_control_register": {"method": "POST", "path": "/v1/browser-control/register"},
+                "browser_control_ws": {"method": "GET", "path": "/v1/browser-control/ws"},
+                "artifact_upload": {"method": "POST", "path": "/v1/artifacts/upload"},
+                "artifact_download": {
+                    "method": "GET",
+                    "path": "/v1/artifacts/download/{artifact_id}",
+                },
+            },
         })
 
-    # -- Browser-extension control (authenticated local/VPS API) ----------------------
+    # ------------------------------------------------------------------
+    # Browser-extension control (authenticated local/VPS API)
+    # ------------------------------------------------------------------
+
+    async def _handle_browser_control_register(self, request: "web.Request") -> "web.Response":
+        """POST /v1/browser-control/register — mint a controller ticket.
+
+        The extension controller proves itself with the same Bearer API key
+        every other API-server client uses, then receives a short-lived,
+        single-use ticket to open the controller WebSocket. Identity is NOT
+        taken from the request body: the scope principal is derived
+        server-side from the authenticated key/profile as a non-reversible
+        digest, and the capability set is filtered to the shared browser
+        action allowlist, so a spoofed
+        ``principal_id`` or inflated capability list in the payload is
+        ignored rather than honored. The named session must already exist in
+        the active profile's server-owned SessionDB before a ticket is minted.
+
+        Status ladder: 404 when the feature is disabled, 403 when no API key
+        is configured at all (registration can never be authenticated), 401
+        for a missing/invalid Bearer token, 201 on success.
+        """
+        if not self._browser_control_enabled():
+            return web.json_response(
+                _openai_error(
+                    "Browser control is not enabled on this server.",
+                    code="browser_control_disabled",
+                ),
+                status=404,
+            )
+        if not self._api_key:
+            logger.warning(
+                "browser-control registration rejected: no API key configured; "
+                "set API_SERVER_KEY to enable authenticated browser control."
+            )
+            return web.json_response(
+                _openai_error(
+                    "Browser control registration requires a configured API key.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_auth_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Request body must be valid JSON."), status=400
+            )
+        if not isinstance(payload, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object."), status=400
+            )
+
+        if not browser_control_protocol_supported(payload.get("protocol_version")):
+            return web.json_response(
+                _openai_error(
+                    "Unsupported browser-control protocol version.",
+                    code="browser_control_protocol_unsupported",
+                ),
+                status=400,
+            )
+
+        controller_id = str(payload.get("controller_id") or "").strip()
+        browser_profile_id = str(payload.get("browser_profile_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        if not controller_id or not browser_profile_id or not session_id:
+            return web.json_response(
+                _openai_error(
+                    "controller_id, browser_profile_id, and session_id are required.",
+                    code="browser_control_invalid_registration",
+                ),
+                status=400,
+            )
+
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(
+                _openai_error(
+                    "Session database unavailable.",
+                    code="session_db_unavailable",
+                ),
+                status=503,
+            )
+        session = await asyncio.to_thread(db.get_session, session_id)
+        if not session:
+            return web.json_response(
+                _openai_error(
+                    "Browser control may register only for an existing server session.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_session_forbidden",
+                ),
+                status=403,
+            )
+
+        profile = _api_request_profile.get() or "default"
+        capabilities = filter_browser_control_capabilities(
+            payload.get("capabilities"),
+            developer_mode=self._browser_control_developer_mode(),
+        )
+        if not capabilities:
+            return web.json_response(
+                _openai_error(
+                    "At least one permitted browser-control capability is required.",
+                    code="browser_control_no_capabilities",
+                ),
+                status=400,
+            )
+        # Developer capabilities may only be negotiated while the broker
+        # itself runs in Developer Mode (fail closed even if a registration
+        # somehow slipped through the filter).
+        if (
+            capabilities & BROWSER_CONTROL_DEVELOPER_CAPABILITIES
+            and not self._browser_control_developer_mode()
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Developer Mode is required for browser_evaluate and raw CDP.",
+                    code="browser_control_developer_mode_required",
+                ),
+                status=403,
+            )
+        scope = ControllerScope(
+            principal_id=self._derive_browser_control_principal(profile),
+            profile_id=profile,
+            session_id=session_id or None,
+            controller_id=controller_id,
+            browser_profile_id=browser_profile_id,
+            transport_family=self._browser_control_transport_family(request),
+            capabilities=capabilities,
+        )
+        ticket = self._browser_control_broker.mint_ticket(scope)
+        ticket_ttl = self._browser_control_broker.ticket_ttl_seconds
+        return web.json_response(
+            {
+                "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
+                "ticket": ticket.value,
+                # Best-effort wall-clock projection for clients; the broker
+                # enforces expiry on its monotonic clock, so after an NTP
+                # step trust ticket_expires_in_seconds, not this absolute.
+                "ticket_expires_at": time.time() + ticket_ttl,
+                "ticket_expires_in_seconds": ticket_ttl,
+                "ws_path": "/v1/browser-control/ws",
+                "scope": {
+                    "principal_id": scope.principal_id,
+                    "profile_id": scope.profile_id,
+                    "session_id": scope.session_id,
+                    "controller_id": scope.controller_id,
+                    "browser_profile_id": scope.browser_profile_id,
+                    "transport_family": scope.transport_family,
+                    "capabilities": sorted(scope.capabilities),
+                },
+            },
+            status=201,
+        )
+
+    async def _handle_browser_control_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+        """GET /v1/browser-control/ws — controller WebSocket (one-shot ticket).
+
+        A ticket-bearing ``Sec-WebSocket-Protocol`` token is exchanged exactly
+        once for the identity scope minted at registration; query-string,
+        unknown, already-consumed, or expired tickets are rejected with 401
+        before upgrade. The socket then attaches to the shared broker under
+        that scope, forwards broker command/cancel frames onto the aiohttp loop
+        thread-safely, and accepts controller result/cancel frames. Completion
+        is exact-scope checked, and owner-aware teardown cannot detach a newer
+        replacement controller generation.
+        """
+        # Re-check at upgrade time so disabling the feature immediately closes
+        # the admission gate without consuming still-live one-shot tickets.
+        if not self._browser_control_enabled():
+            raise web.HTTPNotFound()
+
+        # Credentials in the request target are liable to appear in access
+        # logs. Accept the one-shot ticket only as a WebSocket subprotocol;
+        # reject the former query-string shape without consuming it.
+        if request.query.get("ticket"):
+            raise web.HTTPUnauthorized()
+        requested_protocols = [
+            value.strip()
+            for value in request.headers.get("Sec-WebSocket-Protocol", "").split(",")
+            if value.strip()
+        ]
+        ticket_protocols = [
+            value
+            for value in requested_protocols
+            if value.startswith(_BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX)
+        ]
+        if (
+            _BROWSER_CONTROL_WS_PROTOCOL not in requested_protocols
+            or len(ticket_protocols) != 1
+        ):
+            raise web.HTTPUnauthorized()
+        ticket_value = ticket_protocols[0][len(_BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX) :]
+        if not ticket_value:
+            raise web.HTTPUnauthorized()
+        try:
+            scope = self._browser_control_broker.consume_ticket(ticket_value)
+        except ControllerTicketInvalid:
+            raise web.HTTPUnauthorized() from None
+        except Exception:
+            logger.exception("browser-control WS ticket consumption failed")
+            raise web.HTTPUnauthorized() from None
+
+        ws = web.WebSocketResponse(
+            heartbeat=30.0,
+            protocols=(_BROWSER_CONTROL_WS_PROTOCOL,),
+        )
+        await ws.prepare(request)
+        loop = asyncio.get_running_loop()
+        _send = _browser_controller_ws_sender(ws, loop)
+
+        # attach/disconnect/detach acquire the controller's send_lock, which a
+        # worker-thread dispatch may hold while blocking on THIS loop to
+        # transmit its frame (run_coroutine_threadsafe + result(timeout=10)).
+        # Offload them so a teardown/attach racing an in-flight send parks a
+        # worker thread, never the event loop.
+        await asyncio.to_thread(
+            self._browser_control_broker.attach, scope, _send, owner=ws
+        )
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        frame = msg.json()
+                    except Exception:
+                        continue
+                    if isinstance(frame, dict):
+                        reply = await asyncio.to_thread(
+                            self._handle_browser_control_frame,
+                            scope,
+                            frame,
+                            owner=ws,
+                        )
+                        if isinstance(reply, dict):
+                            await ws.send_json(reply)
+                elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                    break
+        finally:
+            await asyncio.to_thread(
+                self._browser_control_broker.disconnect,
+                scope,
+                owner=ws,
+            )
+        return ws
+
+    def _handle_browser_control_frame(
+        self,
+        scope: "ControllerScope",
+        frame: dict,
+        *,
+        owner: Any = None,
+    ) -> Optional[dict]:
+        """Apply one controller→broker frame with exact-scope checks."""
+        method = frame.get("method")
+        params = frame.get("params")
+        if not isinstance(params, dict):
+            return
+        if owner is None or not self._browser_control_broker.is_owner(scope, owner):
+            return
+        if method == "browser.controller.heartbeat":
+            nonce = str(params.get("nonce") or "").strip()
+            if not nonce or len(nonce) > 128:
+                return
+            # Echo only the caller's opaque nonce on the already authenticated,
+            # exact-scope controller socket. This proves the socket path is live
+            # without granting a new capability or touching broker commands.
+            return {
+                "method": "browser.controller.heartbeat",
+                "params": {"nonce": nonce, "ok": True},
+            }
+        if method == "browser.controller.detach":
+            self._browser_control_broker.detach(
+                scope,
+                owner=owner,
+                notify_controller=False,
+            )
+            return {
+                "method": "browser.controller.detach",
+                "params": {"ok": True},
+            }
+        if method == "browser.controller.result":
+            command_id = params.get("command_id")
+            if isinstance(command_id, str) and command_id:
+                # Broker resolves only the pending command whose scope equals
+                # this socket's scope; a stranger's command id is a no-op.
+                ok = params.get("ok") is True
+                self._browser_control_broker.complete(
+                    command_id,
+                    scope=scope,
+                    ok=ok,
+                    result=params.get("result") if ok else params.get("error"),
+                )
+        elif method == "browser.controller.cancel":
+            tool_call_id = params.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                self._browser_control_broker.cancel(scope, tool_call_id=tool_call_id)
+
+    def _browser_control_enabled(self) -> bool:
+        """Feature flag; False unless explicitly enabled.
+
+        Reads ``browser.extension_control.enabled`` from the global config
+        (defaults to False). Tests monkeypatch this method directly to force
+        the feature on/off without touching config.
+        """
+        try:
+            from gateway.browser_control_broker import browser_control_enabled as _flag
+
+            return _flag()
+        except Exception:
+            return False
+
+    def _derive_browser_control_principal(self, profile: str) -> str:
+        """Server-derived controller principal (non-reversible digest).
+
+        The principal is bound to the credential that authenticated the
+        registration request — the expected API key for the request's
+        profile — so a client cannot impersonate another controller by
+        echoing an id in the registration body.
+        """
+        key = self._expected_api_key() or self._api_key or ""
+        digest = hashlib.sha256(f"{profile}\x00{key}".encode("utf-8")).hexdigest()
+        return f"principal:{profile}:{digest[:32]}"
+
+    def _browser_control_transport_family(self, request: "web.Request") -> str:
+        """Local vs remote API family, decided by the loopback peer.
+
+        A controller speaking to a localhost listener is in the same trust
+        domain as the host and gets the ``local-api`` family; anything else
+        is ``remote-api``. The broker treats the family as part of exact
+        identity, so a remote controller can never satisfy a local-only
+        dispatch (and vice versa).
+        """
+        host = None
+        try:
+            transport = request.transport
+            if transport is not None:
+                peer = transport.get_extra_info("peername")
+                if isinstance(peer, tuple) and peer:
+                    host = peer[0]
+                elif isinstance(peer, str):
+                    host = peer
+        except Exception:
+            host = None
+        if host in ("127.0.0.1", "::1", "localhost"):
+            return "local-api"
+        return "remote-api"
+
+    def _browser_control_developer_mode(self) -> bool:
+        """Developer Mode flag; False unless explicitly enabled.
+
+        Mirrors the broker's gate for ``browser_evaluate`` and raw CDP.
+        Tests monkeypatch this method directly to force the gate on/off.
+        """
+        try:
+            return browser_control_developer_mode()
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # One-shot artifact transport (Phase 8 Task 29)
+    # ------------------------------------------------------------------
+
+    def _artifact_store_for(self, profile: str) -> ArtifactStore:
+        """Return the profile-scoped artifact store, creating it lazily.
+
+        The store root lives under the profile's data directory
+        (``<HERMES_HOME>/plugin-data/.../artifacts``-style controlled root),
+        so artifacts never escape the profile boundary.  Stores are cached
+        BY RESOLVED PROFILE — on a multiplex listener, profile A touching
+        the artifact route first must never pin profile B to A's physical
+        root (same frozen-handle class as the per-profile session-storage
+        fix in #88734).  The root itself is created on first use; TTL
+        cleanup runs on every store/load/prune.
+        """
+        profile_key = str(profile or "default")
+        store = self._browser_control_artifacts.get(profile_key)
+        if store is not None:
+            return store
+        try:
+            from hermes_cli.profiles import get_profile_dir
+
+            profile_root = get_profile_dir(profile or "default")
+            root = Path(profile_root) / "artifacts" / "browser-control"
+        except Exception:
+            # Unscoped fallback used only when profile resolution is
+            # unavailable (tests/manual wiring): keep the controlled root
+            # under the Hermes home.
+            try:
+                from hermes_state import get_hermes_home
+
+                root = Path(get_hermes_home()) / "artifacts" / "browser-control"
+            except Exception:
+                raise ArtifactError("no artifact root is resolvable") from None
+        store = ArtifactStore(
+            root,
+            ttl_seconds=DEFAULT_ARTIFACT_TTL_SECONDS,
+            max_bytes=DEFAULT_MAX_ARTIFACT_BYTES,
+            allowed_mime_types=DEFAULT_ALLOWED_MIME_TYPES,
+        )
+        store.prune_expired()
+        self._browser_control_artifacts[profile_key] = store
+        # Share the store with the broker so artifact actions dispatched to a
+        # controller validate their artifact reference against the same
+        # profile's controlled root ("approved artifact id only").
+        try:
+            self._browser_control_broker.attach_artifact_store(
+                store, profile_id=profile_key
+            )
+        except Exception:
+            logger.debug("could not attach artifact store to broker", exc_info=True)
+        return store
+
+    def _artifact_limiter(self) -> ArtifactRateLimiter:
+        """Return the per-principal artifact route limiter (lazy)."""
+        if self._browser_control_artifact_limiter is None:
+            self._browser_control_artifact_limiter = ArtifactRateLimiter(
+                window_seconds=60.0,
+                max_requests=30,
+            )
+        return self._browser_control_artifact_limiter
+
+    def _inject_browser_control_artifacts(
+        self,
+        store: Optional[ArtifactStore],
+        limiter: Optional[ArtifactRateLimiter] = None,
+        *,
+        profile: str = "default",
+    ) -> None:
+        """Inject a store/limiter (tests, diagnostics)."""
+        if store is None:
+            self._browser_control_artifacts.pop(profile, None)
+        else:
+            self._browser_control_artifacts[profile] = store
+        if limiter is not None:
+            self._browser_control_artifact_limiter = limiter
+
+    @staticmethod
+    def _artifact_auth_fail(request: "web.Request", status: int, code: str, message: str):
+        return web.json_response(
+            _openai_error(
+                message,
+                err_type="gateway_auth_error" if status == 401 else "invalid_request_error",
+                code=code,
+            ),
+            status=status,
+        )
+
+    async def _handle_artifact_upload(self, request: "web.Request") -> "web.Response":
+        """POST /v1/artifacts/upload — one-shot bounded artifact upload.
+
+        Authenticated with the same Bearer API key as every other API-server
+        route and gated on browser.extension_control.enabled.  The body is
+        read as raw bytes with an exact size cap; ``Content-Type`` must name
+        an allowed MIME type and ``X-Artifact-Filename`` supplies the
+        display-only name.  On success returns a provenance receipt carrying
+        the server-minted artifact id, SHA-256, size, TTL, and download path
+        — never a filesystem path.
+
+        Status ladder: 404 feature disabled, 403 no API key configured, 401
+        bad/missing Bearer, 429 rate limited, 413 too large, 415 MIME
+        rejected, 400 missing filename/scope, 201 success.
+        """
+        if not self._browser_control_enabled():
+            return web.json_response(
+                _openai_error(
+                    "Browser control is not enabled on this server.",
+                    code="browser_control_disabled",
+                ),
+                status=404,
+            )
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Artifact transport requires a configured API key.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_auth_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        profile = _api_request_profile.get() or "default"
+        principal = self._derive_browser_control_principal(profile)
+        limiter = self._artifact_limiter()
+        if not limiter.allow(f"upload:{principal}"):
+            return web.json_response(
+                _openai_error(
+                    "Artifact upload rate limit exceeded.",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+
+        content_type = request.headers.get("Content-Type", "")
+        filename = request.headers.get("X-Artifact-Filename", "").strip()
+        if not filename:
+            return web.json_response(
+                _openai_error("X-Artifact-Filename header is required."),
+                status=400,
+            )
+
+        # Bounded read: cap at the store's byte cap + 1 so an oversize body
+        # is detected and rejected without buffering unbounded data.
+        try:
+            store = self._artifact_store_for(profile)
+        except ArtifactError as exc:
+            return web.json_response(_openai_error(str(exc), code="artifact_rejected"), status=500)
+        max_bytes = store.max_bytes
+        try:
+            data = await request.content.read(max_bytes + 1)
+        except Exception:
+            return web.json_response(_openai_error("Failed to read request body."), status=400)
+        if len(data) > max_bytes:
+            return web.json_response(
+                _openai_error(
+                    f"Artifact exceeds the {max_bytes}-byte cap.",
+                    code="artifact_too_large",
+                ),
+                status=413,
+            )
+        if not data:
+            return web.json_response(_openai_error("Empty artifact body."), status=400)
+
+        try:
+            receipt = store.store(
+                data,
+                filename=filename,
+                content_type=content_type,
+                scope=_ArtifactScopeFacade(
+                    principal,
+                    transport_family=self._browser_control_transport_family(request),
+                ),
+            )
+        except ArtifactTooLarge as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="artifact_too_large"), status=413
+            )
+        except ArtifactError as exc:
+            code = "artifact_mime_rejected" if "allowlist" in str(exc) else "artifact_rejected"
+            status = 415 if "allowlist" in str(exc) else 400
+            return web.json_response(_openai_error(str(exc), code=code), status=status)
+
+        return web.json_response(
+            receipt.to_dict(download_path=f"/v1/artifacts/download/{receipt.artifact_id}"),
+            status=201,
+        )
+
+    async def _handle_artifact_download(self, request: "web.Request") -> "web.Response":
+        """GET /v1/artifacts/download/{artifact_id} — one-shot download.
+
+        Authenticated and gated identically to upload.  The artifact is
+        consumed on success: the second download of the same id returns 404.
+        The response streams the verified bytes with the recorded content
+        type and a ``X-Artifact-Sha256`` header for client-side validation.
+
+        Status ladder: 404 feature disabled / unknown artifact, 403 no API
+        key, 401 bad/missing Bearer, 429 rate limited, 410 expired, 400
+        invalid id / scope mismatch, 200 success.
+        """
+        if not self._browser_control_enabled():
+            raise web.HTTPNotFound()
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Artifact transport requires a configured API key.",
+                    err_type="gateway_auth_error",
+                    code="browser_control_auth_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        profile = _api_request_profile.get() or "default"
+        principal = self._derive_browser_control_principal(profile)
+        limiter = self._artifact_limiter()
+        if not limiter.allow(f"download:{principal}"):
+            return web.json_response(
+                _openai_error(
+                    "Artifact download rate limit exceeded.",
+                    err_type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                ),
+                status=429,
+                headers={"Retry-After": "1"},
+            )
+
+        artifact_id = request.match_info.get("artifact_id", "")
+        try:
+            store = self._artifact_store_for(profile)
+            data, receipt = store.load(
+                artifact_id,
+                scope=_ArtifactScopeFacade(
+                    principal,
+                    transport_family=self._browser_control_transport_family(request),
+                ),
+            )
+        except ArtifactError as exc:
+            message = str(exc)
+            if "expired" in message:
+                return web.json_response(
+                    _openai_error(message, code="artifact_expired"), status=410
+                )
+            status = 400 if "scope" in message or "invalid" in message else 404
+            return web.json_response(
+                _openai_error(message, code="artifact_not_found"), status=status
+            )
+
+        return web.Response(
+            body=data,
+            status=200,
+            content_type=receipt.content_type,
+            headers={
+                "X-Artifact-Sha256": receipt.sha256,
+                "X-Artifact-Id": receipt.artifact_id,
+                "Content-Disposition": f'attachment; filename="{receipt.filename}"',
+            },
+        )
+
+    async def _handle_skills(self, request: "web.Request") -> "web.Response":
+        """GET /v1/skills — list installed skills visible to the API-server agent.
 
     async def _handle_browser_control_register(self, request: "web.Request") -> "web.Response":
         """POST /v1/browser-control/register — mint a short-lived single-use controller ticket.
@@ -2727,9 +3479,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
         message = _project_client_message(message)
         safe_keys = (
-            "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
-            "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
-            "display_kind")
+            "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
+            "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
+            "reasoning_content", "display_kind",
+        )
         return {key: message.get(key) for key in safe_keys if key in message}
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
@@ -2770,38 +3523,57 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
-        # Exact-title lookup (`hermes peer dm` -> canonical "Bot Chat"). include_hidden is honored
-        # ONLY with a title filter: a blanket hidden listing stays off this client surface.
+        # Exact-title lookup, used by `hermes peer dm` to resolve a peer's
+        # canonical "Bot Chat" session. ``include_hidden`` is honored ONLY
+        # alongside a title filter: Bot Mode hides canonical chats, so a
+        # title-scoped lookup must see them (issue #91583), but a blanket
+        # hidden listing stays off this client surface.
         title_filter = (request.query.get("title") or "").strip() or None
         include_hidden = bool(title_filter) and _coerce_request_bool(
-            request.query.get("include_hidden"), default=False)
+            request.query.get("include_hidden"), default=False
+        )
+        sessions = await asyncio.to_thread(db.list_sessions_rich,
+            source=source,
+            limit=limit,
+            offset=offset,
+            include_children=include_children,
+            order_by_last_active=True,
+            # A pin means "always reachable", so a pinned conversation that has
+            # aged past the recency window is back-filled rather than dropped.
+            include_pinned=True,
+            # Push the title needle into SQL so a hidden/old canonical row is
+            # found even when it falls outside the recency window, then apply
+            # the exact-match contract below (search_query is substring-based).
+            search_query=title_filter,
+            include_hidden=include_hidden,
+        )
+        if title_filter:
+            sessions = [s for s in sessions if (s.get("title") or "").strip() == title_filter]
+            if not sessions:
+                # Recoverable-archive resurrection (#92687): a canonical Bot
+                # Chat archived by the ws-orphan reaper / older agent cleanup
+                # is invisible to list_sessions_rich (include_archived=False),
+                # which would fail `hermes peer dm` resolution and mint
+                # transient sessions — same accident the tui_gateway lookups
+                # heal. Resurrect and re-list; deliberate archives stay put.
+                try:
+                    from tools.bot_mode_probe import BOT_CHAT_TITLE
 
-        async def _list() -> list:
-            # include_pinned back-fills pins past the recency window; search_query pushes the
-            # title needle into SQL (substring) so a hidden/old row is found, exact match below.
-            rows = await asyncio.to_thread(
-                db.list_sessions_rich, source=source, limit=limit, offset=offset,
-                include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
-            if title_filter:
-                rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
-            return rows
-
-        sessions = await _list()
-        if title_filter and not sessions:
-            # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
-            # mint transient sessions: resurrect and re-list; deliberate archives stay put.
-            try:
-                # Recoverable-archive resurrection (#92687): a canonical Bot Chat archived by the ws-orphan
-                # reaper / older agent cleanup is invisible to list_sessions_rich (include_archived=False),
-                # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
-                # the tui_gateway lookups heal.
-                from tools.bot_mode_probe import BOT_CHAT_TITLE
-                stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
-                if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
-                    sessions = await _list()
-            except Exception:
-                pass  # resolution degrades to today's no-row behavior
+                    stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
+                    if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+                        sessions = await asyncio.to_thread(db.list_sessions_rich,
+                            source=source,
+                            limit=limit,
+                            offset=offset,
+                            include_children=include_children,
+                            order_by_last_active=True,
+                            include_pinned=True,
+                            search_query=title_filter,
+                            include_hidden=include_hidden,
+                        )
+                        sessions = [s for s in sessions if (s.get("title") or "").strip() == title_filter]
+                except Exception:
+                    pass  # resolution degrades to today's no-row behavior
         # Back-filled pins arrive PAST the limit, so counting them would report
         # another page that doesn't exist. Only the recency window decides.
         windowed = sum(1 for s in sessions if not s.get("pinned"))
@@ -3576,11 +4348,193 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             with suppress(TypeError, AttributeError):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
-            return
-        with suppress(TypeError):
-            self._background_tasks.add(task)
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
+            except (TypeError, AttributeError):
+                pass
+
+            return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
+
+
+    # ------------------------------------------------------------------
+    # Output extraction helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_response_conversation_history(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+        final_response: Any,
+    ) -> List[Dict[str, Any]]:
+        """Build the stored Responses transcript without duplicating history.
+
+        When context compression occurs during a turn the agent returns a
+        compressed full transcript in ``result["messages"]`` (starting with a
+        summary) and sets ``result["_compressed"] = True``.  Because the
+        compressed transcript does not share the input ``conversation_history``
+        prefix, the normal turn-start detection fails and old code would
+        concatenate the uncompressed history on front, bloating the stored
+        context and re-triggering compression on every subsequent request.
+        """
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+
+        if isinstance(agent_messages, list) and agent_messages:
+            turn_start = APIServerAdapter._response_messages_turn_start_index(
+                conversation_history,
+                user_message,
+                result,
+            )
+            if turn_start:
+                return list(agent_messages)
+
+            # turn_start == 0: agent_messages does not start with prior.
+            # This can happen because compression rewrote the transcript
+            # (summary prefix replaces original history), OR because
+            # agent_messages only carries the current turn without prior.
+            # The ``_compressed`` flag (set by _run_agent after compaction)
+            # distinguishes — skip the concatenation and use the compressed
+            # transcript directly.
+            if result.get("_compressed"):
+                return list(agent_messages)
+
+            full_history = prior
+            full_history.append(current_user)
+            full_history.extend(agent_messages)
+            return full_history
+
+        full_history = prior
+        full_history.append(current_user)
+        full_history.append({"role": "assistant", "content": final_response})
+        return full_history
+
+    @staticmethod
+    def _response_messages_turn_start_index(
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+    ) -> int:
+        """Detect transcript-shaped result["messages"] and return turn start."""
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return 0
+
+        prior = list(conversation_history)
+        current_user = {"role": "user", "content": user_message}
+        expected_prefix = prior + [current_user]
+        if agent_messages[:len(expected_prefix)] == expected_prefix:
+            return len(expected_prefix)
+        if prior and agent_messages[:len(prior)] == prior:
+            return len(prior)
+        return 0
+
+    @classmethod
+    def _turn_transcript_messages(
+        cls,
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        result: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Return this turn's assistant/tool messages in client-safe shape.
+
+        The streaming SSE contract delivers all assistant text as
+        ``assistant.delta`` events under one ``message_id`` interleaved with
+        ``tool.*`` events, and a single ``assistant.completed`` carrying only
+        the final reply.  A client that accumulates deltas into one buffer
+        cannot reconstruct *intermediate* assistant text segments that preceded
+        tool calls — so when the page is re-opened mid/post-stream those
+        segments appear lost, even though state.db persisted them correctly.
+
+        Emitting the authoritative per-turn transcript on ``run.completed`` lets
+        any SSE consumer reconcile its live view against ground truth without a
+        separate ``GET /messages`` round-trip.  Purely additive: clients that
+        ignore the field are unaffected.  Refs #34703.
+        """
+        agent_messages = result.get("messages") if isinstance(result, dict) else None
+        if not isinstance(agent_messages, list) or not agent_messages:
+            return []
+        start = cls._response_messages_turn_start_index(
+            conversation_history, user_message, result
+        )
+        turn = agent_messages[start:]
+        out: List[Dict[str, Any]] = []
+        for msg in turn:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") not in {"assistant", "tool"}:
+                continue
+            # _message_response projects compaction scaffolding itself and
+            # marks pure handoffs display_kind == "hidden"; classifying here
+            # first would re-run the content classifier (a full content
+            # flatten + prefix scan) a second time per message.
+            projected = cls._message_response(msg)
+            if projected.get("display_kind") == "hidden":
+                continue
+            out.append(projected)
+        return out
+
+    @staticmethod
+    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+        """
+        Build the output item array from the agent's messages.
+
+        Walks *result["messages"]* starting at *start_index* and emits:
+        - ``function_call`` items for each tool_call on assistant messages
+        - ``function_call_output`` items for each tool-role message
+        - a final ``message`` item with the assistant's text reply
+        """
+        items: List[Dict[str, Any]] = []
+        messages = result.get("messages", [])
+        if start_index > 0:
+            messages = messages[start_index:]
+
+        for msg in messages:
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    items.append({
+                        "id": f"fc_{uuid.uuid4().hex[:24]}",
+                        "type": "function_call",
+                        # These calls were already executed server-side by the
+                        # Hermes agent; they are replayed for structured tool
+                        # UI only.  Mark them completed (matching the SSE
+                        # streaming path) so OpenAI clients don't interpret
+                        # them as pending calls the client must execute.
+                        "status": "completed",
+                        "name": func.get("name", ""),
+                        "arguments": func.get("arguments", ""),
+                        "call_id": tc.get("id", ""),
+                    })
+            elif role == "tool":
+                items.append({
+                    "id": f"fco_{uuid.uuid4().hex[:24]}",
+                    "type": "function_call_output",
+                    "status": "completed",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": msg.get("content", ""),
+                })
+
+        # Final assistant message
+        final = result.get("final_response", "")
+        if not final:
+            final = _redact_api_error_text(result.get("error", "(No response generated)"))
+
+        items.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": final,
+                }
+            ],
+        })
+        return items
+
+    # ------------------------------------------------------------------
+    # Agent execution
+    # ------------------------------------------------------------------
 
     def _concurrency_limited_response(self) -> Optional["web.Response"]:
         """429 when the concurrent-run cap is reached (0 disables), else None. Uses the same
@@ -3601,10 +4555,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @staticmethod
     def _bind_api_server_session(
-        *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
-        browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
-        """Bind an API turn with push disabled and history delivery default-denied.
+        *,
+        chat_id: str = "",
+        session_key: str = "",
+        session_id: str = "",
+        browser_control_principal: str = "",
+        browser_control_transport_family: str = "",
+    ) -> list:
+        """Bind session contextvars for an API-server agent run.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
         declaration or fingerprint-derived identity keeps delegation synchronous.
@@ -3614,73 +4572,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
         return set_session_vars(
-            platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
-            profile=profile, browser_control_principal=browser_control_principal,
+            platform="api_server",
+            chat_id=chat_id,
+            session_key=session_key,
+            session_id=session_id,
+            browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
-
-    def _turn_runtime_metadata(
-        self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
-        route_source: str, confirmed_runtime_lock: bool) -> Dict[str, Any]:
-        """Sanitized actual-vs-requested runtime for a finished turn; raises RuntimeError when a
-        confirmed model lock's provider/model differs from what the agent actually ran with."""
-        runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
-        raw_provider = getattr(agent, "provider", "")
-        raw_model = getattr(agent, "model", "")
-        actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
-        actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
-        for key, actual in (("provider", actual_provider), ("model", actual_model)):
-            if actual:
-                runtime[key] = actual
-            else:
-                runtime.setdefault(key, "")
-        route = route or {}
-        requested_runtime = requested_runtime or {}
-        if confirmed_runtime_lock:
-            expected_provider = self._clean_runtime_id(
-                route.get("provider") or requested_runtime.get("provider"), max_len=80)
-            expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
-            if (expected_provider and actual_provider != expected_provider) or (
-                expected_model and actual_model != expected_model):
-                raise RuntimeError(
-                    "confirmed model lock runtime mismatch: "
-                    f"expected provider={expected_provider or '<unspecified>'} "
-                    f"model={expected_model or '<unspecified>'}; "
-                    f"actual provider={actual_provider or '<unknown>'} "
-                    f"model={actual_model or '<unknown>'}")
-        if requested_runtime:
-            model, provider = self._requested_ids(requested_runtime)
-            runtime["requested"] = {"provider": provider, "model": model}
-        runtime["route_source"] = route_source or runtime.get("route_source") or "global"
-        return self._sanitize_runtime_metadata(
-            runtime=runtime, requested_runtime=requested_runtime or None, route_source=route_source or "global",
-            model_lock=("confirmed" if confirmed_runtime_lock else ""))
-
-    def _finish_turn_result(
-        self, agent: Any, result: Any, session_id: Optional[str], *, route, requested_runtime, route_source,
-        confirmed_runtime_lock: bool) -> tuple:
-        """Attach usage, effective session id, ``_compressed`` and runtime metadata to a finished turn."""
-        usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
-        # Effective session id lets callers track compression-triggered rotations.
-        # (#16938)
-        _eff_sid = getattr(agent, "session_id", session_id)
-        if isinstance(_eff_sid, str) and _eff_sid:
-            result["session_id"] = _eff_sid
-        # _compressed tells _build_response_conversation_history to store the compacted
-        # transcript as-is (rotation changes session_id; in-place compaction sets a flag).
-        _session_rotated = isinstance(_eff_sid, str) and isinstance(session_id, str) and _eff_sid != session_id
-        if getattr(agent, "_last_compaction_in_place", False) or _session_rotated:
-            result["_compressed"] = True
-        if requested_runtime or route or confirmed_runtime_lock or (route_source and route_source != "global"):
-            runtime = self._turn_runtime_metadata(
-                agent, route=route, requested_runtime=requested_runtime,
-                route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)
-            if isinstance(result, dict):
-                result["runtime"] = runtime
-            usage["runtime"] = runtime
-        return result, usage
+            async_delivery=False,
+            cron_session="",
+        )
 
     async def _run_agent(
         self, user_message: str, conversation_history: List[Dict[str, str]],
@@ -3705,18 +4605,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
-        request_browser_control_principal = _api_request_browser_control_principal.get()
-        request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
+        request_browser_control_principal = (
+            _api_request_browser_control_principal.get()
+        )
+        request_browser_control_transport_family = (
+            _api_request_browser_control_transport_family.get()
+        )
 
         def _run():
             from gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
-                    chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
-                    session_id=session_id or "", profile=request_profile or "",
+                    chat_id=session_id or "",
+                    session_key=gateway_session_key or session_id or "",
+                    session_id=session_id or "",
                     browser_control_principal=request_browser_control_principal,
-                    browser_control_transport_family=request_browser_control_transport_family,
-                    session_history_delivery=session_history_delivery)
+                    browser_control_transport_family=(
+                        request_browser_control_transport_family
+                    ),
+                )
                 agent = None
                 try:
                     agent = self._create_agent(
@@ -3846,11 +4753,662 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _release_run_owner_if_forgotten(self, run_id: str) -> None:
         _api_runs._release_run_owner_if_forgotten(self, run_id)
 
-    _handle_get_run = _run_route_delegate("_handle_get_run")
-    _handle_run_events = _run_route_delegate("_handle_run_events")
-    _handle_run_approval = _run_route_delegate("_handle_run_approval")
-    _handle_steer_run = _run_route_delegate("_handle_steer_run")
-    _handle_stop_run = _run_route_delegate("_handle_stop_run")
+        raw_input = body.get("input")
+        if not raw_input:
+            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+
+        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        if not user_message:
+            return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        instructions = body.get("instructions")
+        previous_response_id = body.get("previous_response_id")
+
+        # Accept explicit conversation_history from the request body.
+        # Precedence: explicit conversation_history > previous_response_id.
+        conversation_history: List[Dict[str, str]] = []
+        raw_history = body.get("conversation_history")
+        if raw_history:
+            if not isinstance(raw_history, list):
+                return web.json_response(
+                    _openai_error("'conversation_history' must be an array of message objects"),
+                    status=400,
+                )
+            for i, entry in enumerate(raw_history):
+                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                    return web.json_response(
+                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        status=400,
+                    )
+                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            if previous_response_id:
+                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+
+        stored_session_id = None
+        if not conversation_history and previous_response_id:
+            stored = self._response_store.get(previous_response_id)
+            if stored:
+                conversation_history = list(stored.get("conversation_history", []))
+                stored_session_id = stored.get("session_id")
+                if instructions is None:
+                    instructions = stored.get("instructions")
+
+        # When input is a multi-message array, extract all but the last
+        # message as conversation history (the last becomes user_message).
+        # Only fires when no explicit history was provided.
+        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
+            for msg in raw_input[:-1]:
+                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
+                    content = msg["content"]
+                    if isinstance(content, list):
+                        # Flatten multi-part content blocks to text
+                        content = " ".join(
+                            part.get("text", "") for part in content
+                            if isinstance(part, dict) and part.get("type") == "text"
+                        )
+                    conversation_history.append({"role": msg["role"], "content": str(content)})
+
+        session_id = body.get("session_id") or stored_session_id
+        route = self._resolve_route(body.get("model"))
+        agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+        selection_error = self._request_route_conflict_error(
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+            requested_model=agent_overrides.get("requested_model"),
+            requested_provider=agent_overrides.get("requested_provider"),
+            route=route,
+        )
+        if selection_error:
+            return web.json_response(_openai_error(selection_error), status=400)
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        session_id = session_id or run_id
+        # Approval queues gate host-side tool execution and must be isolated
+        # per API run.  Client-provided session IDs and memory session keys are
+        # conversation/memory scopes, not authorization namespaces: multiple
+        # concurrent runs can intentionally share them, and resolving an
+        # approval for one run must not unblock another run's dangerous command.
+        approval_session_key = run_id
+        ephemeral_system_prompt = instructions
+        loop = asyncio.get_running_loop()
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        created_at = time.time()
+        self._run_streams[run_id] = q
+        self._run_streams_created[run_id] = created_at
+        self._run_approval_sessions[run_id] = approval_session_key
+
+        event_cb = self._make_run_event_callback(run_id, loop)
+
+        def _put_event_if_active(event: Optional[Dict]) -> None:
+            """Enqueue only while this run still owns live transport state."""
+            if self._run_streams.get(run_id) is q:
+                q.put_nowait(event)
+
+        # Also wire stream_delta_callback so message.delta events flow through.
+        def _text_cb(delta: Optional[str]) -> None:
+            if delta is None:
+                return
+            if run_id not in self._run_streams:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "message.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": delta,
+                })
+            except Exception:
+                pass
+
+        self._set_run_status(
+            run_id,
+            "queued",
+            created_at=created_at,
+            session_id=session_id,
+            model=body.get("model", self._model_name),
+        )
+
+        # Background task outlives the HTTP response (and thus the middleware
+        # profile scope). Capture now and re-enter inside the task/executor.
+        request_profile = _api_request_profile.get()
+        request_browser_control_principal = (
+            _api_request_browser_control_principal.get()
+        )
+        request_browser_control_transport_family = (
+            _api_request_browser_control_transport_family.get()
+        )
+
+        async def _run_and_close():
+            try:
+                self._set_run_status(run_id, "running")
+                if run_id in self._stopping_run_ids:
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    return
+                with self._profile_scope(request_profile):
+                    agent = self._create_agent(
+                        ephemeral_system_prompt=ephemeral_system_prompt,
+                        session_id=session_id,
+                        stream_delta_callback=_text_cb,
+                        tool_progress_callback=event_cb,
+                        gateway_session_key=gateway_session_key,
+                        requested_model=agent_overrides.get("requested_model"),
+                        requested_provider=agent_overrides.get("requested_provider"),
+                        model_options=agent_overrides.get("model_options"),
+                        route=route,
+                    )
+                self._active_run_agents[run_id] = agent
+
+                def _approval_notify(approval_data: Dict[str, Any]) -> None:
+                    event = dict(approval_data or {})
+                    # Redact credentials from the command before it enters the
+                    # SSE/API event stream — same egress bug as #48456, second
+                    # transport: API/desktop clients would otherwise receive the
+                    # raw command Tirith flagged. Reuse the gateway seam.
+                    if "command" in event:
+                        from gateway.run import _redact_approval_command
+
+                        event["command"] = _redact_approval_command(event.get("command"))
+                    event.update({
+                        "event": "approval.request",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "choices": _approval_event_choices(
+                            smart_denied=bool(event.get("smart_denied")),
+                            allow_session=event.get("allow_session") is not False,
+                            allow_permanent=event.get("allow_permanent") is not False,
+                        ),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "waiting_for_approval",
+                        last_event="approval.request",
+                    )
+                    try:
+                        loop.call_soon_threadsafe(q.put_nowait, event)
+                    except Exception:
+                        pass
+
+                def _run_sync():
+                    from gateway.session_context import clear_session_vars
+                    from tools.approval import (
+                        register_gateway_notify,
+                        reset_current_session_key,
+                        set_current_session_key,
+                        unregister_gateway_notify,
+                    )
+
+                    effective_task_id = session_id or run_id
+                    approval_token = None
+                    session_tokens = []
+                    with self._profile_scope(request_profile):
+                        try:
+                            # Bind approval/session identity for this API run via
+                            # contextvars so concurrent runs do not share process
+                            # environment state.
+                            approval_token = set_current_session_key(approval_session_key)
+                            session_tokens = self._bind_api_server_session(
+                                # chat_id carries the raw session id (the
+                                # X-Hermes-Session-Id equivalent) exactly like
+                                # the other agent-entry routes bind it via
+                                # _run_agent(). Without it,
+                                # tools.async_delegation reads an empty
+                                # HERMES_SESSION_CHAT_ID on /v1/runs and
+                                # background delegations stay forced-sync
+                                # (no wake target).
+                                chat_id=session_id or "",
+                                session_key=approval_session_key,
+                                session_id=session_id or "",
+                                browser_control_principal=(
+                                    request_browser_control_principal
+                                ),
+                                browser_control_transport_family=(
+                                    request_browser_control_transport_family
+                                ),
+                            )
+                            register_gateway_notify(approval_session_key, _approval_notify)
+                            # /v1/runs runs its own agent lifecycle (no
+                            # TurnRunner, no _run_agent) — record turn process
+                            # ownership so stop/cancel can reap only the
+                            # background processes this run created (#76115).
+                            _publish_turn_process_ownership(agent, effective_task_id)
+                            r = agent.run_conversation(
+                                user_message=user_message,
+                                conversation_history=conversation_history,
+                                task_id=effective_task_id,
+                            )
+                        finally:
+                            # Worker finished (interrupted or complete) —
+                            # clear turn ownership immediately so a later
+                            # stop/cancel can't reap background work this
+                            # run deliberately left running (same race-window
+                            # guard as gateway/run.py and _run_agent above).
+                            _clear_turn_process_ownership(agent)
+                            try:
+                                unregister_gateway_notify(approval_session_key)
+                            finally:
+                                if approval_token is not None:
+                                    try:
+                                        reset_current_session_key(approval_token)
+                                    except Exception:
+                                        pass
+                                if session_tokens:
+                                    try:
+                                        clear_session_vars(session_tokens)
+                                    except Exception:
+                                        pass
+                        u = {
+                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        }
+                        return r, u
+
+                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                if run_id in self._stopping_run_ids:
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                # Check for structured failure (non-retryable client errors like
+                # 401/400 return failed=True instead of raising, so the except
+                # block below never fires — issue #15561).
+                elif isinstance(result, dict) and result.get("failed"):
+                    error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
+                    _put_event_if_active({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=error_msg,
+                        last_event="run.failed",
+                    )
+                else:
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Undelivered steer text (accepted after the final response;
+                    # see turn_finalizer) rides on the terminal event/status so
+                    # the client can replay it as the next user turn.
+                    pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+                    completed_event = {
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    }
+                    if pending_steer:
+                        completed_event["pending_steer"] = pending_steer
+                    _put_event_if_active(completed_event)
+                    self._set_run_status(
+                        run_id,
+                        "completed",
+                        output=final_response,
+                        usage=usage,
+                        last_event="run.completed",
+                        **({"pending_steer": pending_steer} if pending_steer else {}),
+                    )
+            except asyncio.CancelledError:
+                self._set_run_status(
+                    run_id,
+                    "cancelled",
+                    last_event="run.cancelled",
+                )
+                try:
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass
+                raise
+            except _ProviderAuthResolutionError as exc:
+                # /v1/runs builds its own agent via _create_agent() and does
+                # not route through _run_agent() (see that method's own
+                # _ProviderAuthResolutionError branch), so it needs its own
+                # handling to surface the same distinguished, controlled
+                # message the other endpoints give a provider auth/credential
+                # failure, instead of falling through to the generic
+                # except-Exception branch below.
+                logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
+                error_msg = f"⚠️ Provider authentication failed: {exc}"
+                self._set_run_status(
+                    run_id,
+                    "failed",
+                    error=error_msg,
+                    last_event="run.failed",
+                )
+                try:
+                    _put_event_if_active({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                    })
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.exception("[api_server] run %s failed", run_id)
+                self._set_run_status(
+                    run_id,
+                    "failed",
+                    error=_redact_api_error_text(exc),
+                    last_event="run.failed",
+                )
+                try:
+                    _put_event_if_active({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": _redact_api_error_text(exc),
+                    })
+                except Exception:
+                    pass
+            finally:
+                # If the asyncio wrapper is cancelled (for example via
+                # /stop), the executor thread can still be blocked waiting
+                # on an approval Event.  Unregistering here releases those
+                # waits immediately; the in-thread unregister is harmlessly
+                # idempotent on normal completion.
+                try:
+                    from tools.approval import unregister_gateway_notify
+
+                    unregister_gateway_notify(approval_session_key)
+                except Exception:
+                    pass
+                # Sentinel: signal SSE stream to close
+                try:
+                    _put_event_if_active(None)
+                except Exception:
+                    pass
+                self._active_run_agents.pop(run_id, None)
+                self._active_run_tasks.pop(run_id, None)
+                self._run_approval_sessions.pop(run_id, None)
+                self._stopping_run_ids.discard(run_id)
+
+        self._activate_admitted_request()
+        task = asyncio.create_task(_run_and_close())
+        self._active_run_tasks[run_id] = task
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+
+        response_headers = (
+            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+        )
+        return web.json_response(
+            {"run_id": run_id, "status": "started"},
+            status=202,
+            headers=response_headers,
+        )
+
+    async def _handle_get_run(self, request: "web.Request") -> "web.Response":
+        """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        return web.json_response(status)
+
+    async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+
+        # Allow subscribing slightly before the run is registered (race condition window)
+        for _ in range(20):
+            if run_id in self._run_streams:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+
+        q = self._run_streams[run_id]
+        self._run_stream_subscribers.add(run_id)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if event is None:
+                    # Run finished — send final SSE comment and close
+                    await response.write(b": stream closed\n\n")
+                    break
+                payload = _sse_frame(event)
+                await response.write(payload)
+        except Exception as exc:
+            logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
+        finally:
+            self._run_stream_subscribers.discard(run_id)
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
+
+        return response
+
+
+    async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_choice = str(body.get("choice", "")).strip().lower()
+        aliases = {"approve": "once", "approved": "once", "allow": "once"}
+        choice = aliases.get(raw_choice, raw_choice)
+        allowed = {"once", "session", "always", "deny"}
+        if choice not in allowed:
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval choice; expected one of: once, session, always, deny",
+                    code="invalid_approval_choice",
+                ),
+                status=400,
+            )
+
+        approval_session_key = self._run_approval_sessions.get(run_id)
+        if not approval_session_key:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no active approval session: {run_id}",
+                    code="approval_not_active",
+                ),
+                status=409,
+            )
+
+        resolve_all = (
+            _coerce_request_bool(body.get("all"), default=False)
+            or _coerce_request_bool(body.get("resolve_all"), default=False)
+        )
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            resolved = resolve_gateway_approval(
+                approval_session_key,
+                choice,
+                resolve_all=resolve_all,
+            )
+        except Exception as exc:
+            logger.exception("[api_server] approval resolution failed for run %s", run_id)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if resolved <= 0:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no pending approval: {run_id}",
+                    code="approval_not_pending",
+                ),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="approval.responded")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait({
+                    "event": "approval.responded",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "choice": choice,
+                    "resolved": resolved,
+                })
+            except Exception:
+                pass
+
+        return web.json_response({
+            "object": "hermes.run.approval_response",
+            "run_id": run_id,
+            "choice": choice,
+            "resolved": resolved,
+        })
+
+    async def _handle_steer_run(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        # Only genuinely running runs are steerable.  /stop retains agent/task
+        # refs during cooperative shutdown, so the status gate (not the mere
+        # presence of an agent ref) is what rejects stop-then-steer.
+        agent = self._active_run_agents.get(run_id)
+        if status.get("status") != "running" or not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(
+                    f"Run is not currently accepting steer input: {run_id}",
+                    code="run_not_accepting_steer",
+                ),
+                status=409,
+            )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        raw_text = body.get("input") or body.get("message") or body.get("text") or ""
+        steer_text = _normalize_chat_content(raw_text).strip()
+        if not steer_text:
+            return web.json_response(
+                _openai_error(
+                    "Missing non-empty steer text; expected 'input', 'message', or 'text'.",
+                    code="invalid_steer_input",
+                ),
+                status=400,
+            )
+
+        try:
+            accepted = bool(agent.steer(steer_text))
+        except Exception as exc:
+            logger.exception("[api_server] steer failed for run %s", run_id)
+            return web.json_response(_openai_error(_redact_api_error_text(exc), code="steer_failed"), status=500)
+        if not accepted:
+            return web.json_response(
+                _openai_error(f"Run did not accept steer text: {run_id}", code="steer_not_accepted"),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="run.steered")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            with suppress(Exception):
+                q.put_nowait({
+                    "event": "run.steered",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "accepted": True,
+                })
+        return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
+
+    async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        agent = self._active_run_agents.get(run_id)
+        task = self._active_run_tasks.get(run_id)
+
+        if agent is None and task is None:
+            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+
+        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._stopping_run_ids.add(run_id)
+
+        if agent is not None:
+            try:
+                request_hard_interrupt(agent, "Stop requested via API")
+            except Exception:
+                pass
+            # The stopped run is abandoned — reap only the background
+            # processes it created (#76115). Epoch-gated inside, so a
+            # concurrent run sharing the same session_id keeps its own
+            # processes; no-op if the run already finished and cleared
+            # its ownership markers.
+            _reap_disconnected_agent_processes(
+                agent, source="api_server_run_stop"
+            )
+
+        return web.json_response({"run_id": run_id, "status": "stopping"})
 
     async def _sweep_orphaned_runs(self) -> None:
         return await _api_runs._sweep_orphaned_runs(self)

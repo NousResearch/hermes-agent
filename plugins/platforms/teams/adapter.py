@@ -31,24 +31,40 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 
+
 def _probe_teams_sdk_available() -> bool:
-    """True when ``microsoft_teams.apps`` is on sys.path, without importing it: the SDK loads a cwd
-    ``.env`` at import, so ``check_teams_requirements()`` binds symbols behind a dotenv no-op.
-    Sibling packages share the namespace, so probe the parent first — ``find_spec`` of the child
-    raises on 3.11+ if the parent is absent."""
+    """True when ``microsoft_teams.apps`` is on sys.path, without importing it.
+
+    Sibling packages (microsoft-teams-api / common / cards) also live under
+    the ``microsoft_teams`` namespace, so ``find_spec("microsoft_teams")``
+    alone can be True while ``App`` is still unbound — connect() then
+    called None and logged ``'NoneType' object is not callable``.
+
+    Probe the parent first: ``find_spec("microsoft_teams.apps")`` raises
+    ``ModuleNotFoundError`` on 3.11+ when the parent namespace is absent,
+    which crashed plugin import and unregistered the Teams platform.
+    """
     try:
-        find_spec = importlib.util.find_spec
-        return find_spec("microsoft_teams") is not None and find_spec("microsoft_teams.apps") is not None
+        if importlib.util.find_spec("microsoft_teams") is None:
+            return False
+        return importlib.util.find_spec("microsoft_teams.apps") is not None
     except (ValueError, ModuleNotFoundError, ImportError):
-        return "microsoft_teams.apps" in sys.modules  # test stubs may lack ``__spec__``
+        # Test stubs may inject a module without ``__spec__``.
+        return "microsoft_teams.apps" in _sys.modules
 
 
 TEAMS_SDK_AVAILABLE = _probe_teams_sdk_available()
-# SDK symbols stay None until check_teams_requirements() binds them (via _SDK_IMPORTS below).
-ClientOptions = App = ActivityContext = MessageActivity = ConversationReference = None  # type: ignore[assignment,misc]
-TypingActivityInput = AdaptiveCardInvokeActivity = AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
-AdaptiveCardActionMessageResponse = AdaptiveCardInvokeResponse = InvokeResponse = None  # type: ignore[assignment,misc]
-HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = TextBlock = None  # type: ignore[assignment,misc]
+ClientOptions = None  # type: ignore[assignment,misc]
+App = None  # type: ignore[assignment,misc]
+ActivityContext = None  # type: ignore[assignment,misc]
+MessageActivity = None  # type: ignore[assignment,misc]
+ConversationReference = None  # type: ignore[assignment,misc]
+TypingActivityInput = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
+InvokeResponse = None  # type: ignore[assignment,misc]
 HttpMethod = str  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
@@ -360,18 +376,40 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        # Reconnect paths reach here without create_adapter()'s installer — re-run to bind SDK globals.
+        # Defensive re-check: create_adapter() already ran the installer
+        # (ensure_deps_fn) if deps were missing, but connect() can also be
+        # reached via reconnect paths — re-run to bind SDK globals.
+        #
+        # Gate on App, not TEAMS_SDK_AVAILABLE. The latter is a find_spec
+        # probe and can be True from the microsoft_teams namespace without
+        # symbols ever being bound (check_teams_requirements returning
+        # False is ignored if we only inspect the flag).
         check_teams_requirements()
-        pip = f"{sys.executable} -m pip install"
-        for failed, code, message in (
-            (App is None or ClientOptions is None, "MISSING_SDK",
-             f"microsoft-teams-apps could not be installed. Run: {pip} microsoft-teams-apps"),
-            (not AIOHTTP_AVAILABLE, "MISSING_SDK", f"aiohttp not installed. Run: {pip} aiohttp"),
-            (not self._client_id or not self._client_secret or not self._tenant_id, "MISSING_CREDENTIALS",
-             "TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")):
-            if failed:
-                self._set_fatal_error(code, message, retryable=False)
-                return False
+        if App is None or ClientOptions is None:
+            self._set_fatal_error(
+                "MISSING_SDK",
+                "microsoft-teams-apps could not be installed. "
+                f"Run: {sys.executable} -m pip install microsoft-teams-apps",
+                retryable=False,
+            )
+            return False
+
+        if not AIOHTTP_AVAILABLE:
+            self._set_fatal_error(
+                "MISSING_SDK",
+                f"aiohttp not installed. Run: {sys.executable} -m pip install aiohttp",
+                retryable=False,
+            )
+            return False
+
+        if not self._client_id or not self._client_secret or not self._tenant_id:
+            self._set_fatal_error(
+                "MISSING_CREDENTIALS",
+                "TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required",
+                retryable=False,
+            )
+            return False
+
         try:
             # aiohttp app first — the bridge adapter wires SDK routes into it.
             # Set up aiohttp app first — the bridge adapter wires SDK routes into it. client_max_size: Bot
@@ -409,7 +447,11 @@ class TeamsAdapter(BasePlatformAdapter):
                     self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
             return True
         except Exception as e:
-            self._set_fatal_error("CONNECT_FAILED", f"Teams connection failed: {e}", retryable=True)
+            self._set_fatal_error(
+                "CONNECT_FAILED",
+                f"Teams connection failed: {e}",
+                retryable=True,
+            )
             logger.error("[teams] Failed to connect: %s", e, exc_info=True)
             return False
 

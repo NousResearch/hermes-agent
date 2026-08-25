@@ -6,7 +6,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type IconComponent, Monitor, Package, Palette, Settings2, Wrench } from '@/lib/icons'
+import { Package, Palette, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
@@ -20,17 +20,6 @@ import {
   buildCredentialSearchEntries,
   type SettingsSearchEntry
 } from './settings-search'
-
-/** An installed plugin row, deep-linkable as `/skills?tab=plugins&plugin=<id>`. */
-export interface PluginSearchEntry {
-  context: string
-  description?: string
-  icon: IconComponent
-  id: string
-  keywords: string[]
-  label: string
-  plugin: string
-}
 
 /**
  * The granular settings-search catalog (appearance controls, config fields,
@@ -82,26 +71,26 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     }
   }, [enabled, gatewayState, requestGateway])
 
-  // Installed plugin rows (both halves) — they live on Capabilities → Plugins,
-  // so each entry carries the `?plugin=` row selector for that page.
-  const pluginEntries: PluginSearchEntry[] = [
+  const pluginContext = t.settings.nav.plugins
+
+  const pluginEntries: SettingsSearchEntry[] = [
     ...Object.values(desktopPluginRecords).map(record => ({
-      context: t.settings.plugins.title,
+      context: pluginContext,
       description: record.description,
-      icon: Monitor,
+      icon: Package,
       id: `plugin:desktop:${record.id}`,
-      keywords: ['plugin', 'extension', 'desktop', record.id],
+      keywords: ['plugin', 'extension', record.id],
       label: record.name,
-      plugin: record.id
+      target: { plugin: record.id, view: 'plugins' as const }
     })),
     ...agentPlugins.filter(isDesktopRelevantPlugin).map(row => ({
-      context: t.skills.plugins.agentTitle,
+      context: pluginContext,
       description: row.description || undefined,
       icon: Package,
       id: `plugin:agent:${row.key ?? row.name}`,
-      keywords: ['plugin', 'extension', 'agent', ...(row.key ? [row.key] : [])],
+      keywords: ['plugin', 'extension', ...(row.key ? [row.key] : [])],
       label: row.name,
-      plugin: row.key ?? row.name
+      target: { plugin: row.key ?? row.name, view: 'plugins' as const }
     }))
   ]
 
@@ -164,15 +153,6 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       : []),
     {
       context: appearanceContext,
-      description: appearance.userBubbleDesc,
-      icon: Palette,
-      id: `setting:${APPEARANCE_SETTING_IDS.userBubble}`,
-      keywords: ['opacity', 'transparent', 'message', 'bubble'],
-      label: appearance.userBubbleTitle,
-      target: { setting: APPEARANCE_SETTING_IDS.userBubble, view: 'config:appearance' }
-    },
-    {
-      context: appearanceContext,
       description: appearance.backdropDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.backdrop}`,
@@ -197,15 +177,6 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       keywords: ['tool display', 'technical'],
       label: appearance.toolViewTitle,
       target: { setting: APPEARANCE_SETTING_IDS.toolView, view: 'config:appearance' }
-    },
-    {
-      context: appearanceContext,
-      description: appearance.appActionsDesc,
-      icon: Palette,
-      id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,
-      keywords: ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
-      label: appearance.appActionsTitle,
-      target: { setting: APPEARANCE_SETTING_IDS.appActions, view: 'config:appearance' }
     },
     {
       context: appearanceContext,

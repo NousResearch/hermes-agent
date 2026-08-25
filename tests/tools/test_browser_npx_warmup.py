@@ -18,9 +18,11 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
-from tools.browser_tool_install import warm_agent_browser_npx_cache
-from tools.browser_tool_lifecycle import _legacy_kill_process_tree
+from tools.browser_tool import (
+    AGENT_BROWSER_NPX_SPEC,
+    _legacy_kill_process_tree,
+    warm_agent_browser_npx_cache,
+)
 
 
 def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):

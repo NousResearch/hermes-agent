@@ -239,25 +239,43 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 def main():
     _install_sidecar_publisher()
 
-    # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
-    # so it must start BEFORE the sweep.
-    for start, what in (
-            (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
-            (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling")):
-        try:
-            start()
-        except Exception:
-            logger.warning("%s failed", what, exc_info=True)
+    # One-time sweep of session rows orphaned by a previous gateway process
+    # (#65194) — the in-process WS-orphan reap timer dies with the process.
+    # Desktop/dashboard reach the agent through handle_ws instead; the
+    # scheduler is once-per-process + config-gated so the second site is a
+    # no-op when this already ran.
+    try:
+        server._schedule_startup_orphan_sweep()
+    except Exception:
+        logger.warning("startup orphan sweep scheduling failed", exc_info=True)
 
-    # Backgrounded so a dead MCP server can't freeze startup; _make_agent briefly joins it.
+    # MCP tool discovery — backgrounded so a slow or unreachable MCP server
+    # can't freeze TUI startup (a dead stdio/http server burns 1+2+4s of
+    # connect retries → ~7s of dead air before the composer appears).  The
+    # agent isn't built until the first prompt, at which point _make_agent
+    # briefly joins the discovery thread (wait_for_mcp_discovery, bounded) so
+    # already-spawning fast servers land in the tool snapshot.  The config
+    # gate inside ensure_mcp_discovery_started keeps the ~200ms MCP SDK
+    # import cost entirely off the path for users with no mcp_servers.
     ensure_mcp_discovery_started()
 
-    # change_events: clients demote legacy polls; replay_epoch: WS restart detection.
-    _write_or_exit({
-        "jsonrpc": "2.0", "method": "event",
-        "params": {"type": "gateway.ready", "payload": {
-            "skin": resolve_skin(), "change_events": True, "replay_epoch": replay_epoch()}}},
-        "startup write failed (broken stdout pipe before first event)")
+    if not write_json({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": "gateway.ready",
+            # change_events: see tui_gateway/ws.py — clients demote legacy polls.
+            # replay_epoch: restart detection for the WS replay contract (the
+            # stdio TUI ignores it).
+            "payload": {
+                "skin": resolve_skin(),
+                "change_events": True,
+                "replay_epoch": replay_epoch(),
+            },
+        },
+    }):
+        _log_exit("startup write failed (broken stdout pipe before first event)")
+        sys.exit(0)
 
     # Live-apply skins Hermes activates mid-conversation.
     server._ensure_skin_watcher()

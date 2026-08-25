@@ -743,14 +743,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
-    @staticmethod
-    def _classify_bridge_message(data: Dict[str, Any]) -> MessageType:
-        media_type = str(data.get("mediaType", "") or "")
-        if media_type in _NATIVE_MEDIA_TYPES:
-            return _NATIVE_MEDIA_TYPES[media_type]
-        if not data.get("hasMedia"):
-            return MessageType.TEXT
-        return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=self._session_key_profile(event.source),
+        )
 
     async def _collect_bridge_media(self, data: Dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""

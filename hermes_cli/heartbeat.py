@@ -122,6 +122,7 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
     db = _get_session_db()
     if db is None:
         from hermes_cli.goals import _warn_dropped_write
+
         _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
         return
     try:

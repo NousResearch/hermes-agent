@@ -17,27 +17,39 @@ if _DEBUG_INTERRUPT:
     # force ours back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
-# Interrupted thread idents + optional user-safe cause (never the user's message text).
+# Set of thread idents that have been interrupted, plus an optional
+# user-safe cause for each signal. The cause deliberately does not contain an
+# incoming user's message text.
 _interrupted_threads: set[int] = set()
 _interrupt_reasons: dict[int, str] = {}
-# Threads asked to YIELD: hand a long-running foreground command to the background
-# instead of killing it, so a mid-turn user message is not parked behind it.
-_yield_threads: set[int] = set()
 _lock = threading.Lock()
 
 
-def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | None = None) -> None:
-    """Set or clear the interrupt for *thread_id* (default: current thread); ``reason`` is
-    an optional user-safe cause. Clearing also drops a pending yield request."""
+def set_interrupt(
+    active: bool,
+    thread_id: int | None = None,
+    *,
+    reason: str | None = None,
+) -> None:
+    """Set or clear interrupt for a specific thread.
+
+    Args:
+        active: True to signal interrupt, False to clear it.
+        thread_id: Target thread ident.  When None, targets the
+                   current thread (backward compat for CLI/tests).
+        reason: Optional user-safe cause for the interrupt.
+    """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
-        (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
-        if active and reason:
-            _interrupt_reasons[tid] = reason
+        if active:
+            _interrupted_threads.add(tid)
+            if reason:
+                _interrupt_reasons[tid] = reason
+            else:
+                _interrupt_reasons.pop(tid, None)
         else:
+            _interrupted_threads.discard(tid)
             _interrupt_reasons.pop(tid, None)
-        if not active:
-            _yield_threads.discard(tid)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
@@ -110,6 +122,13 @@ def get_interrupt_reason() -> str | None:
     """User-safe interrupt cause for the current thread, if known."""
     with _lock:
         return _interrupt_reasons.get(threading.current_thread().ident)
+
+
+def get_interrupt_reason() -> str | None:
+    """Return the user-safe interrupt cause for the current thread, if known."""
+    tid = threading.current_thread().ident
+    with _lock:
+        return _interrupt_reasons.get(tid)
 
 
 def clear_current_thread_interrupt() -> None:

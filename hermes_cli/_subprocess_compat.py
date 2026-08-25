@@ -442,16 +442,42 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     path whose contract is to fail open, so every failure (access denied, already reaped) is
     swallowed rather than escaping the caller's ``except``.
 
-    On Windows a suspended descendant (e.g. ``git.exe``) can survive holding duplicates of the captured pipe
-    handles, which keeps the pipes from reaching EOF and leaks two reader threads + the process per fired
-    timeout — ``taskkill /T /F`` takes the whole tree down so the bounded drain that follows can actually
-    reach EOF. On POSIX the same class exists: killing the launcher leaves descendants (credential helpers,
-    ``git-remote-https``, hook children) running and holding the pipe write ends. Callers spawn the child in
-    its own process group (``process_group=0``, Python ≥3.11), so when — and only when — the child leads its
-    own group (``pgid == pid``), the entire group is signalled with ``os.killpg``. The ownership check means
-    a fallback spawn that shares our group can never cause us to kill unrelated processes. Ported from
-    openai/codex#36793 ("Terminate timed-out Git process trees"); generalized for the shell-hook runner via
-    openai/codex#37527 ("Terminate timed-out hook process trees").
+    All failures are swallowed — this is cleanup on an already-failing path, and
+    the caller's contract is to fail open. ``kill()`` can raise (access denied,
+    already reaped); an unhandled raise here would escape the caller's ``except``
+    handler and break that contract. The ``taskkill`` spawn itself cannot
+    re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
+    own timeout cleanup has no reader threads to join.
+
+    Delegates the tree-kill to :func:`agent.deadline.kill_process_tree`
+    (#85125 4d) — same taskkill /T /F on Windows and killpg-when-leader on
+    POSIX, plus a psutil descendant sweep that also reaches descendants that
+    ``setsid``'d into their own sessions. On any import/delegation failure it
+    falls back to the original local implementation
+    (:func:`_legacy_kill_process_tree`), so the fail-open contract holds even
+    in stripped environments.
+    """
+    try:
+        from agent.deadline import kill_process_tree as _deadline_kill_tree
+
+        _deadline_kill_tree(proc.pid)
+    except Exception:
+        _legacy_kill_process_tree(proc)
+        return
+    # Ensure Popen's own bookkeeping sees the exit (matches the legacy body:
+    # a direct kill() so communicate()/wait() cannot hang on a stale handle).
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable.
+
+    Kept verbatim so ``kill_process_tree`` can honor its swallow-everything
+    contract even when the delegation path itself fails (partial install,
+    import cycle during teardown).
     """
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree

@@ -547,31 +547,30 @@ export const zh = defineLocale({
       failed: '失败',
       empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
-      agentHalfMissing: '此处缺少 agent 部分',
-      agentHalfMissingTip:
-        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
+      agent: {
+        title: '智能体插件',
+        blurb:
+          '你安装到 Hermes 后端的插件——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
+        appliesTo: '应用于：',
+        empty: '尚未安装智能体插件。',
+        loadFailed: '无法加载智能体插件',
+        portable: '便携',
+        search: '搜索插件…',
+        noMatches: '没有匹配的插件。',
+        toggleFailed: (name: string) => `无法切换 ${name}`,
+        updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
+        sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
+      },
       installModal: {
-        installFromGit: '从 Git 安装',
-        reviewRepository: '检查仓库',
-        repoPlaceholder: 'https://github.com/owner/repo',
         title: '安装插件',
         description: '在安装前查看此仓库包含哪些组件。',
         repoLabel: '仓库',
         includesHeading: '此包包含',
         agentLabel: '智能体插件',
         desktopLabel: '桌面 UI',
-        agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
+        agentTargetLocal: profile => `安装到 ${profile} 后端（~/.hermes/plugins/）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
-        catalogPinned: (name, sha) =>
-          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
-        reviewedHeading: '经过审核的目录条目',
-        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
-        restartToApply: '重启网关后插件才会生效。',
-        restartNow: '重启网关',
-        missingEnvAction: '去设置',
-        alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
-        desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
         securityHeading: '安装前须知',
@@ -582,11 +581,6 @@ export const zh = defineLocale({
         gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
-        pinToCommit: '固定到提交（可选）',
-        pinToCommitPlaceholder: '完整的 40 位提交 SHA',
-        pinToCommitHint:
-          '安装同一 SHA 的所有人都会得到相同的代码；固定后插件将拒绝更新，直到重新固定。留空则安装最新提交。',
-        pinToCommitInvalid: '必须是完整的 40 位提交 SHA（不接受分支和标签）。',
         install: '安装',
         installing: '正在安装…',
         probing: '正在检查仓库…',
@@ -597,7 +591,7 @@ export const zh = defineLocale({
         desktopSuccess: name => `桌面插件 ${name} 已安装`,
         agentFailed: '智能体插件安装失败',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: vars => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
       }
     },
     notifications: {
@@ -690,10 +684,6 @@ export const zh = defineLocale({
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
-      appActionsTitle: '应用操作',
-      appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
-      appActionsLeft: '左侧',
-      appActionsRight: '右侧',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -727,8 +717,6 @@ export const zh = defineLocale({
       },
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
-      userBubbleTitle: '消息气泡',
-      userBubbleDesc: '你自己的消息有多透明。0 为不透明，100 时只保留边框。',
       introSplashTitle: '开场标识',
       introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
@@ -1547,9 +1535,6 @@ export const zh = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         review: { label: '评审', hint: '/review 评审子智能体' },
-        triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
-        kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
-        profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
     },
@@ -2504,14 +2489,6 @@ export const zh = defineLocale({
     switchConnectionFailed: name => `无法连接到 ${name}`,
     manageProfiles: '管理配置档案…',
     connectGateway: '管理网关…',
-    fleet: {
-      allOnGateway: '此网关上的全部配置档案',
-      gateway: gateway => `${gateway} 上的配置档案`,
-      gatewayUnreachable: gateway => `${gateway} · 无法连接`,
-      onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,
-      deleteOn: gateway => `（位于 ${gateway}）`
-    },
     remoteOverride: {
       menuItem: '连接到远程主机…',
       badge: (host: string) => `运行于 ${host}`,
@@ -3036,13 +3013,6 @@ export const zh = defineLocale({
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceControls: '语音',
-    voiceEngine: '语音聊天引擎',
-    voiceEngineChained: '语音转文字 + Hermes 语音',
-    voiceEngineLive: 'GPT-Live（全双工，委托给 Hermes）',
-    voiceEngineLiveNeedsKey: '需要 OpenAI API 密钥',
-    voiceEngineChangeFailed: '无法更改语音聊天引擎',
-    voiceEngineChainedShort: '语音转文字',
-    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -4028,10 +3998,7 @@ export const zh = defineLocale({
         streaming: '流式连接错误'
       },
       errorRetry: '重试',
-      errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
-      errorSignInAgain: provider => `重新登录 ${provider}`,
-      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',

@@ -7,7 +7,7 @@ termination through :func:`agent.deadline.kill_process_tree`:
 * ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
   by ``agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
-* ``tools.browser_tool_lifecycle._kill_process_tree(proc)`` — same pattern.
+* ``tools.browser_tool._kill_process_tree(proc)`` — same pattern.
 * ``tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
   SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
 
@@ -26,7 +26,6 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent.deadline as deadline_mod
-from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 class _FakeProc:
@@ -75,9 +74,17 @@ class TestSubprocessCompatDelegation:
 
         assert shell_hooks.kill_process_tree is _subprocess_compat.kill_process_tree
 
+    def test_backcompat_alias_preserved(self):
+        from hermes_cli import _subprocess_compat
+
+        assert (
+            _subprocess_compat._kill_git_process_tree
+            is _subprocess_compat.kill_process_tree
+        )
+
 
 # ---------------------------------------------------------------------------
-# (2) tools.browser_tool_lifecycle._kill_process_tree
+# (2) tools.browser_tool._kill_process_tree
 # ---------------------------------------------------------------------------
 
 class TestBrowserToolDelegation:
@@ -89,7 +96,7 @@ class TestBrowserToolDelegation:
             deadline_mod, "kill_process_tree", lambda pid, **kw: calls.append(pid) or True
         )
         proc = _FakeProc(pid=3333)
-        assert bt_lifecycle._kill_process_tree(proc) is None
+        assert browser_tool._kill_process_tree(proc) is None
         assert calls == [3333]
 
     def test_swallows_delegation_raise_and_falls_back_to_legacy(self, monkeypatch):
@@ -101,10 +108,10 @@ class TestBrowserToolDelegation:
         monkeypatch.setattr(deadline_mod, "kill_process_tree", _boom)
         legacy_calls = []
         monkeypatch.setattr(
-            "tools.browser_tool_lifecycle._legacy_kill_process_tree", lambda proc: legacy_calls.append(proc)
+            browser_tool, "_legacy_kill_process_tree", lambda proc: legacy_calls.append(proc)
         )
         proc = _FakeProc(pid=4444)
-        bt_lifecycle._kill_process_tree(proc)  # must not raise
+        browser_tool._kill_process_tree(proc)  # must not raise
         assert legacy_calls == [proc]
 
 

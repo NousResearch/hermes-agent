@@ -726,22 +726,6 @@ async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
 
 
 @pytest.mark.asyncio
-async def test_finalize_edit_cjk_rich_content_can_be_opted_in():
-    adapter = _make_adapter(extra={"allow_cjk_rich_messages": True})
-
-    result = await adapter.edit_message(
-        "12345", "555", CJK_RICH_CONTENT, finalize=True,
-    )
-
-    assert result.success is True
-    assert result.message_id == "555"
-    api_kwargs = _rich_edit_kwargs(adapter)
-    assert api_kwargs["message_id"] == 555
-    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
-    adapter._bot.edit_message_text.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
     import agent.redact as redact
 

@@ -1388,7 +1388,7 @@ class TestPrMergedEscapeHatch:
     def test_merged_pr_tree_is_reaped(self, git_repo, tmp_path, monkeypatch):
         import cli
         wt = self._mk_diverged(git_repo, "hermes-rebase-merged")
-        assert worktree_ops._worktree_commits_all_merged_upstream(str(wt)) is False, (
+        assert cli._worktree_commits_all_merged_upstream(str(wt)) is False, (
             "precondition: cherry must NOT consider this merged — the PR "
             "check is the only thing that can reap it"
         )
@@ -1430,19 +1430,19 @@ class TestPrMergedEscapeHatch:
         wt = self._mk_diverged(git_repo, "hermes-memo")
         self._stub_gh(tmp_path, monkeypatch)
         cache: dict = {}
-        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
+        assert cli._worktree_branch_pr_merged(str(wt), cache=cache) is True
         keys = [k for k in cache if k.startswith("pr-merged:")]
         assert len(keys) == 1 and cache[keys[0]] is True
         # Break gh: a cached True verdict must not re-consult it.
         self._stub_gh(tmp_path, monkeypatch, stdout="", exit_code=1)
-        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
+        assert cli._worktree_branch_pr_merged(str(wt), cache=cache) is True
 
     def test_negative_verdict_not_cached(self, git_repo, tmp_path, monkeypatch):
         import cli
         wt = self._mk_diverged(git_repo, "hermes-nocache-neg")
         self._stub_gh(tmp_path, monkeypatch, stdout="[]")
         cache: dict = {}
-        assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is False
+        assert cli._worktree_branch_pr_merged(str(wt), cache=cache) is False
         assert not [k for k in cache if k.startswith("pr-merged:")], (
             "False must not be memoized — the PR can merge later with the "
             "same (branch, head) key"

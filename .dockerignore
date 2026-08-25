@@ -106,9 +106,9 @@ plans/
 .hadolint.yaml
 .mailmap
 
-# Debug/export artifacts — must never reach image layers (COPY . .)
+# Repo-root debug/export artifacts — must never reach image layers (COPY . .)
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-*.tar.gz
-*.tgz
+/default.tar.gz
+/*.tar.gz

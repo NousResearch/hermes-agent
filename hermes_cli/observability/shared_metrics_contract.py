@@ -71,13 +71,108 @@ TOOL_RETRY_BUCKETS = COUNT_BUCKETS | frozenset({"unknown"})
 SKILL_LIFECYCLE_ACTIONS = frozenset({
     "archived", "created", "edited", "installed", "patched", "restored", "stale",
 })
-SKILL_PROVENANCES = frozenset({"agent_created", "external", "installed", "local", "unknown"})
-SKILL_REUSE_STATES = frozenset({"first_use", "reused"})
-SKILL_POST_PATCH_STATES = frozenset({"no_new_patch", "not_applicable", "reused_after_patch"})
-CLIENT_OS_FAMILIES = frozenset({"linux", "macos", "unknown", "windows"})
-CLIENT_ARCHITECTURES = frozenset({"arm", "arm64", "unknown", "x86", "x86_64"})
-CLIENT_INSTALL_METHODS = frozenset({
-    "apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown",
+TOOL_CATEGORIES: frozenset[str] = frozenset({
+    "browser",
+    "code_execution",
+    "communication",
+    "computer_use",
+    "delegation",
+    "file",
+    "home_automation",
+    "mcp",
+    "media",
+    "memory",
+    "other",
+    "planning",
+    "project",
+    "scheduler",
+    "skill",
+    "terminal",
+    "unknown",
+    "web",
+})
+TOOL_OUTCOMES: frozenset[str] = frozenset({
+    "blocked",
+    "cancelled",
+    "failed",
+    "success",
+    "timed_out",
+    "unknown",
+})
+TOOL_APPROVAL_OUTCOMES: frozenset[str] = frozenset({
+    "approved",
+    "denied",
+    "not_required",
+    "timed_out",
+    "unknown",
+})
+TOOL_APPROVAL_ATTRIBUTIONS: frozenset[str] = frozenset({
+    "tool_call",
+    "unattributed",
+})
+TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
+    "100ms_to_250ms",
+    "10s_to_30s",
+    "1s_to_2s",
+    "250ms_to_500ms",
+    "2s_to_5s",
+    "500ms_to_1s",
+    "5s_to_10s",
+    "gte_30s",
+    "lt_100ms",
+    "unknown",
+})
+TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
+SKILL_LIFECYCLE_ACTIONS: frozenset[str] = frozenset({
+    "archived",
+    "created",
+    "edited",
+    "installed",
+    "patched",
+    "restored",
+    "stale",
+})
+SKILL_PROVENANCES: frozenset[str] = frozenset({
+    "agent_created",
+    "external",
+    "installed",
+    "local",
+    "unknown",
+})
+SKILL_REUSE_STATES: frozenset[str] = frozenset({"first_use", "reused"})
+SKILL_POST_PATCH_STATES: frozenset[str] = frozenset({
+    "no_new_patch",
+    "not_applicable",
+    "reused_after_patch",
+})
+CLIENT_OS_FAMILIES: frozenset[str] = frozenset({
+    "linux",
+    "macos",
+    "unknown",
+    "windows",
+})
+CLIENT_ARCHITECTURES: frozenset[str] = frozenset({
+    "arm",
+    "arm64",
+    "unknown",
+    "x86",
+    "x86_64",
+})
+CLIENT_INSTALL_METHODS: frozenset[str] = frozenset({
+    "apt",
+    "docker",
+    "git",
+    "home-manager",
+    "homebrew",
+    "nixos",
+    "pip",
+    "unknown",
+})
+CLIENT_RESOURCE_KEYS: frozenset[str] = frozenset({
+    "architecture",
+    "hermes_version",
+    "install_method",
+    "os_family",
 })
 CLIENT_RESOURCE_KEYS = frozenset({"architecture", "hermes_version", "install_method", "os_family"})
 

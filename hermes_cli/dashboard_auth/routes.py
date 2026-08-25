@@ -316,18 +316,96 @@ async def auth_callback(
         _login_failure(request, provider_name, "invalid_code")
         raise _http(400, f"Invalid code: {e}")
     except ProviderError as e:
-        _login_failure(request, provider_name, "provider_unreachable")
-        raise _http(503, f"Provider unreachable: {e}")
-    target, native = _complete_login(
-        request, provider_name, session, broker_state=parts.get("broker", ""),
-        next_raw=parts.get("next", ""))
-    resp = RedirectResponse(url=target, status_code=302)
-    if not native:
-        _set_session(resp, request, session)
-    prefix = _prefix(request)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
-    # Clear the one-shot auto-SSO loop-guard so it never suppresses a future silent attempt.
-    clear_sso_attempt_cookie(resp, prefix=prefix)
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=provider_name,
+            reason="provider_unreachable",
+            ip=_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Provider unreachable: {e}",
+        )
+
+    audit_log(
+        AuditEvent.LOGIN_SUCCESS,
+        provider=provider_name,
+        user_id=session.user_id,
+        email=session.email,
+        org_id=session.org_id,
+        ip=_client_ip(request),
+    )
+
+    expires_in = max(60, session.expires_at - int(time.time()))
+
+    # RFC 8252 native-app branch: the desktop initiated this via
+    # /auth/native/authorize and is waiting on a loopback listener. Mint a
+    # one-time gateway authorization code bound to the desktop's PKCE
+    # challenge and 302 the SYSTEM BROWSER to the desktop's loopback
+    # redirect_uri — no session cookies are set on this response, and the
+    # tokens are handed to the desktop only at /auth/native/token. This is
+    # what lets the desktop avoid both the embedded webview and cookie auth.
+    if broker_state:
+        from hermes_cli.dashboard_auth import native_flow
+
+        try:
+            pending = native_flow.get_pending(broker_state)
+            gw_code = native_flow.complete_pending(
+                broker_state, session=session
+            )
+        except native_flow.NativeFlowError:
+            audit_log(
+                AuditEvent.NATIVE_TOKEN_FAILURE,
+                provider=provider_name,
+                reason="pending_not_found",
+                ip=_client_ip(request),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Native login expired or unknown; restart sign-in.",
+            )
+        from urllib.parse import urlencode
+
+        sep = "&" if "?" in pending.redirect_uri else "?"
+        loopback = (
+            f"{pending.redirect_uri}{sep}"
+            f"{urlencode({'code': gw_code, 'state': pending.client_state})}"
+        )
+        audit_log(
+            AuditEvent.NATIVE_CODE_ISSUED,
+            provider=provider_name,
+            user_id=session.user_id,
+            ip=_client_ip(request),
+        )
+        resp = RedirectResponse(url=loopback, status_code=302)
+        # Clear the PKCE cookie (its job is done) but set NO session cookies:
+        # the desktop is not a browser session, it redeems the code for a
+        # bearer token it stores itself.
+        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+        clear_sso_attempt_cookie(resp, prefix=_prefix(request))
+        return resp
+
+    # Honour the ``next=`` value the gate's _unauth_response set in the
+    # /login redirect URL and that /auth/login persisted into the PKCE
+    # cookie. We re-validate against the same-origin rules here — the
+    # cookie is server-set so this is defence in depth, but a regression
+    # that lets attacker-controlled bytes into the cookie would otherwise
+    # produce an open redirect.
+    landing = _validate_post_login_target(next_from_cookie) or "/"
+    resp = RedirectResponse(url=landing, status_code=302)
+    set_session_cookies(
+        resp,
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+        provider=session.provider,
+    )
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+    # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
+    # so it never lingers to suppress a future silent attempt after logout.
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
 
 
@@ -406,15 +484,77 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         # supports_password True but method not implemented: a provider bug.
         raise _http(500, "Provider misconfigured")
     except ProviderError as e:
-        _login_failure(request, body.provider, "provider_unreachable")
-        raise _http(503, f"Provider unreachable: {e}")
-    target, native = _complete_login(
-        request, body.provider, session, broker_state=broker_state, next_raw=body.next)
-    resp = JSONResponse({"ok": True, "next": target})
-    if native:
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=body.provider,
+            reason="provider_unreachable",
+            ip=ip,
+        )
+        raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
+
+    audit_log(
+        AuditEvent.LOGIN_SUCCESS,
+        provider=body.provider,
+        user_id=session.user_id,
+        email=session.email,
+        org_id=session.org_id,
+        ip=ip,
+    )
+
+    # Native-app branch: the broker handle was parsed (and its provider
+    # binding enforced) above, before credential verification.
+    if broker_state:
+        from hermes_cli.dashboard_auth import native_flow
+
+        try:
+            pending = native_flow.get_pending(broker_state)
+            gw_code = native_flow.complete_pending(
+                broker_state, session=session
+            )
+        except native_flow.NativeFlowError:
+            audit_log(
+                AuditEvent.NATIVE_TOKEN_FAILURE,
+                provider=body.provider,
+                reason="pending_not_found",
+                ip=ip,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Native login expired or unknown; restart sign-in.",
+            )
+        from urllib.parse import urlencode
+
+        sep = "&" if "?" in pending.redirect_uri else "?"
+        loopback = (
+            f"{pending.redirect_uri}{sep}"
+            f"{urlencode({'code': gw_code, 'state': pending.client_state})}"
+        )
+        audit_log(
+            AuditEvent.NATIVE_CODE_ISSUED,
+            provider=body.provider,
+            user_id=session.user_id,
+            ip=ip,
+        )
+        # The login page's form script navigates to ``next`` — here the
+        # loopback listener, which answers with its own "you can close
+        # this window" page. No session cookies: the desktop is not a
+        # browser session (mirrors the /auth/callback native branch).
+        resp = JSONResponse({"ok": True, "next": loopback})
         clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
-    else:
-        _set_session(resp, request, session)
+        return resp
+
+    expires_in = max(60, session.expires_at - int(time.time()))
+    landing = _validate_post_login_target(body.next) or "/"
+    resp = JSONResponse({"ok": True, "next": landing})
+    set_session_cookies(
+        resp,
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+        provider=session.provider,
+    )
     return resp
 
 

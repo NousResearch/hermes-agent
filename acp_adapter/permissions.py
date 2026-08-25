@@ -31,23 +31,43 @@ def _permission_option_supports_kind(kind: str) -> bool:
 
 
 def _build_permission_options(
-    *, allow_permanent: bool, allow_session: bool = True, smart_denied: bool = False,
+    *, allow_permanent: bool, allow_session: bool = True,
+    smart_denied: bool = False,
 ) -> list[PermissionOption]:
     """Return ACP options that match Hermes approval semantics."""
     # A gate that re-asks every time (allow_session=False, e.g. protected
-    # agent-instruction writes) collapses to the same two options as a Smart
-    # DENY override — offering a scope Hermes discards would re-prompt every write.
-    # See #81887.
+    # agent-instruction writes) collapses to the same two options as a
+    # Smart DENY override — the editor must not offer a scope Hermes
+    # discards, or every subsequent write re-prompts (#81887).
     once_only = smart_denied or not allow_session
-    options = [PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once")]
+    options = [PermissionOption(
+        option_id="allow_once", kind="allow_once", name="Allow once",
+    )]
     if not once_only:
-        # ACP has no session-scoped kind: closest persistent hint, Hermes semantics in the id.
-        options.append(PermissionOption(option_id="allow_session", kind="allow_always", name="Allow for session"))
-        if allow_permanent:
-            options.append(PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"))
+        options.append(PermissionOption(
+            option_id="allow_session",
+            # ACP has no session-scoped kind, so use the closest persistent
+            # hint while keeping Hermes semantics in the option id.
+            kind="allow_always",
+            name="Allow for session",
+        ))
+    if allow_permanent and not once_only:
+        options.append(
+            PermissionOption(
+                option_id="allow_always",
+                kind="allow_always",
+                name="Allow always",
+            ),
+        )
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
     if not once_only and _permission_option_supports_kind("reject_always"):
-        options.append(PermissionOption(option_id="deny_always", kind="reject_always", name="Deny always"))
+        options.append(
+            PermissionOption(
+                option_id="deny_always",
+                kind="reject_always",
+                name="Deny always",
+            ),
+        )
     return options
 
 
@@ -98,19 +118,21 @@ def await_permission(
         return None, False
 
 
-def make_approval_callback(request_permission_fn: Callable, loop: asyncio.AbstractEventLoop,
-                           session_id: str, timeout: float = 60.0) -> Callable[..., str]:
-    """Return a Hermes approval callback (``command, description, **kw`` as used by
-    ``tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
-    connection's ``request_permission`` coroutine on ``loop``; auto-denies after ``timeout`` s."""
+    def _callback(
+        command: str,
+        description: str,
+        *,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+        **_: object,
+    ) -> str:
+        from agent.async_utils import safe_schedule_threadsafe
 
-    def _callback(command: str, description: str, *, allow_permanent: bool = True,
-                  allow_session: bool = True, smart_denied: bool = False, **_: object) -> str:
-        options = _build_permission_options(allow_permanent=allow_permanent, allow_session=allow_session,
-                                            smart_denied=smart_denied)
-        response, timed_out = await_permission(
-            request_permission_fn, loop, session_id, tool_call=_build_permission_tool_call(command, description),
-            options=options, timeout=timeout, what="Permission request",
+        options = _build_permission_options(
+            allow_permanent=allow_permanent,
+            allow_session=allow_session,
+            smart_denied=smart_denied,
         )
         if timed_out:
             # Distinct from an explicit deny: tools.approval reports "timed out

@@ -159,7 +159,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
-- **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
+- **Exiting** — click the exit button on the bar, or press **⌘/Ctrl+Shift+H** again. The app window comes back with your session intact.
 
 #### Linux / Wayland
 
@@ -175,10 +175,6 @@ desktop:
 ```
 
 That bridges to `ELECTRON_OZONE_PLATFORM_HINT` at launch (an explicit env var still wins). The trade: X11 cannot restore a window that has ignored the mouse, so the HUD stays a solid window instead of click-through. Some KDE setups also report keyboard breakage with the X11 ozone backend — leave the hint on `auto` unless you need always-on-top.
-
-#### WSLg (Windows GPU from WSL2)
-
-When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
 
 ### Settings & onboarding
 
@@ -292,13 +288,6 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.
-
-During a local update, detailed build output streams into the active profile's
-`logs/update.log`, including detached `--gateway` updates. It stays out of the
-terminal but is available for troubleshooting before the build finishes. The
-Windows hand-off counts new output in this log as progress; a child that produces
-no output is still subject to the idle watchdog. Process liveness alone does not
-reset that watchdog, and cancelling an update does not wait for its build to finish.
 
 The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
 
@@ -495,10 +484,6 @@ carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
 redirect here.
 
 ## Troubleshooting
-
-### Reconnect without restarting the app
-
-If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
 
 ### Failed turns name the failing layer
 

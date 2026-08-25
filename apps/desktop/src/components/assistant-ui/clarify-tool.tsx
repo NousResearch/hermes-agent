@@ -1017,7 +1017,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
 
       return
     }
@@ -1025,27 +1025,19 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     setSubmitting(true)
 
     try {
-      // Sequential, not Promise.all: the LAST lock resolves the blocked
-      // server request, so every earlier lock must already be accepted when
-      // it lands — a reordered burst could complete the batch with a missing
-      // answer. `clarify.lock` is a normal RPC; it rides the session's OWNER
-      // socket (a profile / Bot Chat switch re-points ambient elsewhere).
+      // Sequential, not Promise.all: the LAST lock resolves the blocked tool
+      // server-side, so every earlier lock must already be accepted when it
+      // lands — a reordered burst could complete the batch with a missing
+      // answer.
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.lock',
-          {
-            answer: answer ?? '',
-            question_id: question.qid,
-            request_id: request.requestId
-          }
-        )
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          answer: answer ?? '',
+          question_id: question.qid,
+          request_id: request.requestId
+        })
       }
-
-      forgetServerRequest(request.requestId)
 
       triggerHaptic('submit')
       onAnswered()
@@ -1083,8 +1075,11 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
-    // A response with no `answers` is the cancel-all (the plain Esc path).
-    respondToServerRequest(request.requestId, {})
+    try {
+      await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
+    } catch {
+      // The tool times out on its own; a failed skip must never block the UI.
+    }
   }, [gateway, onAnswered, request])
 
   const handleSubmit = useCallback(
@@ -1107,12 +1102,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }
 
   return (
-    <form
-      className="my-1.5 grid gap-4"
-      data-clarify-batch={questions.length}
-      onKeyDownCapture={handleClarifySubmitShortcut}
-      onSubmit={handleSubmit}
-    >
+    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">

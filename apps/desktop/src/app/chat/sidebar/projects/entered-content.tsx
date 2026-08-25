@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useMemo, useState } from 'react'
 
-import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGitWorktree } from '@/global'

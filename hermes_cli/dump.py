@@ -140,7 +140,29 @@ def _config_overrides(config: dict) -> dict[str, str]:
     """Find non-default config values worth reporting."""
     from hermes_cli.config import DEFAULT_CONFIG
     overrides = {}
-    for section, key in _INTERESTING_PATHS:
+
+    # Sections with interesting user-facing overrides
+    interesting_paths = [
+        ("agent", "max_turns"),
+        ("agent", "gateway_timeout"),
+        ("agent", "session_stall_timeout"),
+        ("agent", "tool_use_enforcement"),
+        ("agent", "execution_guidance"),
+        ("terminal", "backend"),
+        ("terminal", "docker_image"),
+        ("terminal", "persistent_shell"),
+        ("browser", "allow_private_urls"),
+        ("compression", "enabled"),
+        ("compression", "threshold"),
+        ("compression", "in_place"),
+        ("display", "streaming"),
+        ("display", "skin"),
+        ("display", "show_reasoning"),
+        ("privacy", "redact_pii"),
+        ("tts", "provider"),
+    ]
+
+    for section, key in interesting_paths:
         default_section = DEFAULT_CONFIG.get(section, {})
         user_section = config.get(section, {})
         if not isinstance(default_section, dict) or not isinstance(user_section, dict):

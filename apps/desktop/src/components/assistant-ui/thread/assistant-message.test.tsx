@@ -5,9 +5,8 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $displayTimestamps } from '@/store/display-timestamps'

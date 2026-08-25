@@ -24,8 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.secret_scope import get_secret
+
+from agent.memory_provider import MemoryProvider, RecallStatus
+from hermes_constants import get_hermes_home
+from hermes_time import now as _hermes_now
+from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -220,15 +224,21 @@ RETAIN_SCHEMA = {
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
-            "tags": {"type": "array", "items": {"type": "string"},
-                     "description": "Optional per-call tags to merge with configured default retain tags."},
-            "occurred_at": {"type": "string", "description": (
-                "When the remembered event actually happened, as an ISO-8601 date "
-                "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
-                "Pass this whenever the memory references a specific event time "
-                "('yesterday', 'last Tuesday', 'on March 3rd') so Hindsight can "
-                "anchor it on the timeline. Omit for timeless facts/preferences."
-            )},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional per-call tags to merge with configured default retain tags.",
+            },
+            "occurred_at": {
+                "type": "string",
+                "description": (
+                    "When the remembered event actually happened, as an ISO-8601 date "
+                    "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
+                    "Pass this whenever the memory references a specific event time "
+                    "('yesterday', 'last Tuesday', 'on March 3rd') so Hindsight can "
+                    "anchor it on the timeline. Omit for timeless facts/preferences."
+                ),
+            },
         },
         "required": ["content"],
     },
@@ -314,6 +324,246 @@ _SYSTEM_PROMPT_TAILS = {
                "hindsight_retain to store facts."),
 }
 
+    Returns one of:
+      * ``None`` — nothing configured; Hindsight applies its ``combined`` default.
+      * a keyword string — ``"per_tag"`` / ``"combined"`` / ``"all_combinations"``.
+      * ``list[list[str]]`` — custom scopes, one inner list per consolidation pass.
+
+    Accepts a keyword string, a JSON-encoded list, a flat list of tags (treated as
+    a single scope), or a list of tag-lists. Anything unrecognized yields ``None``
+    so we never send an invalid payload.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text in _OBSERVATION_SCOPE_KEYWORDS:
+            return text
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return None
+            return _normalize_observation_scopes(parsed)
+        return None
+
+    if isinstance(value, (list, tuple)):
+        # A flat list of tag strings is one scope; a list of lists is many.
+        if all(isinstance(entry, str) for entry in value):
+            inner = [entry.strip() for entry in value if entry.strip()]
+            return [inner] if inner else None
+        scopes: list[list[str]] = []
+        for entry in value:
+            if isinstance(entry, (list, tuple)):
+                inner = [str(tag).strip() for tag in entry if str(tag).strip()]
+                if inner:
+                    scopes.append(inner)
+            elif isinstance(entry, str) and entry.strip():
+                scopes.append([entry.strip()])
+        return scopes or None
+
+    return None
+
+
+def _utc_timestamp() -> str:
+    """Return the UTC write/audit time for retain metadata."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _event_timestamp() -> str:
+    """Return the configured Hermes event time with an explicit UTC offset."""
+    event_time = _hermes_now()
+    # hermes_time.now() guarantees an aware datetime. Keep this fallback so a
+    # replacement clock cannot silently emit an offset-less Hindsight Event Date.
+    if event_time.tzinfo is None or event_time.utcoffset() is None:
+        event_time = event_time.astimezone()
+    return event_time.isoformat(timespec="seconds")
+
+
+def _embedded_profile_name(config: dict[str, Any]) -> str:
+    """Return the Hindsight embedded profile name for this Hermes config."""
+    profile = config.get("profile", "hermes")
+    return str(profile or "hermes")
+
+
+def _load_simple_env(path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE env file, ignoring comments and blank lines."""
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    # utf-8-sig, not plain utf-8: this is also used on the Hermes .env during
+    # post_setup, and a Notepad BOM would otherwise stick to the first key.
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    current_key = llm_api_key
+    if current_key is None:
+        current_key = (
+            config.get("llmApiKey")
+            or config.get("llm_api_key")
+            or get_secret("HINDSIGHT_LLM_API_KEY", "")
+        )
+
+    current_provider = config.get("llm_provider", "")
+    current_model = config.get("llm_model", "")
+    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+
+    # The embedded daemon expects OpenAI wire format for these providers.
+    daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
+
+    env_values = {
+        "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
+        "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
+        "HINDSIGHT_API_LLM_MODEL": str(current_model),
+        "HINDSIGHT_API_LOG_LEVEL": "info",
+    }
+    if current_base_url:
+        env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+
+    idle_timeout = (
+        config.get("idle_timeout")
+        if config.get("idle_timeout") is not None
+        else os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
+    )
+    if idle_timeout is not None and idle_timeout != "":
+        env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
+            _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
+        )
+    return env_values
+
+
+def _embedded_profile_env_path(config: dict[str, Any]):
+    from pathlib import Path
+
+    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+
+
+def _secure_write_profile_env(profile_env, content: str) -> None:
+    """Create/overwrite *profile_env* with owner-only (0600) permissions.
+
+    The file carries the embedded daemon's plaintext LLM API key
+    (``HINDSIGHT_API_LLM_API_KEY``), so it must never be created with the
+    default umask-derived mode. A pre-existing file is tightened *before*
+    the new secret bytes are written.
+    """
+    if profile_env.exists():
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+    fd = os.open(str(profile_env), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _validate_profile_env_permissions(profile_env) -> None:
+    """Post-write validation: the secret file must be owner-only on POSIX."""
+    if os.name != "posix":
+        # POSIX mode bits do not model Windows ACLs.
+        return
+    import stat
+
+    mode = stat.S_IMODE(profile_env.stat().st_mode)
+    if mode != 0o600:
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+        mode = stat.S_IMODE(profile_env.stat().st_mode)
+        if mode != 0o600:
+            raise PermissionError(
+                f"Embedded Hindsight profile environment is not owner-only: {profile_env}"
+            )
+
+
+def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
+    """Write the profile-scoped env file that standalone hindsight-embed uses."""
+    profile_env = _embedded_profile_env_path(config)
+    profile_env.parent.mkdir(parents=True, exist_ok=True)
+    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    try:
+        _secure_write_profile_env(profile_env, content)
+        _validate_profile_env_permissions(profile_env)
+    except BaseException:
+        # Never leave a plaintext API key behind in a file whose permissions
+        # could not be verified.
+        try:
+            profile_env.unlink()
+        except OSError:
+            pass
+        raise
+    return profile_env
+
+def _sanitize_bank_segment(value: str) -> str:
+    """Sanitize a bank_id_template placeholder value.
+
+    Bank IDs should be safe for URL paths and filesystem use. Replaces any
+    character that isn't alphanumeric, dash, or underscore with a dash, and
+    collapses runs of dashes.
+    """
+    if not value:
+        return ""
+    out = []
+    prev_dash = False
+    for ch in str(value):
+        if ch.isalnum() or ch == "-" or ch == "_":
+            out.append(ch)
+            prev_dash = False
+        else:
+            if not prev_dash:
+                out.append("-")
+                prev_dash = True
+    return "".join(out).strip("-_")
+
+
+def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
+    """Resolve a bank_id template string with the given placeholders.
+
+    Supported placeholders (each is sanitized before substitution):
+      {profile}   — active Hermes profile name (from agent_identity)
+      {workspace} — Hermes workspace name (from agent_workspace)
+      {platform}  — "cli", "telegram", "discord", etc.
+      {user}      — platform user id (gateway sessions)
+      {session}   — current session id
+
+    Missing/empty placeholders are rendered as the empty string and then
+    collapsed — e.g. ``hermes-{user}`` with no user becomes ``hermes``.
+
+    If the template is empty, resolution falls back to *fallback*.
+    Returns the sanitized bank id.
+    """
+    if not template:
+        return fallback
+    sanitized = {k: _sanitize_bank_segment(v) for k, v in placeholders.items()}
+    try:
+        rendered = template.format(**sanitized)
+    except (KeyError, IndexError) as exc:
+        logger.warning("Invalid bank_id_template %r: %s — using fallback %r",
+                       template, exc, fallback)
+        return fallback
+    while "--" in rendered:
+        rendered = rendered.replace("--", "-")
+    while "__" in rendered:
+        rendered = rendered.replace("__", "_")
+    rendered = rendered.strip("-_")
+    return rendered or fallback
+
+
+# ---------------------------------------------------------------------------
+# MemoryProvider implementation
+# ---------------------------------------------------------------------------
 
 class HindsightMemoryProvider(MemoryProvider):
     """Hindsight long-term memory with knowledge graph and multi-strategy retrieval."""
@@ -969,9 +1219,21 @@ class HindsightMemoryProvider(MemoryProvider):
     # -- retain ------------------------------------------------------------------
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = _event_timestamp()  # one turn -> both messages share the event timestamp
-        return [{"role": role, "content": f"{prefix}: {content}", "timestamp": now} for role, prefix, content in
-                (("user", self._retain_user_prefix, user_content), ("assistant", self._retain_assistant_prefix, assistant_content))]
+        # Hindsight receives this pair as one conversation turn, so both
+        # messages intentionally share the same turn-level event timestamp.
+        now = _event_timestamp()
+        return [
+            {
+                "role": "user",
+                "content": f"{self._retain_user_prefix}: {user_content}",
+                "timestamp": now,
+            },
+            {
+                "role": "assistant",
+                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "timestamp": now,
+            },
+        ]
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
@@ -985,17 +1247,26 @@ class HindsightMemoryProvider(MemoryProvider):
         metadata.update({name: value for name in _METADATA_ATTRS if (value := getattr(self, f"_{name}"))})
         return metadata
 
-    def _build_retain_kwargs(self, content: str, *, context: str | None = None,
-                             metadata: Dict[str, str] | None = None, tags: List[str] | None = None,
-                             occurred_at: str | None = None, update_mode: str | None = None) -> Dict[str, Any]:
-        """Build one aretain_batch item. The server resolves occurred_start/end (incl.
-        relative phrases in content) from the item timestamp: explicit occurred_at
-        wins, else the configured event clock."""
-        item: Dict[str, Any] = {
-            # See #93568.
+    def _build_retain_kwargs(
+        self,
+        content: str,
+        *,
+        context: str | None = None,
+        document_id: str | None = None,
+        metadata: Dict[str, str] | None = None,
+        tags: List[str] | None = None,
+        retain_async: bool | None = None,
+        occurred_at: str | None = None,
+    ) -> Dict[str, Any]:
+        # The item-level timestamp is what the Hindsight server uses to resolve
+        # occurred_start/occurred_end (including relative phrases in content).
+        # An explicit occurred_at (from the retain tool) wins; otherwise default
+        # to the configured event clock so relative times still resolve (#93568).
+        kwargs: Dict[str, Any] = {
+            "bank_id": self._bank_id,
             "content": content,
             "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
-            "timestamp": (occurred_at or "").strip() or _event_timestamp(),
+            "timestamp": occurred_at.strip() if occurred_at and occurred_at.strip() else _event_timestamp(),
         }
         merged_tags = _normalize_retain_tags(list(self._retain_tags) + _normalize_retain_tags(tags))
         item.update({k: v for k, v in (("context", context), ("update_mode", update_mode)) if v is not None})
@@ -1122,16 +1393,31 @@ class HindsightMemoryProvider(MemoryProvider):
     }
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if tool_name not in self._TOOL_HANDLERS:
-            return tool_error(f"Unknown tool: {tool_name}")
-        required, handler, failure = self._TOOL_HANDLERS[tool_name]
-        if not args.get(required, ""):
-            return tool_error(f"Missing required parameter: {required}")
-        try:
-            return json.dumps({"result": handler(self, args)})
-        except Exception as e:
-            logger.warning("%s failed: %s", tool_name, e, exc_info=True)
-            return tool_error(f"{failure}: {e}")
+        if tool_name == "hindsight_retain":
+            content = args.get("content", "")
+            if not content:
+                return tool_error("Missing required parameter: content")
+            context = args.get("context")
+            try:
+                item = self._build_retain_kwargs(
+                    content,
+                    context=context,
+                    tags=args.get("tags"),
+                    occurred_at=args.get("occurred_at"),
+                )
+                # aretain_batch takes bank_id/retain_async as call args, not item keys.
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
+                             self._bank_id, len(content), context)
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                )
+                logger.debug("Tool hindsight_retain: success")
+                return json.dumps({"result": "Memory stored successfully."})
+            except Exception as e:
+                logger.warning("hindsight_retain failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to store memory: {e}")
 
     # -- session lifecycle -------------------------------------------------------
 

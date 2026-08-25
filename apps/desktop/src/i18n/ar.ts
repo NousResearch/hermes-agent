@@ -1,39 +1,6 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
-  sessionImport: {
-    title: 'المتابعة من تطبيق آخر',
-    subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
-    action: 'استيراد جلسة',
-    readingFrom: 'القراءة من',
-    connectedComputer: 'الكمبيوتر المتصل',
-    destination: 'الاستيراد إلى',
-    all: 'الكل',
-    search: 'البحث في الجلسات المحملة',
-    scanning: 'جارٍ البحث عن المحادثات',
-    scanError: 'تعذر العثور على الجلسات',
-    scanHelp: 'تحقق من اتصال الخادم ثم أعد المحاولة. قد تحتاج الخوادم القديمة إلى تحديث.',
-    empty: 'لا توجد محادثات',
-    emptyHelp: 'ستظهر هنا جلسات Claude Code وCodex الموجودة على هذا الخادم.',
-    noMatches: 'لا توجد محادثات مطابقة',
-    searchHelp: 'جرّب عنوانًا أو مجلدًا آخر، أو حمّل المزيد من الجلسات.',
-    skipped: 'تم تجاوز بعض السجلات الفارغة أو غير المقروءة أو الكبيرة جدًا.',
-    more: 'تحميل المزيد من الجلسات',
-    messages: 'رسائل',
-    choose: 'محادثة تستحق المتابعة',
-    chooseHelp: 'اختر جلسة لقراءة سجلها قبل نقلها إلى Hermes.',
-    previewLoading: 'جارٍ فتح المعاينة',
-    previewError: 'المعاينة غير متاحة',
-    previewHelp: 'ربما تم نقل الملف الأصلي أو تغييره. حدّث القائمة وحاول مرة أخرى.',
-    previewLimit: 'تم اختصار المعاينة لتسهيل القراءة. يتم استيراد المحادثة كاملة.',
-    you: 'أنت',
-    snapshot: 'هذه المحادثة موجودة بالفعل في Hermes. افتح نسختك الحالية للمتابعة.',
-    copyNotice: 'ينسخ نص المحادثة دون تغيير الملفات الأصلية. لا يشمل مخرجات الأدوات أو الاستدلال.',
-    importing: 'جارٍ الاستيراد…',
-    open: 'فتح في Hermes',
-    continue: 'المتابعة في Hermes',
-    importError: 'تعذر استيراد هذه المحادثة.'
-  },
   sendDiagnostics: {
     title: 'إرسال التشخيصات إلى Nous',
     privacyNotice:
@@ -575,8 +542,6 @@ export const ar = defineLocale({
       },
       backdropTitle: 'خلفية النافذة',
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
-      userBubbleTitle: 'فقاعة الرسالة',
-      userBubbleDesc: 'مدى شفافية رسائلك. معتمة عند 0؛ يبقى الإطار فقط عند 100.',
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
       reactionsTitle: 'تفاعلات الرسائل',
@@ -1026,18 +991,6 @@ export const ar = defineLocale({
         review: {
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
-        },
-        triage_specifier: {
-          label: 'محدد الفرز',
-          hint: 'توضيح مواصفات كانبان'
-        },
-        kanban_decomposer: {
-          label: 'مفكك كانبان',
-          hint: 'تفكيك المهام'
-        },
-        profile_describer: {
-          label: 'واصف الملف الشخصي',
-          hint: 'أوصاف ملفات شخصية تلقائية'
         },
         curator: {
           label: 'المنسّق',
@@ -2834,11 +2787,7 @@ export const ar = defineLocale({
         streaming: 'خطأ في اتصال البث'
       },
       errorRetry: 'إعادة المحاولة',
-      errorStartNewSession: 'بدء جلسة جديدة',
       errorSwitchProvider: 'تبديل المزوّد',
-      errorSignInAgain: provider => `تسجيل الدخول إلى ${provider} مجدداً`,
-      errorOauthExpired: provider =>
-        `انتهت صلاحية تسجيل دخولك إلى ${provider} أو تم إلغاؤه. سجّل الدخول مجدداً لمتابعة المحادثة.`,
       errorOpenLogs: 'فتح السجلات',
       errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
       errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',

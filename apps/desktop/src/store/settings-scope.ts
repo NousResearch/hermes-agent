@@ -16,20 +16,6 @@ export const $settingsScopeProfile = computed([$settingsScopeOverride, $activeGa
   normalizeProfileKey(override ?? active)
 )
 
-// Whether the settings pages are editing a profile OTHER than the default
-// one. The scope follows the app's active profile when no override is set —
-// which, after opening any Bot Mode chat, is the BOT's profile — so an edit
-// can land in profiles/<bot>/config.yaml while the user believes they are
-// editing their main config (#89190/#89162 class). Surfaces render this
-// loudly. Until the roster has loaded (no is_default entry yet) the root
-// profile's canonical key is assumed, so an unknown default fails loud, not
-// quiet.
-export const $settingsScopeEditsNonDefault = computed([$settingsScopeProfile, $profiles], (selected, profiles) => {
-  const defaultProfile = profiles.find(profile => profile.is_default)
-
-  return selected !== normalizeProfileKey(defaultProfile?.name)
-})
-
 // ── Request-scope form (THE value to hand to API helpers) ──────────────────
 // The store contract and the API contract disagree about `null`:
 //   - here, `null` means "follow the app's active profile" (no override);

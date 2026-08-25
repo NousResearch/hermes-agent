@@ -249,11 +249,15 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/screenshots", "browser_screenshots"),
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
-    ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
-    # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
-    # mounted so vision/file tools in sandboxes reach uploads and dropped files.
-    # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so
-    # both tuple slots are ``images``.
+    # Oversized tool results (tools/tool_result_storage.py). Host-side is the
+    # single canonical location; mounting/syncing it lets remote backends
+    # read spilled results at the translated path instead of needing a
+    # separate in-sandbox copy.
+    ("cache/spillover", "cache/spillover"),
+    # Desktop/clipboard/PDF uploads land in the flat top-level ``images/`` dir
+    # (tui_gateway attach RPCs), not under ``cache/``. Mount it so vision can
+    # reach uploads inside sandbox containers (#69575). No legacy alias exists,
+    # so both tuple slots are ``images``.
     ("images", "images"),
     # Mount it so the agent's file tools can read dropped binaries (zip/pdf/...) from inside sandbox
     # containers instead of dangling host paths (#76577).
@@ -340,14 +344,18 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     backend = _terminal_backend()
     if backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
-    elif backend not in ("docker", "modal"):
+    else:
+        # Plugin-registered backends declare where synced cache files land
+        # via ``cache_path_base``; None means host paths remain correct.
+        plugin_base = None
         try:
             from agent.terminal_env_registry import provider_flag
+
             plugin_base = provider_flag(backend, "cache_path_base", None)
         except Exception:
             plugin_base = None
         if not plugin_base:
-            return host_path
+            return host_path  # local, singularity, unknown: host path is correct
         container_base = str(plugin_base)
 
     mapped = map_cache_path_to_container(host_path, container_base=container_base)

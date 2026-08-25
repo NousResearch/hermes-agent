@@ -334,85 +334,208 @@ def test_late_response_and_lock_are_dropped_quietly(server):
     assert response["result"] == {"status": "expired"}
 
 
-def _start_batch_clarify(server, buf, qids, timeout=None):
-    from tui_gateway import server_requests
+# ── clarify batch (multi-question) bridge ────────────────────────────
+
+
+def _drain_batch_block(server, qids, timeout=5, payload=None):
+    """Run a batch _block on a worker thread and return (thread, result box,
+    emitted request payload). The caller resolves questions via
+    handle_request and then joins."""
     box = {}
-    normalized = [{"qid": q, "id": "", "question": q, "choices": None, "choices_offered": [], "multi_select": False}
-                  for q in qids]
-    if timeout is not None:
-        server._clarify_timeout_seconds = lambda: timeout
-    thread = threading.Thread(
-        target=lambda: box.__setitem__("answer", server._clarify_block("s1", "", None, questions=normalized)), daemon=True)
+
+    def run():
+        box["answer"] = server._block(
+            "clarify.request",
+            "s1",
+            dict(payload or {"questions": [{"qid": q, "question": q} for q in qids]}),
+            timeout=timeout,
+            batch_qids=list(qids),
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    return thread, box, _wait_open(server_requests, buf)
+    # Wait for the request to be registered so respond calls can find it.
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with server._prompt_lock:
+            if server._batch_clarify:
+                rid = next(iter(server._batch_clarify))
+                return thread, box, rid
+        time.sleep(0.01)
+    raise AssertionError("batch clarify request never registered")
 
 
-def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(capture):
-    """Per-question locks (clarify.lock) are editable until every qid is locked; the last lock resolves the
-    request with the full answer set. Only wire fields reach the renderer."""
+def test_clarify_batch_resolves_when_all_questions_locked(capture):
     server, buf = capture
-    thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"])
-    sent = _frames(buf)[-1]["params"]["questions"][0]
-    assert set(sent) == {"qid", "question", "choices", "multi_select"}
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
 
-    first = server.handle_request({"id": "a1", "method": "clarify.lock",
-                                   "params": {"request_id": req.id, "question_id": "q0", "answer": "x"}})
-    assert first["result"] == {"status": "ok", "remaining": ["q1"]}
-    redo = server.handle_request({"id": "a1b", "method": "clarify.lock",
-                                  "params": {"request_id": req.id, "question_id": "q0", "answer": "y"}})
-    assert redo["result"] == {"status": "ok", "remaining": ["q1"]}
-    bad = server.handle_request({"id": "bad", "method": "clarify.lock",
-                                 "params": {"request_id": req.id, "question_id": "nope", "answer": ""}})
-    assert bad["error"]["code"] == 4002
-    assert server._open_requests("s1")[0]["params"]["answers"] == {"q0": "y"}
-    last = server.handle_request({"id": "a2", "method": "clarify.lock",
-                                  "params": {"request_id": req.id, "question_id": "q1", "answer": ""}})
-    assert last["result"] == {"status": "ok", "remaining": []}
+    first = server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "beta"},
+    })
+    assert first["result"]["status"] == "ok"
+    assert first["result"]["remaining"] == ["q0"]
+    assert thread.is_alive()  # one question left — still blocking
+
+    second = server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "alpha"},
+    })
+    assert second["result"]["status"] == "ok"
+    assert second["result"]["remaining"] == []
+
     thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
-
-    # Deadline: locked answers survive, timed_out flagged, one request.cancel.
-    original_timeout = server._clarify_timeout_seconds
-    try:
-        thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
-        locked = server.handle_request({"id": "b1", "method": "clarify.lock",
-                                        "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
-        assert locked["result"]["status"] == "ok"
-        thread.join(timeout=5)
-    finally:
-        server._clarify_timeout_seconds = original_timeout
-    assert json.loads(box["answer"]) == {"answers": {"q0": "kept"}, "timed_out": True}
-    cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
-    assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
+    assert not thread.is_alive()
+    assert json.loads(box["answer"]) == {"answers": {"q0": "alpha", "q1": "beta"}}
 
 
-def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
+def test_clarify_batch_answer_update_overwrites_before_completion(server):
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "first"},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "changed"},
+    })
+    server.handle_request({
+        "id": "a3", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "done"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"])["answers"]["q0"] == "changed"
+
+
+def test_clarify_batch_empty_answer_is_a_locked_skip(server):
+    """Skipping one question locks an empty answer — it counts toward
+    completion instead of leaving the batch waiting."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": ""},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "kept"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"]) == {"answers": {"q0": "", "q1": "kept"}}
+
+
+def test_clarify_batch_unknown_question_id_rejected(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+
+    response = server.handle_request({
+        "id": "bad", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q9", "answer": "x"},
+    })
+    assert response["error"]["code"] == 4002
+
+    server.handle_request({
+        "id": "ok", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "fine"},
+    })
+    thread.join(timeout=5)
+
+
+def test_clarify_batch_timeout_keeps_locked_answers(capture):
+    """Locked answers survive the deadline: the tool sees the partials plus
+    timed_out instead of an empty string."""
     server, buf = capture
-    thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"])
-    server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {}})
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"], timeout=1)
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "kept"},
+    })
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    result = json.loads(box["answer"])
+    assert result == {"answers": {"q0": "kept"}, "timed_out": True}
+    # The expire notification still fires for the un-finished batch.
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    assert any(m["params"]["type"] == "clarify.expire" for m in messages)
+
+
+def test_clarify_batch_cancel_all_returns_empty(server):
+    """A respond without question_id cancels the whole batch (Esc path)."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "cancel", "method": "clarify.respond",
+        "params": {"request_id": rid, "answer": ""},
+    })
+
     thread.join(timeout=5)
     assert box["answer"] == ""
 
 
-def test_clear_pending_cancels_only_that_session(capture):
-    from tui_gateway import server_requests
+def test_clarify_batch_late_question_respond_is_idempotent(server):
+    response = server.handle_request({
+        "id": "late", "method": "clarify.respond",
+        "params": {"request_id": "gone", "question_id": "q0", "answer": "x"},
+    })
+    assert response["result"] == {"status": "expired"}
+
+
+def test_clarify_batch_state_cleared_after_resolution(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "x"},
+    })
+    thread.join(timeout=5)
+    with server._prompt_lock:
+        assert rid not in server._batch_clarify
+        assert rid not in server._pending
+
+
+def test_clarify_block_helper_builds_batch_payload(capture):
+    """_clarify_block forwards only wire fields (qid/question/choices/
+    multi_select) — the tool-side normalized entries carry extra keys the
+    renderer must not see."""
     server, buf = capture
-    a = threading.Thread(target=lambda: server_requests.send("sudo", "sid-a", {}, timeout=None), daemon=True)
-    b = threading.Thread(target=lambda: server_requests.send("sudo", "sid-b", {}, timeout=None), daemon=True)
-    a.start(); b.start()
+    normalized = [
+        {
+            "qid": "q0", "id": "approach", "question": "Which?",
+            "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
+            "multi_select": False,
+        },
+    ]
+
+    box = {}
+
+    def run():
+        box["answer"] = server._clarify_block("s1", "", None, questions=normalized)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
     deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and len(server_requests._open) < 2:
+    rid = None
+    while time.monotonic() < deadline and rid is None:
+        with server._prompt_lock:
+            rid = next(iter(server._batch_clarify), None)
         time.sleep(0.01)
-    assert server._session_pending_kind("sid-a") == "sudo"
-    server._clear_pending("sid-a")
-    a.join(timeout=2)
-    assert not a.is_alive() and b.is_alive()
-    assert server._session_pending_kind("sid-a") == "" and server._session_pending_kind("sid-b") == "sudo"
-    server._clear_pending()
-    b.join(timeout=2)
-    assert not b.is_alive()
-    reasons = [f["params"]["payload"]["reason"] for f in _frames(buf) if f.get("method") == "event"]
-    assert reasons == ["interrupted", "shutdown"]
+    assert rid
+
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "a"},
+    })
+    thread.join(timeout=5)
+
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    request = messages[0]["params"]
+    assert request["type"] == "clarify.request"
+    sent = request["payload"]["questions"][0]
+    assert set(sent) == {"qid", "question", "choices", "multi_select"}
+    assert "id" not in sent and "choices_offered" not in sent
 
 
 def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
@@ -479,6 +602,87 @@ def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
     """A stale live sid must not 4001 an approval answer when the request_id
     resolves to a live session (durable-identity fallback, #91684)."""
     from tools import approval
+
+    live = {"session_key": "agent-live", "history": []}
+    server._sessions["ui-live"] = live
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "req-91684"}] if key == "agent-live" else [],
+    )
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-fallback",
+            "method": "approval.respond",
+            "params": {
+                "session_id": "gone-sid",
+                "request_id": "req-91684",
+                "choice": "once",
+            },
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("agent-live", "once", {"resolve_all": False, "request_id": "req-91684"})
+    ]
+
+
+def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
+    """session_id holding a STORED id maps to the live runtime record."""
+    from tools import approval
+
+    live = {"session_key": "stored-91684", "history": []}
+    server._sessions["ui-stored"] = live
+    calls = []
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-stored",
+            "method": "approval.respond",
+            "params": {"session_id": "stored-91684", "choice": "deny"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("stored-91684", "deny", {"resolve_all": False, "request_id": None})
+    ]
+
+
+def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    response = server.handle_request(
+        {
+            "id": "r-nope",
+            "method": "approval.respond",
+            "params": {"session_id": "nope", "request_id": "req-x", "choice": "once"},
+        }
+    )
+
+    assert response["error"]["code"] == 4001
+
+
+def test_clear_pending(server):
+    ev = threading.Event()
+    # _pending values are (sid, Event) tuples
+    server._pending["r1"] = ("sid-x", ev)
+    server._clear_pending()
 
     live = {"session_key": "agent-live", "history": []}
     server._sessions["ui-live"] = live

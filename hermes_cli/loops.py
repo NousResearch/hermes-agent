@@ -241,11 +241,15 @@ def _meta_key(session_id: str) -> str:
 
 
 def _get_session_db() -> Optional[Any]:
-    """The goals module's cached SessionDB, so goals/loops/heartbeats share one connection and
-    its off-loop bootstrap (a cold cache on the loop thread never runs ``SessionDB()`` inline).
+    """One SessionDB per HERMES_HOME.
 
-    The previous copy here did, which froze the loop for the init duration and dropped the first ``loop:*``
-    write (the /goal bug class, #88965).
+    Delegates to the goals module's cached SessionDB so goals, loops,
+    and heartbeats share one connection (same pattern as
+    ``hermes_cli/heartbeat.py``). The delegation also inherits the
+    off-loop bootstrap and the window logic: a cold cache on the loop
+    thread never runs ``SessionDB()`` inline. The previous copy here
+    did, which froze the loop for the init duration and dropped the
+    first ``loop:*`` write (the /goal bug class, #88965).
     """
     try:
         from hermes_cli.goals import _get_session_db as _goals_db
@@ -253,25 +257,6 @@ def _get_session_db() -> Optional[Any]:
         logger.debug("LoopManager: SessionDB bootstrap failed (%s)", exc)
         return None
     return _goals_db()
-
-
-def _db_op(label: str, fn, default=None):
-    """Run one SessionDB call; any error is logged at debug and yields ``default``."""
-    try:
-        return fn()
-    except Exception as exc:
-        logger.debug("LoopManager: %s failed: %s", label, exc)
-        return default
-
-
-def _parse_state(raw: str, session_id: str = "") -> Optional[LoopState]:
-    """``LoopState`` from stored JSON; None (warning when *session_id* given) on corrupt data."""
-    try:
-        return LoopState.from_json(raw)
-    except Exception as exc:
-        if session_id:
-            logger.warning("LoopManager: could not parse stored loop for %s: %s", session_id, exc)
-        return None
 
 
 def load_loop(session_id: str) -> Optional[LoopState]:

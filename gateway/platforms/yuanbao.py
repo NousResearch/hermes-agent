@@ -694,15 +694,40 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy(OwnAccessPolicyMixin):
-    """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
-    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+def _yb_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Resolve a per-profile ``YUANBAO_*`` / gateway setting honoring the
+    active secret scope (#93522).
+
+    Under ``gateway.multiplex_profiles`` every secondary profile is
+    constructed inside ``_profile_runtime_scope`` (``gateway/run.py``) and
+    its ``.env`` lives in that scope — raw ``os.getenv`` misses it and
+    leaks the default profile's values instead. The primary/active profile
+    is constructed without a scope and legitimately owns ``os.environ``,
+    so fall back to it there (same canonical shape as QQ's
+    ``_resolve_qq_secret``).
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
+class AccessPolicy:
+    """Platform-level DM / Group access control policy.
 
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
         self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
+
+    def _open_dm_opted_in(self) -> bool:
+        if (_yb_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
+            return True
+        return (_yb_secret("YUANBAO_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
@@ -2997,7 +3022,1127 @@ class GroupQueryService:
             "mentionHint": mention_hint,
         }
 
-REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
+
+class HeartbeatManager:
+    """Manages reply heartbeat (RUNNING / FINISH) lifecycle.
+
+    Responsibilities:
+      - Periodic RUNNING heartbeat sender (every 2s)
+      - Auto-FINISH after 30s inactivity
+      - Explicit stop with optional FINISH signal
+    """
+
+    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+        self._adapter = adapter
+        self._reply_heartbeat_tasks: Dict[str, asyncio.Task] = {}
+        self._reply_hb_last_active: Dict[str, float] = {}
+
+    async def send_heartbeat_once(self, chat_id: str, heartbeat_val: int) -> None:
+        """Send a single heartbeat (RUNNING or FINISH), best effort."""
+        adapter = self._adapter
+        conn = adapter._connection
+        if conn.ws is None or not adapter._bot_id:
+            return
+        try:
+            if chat_id.startswith("group:"):
+                group_code = chat_id[len("group:"):]
+                encoded = encode_send_group_heartbeat(
+                    from_account=adapter._bot_id,
+                    group_code=group_code,
+                    heartbeat=heartbeat_val,
+                )
+            else:
+                to_account = chat_id.removeprefix("direct:")
+                encoded = encode_send_private_heartbeat(
+                    from_account=adapter._bot_id,
+                    to_account=to_account,
+                    heartbeat=heartbeat_val,
+                )
+            await conn.ws.send(encoded)
+            status_name = "RUNNING" if heartbeat_val == WS_HEARTBEAT_RUNNING else "FINISH"
+            logger.debug(
+                "[%s] Reply heartbeat %s sent: chat=%s",
+                adapter.name, status_name, chat_id,
+            )
+        except Exception as exc:
+            logger.debug("[%s] send_heartbeat_once failed: %s", adapter.name, exc)
+
+    async def start(self, chat_id: str) -> None:
+        """Start or renew the Reply Heartbeat periodic sender (RUNNING, every 2s)."""
+        adapter = self._adapter
+        conn = adapter._connection
+        if conn.ws is None or not adapter._bot_id:
+            return
+
+        existing = self._reply_heartbeat_tasks.get(chat_id)
+        if existing and not existing.done():
+            self._reply_hb_last_active[chat_id] = time.time()
+            return
+
+        self._reply_hb_last_active[chat_id] = time.time()
+
+        task = asyncio.create_task(
+            self._worker(chat_id),
+            name=f"yuanbao-reply-hb-{chat_id}",
+        )
+        self._reply_heartbeat_tasks[chat_id] = task
+
+    async def _worker(self, chat_id: str) -> None:
+        """Background coroutine: send RUNNING heartbeat every 2s.
+        30s without renewal -> send FINISH and exit.
+        """
+        try:
+            await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_RUNNING)
+
+            while True:
+                await asyncio.sleep(REPLY_HEARTBEAT_INTERVAL_S)
+
+                last_active = self._reply_hb_last_active.get(chat_id, 0)
+                if time.time() - last_active > REPLY_HEARTBEAT_TIMEOUT_S:
+                    break
+
+                conn = self._adapter._connection
+                if conn.ws is None:
+                    break
+
+                await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_RUNNING)
+
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            cancelled = False
+        else:
+            cancelled = False
+        finally:
+            if not cancelled:
+                try:
+                    await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
+                except Exception:
+                    pass
+            self._reply_heartbeat_tasks.pop(chat_id, None)
+            self._reply_hb_last_active.pop(chat_id, None)
+
+    async def stop(self, chat_id: str, send_finish: bool = True) -> None:
+        """Stop Reply Heartbeat and optionally send FINISH."""
+        task = self._reply_heartbeat_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if send_finish:
+            try:
+                await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
+            except Exception:
+                pass
+
+    async def close(self) -> None:
+        """Cancel all reply heartbeat tasks."""
+        for task in list(self._reply_heartbeat_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._reply_heartbeat_tasks.clear()
+        self._reply_hb_last_active.clear()
+
+
+class SlowResponseNotifier:
+    """Manages delayed 'please wait' notifications for slow agent responses.
+
+    Starts a timer per chat_id; if the agent hasn't replied within
+    SLOW_RESPONSE_TIMEOUT_S seconds, sends a courtesy message.
+    """
+
+    def __init__(self, adapter: "YuanbaoAdapter", sender: "MessageSender") -> None:
+        self._adapter = adapter
+        self._sender = sender
+        self._tasks: Dict[str, asyncio.Task] = {}
+
+    async def start(self, chat_id: str) -> None:
+        """Start a delayed task that notifies the user when the agent is slow."""
+        self.cancel(chat_id)
+        task = asyncio.create_task(
+            self._notifier(chat_id),
+            name=f"yuanbao-slow-resp-{chat_id}",
+        )
+        self._tasks[chat_id] = task
+
+    async def _notifier(self, chat_id: str) -> None:
+        """Wait SLOW_RESPONSE_TIMEOUT_S, then push a 'please wait' message."""
+        try:
+            await asyncio.sleep(SLOW_RESPONSE_TIMEOUT_S)
+            logger.info(
+                "[%s] Agent response exceeded %ds for %s, sending wait notice",
+                self._adapter.name, int(SLOW_RESPONSE_TIMEOUT_S), chat_id,
+            )
+            await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("[%s] Slow-response notifier failed: %s", self._adapter.name, exc)
+
+    def cancel(self, chat_id: str) -> None:
+        """Cancel the pending slow-response notifier for *chat_id*, if any."""
+        task = self._tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def close(self) -> None:
+        """Cancel all slow-response tasks."""
+        for task in list(self._tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+
+
+class MessageSender:
+    """Core message sending dispatcher for YuanbaoAdapter.
+
+    Responsibilities:
+      - Per-chat-id lock management (serial send ordering)
+      - Text chunk sending with retry
+      - C2C / Group message encoding and dispatch
+      - Media send helpers (image, file, sticker, document)
+      - Direct send helper (text + media, used by send_message tool)
+    """
+
+    IMAGE_EXTS: ClassVar[frozenset] = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
+    CHAT_DICT_MAX_SIZE: ClassVar[int] = 1000  # Max distinct chat IDs in _chat_locks
+
+    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+        self._adapter = adapter
+        self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()
+
+        # Optional hooks injected by OutboundManager for coordination
+        self._on_send_start: Optional[Callable[[str], Any]] = None   # cancel slow-notifier
+        self._on_send_finish: Optional[Callable[[str], Any]] = None  # send FINISH heartbeat
+
+        # Media send handlers (strategy pattern)
+        self._media_handlers: Dict[str, MediaSendHandler] = {
+            "image_url": ImageUrlHandler(),
+            "image_file": ImageFileHandler(),
+            "file_url": FileUrlHandler(),
+            "document": DocumentHandler(),
+            "sticker": StickerHandler(),
+        }
+
+    # -- Media handler registry ---------------------------------------------
+
+    def register_handler(self, name: str, handler: MediaSendHandler) -> None:
+        """Register (or replace) a named media send handler."""
+        self._media_handlers[name] = handler
+
+    # -- Chat lock ---------------------------------------------------------
+
+    def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
+        """Return (or create) a per-chat-id lock with safe LRU eviction."""
+        if chat_id in self._chat_locks:
+            self._chat_locks.move_to_end(chat_id)
+            return self._chat_locks[chat_id]
+        if len(self._chat_locks) >= self.CHAT_DICT_MAX_SIZE:
+            evicted = False
+            for key in list(self._chat_locks):
+                if not self._chat_locks[key].locked():
+                    self._chat_locks.pop(key)
+                    evicted = True
+                    break
+            if not evicted:
+                self._chat_locks.pop(next(iter(self._chat_locks)))
+        self._chat_locks[chat_id] = asyncio.Lock()
+        return self._chat_locks[chat_id]
+
+    # -- Text send ---------------------------------------------------------
+
+    async def send_text(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        group_code: str = "",
+    ) -> "SendResult":
+        """Send text message with auto-chunking and per-chat-id ordering guarantee."""
+        adapter = self._adapter
+        conn = adapter._connection
+        if conn.ws is None:
+            return SendResult(success=False, error="Not connected", retryable=True)
+
+        if self._on_send_start:
+            self._on_send_start(chat_id)
+
+        lock = self.get_chat_lock(chat_id)
+        async with lock:
+            content_to_send = self.strip_cron_wrapper(content)
+            chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
+            logger.info(
+                "[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
+                adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK,
+                len(chunks), [len(c) for c in chunks],
+            )
+            for i, chunk in enumerate(chunks):
+                r_to = reply_to if i == 0 else None
+                result = await self.send_text_chunk(chat_id, chunk, r_to, group_code=group_code)
+                if not result.success:
+                    return result
+
+        # Notify outbound coordinator that send is complete (e.g. FINISH heartbeat)
+        if self._on_send_finish:
+            try:
+                await self._on_send_finish(chat_id)
+            except Exception:
+                pass
+        return SendResult(success=True)
+
+    async def send_media(
+        self,
+        chat_id: str,
+        handler_name: str,
+        reply_to: Optional[str] = None,
+        caption: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "SendResult":
+        """Dispatch media send to the named handler strategy."""
+        handler = self._media_handlers.get(handler_name)
+        if handler is None:
+            return SendResult(
+                success=False,
+                error=f"Unknown media handler: {handler_name!r}",
+            )
+        return await handler.handle(
+            self._adapter, chat_id,
+            reply_to=reply_to, caption=caption, **kwargs,
+        )
+
+    # -- Direct send (text + media, used by send_message tool) -------------
+
+    async def send_direct(
+        self,
+        chat_id: str,
+        message: str,
+        media_files: Optional[List[Tuple[str, bool]]] = None,
+    ) -> Dict[str, Any]:
+        """Send text + media via Yuanbao (used by the ``send_message`` tool).
+
+        Unlike Weixin which creates a fresh adapter per call, Yuanbao reuses
+        the running gateway adapter (persistent WebSocket).  Logic mirrors
+        send_weixin_direct: send text first, then iterate media_files by
+        extension.
+        """
+        adapter = self._adapter
+        last_result: Optional["SendResult"] = None
+
+        # 1. Send text
+        if message.strip():
+            last_result = await adapter.send(chat_id, message)
+            if not last_result.success:
+                return {"error": f"Yuanbao send failed: {last_result.error}"}
+
+        # 2. Iterate media_files, dispatch by file extension
+        for media_path, _is_voice in media_files or []:
+            ext = Path(media_path).suffix.lower()
+            if ext in self.IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path)
+
+            if not last_result.success:
+                return {"error": f"Yuanbao media send failed: {last_result.error}"}
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing"}
+
+        return {
+            "success": True,
+            "platform": "yuanbao",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id if last_result else None,
+        }
+
+    async def dispatch_msg_body(
+        self,
+        chat_id: str,
+        msg_body: list,
+        reply_to: Optional[str] = None,
+        group_code: str = "",
+    ) -> "SendResult":
+        """Lock + dispatch an arbitrary MsgBody to C2C or group."""
+        lock = self.get_chat_lock(chat_id)
+        async with lock:
+            if chat_id.startswith("group:"):
+                grp = chat_id[len("group:"):]
+                result = await self.send_group_msg_body(grp, msg_body, reply_to)
+            else:
+                to_account = chat_id.removeprefix("direct:")
+                result = await self.send_c2c_msg_body(to_account, msg_body, group_code=group_code)
+
+        if result.get("success"):
+            return SendResult(success=True, message_id=result.get("msg_key"))
+        return SendResult(success=False, error=result.get("error", "Unknown error"))
+
+    async def send_text_chunk(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        retry: int = 3,
+        group_code: str = "",
+    ) -> "SendResult":
+        """Send a single text chunk with retry (exponential backoff: 1s, 2s, 4s)."""
+        adapter = self._adapter
+        last_error: str = "Unknown error"
+        for attempt in range(retry):
+            try:
+                if chat_id.startswith("group:"):
+                    grp = chat_id[len("group:"):]
+                    raw = await self.send_group_message(grp, text, reply_to)
+                else:
+                    to_account = chat_id.removeprefix("direct:")
+                    raw = await self.send_c2c_message(to_account, text, group_code=group_code)
+
+                if raw.get("success"):
+                    return SendResult(success=True, message_id=raw.get("msg_key"))
+
+                last_error = raw.get("error", "Unknown error")
+                logger.warning(
+                    "[%s] send_text_chunk attempt %d/%d failed: %s",
+                    adapter.name, attempt + 1, retry, last_error,
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "[%s] send_text_chunk attempt %d/%d exception: %s",
+                    adapter.name, attempt + 1, retry, last_error,
+                )
+
+            if attempt < retry - 1:
+                await asyncio.sleep(2 ** attempt)
+
+        logger.error(
+            "[%s] send_text_chunk max retries (%d) exceeded. Last error: %s",
+            adapter.name, retry, last_error,
+        )
+        return SendResult(success=False, error=f"Max retries exceeded: {last_error}")
+
+    # -- C2C / Group message -----------------------------------------------
+
+    async def send_c2c_message(self, to_account: str, text: str, group_code: str = "") -> dict:
+        """Send C2C text message, return {success: bool, msg_key: str}."""
+        msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": text}}]
+        return await self.send_c2c_msg_body(to_account, msg_body, group_code=group_code)
+
+    async def send_group_message(
+        self,
+        group_code: str,
+        text: str,
+        reply_to: Optional[str] = None,
+    ) -> dict:
+        """Send group text message, auto-converting @nickname to TIMCustomElem."""
+        msg_body = self._build_msg_body_with_mentions(text, group_code)
+        return await self.send_group_msg_body(group_code, msg_body, reply_to)
+
+    # @mention pattern: (whitespace or start) + @ + nickname + (whitespace or end)
+    _AT_USER_RE = re.compile(r'(?:(?<=\s)|(?<=^))@(\S+?)(?=\s|$)', re.MULTILINE)
+
+    def _build_msg_body_with_mentions(self, text: str, group_code: str) -> list:
+        """Parse @nickname patterns and build mixed TIMTextElem + TIMCustomElem msg_body."""
+        cached = self._adapter._member_cache.get(group_code)
+        if cached:
+            ts, member_list = cached
+            if time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S:
+                members = member_list
+            else:
+                del self._adapter._member_cache[group_code]
+                members = []
+        else:
+            members = []
+        if not members:
+            return [{"msg_type": "TIMTextElem", "msg_content": {"text": text}}]
+
+        nickname_to_uid = {}
+        for m in members:
+            nick = m.get("nickname") or m.get("nick_name") or ""
+            uid = m.get("user_id") or ""
+            if nick and uid:
+                nickname_to_uid[nick.lower()] = (nick, uid)
+
+        msg_body: list = []
+        last_idx = 0
+        for match in self._AT_USER_RE.finditer(text):
+            start = match.start()
+            if start > last_idx:
+                seg = text[last_idx:start].strip()
+                if seg:
+                    msg_body.append({"msg_type": "TIMTextElem", "msg_content": {"text": seg}})
+
+            nickname = match.group(1)
+            entry = nickname_to_uid.get(nickname.lower())
+            if entry:
+                real_nick, uid = entry
+                msg_body.append({
+                    "msg_type": "TIMCustomElem",
+                    "msg_content": {
+                        "data": json.dumps({"elem_type": 1002, "text": f"@{real_nick}", "user_id": uid}),
+                    },
+                })
+            else:
+                msg_body.append({"msg_type": "TIMTextElem", "msg_content": {"text": f"@{nickname}"}})
+
+            last_idx = match.end()
+
+        if last_idx < len(text):
+            tail = text[last_idx:].strip()
+            if tail:
+                msg_body.append({"msg_type": "TIMTextElem", "msg_content": {"text": tail}})
+
+        if not msg_body:
+            msg_body.append({"msg_type": "TIMTextElem", "msg_content": {"text": text}})
+
+        return msg_body
+
+    async def send_c2c_msg_body(self, to_account: str, msg_body: list, group_code: str = "") -> dict:
+        """Send C2C message with arbitrary MsgBody."""
+        adapter = self._adapter
+        req_id = f"c2c_{next_seq_no()}"
+        encoded = encode_send_c2c_message(
+            to_account=to_account,
+            msg_body=msg_body,
+            from_account=adapter._bot_id or "",
+            msg_id=req_id,
+            group_code=group_code,
+        )
+        return await self._dispatch_encoded(adapter, encoded, req_id)
+
+    async def send_group_msg_body(
+        self,
+        group_code: str,
+        msg_body: list,
+        reply_to: Optional[str] = None,
+    ) -> dict:
+        """Send group message with arbitrary MsgBody."""
+        adapter = self._adapter
+        req_id = f"grp_{next_seq_no()}"
+        encoded = encode_send_group_message(
+            group_code=group_code,
+            msg_body=msg_body,
+            from_account=adapter._bot_id or "",
+            msg_id=req_id,
+            ref_msg_id=reply_to or "",
+        )
+        return await self._dispatch_encoded(adapter, encoded, req_id)
+
+    # -- Common dispatch helper --------------------------------------------
+
+    @staticmethod
+    async def _dispatch_encoded(
+        adapter: "YuanbaoAdapter", encoded: bytes, req_id: str,
+    ) -> dict:
+        """Send pre-encoded bytes via WS and return a normalised result dict."""
+        try:
+            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
+            return {"success": True, "msg_key": response.get("msg_id", "")}
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    # -- Media validation ---------------------------------------------------
+
+    @staticmethod
+    def validate_media(
+        file_bytes: Optional[bytes], filename: str, max_size_mb: int = 20
+    ) -> Optional[str]:
+        """Media pre-validation: check file validity before sending/uploading.
+
+        Returns:
+            Error description (str) if validation fails, otherwise None.
+        """
+        if file_bytes is None or len(file_bytes) == 0:
+            return f"Empty file: {filename}"
+        max_bytes = max_size_mb * 1024 * 1024
+        if len(file_bytes) > max_bytes:
+            size_mb = len(file_bytes) / 1024 / 1024
+            return f"File too large: {filename} ({size_mb:.1f}MB > {max_size_mb}MB)"
+        return None
+
+    # -- Text truncation (table-aware) --------------------------------------
+
+    @staticmethod
+    def truncate_message(
+        content: str,
+        max_length: int = 4000,
+        len_fn: Optional[Callable[[str], int]] = None,
+    ) -> List[str]:
+        """
+        Split a long message into chunks with table-awareness.
+
+        Delegates core splitting to ``MarkdownProcessor.chunk_markdown_text``
+        and strips page indicators like ``(1/3)`` from the output.
+
+        Falls back to ``BasePlatformAdapter.truncate_message`` for non-table
+        content and for overall text that fits in a single chunk.
+        """
+        _len = len_fn or len
+        if _len(content) <= max_length:
+            return [content]
+
+        # Delegate to MarkdownProcessor for table/fence-aware chunking
+        chunks = MarkdownProcessor.chunk_markdown_text(
+            content, max_length, len_fn=len_fn,
+        )
+
+        # Strip page indicators like (1/3) that BasePlatformAdapter may add
+        chunks = [_INDICATOR_RE.sub('', c) for c in chunks]
+
+        return chunks if chunks else [content]
+
+    # -- Cron wrapper stripping ---------------------------------------------
+
+    @staticmethod
+    def strip_cron_wrapper(content: str) -> str:
+        """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
+        if not content.startswith("Cronjob Response: "):
+            return content
+
+        divider = "\n-------------\n\n"
+        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        divider_pos = content.find(divider)
+        footer_pos = content.rfind(footer_prefix)
+        if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:
+            return content
+
+        header = content[:divider_pos]
+        if "\n(job_id: " not in header:
+            return content
+
+        body_start = divider_pos + len(divider)
+        body = content[body_start:footer_pos].strip()
+        return body or content
+
+    # -- Cleanup on disconnect ---------------------------------------------
+
+    async def close(self) -> None:
+        """Release chat locks (no-op for now; placeholder for future cleanup)."""
+        self._chat_locks.clear()
+
+
+class OutboundManager:
+    """Outbound coordinator that orchestrates sending, heartbeat and slow-response.
+
+    Composes:
+      - MessageSender   — core text/media sending
+      - HeartbeatManager — reply heartbeat (RUNNING / FINISH) lifecycle
+      - SlowResponseNotifier — delayed 'please wait' notifications
+
+    YuanbaoAdapter holds a single ``_outbound: OutboundManager`` and delegates
+    all outbound operations through it.
+    """
+
+    # Expose class-level constants from MessageSender for backward compatibility
+    CHAT_DICT_MAX_SIZE: ClassVar[int] = MessageSender.CHAT_DICT_MAX_SIZE
+
+    def __init__(self, adapter: "YuanbaoAdapter") -> None:
+        self._adapter = adapter
+        self.sender: MessageSender = MessageSender(adapter)
+        self.heartbeat: HeartbeatManager = HeartbeatManager(adapter)
+        self.slow_notifier: SlowResponseNotifier = SlowResponseNotifier(adapter, self.sender)
+
+        # Wire coordination hooks into MessageSender
+        self.sender._on_send_start = self._handle_send_start
+        self.sender._on_send_finish = self._handle_send_finish
+
+    # -- Coordination hooks ------------------------------------------------
+
+    def _handle_send_start(self, chat_id: str) -> None:
+        """Called by MessageSender before sending: cancel slow-response notifier."""
+        self.slow_notifier.cancel(chat_id)
+
+    async def _handle_send_finish(self, chat_id: str) -> None:
+        """Called by MessageSender after sending: send FINISH heartbeat."""
+        await self.heartbeat.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
+
+    # -- Delegated public API (used by YuanbaoAdapter) ---------------------
+
+    async def send_text(
+        self, chat_id: str, content: str, reply_to: Optional[str] = None,
+        group_code: str = "",
+    ) -> "SendResult":
+        """Send text message with auto-chunking."""
+        return await self.sender.send_text(chat_id, content, reply_to, group_code=group_code)
+
+    async def send_media(
+        self, chat_id: str, handler_name: str, **kwargs: Any,
+    ) -> "SendResult":
+        """Dispatch media send to the named handler strategy."""
+        return await self.sender.send_media(chat_id, handler_name, **kwargs)
+
+    async def send_direct(
+        self, chat_id: str, message: str,
+        media_files: Optional[List[Tuple[str, bool]]] = None,
+    ) -> Dict[str, Any]:
+        """Send text + media (used by send_message tool)."""
+        return await self.sender.send_direct(chat_id, message, media_files)
+
+    async def start_typing(self, chat_id: str) -> None:
+        """Start reply heartbeat (RUNNING)."""
+        await self.heartbeat.start(chat_id)
+
+    async def stop_typing(self, chat_id: str, send_finish: bool = False) -> None:
+        """Stop reply heartbeat."""
+        await self.heartbeat.stop(chat_id, send_finish=send_finish)
+
+    async def start_slow_notifier(self, chat_id: str) -> None:
+        """Start slow-response notifier."""
+        await self.slow_notifier.start(chat_id)
+
+    def cancel_slow_notifier(self, chat_id: str) -> None:
+        """Cancel slow-response notifier."""
+        self.slow_notifier.cancel(chat_id)
+
+    def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
+        """Proxy to MessageSender.get_chat_lock for backward compatibility."""
+        return self.sender.get_chat_lock(chat_id)
+
+    @property
+    def _chat_locks(self) -> collections.OrderedDict:
+        """Proxy to MessageSender._chat_locks for backward compatibility."""
+        return self.sender._chat_locks
+
+    @staticmethod
+    def validate_media(
+        file_bytes: Optional[bytes], filename: str, max_size_mb: int = 20,
+    ) -> Optional[str]:
+        """Proxy to MessageSender.validate_media."""
+        return MessageSender.validate_media(file_bytes, filename, max_size_mb)
+
+    async def close(self) -> None:
+        """Shut down all sub-managers."""
+        await self.sender.close()
+        await self.heartbeat.close()
+        await self.slow_notifier.close()
+
+
+class YuanbaoAdapter(BasePlatformAdapter):
+    """Yuanbao AI Bot adapter backed by a persistent WebSocket connection."""
+
+    PLATFORM = Platform.YUANBAO
+    MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
+    MEDIA_MAX_SIZE_MB: int = 50  # Max media file size in MB for upload validation
+    REPLY_REF_MAX_ENTRIES: ClassVar[int] = 500  # Max capacity of reference dedup dict
+
+    # -- Active instance registry (class-level singleton) -------------------
+
+    _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["YuanbaoAdapter"]:
+        """Return the currently connected YuanbaoAdapter, or None."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
+        """Register (or clear) the active adapter instance."""
+        cls._active_instance = adapter
+
+    def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
+        super().__init__(config, Platform.YUANBAO)
+
+        # Credentials / endpoints from config.extra (populated by config.py from env/yaml)
+        _extra = config.extra or {}
+        self._app_key: str = (_extra.get("app_id") or "").strip()
+        self._app_secret: str = (_extra.get("app_secret") or "").strip()
+        self._bot_id: Optional[str] = _extra.get("bot_id") or None
+        self._ws_url: str = (_extra.get("ws_url") or DEFAULT_WS_GATEWAY_URL).strip()
+        self._api_domain: str = (_extra.get("api_domain") or DEFAULT_API_DOMAIN).rstrip("/")
+        self._route_env: str = (_extra.get("route_env") or "").strip()
+
+        # Bounded concurrency for inbound media resolve/download.
+        # See _DEFAULT_RESOLVE_CONCURRENCY for rationale; clamped to [min, max]
+        # so a misconfigured value cannot hammer the resource backend nor
+        # accidentally drop below sequential behavior.
+        try:
+            _raw_concurrency = int(_extra.get("media_resolve_concurrency", _DEFAULT_RESOLVE_CONCURRENCY))
+        except (TypeError, ValueError):
+            _raw_concurrency = _DEFAULT_RESOLVE_CONCURRENCY
+        self.media_resolve_concurrency: int = max(
+            _MIN_RESOLVE_CONCURRENCY,
+            min(_MAX_RESOLVE_CONCURRENCY, _raw_concurrency),
+        )
+
+        # Core managers (UML composition)
+        self._connection: ConnectionManager = ConnectionManager(self)
+        self._outbound: OutboundManager = OutboundManager(self)
+
+        # Inbound dispatch tasks — tracked so disconnect() can cancel them
+        self._inbound_tasks: set[asyncio.Task] = set()
+
+        # Set of background tasks — prevent GC from collecting fire-and-forget tasks
+        self._background_tasks: set[asyncio.Task] = set()
+
+        # Member cache: group_code -> (updated_ts, [{"user_id":..., "nickname":..., ...}, ...])
+        # Populated by get_group_member_list(), used by @mention resolution.
+        # Entries older than MEMBER_CACHE_TTL_S are treated as stale.
+        self._member_cache: Dict[str, Tuple[float, list]] = {}
+        self.MEMBER_CACHE_TTL_S: float = 300.0  # 5 minutes
+
+        # Inbound message deduplication (WS reconnect / network jitter)
+        self._dedup = MessageDeduplicator(ttl_seconds=300)
+
+        # Group chat sequential dispatch queue (session_key → asyncio.Queue).
+        self._group_queues: Dict[str, asyncio.Queue] = {}
+
+        # Recall support: track which msg_id is being processed per session_key
+        # so RecallGuardMiddleware can detect "currently processing" messages.
+        self._processing_msg_ids: Dict[str, str] = {}
+        self._processing_msg_texts: Dict[str, str] = {}
+        # Bounded cache of msg_id → attributed content for recent messages.
+        # Used by _patch_transcript as content-match fallback when transcript
+        # entries lack a message_id field (agent-processed @bot messages).
+        self._msg_content_cache: Dict[str, str] = {}
+
+        # Reply-to dedup: inbound_msg_id -> expire_ts
+        # ------------------------------------------------------------------
+        # Access control policy (DM / Group) — scoped reads (#93522)
+        # ------------------------------------------------------------------
+        dm_policy: str = (
+            _extra.get("dm_policy")
+            or _yb_secret("YUANBAO_DM_POLICY")
+            or "pairing"
+        ).strip().lower()
+
+        _dm_allow_from_raw: str = (
+            _extra.get("dm_allow_from")
+            or _yb_secret("YUANBAO_DM_ALLOW_FROM", "")
+        )
+        dm_allow_from: list[str] = [x.strip() for x in _dm_allow_from_raw.split(",") if x.strip()]
+
+        group_policy: str = (
+            _extra.get("group_policy")
+            or _yb_secret("YUANBAO_GROUP_POLICY")
+            or "pairing"
+        ).strip().lower()
+
+        _group_allow_from_raw: str = (
+            _extra.get("group_allow_from")
+            or _yb_secret("YUANBAO_GROUP_ALLOW_FROM", "")
+        )
+        group_allow_from: list[str] = [x.strip() for x in _group_allow_from_raw.split(",") if x.strip()]
+
+        self._access_policy = AccessPolicy(
+            dm_policy=dm_policy,
+            dm_allow_from=dm_allow_from,
+            group_policy=group_policy,
+            group_allow_from=group_allow_from,
+        )
+
+        # Group query service (AI tool backing)
+        self._group_query = GroupQueryService(self)
+
+        # Inbound message processing pipeline (middleware pattern)
+        self._inbound_pipeline: InboundPipeline = InboundPipelineBuilder.build()
+
+        # ------------------------------------------------------------------
+        # Auto-sethome: first user to message the bot becomes the owner.
+        # If no home channel is configured, the first conversation will be
+        # automatically set as the home channel.  When the existing home
+        # channel is a group chat (group:xxx), it stays eligible for
+        # upgrade — the first DM will override it with direct:xxx.
+        # ------------------------------------------------------------------
+        _existing_home = os.getenv("YUANBAO_HOME_CHANNEL") or (
+            config.home_channel.chat_id if config.home_channel else ""
+        )
+        self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
+
+    # ------------------------------------------------------------------
+    # Task tracking helper
+    # ------------------------------------------------------------------
+
+    def _track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Register a fire-and-forget task so it won't be GC'd prematurely."""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    # ------------------------------------------------------------------
+    # Abstract method implementations
+    # ------------------------------------------------------------------
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
+    def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
+        """True when the sender may persist ``YUANBAO_HOME_CHANNEL``.
+
+        Intake-only pairing forwards are excluded until the sender is on the
+        strict allowlist, has explicit open-world opt-in, or is approved in the
+        pairing store.
+        """
+        policy: AccessPolicy = self._access_policy
+        sender = str(ctx.from_account or "").strip()
+        if not sender:
+            return False
+        if ctx.chat_type == "dm":
+            if policy.is_dm_allowed(sender):
+                return True
+            if policy.dm_policy == "pairing":
+                from gateway.pairing import PairingStore
+
+                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+            return False
+        if ctx.chat_type == "group":
+            group_code = str(ctx.group_code or "").strip()
+            if not group_code:
+                return False
+            if policy.group_policy == "allowlist":
+                return policy.is_group_allowed(group_code)
+            if policy.group_policy == "open":
+                return policy._open_dm_opted_in()
+            return False
+        return False
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Connect to Yuanbao WS gateway and authenticate.
+
+        Delegates to ConnectionManager.open().
+        """
+        return await self._connection.open()
+
+    async def disconnect(self) -> None:
+        """Cancel background tasks and close the WebSocket connection."""
+        if YuanbaoAdapter._active_instance is self:
+            YuanbaoAdapter.set_active(None)
+
+        self._running = False
+        self._mark_disconnected()
+        self._release_platform_lock()
+
+        # Delegate to managers
+        await self._connection.close()
+        await self._outbound.close()
+
+        # Cancel all in-flight inbound dispatch tasks
+        for task in list(self._inbound_tasks):
+            if not task.done():
+                task.cancel()
+        self._inbound_tasks.clear()
+
+        self._group_queues.clear()
+
+        logger.info("[%s] Disconnected", self.name)
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        group_code: str = "",
+    ) -> SendResult:
+        """Send text message with auto-chunking. Delegates to OutboundManager."""
+        return await self._outbound.send_text(chat_id, content, reply_to, group_code=group_code)
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        """Return basic chat metadata derived from the chat_id prefix.
+
+        chat_id conventions:
+          "group:<group_code>"  → group chat
+          "direct:<account>"   → C2C / direct message (default)
+
+        TODO (T06): fetch real chat name/member-count from Yuanbao API.
+        """
+        if chat_id.startswith("group:"):
+            return {"name": chat_id, "type": "group"}
+        return {"name": chat_id, "type": "dm"}
+
+    async def send_typing(self, chat_id: str, metadata: Optional[dict] = None) -> None:
+        """Send "typing" status heartbeat (RUNNING). Delegates to OutboundManager."""
+        try:
+            await self._outbound.start_typing(chat_id)
+        except Exception:
+            pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the RUNNING heartbeat loop without sending FINISH immediately.
+
+        FINISH is sent by send() after actual message delivery to ensure correct ordering:
+        RUNNING... -> message arrives -> FINISH.
+        """
+        try:
+            await self._outbound.stop_typing(chat_id, send_finish=False)
+        except Exception:
+            pass
+
+    async def _process_message_background(self, event, session_key: str) -> None:
+        """Wrap base class processing with a slow-response notifier."""
+        chat_id = event.source.chat_id
+        await self._outbound.start_slow_notifier(chat_id)
+        try:
+            await super()._process_message_background(event, session_key)
+        finally:
+            self._outbound.cancel_slow_notifier(chat_id)
+            # Clear the RecallGuard tracking entries for this message only if
+            # our msg_id is still current.  A concurrent pending message may
+            # have already overwritten the entry in _dispatch_inbound_event
+            # while we were running; in that case the drain task owns it and
+            # we must not clear it.  Id-less events (internal/synthetic
+            # messages, pushes without a msg_id) never wrote a tracking entry
+            # in _dispatch_inbound_event, so they must never pop either — the
+            # entry they see belongs to a concurrently-queued id-bearing
+            # message whose drain task still needs it for recall matching.
+            msg_id = event.message_id
+            if msg_id and self._processing_msg_ids.get(session_key) == msg_id:
+                self._processing_msg_ids.pop(session_key, None)
+                self._processing_msg_texts.pop(session_key, None)
+
+    # ------------------------------------------------------------------
+    # Group query (delegate to GroupQueryService)
+    # ------------------------------------------------------------------
+
+    async def query_group_info(self, group_code: str) -> Optional[dict]:
+        """Query group info (delegates to GroupQueryService)."""
+        return await self._group_query.query_group_info_raw(group_code)
+
+    async def get_group_member_list(
+        self, group_code: str, offset: int = 0, limit: int = 200
+    ) -> Optional[dict]:
+        """Query group member list (delegates to GroupQueryService)."""
+        return await self._group_query.get_group_member_list_raw(group_code, offset=offset, limit=limit)
+
+    # ------------------------------------------------------------------
+    # DM active private chat + access control
+    # ------------------------------------------------------------------
+
+    DM_MAX_CHARS = 10000  # DM text limit
+
+    async def send_dm(self, user_id: str, text: str, group_code: str = "") -> SendResult:
+        """
+        Actively send C2C private chat message.
+
+        Args:
+            user_id: Target user ID
+            text: Message text (limit 10000 characters)
+            group_code: Source group code (for group-originated DM context)
+
+        Returns:
+            SendResult
+        """
+        if not self._access_policy.is_dm_allowed(user_id):
+            return SendResult(success=False, error="DM access denied for this user")
+        if len(text) > self.DM_MAX_CHARS:
+            text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
+        chat_id = f"direct:{user_id}"
+        return await self.send(chat_id, text, group_code=group_code)
+
+    # ------------------------------------------------------------------
+    # Media send methods
+    # ------------------------------------------------------------------
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send image message (URL). Delegates to OutboundManager via ImageUrlHandler."""
+        return await self._outbound.send_media(
+            chat_id, "image_url",
+            reply_to=reply_to, caption=caption, image_url=image_url,
+            **kwargs,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send local image file. Delegates to OutboundManager via ImageFileHandler."""
+        return await self._outbound.send_media(
+            chat_id, "image_file",
+            reply_to=reply_to, caption=caption, image_path=image_path,
+            **kwargs,
+        )
+
+    async def send_file(
+        self,
+        chat_id: str,
+        file_url: str,
+        filename: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send file message (URL). Delegates to OutboundManager via FileUrlHandler."""
+        return await self._outbound.send_media(
+            chat_id, "file_url",
+            reply_to=reply_to, file_url=file_url, filename=filename,
+            **kwargs,
+        )
+
+    async def send_sticker(
+        self,
+        chat_id: str,
+        sticker_name: Optional[str] = None,
+        face_index: Optional[int] = None,
+        reply_to: Optional[str] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send sticker/emoji. Delegates to OutboundManager via StickerHandler."""
+        return await self._outbound.send_media(
+            chat_id, "sticker",
+            reply_to=reply_to,
+            sticker_name=sticker_name, face_index=face_index,
+            **kwargs,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        filename: Optional[str] = None,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **kwargs: Any,
+    ) -> SendResult:
+        """Send local file (document). Delegates to OutboundManager via DocumentHandler."""
+        return await self._outbound.send_media(
+            chat_id, "document",
+            reply_to=reply_to, caption=caption,
+            file_path=file_path, filename=filename,
+            **kwargs,
+        )
+
+    async def _get_cached_token(self) -> dict:
+        """Get the current valid sign token (using module-level cache)."""
+        return await SignManager.get_token(
+            self._app_key, self._app_secret, self._api_domain,
+            route_env=self._route_env,
+        )
+
+    def get_status(self) -> dict:
+        """Return a snapshot of the current connection status."""
+        conn = self._connection
+        return {
+            "connected": conn.is_connected,
+            "bot_id": self._bot_id,
+            "connect_id": conn.connect_id,
+            "reconnect_attempts": conn.reconnect_attempts,
+            "ws_url": self._ws_url,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Module-level thin delegates (preserve import compatibility for external callers)
+# ---------------------------------------------------------------------------
+
 
 def get_active_adapter() -> Optional["YuanbaoAdapter"]:
     """Delegate to ``YuanbaoAdapter.get_active()``."""

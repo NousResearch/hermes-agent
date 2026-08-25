@@ -199,7 +199,7 @@ class TestFreshInstall:
             m = _enter_fresh_install_patches(
                 stack,
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
-                blank="hermes_cli.setup_quick._run_blank_slate_setup",
+                blank="hermes_cli.setup._run_blank_slate_setup",
             )
             from hermes_cli import setup as setup_mod
 

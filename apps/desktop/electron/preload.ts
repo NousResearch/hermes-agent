@@ -10,22 +10,11 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
-const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
-  // Launch-flag fact: the app was started with --local, so the renderer may
-  // show the local-models surfaces. Static for the window's lifetime.
-  localModelsEnabled: launchFlags?.localModels === true,
-  // Launch-flag fact: the Nous free tier is on for this launch
-  // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
-  // decision is stamped onto every backend the app spawns.
-  guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
-  // Launch-flag fact: skip the first-run film (HERMES_SKIP_INTRO=1 or
-  // --skip-intro). Rehearsal aid for the guided chat behind it.
-  skipIntro: launchFlags?.skipIntro === true,
-  getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
+  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
@@ -121,7 +110,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       clientPlacement: hudWindowing?.clientPlacement !== false,
       controlDrag: hudWindowing?.controlDrag === true,
       nativeDrag: hudNativeDrag,
-      solid: hudWindowing?.solid === true,
       workspaceTransfer: hudWindowing?.workspaceTransfer === true
     },
     open: request => ipcRenderer.invoke('hermes:hud:open', request),
@@ -286,9 +274,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:context-menu-spellcheck', listener)
   },
-  saveImageBuffer: (data, ext, name) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext, name }),
-  capturePreview: payload => ipcRenderer.invoke('hermes:capturePreview', payload),
-  savePastedText: text => ipcRenderer.invoke('hermes:savePastedText', { text }),
+  saveImageBuffer: (data, ext) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
   getPathForFile: file => {
     try {
@@ -319,7 +305,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   reachPreviewUrl: url => ipcRenderer.invoke('hermes:preview:reach', url),
-  setActiveConnectionRoute: route => ipcRenderer.send('hermes:connection:active-route', route),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   resolveFavicon: url => ipcRenderer.invoke('hermes:resolveFavicon', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
@@ -354,8 +339,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
-  reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
   logsRoot: () => ipcRenderer.invoke('hermes:fs:logsRoot'),
+  agentPluginsRoot: () => ipcRenderer.invoke('hermes:fs:agentPluginsRoot'),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),

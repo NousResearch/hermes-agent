@@ -68,20 +68,11 @@ explicitly:
 
 ```bash
 hermes worktree list              # audit: age, size, verdict, reason per tree
-hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
 hermes worktree prune             # remove safe trees + delete merged branches
 hermes worktree prune --dry-run   # show the plan without changing anything
-hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
 ```
-
-Worktrees registered **outside** `.worktrees/` (created by hand or by another
-tool) are reported read-only in `list` output and are never removed. The one
-exception is metadata: registrations whose directory no longer exists are
-dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
-only ever narrows what gets reaped — a tree carrying real work is kept at any
-age regardless of the flag.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
@@ -93,12 +84,6 @@ Safety guarantees (all modes, any age):
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
-- **Pushed open-PR lanes free their disk without losing anything**: when a
-  clean tree's branch head exactly matches what `origin` holds (checked with
-  one `git ls-remote` per sweep), the checkout is redundant — the tree is
-  removed but its **branch ref is kept**, so the lane is one
-  `git worktree add .worktrees/<name> <branch>` away from restored. If the
-  remote can't be reached, the tree is preserved.
 - Trees **in use by a running hermes session** are never touched.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
@@ -106,11 +91,6 @@ Safety guarantees (all modes, any age):
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.
-
-The same conservative pruner also runs from the cron scheduler (at most once
-every 6 hours, in the background), so gateway-only machines — where nobody
-launches `hermes -w` for days — no longer accumulate merged scratch trees
-between CLI sessions.
 
 When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
 notice pointing at these commands.

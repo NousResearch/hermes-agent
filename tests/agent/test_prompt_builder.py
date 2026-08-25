@@ -55,6 +55,23 @@ def _drain_truncation_warnings():
     drain_truncation_warnings()
 
 
+@pytest.fixture(autouse=True)
+def _drain_truncation_warnings():
+    """Leave no truncation warnings in the shared thread context.
+
+    Truncation warnings ride a ContextVar; under plain ``pytest`` (no
+    per-file subprocess isolation) anything this file records leaks into
+    later files' contexts and breaks their assertions/ordering.
+
+    Drain on both sides: before, so warnings leaked by earlier files can't
+    pollute this file's assertions, and after, so this file leaves the
+    ContextVar clean for later files.
+    """
+    drain_truncation_warnings()
+    yield
+    drain_truncation_warnings()
+
+
 # =========================================================================
 # Guidance constants
 # =========================================================================
@@ -1134,13 +1151,6 @@ class TestExecutionGuidanceModels:
         from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
         for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
             assert fam in EXECUTION_GUIDANCE_MODELS
-
-    def test_muse_spark_gets_both_guidance_blocks(self):
-        # Muse Spark closes the turn after a chat-only response on defaults
-        # (#96550) — it needs tool-use enforcement AND execution guidance.
-        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
-        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
-        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
 
     def test_excludes_google_and_claude(self):
         # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;

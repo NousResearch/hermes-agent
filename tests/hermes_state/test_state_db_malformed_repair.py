@@ -79,9 +79,10 @@ def test_generic_malformed_open_does_not_attempt_schema_surgery(
     def _generic_corruption(*_args, **_kwargs):
         raise sqlite3.DatabaseError("database disk image is malformed")
 
-    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _generic_corruption)  # SessionDB open path
+    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _generic_corruption)
     monkeypatch.setattr(
-        hermes_state, "repair_state_db_schema",
+        hermes_state,
+        "repair_state_db_schema",
         lambda *args, **kwargs: repair_calls.append((args, kwargs)),
     )
 

@@ -24,6 +24,20 @@ def test_paid_model_without_original_shows_no_sale():
     assert compute_sale_discount("0.000002", "0.00001", None) is None
 
 
+def test_free_model_gets_flat_100_percent_discount():
+    """$0/$0 models always show -100%; was_* pass through when present."""
+    assert compute_sale_discount("0", "0", None) == (100, "", "")
+    assert compute_sale_discount(
+        "0", "0", {"prompt": "0.000002", "completion": "0.00001"}
+    ) == (100, "0.000002", "0.00001")
+    # "0.0000000000" strings (Nous portal shape) count as free too.
+    assert compute_sale_discount("0.0000000000", "0.0000000000", None) == (100, "", "")
+
+
+def test_paid_model_without_original_shows_no_sale():
+    assert compute_sale_discount("0.000002", "0.00001", None) is None
+
+
 
 
 
@@ -117,7 +131,7 @@ def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
         "https://stg-inference-api.nousresearch.com/v1/",
     ):
         monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
-        assert models_pricing._resolve_nous_pricing_credentials()[1] == (
+        assert models_mod._resolve_nous_pricing_credentials()[1] == (
             "https://stg-inference-api.nousresearch.com"
         )
 

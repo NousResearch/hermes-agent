@@ -836,18 +836,684 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
-    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
-    # around the whole loop: the routing guard (``_is_profile_skill_command``) and the stages
-    # must resolve against the SAME profile or a secondary-only skill is routed here and then
-    # not found (#110695).
-    stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
-    with _session_home_scope(session):
-        for stage in filter(None, stages):
-            res = stage(rid, params, session, name, arg)
-            if res is not None:
-                if name in _SESSION_CONTROL_SLASHES and "error" not in res:
-                    _publish_session_control_snapshot(params.get("session_id", ""), session)
-                return res
+    qcmds = _load_cfg().get("quick_commands", {})
+    if name in qcmds:
+        qc = qcmds[name]
+        if qc.get("type") == "exec":
+            # Sanitize env to prevent credential leakage —
+            # quick commands run in the TUI server process which
+            # has all API keys in os.environ.
+            from tools.environments.local import build_subprocess_env
+            sanitized_env = build_subprocess_env()
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            r = subprocess.run(
+                qc.get("command", ""),
+                shell=True,
+                capture_output=True,
+                text=True,
+                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                # crash the gateway thread on locale-mismatched Windows (#53137).
+                encoding="utf-8", errors="replace",
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                env=sanitized_env,
+                creationflags=windows_hide_flags(),
+            )
+            output = (
+                (r.stdout or "")
+                + ("\n" if r.stdout and r.stderr else "")
+                + (r.stderr or "")
+            ).strip()[:4000]
+            if output:
+                from agent.redact import redact_sensitive_text
+                output = redact_sensitive_text(output)
+            if r.returncode != 0:
+                return _err(
+                    rid,
+                    4018,
+                    output or f"quick command failed with exit code {r.returncode}",
+                )
+            return _ok(rid, {"type": "exec", "output": output})
+        if qc.get("type") == "alias":
+            return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
+
+    try:
+        from hermes_cli.plugins import (
+            get_plugin_command_handler,
+            resolve_plugin_command_result,
+        )
+
+        handler = get_plugin_command_handler(name)
+        if handler:
+            result = resolve_plugin_command_result(handler(arg))
+            return _ok(rid, {"type": "plugin", "output": str(result or "")})
+    except Exception:
+        pass
+
+    try:
+        from agent.skill_bundles import (
+            build_bundle_invocation_message,
+            get_skill_bundles,
+            resolve_bundle_command_key,
+        )
+
+        from hermes_cli.commands import resolve_command
+
+        bundle_key = (
+            resolve_bundle_command_key(name)
+            if resolve_command(name) is None
+            else None
+        )
+    except Exception:
+        bundle_key = None
+
+    if bundle_key is not None:
+        try:
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                arg,
+                task_id=session.get("session_key", "") if session else "",
+                platform=_resolve_session_platform(),
+            )
+        except Exception as exc:
+            return _err(rid, 4018, f"bundle dispatch failed: {exc}")
+
+        if not bundle_result:
+            return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
+
+        msg, loaded_names, missing = bundle_result
+        bundle_info = get_skill_bundles().get(bundle_key, {})
+        bundle_name = bundle_info.get("name", bundle_key.lstrip("/"))
+        notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded_names)} skills)"
+        if missing:
+            notice += f"\nSkipped missing skills: {', '.join(missing)}"
+        return _ok(
+            rid,
+            {
+                "type": "send",
+                "message": msg,
+                "notice": notice,
+                # UIs render this, never `message` — the expanded bundle body
+                # is model-facing scaffolding (see _skill_scaffold_projection).
+                "display": _skill_scaffold_projection(msg),
+            },
+        )
+
+    try:
+        from agent.skill_commands import (
+            scan_skill_commands,
+            build_skill_invocation_message,
+        )
+
+        cmds = scan_skill_commands()
+        key = f"/{name}"
+        if key in cmds:
+            msg = build_skill_invocation_message(
+                key, arg, task_id=session.get("session_key", "") if session else ""
+            )
+            if msg:
+                return _ok(
+                    rid,
+                    {
+                        "type": "skill",
+                        "message": msg,
+                        "name": cmds[key].get("name", name),
+                        # UIs render this, never `message` — the expanded skill
+                        # body is model-facing scaffolding.
+                        "display": _skill_scaffold_projection(msg),
+                    },
+                )
+    except Exception:
+        pass
+
+    # ── Commands that queue messages onto _pending_input in the CLI ───
+    # In the TUI the slash worker subprocess has no reader for that queue,
+    # so we handle them here and return a structured payload.
+
+    if name in {"queue", "q"}:
+        if not arg:
+            return _err(rid, 4004, "usage: /queue <prompt>")
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "learn":
+        # Open-ended: build the standards-guided prompt and submit it as a
+        # normal agent turn. The live agent gathers whatever the user
+        # described (dirs, URLs, this conversation, pasted text) with its own
+        # tools and authors the skill via skill_manage. Works on any backend.
+        from agent.learn_prompt import build_learn_prompt
+
+        return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "init":
+        # Generate-or-update AGENTS.md: build the guidance-laden prompt and
+        # submit it as a normal agent turn (same pattern as /learn). The live
+        # agent scans the project with its own read-only tools and writes or
+        # merge-updates AGENTS.md via write_file. Works on any backend.
+        from hermes_cli.init_command import build_init_prompt_for_cwd
+
+        return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(extra=arg)})
+    if name == "moa":
+        # /moa is one-shot sugar only: run a single prompt through the default
+        # MoA preset, then restore the prior model. To *switch* to a MoA preset
+        # for the rest of the session, pick it from the model picker (MoA
+        # presets surface as a virtual "Mixture of Agents" provider).
+        try:
+            from hermes_cli.moa_config import moa_usage, normalize_moa_config
+
+            if not arg:
+                return _err(rid, 4004, moa_usage())
+            if not session:
+                return _err(rid, 4001, "no active session")
+            sid = params.get("session_id", "")
+            moa_cfg = normalize_moa_config(_load_cfg().get("moa") or {})
+            preset = moa_cfg["default_preset"]
+            # Record the live model identity so it can be restored after the
+            # one-shot turn, then swap the agent's client in place (#53444:
+            # setting session["model_override"] alone never switched the
+            # already-built agent, so the turn silently ran on the old model).
+            agent = session.get("agent")
+            session["moa_one_shot_restore"] = {
+                "override": session.get("model_override"),
+                "model": getattr(agent, "model", None) if agent else None,
+                "provider": getattr(agent, "provider", None) if agent else None,
+            }
+            if agent is not None:
+                # Live agent: swap its client in place so THIS turn runs MoA.
+                try:
+                    _apply_model_switch(
+                        sid,
+                        session,
+                        f"{preset} --provider moa",
+                        confirm_expensive_model=False,
+                        pin_session_override=True,
+                        # One-shot turn-scoped swap — never persist the MoA
+                        # virtual provider to config.yaml.
+                        persist_override=False,
+                    )
+                except Exception as exc:
+                    session.pop("moa_one_shot_restore", None)
+                    return _err(rid, 5030, f"moa unavailable: {exc}")
+            else:
+                # No agent built yet (lazy/fresh session): the override is
+                # consumed by the first build, so the turn runs MoA without an
+                # in-place switch.
+                session["model_override"] = {
+                    "provider": "moa",
+                    "model": preset,
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                }
+            return _ok(
+                rid,
+                {
+                    "type": "send",
+                    "notice": f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn.",
+                    "message": arg,
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5030, f"moa unavailable: {exc}")
+
+    if name == "focus":
+        # /focus is display-only. Route it through the same config.set branch the
+        # Ink TUI slash command uses so both surfaces share one state machine and
+        # one persistence path. Returns a plain notice line for the transcript.
+        from hermes_cli.focus_view import (
+            format_focus_status,
+            format_focus_toggle_message,
+            resolve_focus_arg,
+        )
+
+        _display_focus = _load_cfg().get("display")
+        _d_focus: dict = _display_focus if isinstance(_display_focus, dict) else {}
+        _cur_focus = bool(_d_focus.get("focus_view", False))
+        _action, _target = resolve_focus_arg(arg, _cur_focus)
+        if _action == "usage":
+            return _err(rid, 4004, "usage: /focus [on|off|status]")
+        if _action == "status":
+            _saved = _d_focus.get("focus_saved_tool_progress") or _load_tool_progress_mode()
+            return _ok(
+                rid,
+                {"type": "exec", "output": format_focus_status(_cur_focus, _saved)},
+            )
+        _res = _methods["config.set"](
+            rid,
+            {
+                "key": "focus",
+                "value": "on" if _target else "off",
+                "session_id": params.get("session_id", ""),
+            },
+        )
+        if "error" in _res:
+            return _res
+        _payload = _res.get("result") or {}
+        return _ok(
+            rid,
+            {
+                "type": "exec",
+                "output": format_focus_toggle_message(
+                    bool(_target), _payload.get("tool_progress") or "all"
+                ),
+            },
+        )
+
+    if name == "retry":
+        if not session:
+            return _err(rid, 4001, "no active session to retry")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /retry"
+            )
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            user_originated_turn_view,
+        )
+
+        with session["history_lock"]:
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /retry",
+                )
+            if session.get("attached_images"):
+                return _err(
+                    rid,
+                    4018,
+                    "retry cannot safely reconstruct or combine attached media",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no previous user message to retry")
+            _prefix, live_view = history_before_user_originated_turn(
+                history, user_indices[-1]
+            )
+            try:
+                content = retryable_user_text(live_view.get("content"))
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            try:
+                _active, durable_live_view, _rewound_count = (
+                    _rewind_active_session_history(
+                        session,
+                        len(user_indices) - 1,
+                        require_retryable=True,
+                    )
+                )
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            except Exception as exc:
+                return _err(rid, 5008, f"retry: failed to persist history: {exc}")
+            content = retryable_user_text(durable_live_view.get("content"))
+        return _ok(rid, {"type": "send", "message": content})
+
+    if name == "steer":
+        if not arg:
+            return _err(rid, 4004, "usage: /steer <prompt>")
+        agent = session.get("agent") if session else None
+        if agent and hasattr(agent, "steer"):
+            try:
+                accepted = agent.steer(arg)
+                if accepted:
+                    return _ok(
+                        rid,
+                        {
+                            "type": "exec",
+                            "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}",
+                        },
+                    )
+            except Exception:
+                pass
+        # Fallback: no active run, treat as next-turn message
+        return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "goal":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            return _err(rid, 5030, f"goals unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        try:
+            goals_cfg = _load_cfg().get("goals") or {}
+            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+        except Exception:
+            max_turns = 20
+        mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
+
+        lower = arg.strip().lower()
+        if not arg.strip() or lower == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            # Resume must restart work, not just flip persisted state
+            # (#75362). An `exec` result is display-only — nothing would
+            # re-enter the conversation loop until the user typed another
+            # message. Return a `send` dispatch carrying the canonical
+            # continuation prompt so the client fires the next turn
+            # immediately; `display` keeps the transcript showing the
+            # concise invocation instead of the model-facing scaffolding.
+            prompt = mgr.next_continuation_prompt()
+            notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
+            if not prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
+            return _ok(
+                rid,
+                {
+                    "type": "send",
+                    "notice": notice,
+                    "message": prompt,
+                    "display": "/goal resume",
+                },
+            )
+        if lower in {"clear", "stop", "done"}:
+            had = mgr.has_goal()
+            mgr.clear()
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "✓ Goal cleared." if had else "No active goal.",
+                },
+            )
+
+        # Otherwise — treat the remaining text as the new goal.
+        try:
+            state = mgr.set(arg)
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid goal: {exc}")
+
+        notice = (
+            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+        )
+        # Send the goal text as the kickoff prompt. The TUI client sees
+        # {type: send, notice, message} → renders `notice` as a sys line,
+        # then submits `message` as a user turn. The post-turn judge
+        # wired in _run_prompt_submit takes over from there.
+        return _ok(
+            rid,
+            {"type": "send", "notice": notice, "message": state.goal},
+        )
+
+    if name == "loop":
+        # /loop — recurring in-session wakeups (Claude Code parity). State
+        # mutation via the shared dispatcher; the notification poller thread
+        # fires due wakeups into this session while it's idle.
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.loops import LoopManager, dispatch_loop_command
+        except Exception as exc:
+            return _err(rid, 5030, f"loops unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        mgr = LoopManager(session_id=sid_key)
+        result = dispatch_loop_command(mgr, arg)
+        output = result.get("output") or ""
+        if result.get("created"):
+            try:
+                from hermes_cli.loops import goal_blocks_loop_tick
+
+                if goal_blocks_loop_tick(sid_key):
+                    output += (
+                        "\nNote: an active /goal is driving this session — loop "
+                        "wakeups defer until the goal finishes, pauses, or parks."
+                    )
+            except Exception:
+                pass
+        return _ok(rid, {"type": "exec", "output": output})
+
+    if name == "undo":
+        # /undo [N]: back up N user turns (default 1), soft-delete the
+        # truncated rows on disk, and prefill the composer with the text
+        # of the user message we backed up to so it can be edited and
+        # resubmitted. N=1 is the Claude-Code-style single-step undo;
+        # /undo 3 backs up three user turns at once. See issue #21910.
+        if not session:
+            return _err(rid, 4001, "no active session to undo")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /undo"
+            )
+        session_key = session.get("session_key", "")
+        if not session_key:
+            return _err(rid, 4001, "no session key for undo")
+        # Parse the optional count argument (e.g. "/undo 3" → 3).
+        n = 1
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                n = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+        if n < 1:
+            n = 1
+        from agent.context_compressor import (
+            user_originated_turn_view,
+        )
+        from agent.message_content import flatten_message_text
+
+        with session["history_lock"]:
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /undo",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no user messages to undo")
+            turns_undone = min(n, len(user_indices))
+            target_position = len(user_indices) - turns_undone
+            try:
+                active, live_view, rewound_count = _rewind_active_session_history(
+                    session, target_position
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"undo: {exc}")
+            except Exception as exc:
+                return _err(rid, 5008, f"undo: {exc}")
+            target_text = flatten_message_text(live_view.get("content"))
+        # Notify memory providers — same hook /branch fires, plus the
+        # rewound flag so providers caching per-turn document state
+        # know to invalidate. See #6672 + #21910.
+        agent = session.get("agent")
+        if agent is not None:
+            mm = getattr(agent, "_memory_manager", None)
+            if mm is not None:
+                try:
+                    mm.on_session_switch(
+                        session_key,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+                except Exception:
+                    pass
+            if hasattr(agent, "_invalidate_system_prompt"):
+                try:
+                    agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(agent, "_last_flushed_db_idx"):
+                try:
+                    agent._last_flushed_db_idx = len(active)
+                except Exception:
+                    pass
+        turn_word = "turn" if turns_undone == 1 else "turns"
+        notice = (
+            f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). "
+            "Edit and resubmit, or send a new message."
+        )
+        return _ok(
+            rid,
+            {"type": "prefill", "message": target_text, "notice": notice},
+        )
+
+    if name in {"snapshot", "snap"}:
+        subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
+        if subcommand in {"restore", "rewind"}:
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": (
+                        "/snapshot restore is blocked in the TUI because it changes "
+                        "config/state on disk while the live agent has cached settings. "
+                        "Run it in the classic CLI, then restart the TUI."
+                    ),
+                },
+            )
+
+    if name in {"compress", "compact"}:
+        if not session:
+            return _err(rid, 4001, "no active session to compress")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /compress"
+            )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
+
+        sid = params.get("session_id", "")
+        if _session_uses_compute_host(session):
+            command = f"/{name}" + (f" {arg}" if arg else "")
+            try:
+                ack = _send_compute_host_control(
+                    sid,
+                    route_name="slash.compress",
+                    command=command,
+                    wait=True,
+                )
+            except Exception as exc:
+                return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")
+            if ack.get("type") in {"control.error", "error"}:
+                return _err(
+                    rid,
+                    4009,
+                    str(ack.get("message") or "compute-host slash.compress failed"),
+                )
+            _apply_compute_host_metadata_mirror(session, ack)
+            return _ok(
+                rid,
+                {"type": "exec", "output": str(ack.get("output") or "")},
+            )
+        try:
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            with session["history_lock"]:
+                before_messages = list(session.get("history", []))
+                history_version = int(session.get("history_version", 0))
+            before_count = len(before_messages)
+            _agent = session["agent"]
+            _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(_agent, "tools", None) or None
+            before_tokens = (
+                estimate_request_tokens_rough(
+                    before_messages, system_prompt=_sys_prompt, tools=_tools
+                )
+                if before_count
+                else 0
+            )
+            removed, usage = _compress_session_history(
+                session,
+                arg.strip() or None,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
+            )
+            with session["history_lock"]:
+                after_messages = list(session.get("history", []))
+            after_count = len(after_messages)
+            _sys_prompt_after = (
+                getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            )
+            _tools_after = getattr(_agent, "tools", None) or _tools
+            after_tokens = (
+                estimate_request_tokens_rough(
+                    after_messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_count
+                else 0
+            )
+            _sync_session_key_after_compress(sid, session)
+            summary = summarize_manual_compression(
+                before_messages,
+                after_messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(_agent, "context_compressor", None),
+            )
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
+            finalize_context_engine_compression_notification(
+                _agent,
+                committed=True,
+            )
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "\n".join(
+                        filter(None, [summary["headline"], summary["token_line"], summary.get("note")])
+                    ),
+                },
+            )
+        except CompressionLockHeld as e:
+            # Lock-skip is a clean no-op, not a failure: report it as
+            # normal command output (matching the slash-mirror and
+            # session.compress RPC), never as a "compress failed" error.
+            # _compress_session_history already discarded the deferred
+            # context-engine notification before raising.
+            from agent.manual_compression_feedback import (
+                describe_compression_lock_skip,
+            )
+            return _ok(
+                rid,
+                {"type": "exec", "output": describe_compression_lock_skip(e.holder)},
+            )
+        except Exception as exc:
+            finalize_context_engine_compression_notification(
+                session["agent"],
+                committed=False,
+            )
+            return _err(rid, 5009, f"compress failed: {exc}")
+
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
@@ -948,20 +1614,40 @@ def _(rid, params: dict, session) -> dict:
     if not file_path and session.get("running"):
         return _err(rid, 4009, busy_message("rollback restore"))
 
-    def go(mgr, cwd):
-        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
-        if result.get("success") and not file_path:
-            removed = 0
-            with session["history_lock"]:
-                _history, user_indices = _user_turn_indices(session)
-                if user_indices:
-                    try:
-                        removed = _rewind_active_session_history(session, len(user_indices) - 1)[2]
-                    except Exception as exc:
-                        raise RuntimeError(f"checkpoint restored, but session history rewind failed: {exc}") from exc
-            result["history_removed"] = removed
-        return result
-    return _ok(rid, _with_checkpoints(session, go))
+        def go(mgr, cwd):
+            resolved = _resolve_checkpoint_hash(mgr, cwd, target)
+            result = mgr.restore(cwd, resolved, file_path=file_path or None)
+            if result.get("success") and not file_path:
+                removed = 0
+                with session["history_lock"]:
+                    history = _history_without_ephemeral_scaffolding(
+                        session.get("history", [])
+                    )
+                    from agent.context_compressor import user_originated_turn_view
+
+                    user_indices = [
+                        index
+                        for index, message in enumerate(history)
+                        if user_originated_turn_view(message) is not None
+                    ]
+                    if user_indices:
+                        try:
+                            _active, _live_view, removed = (
+                                _rewind_active_session_history(
+                                    session, len(user_indices) - 1
+                                )
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "checkpoint restored, but session history rewind "
+                                f"failed: {exc}"
+                            ) from exc
+                result["history_removed"] = removed
+            return result
+
+        return _ok(rid, _with_checkpoints(session, go))
+    except Exception as e:
+        return _err(rid, 5021, str(e))
 
 
 @_rpc("rollback.diff", live_session=True, fail_code=5022)
@@ -1076,26 +1762,88 @@ def _(rid, params: dict) -> dict:
     """cronjob() keys off HERMES_HOME, so ``profile`` reaches a per-profile cron store."""
     cronjob = _tools_mod("tools.cronjob_tools").cronjob
     action, jid = params.get("action", "list"), params.get("name", "")
-    if action == "list":
-        # Paused jobs are excluded by default (reads as deletion in a toggle UI) — forward the flag.
-        include_disabled = is_truthy_value(params.get("include_disabled", False))
-        result = json.loads(cronjob(action="list", include_disabled=include_disabled))
-        # ``scoped`` proves the profile scope was honored; older gateways omit it and clients
-        # keep the safe [bot:<name>] filter.
-        if profile := _str_arg(params, "profile"):
-            result["scoped"] = profile
-        return _ok(rid, result)
-    if action == "add":
-        # Optional repeat / continuity / deliver ('bot-chat[:name]'): None keeps each cronjob() default.
-        raw = cronjob(
-            action="create", name=jid, schedule=params.get("schedule", ""), prompt=params.get("prompt", ""),
-            repeat=int(params["repeat"]) if str(params.get("repeat", "")).strip().isdigit() else None,
-            continuity=is_truthy_value(params.get("continuity")) if params.get("continuity") is not None else None,
-            deliver=_str_arg(params, "deliver") or None)
-        return _ok(rid, json.loads(raw))
-    if action in {"remove", "pause", "resume"}:
-        return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
-    return _err(rid, 4016, f"unknown cron action: {action}")
+    # Optional profile scoping: cronjob() keys off HERMES_HOME, so scoping the
+    # env override lets a per-profile cron store be listed/mutated even when
+    # that profile runs a separate gateway. Omitted/None = the launch profile.
+    # Mirrors ``skills.manage`` / ``mcp.catalog``.
+    profile = str(params.get("profile") or "").strip()
+    token = None
+    if profile:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            from hermes_constants import set_hermes_home_override
+
+            profile_dir = get_profile_dir(profile)
+            if not profile_dir or not profile_dir.is_dir():
+                return _err(rid, 4064, f"profile '{profile}' not found")
+            token = set_hermes_home_override(str(profile_dir))
+        except Exception as e:
+            return _err(rid, 5023, str(e))
+    try:
+        from tools.cronjob_tools import cronjob
+
+        if action == "list":
+            # Paused jobs are excluded by default, which reads as deletion in
+            # any UI with an enable/disable toggle — forward the flag.
+            result = json.loads(
+                cronjob(
+                    action="list",
+                    include_disabled=is_truthy_value(params.get("include_disabled", False)),
+                )
+            )
+            # This marker proves the gateway honored the optional profile
+            # scope. New clients may therefore treat every returned job as
+            # owned by that profile; older gateways omit it, preserving the
+            # safe [bot:<name>] compatibility filter.
+            if profile:
+                result["scoped"] = profile
+            return _ok(rid, result)
+        if action == "add":
+            return _ok(
+                rid,
+                json.loads(
+                    cronjob(
+                        action="create",
+                        name=jid,
+                        schedule=params.get("schedule", ""),
+                        prompt=params.get("prompt", ""),
+                        # Optional repeat cap ("run N times"); None keeps the
+                        # schedule-kind default (once for one-shot, forever
+                        # for recurring).
+                        repeat=(
+                            int(params["repeat"])
+                            if str(params.get("repeat", "")).strip().isdigit()
+                            else None
+                        ),
+                        # Optional continuity toggle: the job's own previous
+                        # output is injected into each run (stored as the
+                        # reserved "self" entry in context_from).
+                        continuity=(
+                            is_truthy_value(params.get("continuity"))
+                            if params.get("continuity") is not None
+                            else None
+                        ),
+                        # Optional delivery target — notably 'bot-chat[:name]'
+                        # (canonical Bot Chat injection) from the Desktop Bot
+                        # Mode cronjob dialog. Omitted/empty keeps the
+                        # cronjob() default.
+                        deliver=(str(params.get("deliver") or "").strip() or None),
+                    )
+                ),
+            )
+        if action in {"remove", "pause", "resume"}:
+            return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
+        return _err(rid, 4016, f"unknown cron action: {action}")
+    except Exception as e:
+        return _err(rid, 5023, str(e))
+    finally:
+        if token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(token)
+            except Exception:
+                pass
 
 
 @_rpc("learning.frames", 5000, "learning.frames failed: ")
@@ -1456,11 +2204,161 @@ _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install":
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
 def _(rid, params: dict) -> dict:
-    """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
-    ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
-    ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
-    return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
+    try:
+        from agent.skill_commands import reload_skills
+
+        result = reload_skills()
+        added = result.get("added") or []
+        removed = result.get("removed") or []
+        total = int(result.get("total") or 0)
+
+        lines = ["Reloading skills..."]
+        if not added and not removed:
+            lines.append("No new skills detected.")
+        if added:
+            lines.append("Added skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in added)
+        if removed:
+            lines.append("Removed skills:")
+            lines.extend(f"  - {item.get('name', '')}" for item in removed)
+        lines.append(f"{total} skill(s) available")
+        return _ok(rid, {"output": "\n".join(lines), "result": result})
+    except Exception as e:
+        return _err(rid, 5025, str(e))
+
+
+@method("plugins.manage")
+def _(rid, params: dict) -> dict:
+    """List installed plugins with activation state, or toggle one on/off.
+
+    Backs the TUI Plugins Hub. Uses the same disk-discovery + enable/disable
+    primitives as ``hermes plugins`` / the dashboard, so the three surfaces
+    agree on what's installed and what's enabled.
+
+    Actions:
+      - ``list``   → {"plugins": [{name, key, version, description, source,
+                       status, portable}], "user_count": N, "bundled_count": M}
+      - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
+                       Returns the refreshed row plus {"ok", "unchanged"}.
+      - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
+                       Params: ``identifier`` or ``repo``, optional ``force``,
+                       ``enable`` (default True). Returns dashboard install dict.
+
+    Accepts an optional ``profile`` param (same contract as mcp.servers.*):
+    plugins live under each profile's HERMES_HOME, so a client can list or
+    toggle another profile's plugins without switching the whole app.
+    """
+    action = params.get("action", "list")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.plugins_cmd import (
+            _bundled_default_on,
+            _discover_all_plugins,
+            _get_disabled_set,
+            _get_enabled_set,
+            _is_portable_plugin_dir,
+            _plugin_status,
+        )
+
+        def _rows():
+            enabled = _get_enabled_set()
+            disabled = _get_disabled_set()
+            out = []
+            for name, version, desc, source, _dir, key in sorted(
+                _discover_all_plugins()
+            ):
+                status = _plugin_status(name, enabled, disabled, key=key)
+                # Bundled backends/platforms/providers are active without an
+                # explicit enable (they "just work" — plugins.py). Reporting
+                # them "not enabled" reads as OFF in clients when they are in
+                # fact running; surface the truthful default instead.
+                if (
+                    status == "not enabled"
+                    and source == "bundled"
+                    and _bundled_default_on(_dir)
+                ):
+                    status = "enabled"
+                out.append(
+                    {
+                        "name": name,
+                        # Canonical registry key (e.g. ``image_gen/fal``). Names
+                        # can collide across category dirs — both fal backends
+                        # are named "fal" — so toggles must address the key.
+                        "key": key,
+                        "version": str(version or ""),
+                        "description": desc or "",
+                        "source": source,
+                        "status": status,
+                        # Agent Plugins v1 package (plugin.json — the portable
+                        # skills/MCP format) vs a native Hermes plugin.
+                        "portable": _is_portable_plugin_dir(_dir),
+                    }
+                )
+            return out
+
+        if action == "list":
+            rows = _rows()
+            user_count = sum(1 for r in rows if r["source"] != "bundled")
+            return _ok(
+                rid,
+                {
+                    "plugins": rows,
+                    "user_count": user_count,
+                    "bundled_count": len(rows) - user_count,
+                },
+            )
+
+        if action == "toggle":
+            from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+            # Prefer the canonical key — bare names are ambiguous when two
+            # category plugins share one (image_gen/fal vs video_gen/fal).
+            ident = (params.get("key") or params.get("name") or "").strip()
+            if not ident:
+                return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
+            enable = bool(params.get("enable"))
+            result = dashboard_set_agent_plugin_enabled(ident, enabled=enable)
+            if not result.get("ok"):
+                return _err(rid, 5026, result.get("error") or "toggle failed")
+            row = next(
+                (r for r in _rows() if ident in (r["key"], r["name"])), None
+            )
+            return _ok(
+                rid,
+                {
+                    "ok": True,
+                    "unchanged": bool(result.get("unchanged")),
+                    "name": ident,
+                    "plugin": row,
+                },
+            )
+
+        if action == "install":
+            from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+            ident = (
+                params.get("identifier") or params.get("repo") or ""
+            ).strip()
+            if not ident:
+                return _err(
+                    rid, 4019, "plugins.install requires 'identifier' or 'repo'"
+                )
+            result = dashboard_install_plugin(
+                ident,
+                force=bool(params.get("force")),
+                enable=params.get("enable", True),
+            )
+            if not result.get("ok"):
+                return _err(rid, 5026, result.get("error") or "install failed")
+            return _ok(rid, result)
+
+        return _err(rid, 4017, f"unknown plugins action: {action}")
+    except Exception as e:
+        return _err(rid, 5026, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
 @method("shell.exec")

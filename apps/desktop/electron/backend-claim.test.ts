@@ -66,12 +66,9 @@ test('processStartMarker resolves a real marker for the current process', async 
   assert.match(marker, /^(linux|win|winms|ps):.+/)
 })
 
-test('a missing PID is classified as ESRCH so reapOrphans can drop the record', async () => {
+test('processStartMarker rejects for a PID that does not exist', async () => {
   // Largest PIDs are bounded well below this on every supported platform.
-  // Windows Get-Process / macOS `ps -p` used to surface exit code 1, which
-  // the identity matchers treated as "unknown" and kept forever. The native
-  // gate throws ESRCH — the errno those catch blocks already map to gone.
-  await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
+  await assert.rejects(processStartMarker(2 ** 30 + 12345))
 })
 
 // --- PID-only marker helpers --------------------------------------------------

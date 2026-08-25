@@ -31,7 +31,14 @@ FLY_API_SOCKET = "/.fly/api"
 # its own signed credential in the query string, like GATEWAY_RELAY_WAKE_URL.
 SLEEP_URL_ENV = "GATEWAY_RELAY_SLEEP_URL"
 
-_malformed_sleep_url_logged = False
+# config.yaml default (D2). Behavioural setting -> config, not env.
+# 2 minutes: with the gateway owning the suspend (idle predicate covers agent
+# turns, cron, API runs, and background work; the relay drains + flips before
+# the freeze), a short window is safe — real work always blocks the suspend and
+# resume-from-suspend is sub-second, so the only cost of waking "too eagerly"
+# after a quiet spell is a Fly-proxied poke away. Longer windows just bill idle
+# RAM. Raise per-instance via gateway.scale_to_zero.idle_timeout_minutes.
+DEFAULT_IDLE_TIMEOUT_MINUTES = 2
 
 # Short is safe: real work always blocks the suspend, resume is sub-second; longer bills idle RAM.
 DEFAULT_IDLE_TIMEOUT_MINUTES = 2
@@ -79,34 +86,27 @@ def should_arm(*, enabled: bool, relay_only_or_absent: bool, wake_url: Optional[
     return bool(enabled) and bool(relay_only_or_absent) and bool(wake_url)
 
 
-def is_idle(*, active_work_count: int, seconds_since_last_inbound: float,
-            idle_timeout_seconds: float, has_live_background_work: bool) -> bool:
-    """Pure idle predicate: no active work, no inbound within the window, no live background work.
-    ``active_work_count`` is the BROAD aggregate (agent turns + cron + API runs) — passing only
-    ``len(_running_agents)`` reopens the mid-cron-job suspend hole. Callers that cannot read a
-    work source must fail AWAKE (pass a positive sentinel), never fail to 0."""
-    return (active_work_count <= 0 and not has_live_background_work
-            and seconds_since_last_inbound >= idle_timeout_seconds)
+def is_idle(
+    *,
+    active_work_count: int,
+    seconds_since_last_inbound: float,
+    idle_timeout_seconds: float,
+    has_live_background_work: bool,
+) -> bool:
+    """The idle predicate (D2/D3/F7). Pure — composes the three conjuncts.
 
+    Idle iff: no counted active work (in-flight agent turns + cron jobs +
+    API-server runs — the caller aggregates every foreground work source),
+    no inbound within the timeout window, and no live background work
+    (backgrounded delegate_task / kanban / bg terminal). Any active work
+    keeps the gateway awake — suspending mid-flight would lose it.
 
-def dashboard_client_heartbeat_path(hermes_home: Optional[os.PathLike | str] = None):
-    """Path of the dashboard-client liveness marker under HERMES_HOME."""
-    if hermes_home is None:
-        from hermes_constants import get_hermes_home
-        hermes_home = get_hermes_home()
-    return Path(hermes_home) / DASHBOARD_CLIENT_HEARTBEAT_REL
-
-
-def touch_dashboard_client_heartbeat(path: Optional[os.PathLike | str] = None) -> bool:
-    """Mark "a dashboard client is attached right now". Best-effort, never raises."""
-    try:
-        p = dashboard_client_heartbeat_path() if path is None else path
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(p, "a", encoding="utf-8").close()
-        os.utime(p, None)
-        return True
-    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
-        logger.debug("scale-to-zero: dashboard heartbeat touch failed", exc_info=True)
+    ``active_work_count`` deliberately names the BROAD aggregate, not just
+    agents: a caller passing only ``len(_running_agents)`` reopens the
+    mid-cron-job suspend hole. Callers that cannot read a work source must
+    fail AWAKE (pass a positive sentinel), never fail to 0.
+    """
+    if active_work_count > 0:
         return False
 
 

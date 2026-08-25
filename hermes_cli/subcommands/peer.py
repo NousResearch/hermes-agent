@@ -121,8 +121,11 @@ def _ensure_bot_chat(base: str, key: str) -> str:
         return existing
     try:
         created = _request(
-            f"{base}/api/sessions", key, method="POST",
-            body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"})
+            f"{base}/api/sessions",
+            key,
+            method="POST",
+            body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"},
+        )
     except urllib.error.HTTPError as exc:
         detail = _http_error_detail(exc)
         if exc.code == 400 and "title" in detail.lower():
@@ -133,7 +136,8 @@ def _ensure_bot_chat(base: str, key: str) -> str:
                 f"Peer already has a '{BOT_CHAT_TITLE}' session but it is hidden and the "
                 f"peer's gateway is too old to expose hidden sessions to this lookup "
                 f"(HTTP 400: {detail}). Update the peer's hermes-agent, or unhide the "
-                f"session there: PATCH /api/sessions/<id> {{\"hidden\": false}}.") from exc
+                f"session there: PATCH /api/sessions/<id> {{\"hidden\": false}}."
+            ) from exc
         raise
     # Real api_server wraps the row: {"object": "hermes.session", "session": {...}}.
     session = created.get("session") if isinstance(created.get("session"), dict) else created
@@ -367,28 +371,114 @@ _REGISTRY_ACTIONS = {
 
 def cmd_peer(args) -> int:
     action = getattr(args, "peer_action", None)
-    if action in _REGISTRY_ACTIONS:
-        return _REGISTRY_ACTIONS[action](args)
-    if action not in {"dm", "run", "status", "stop"}:
-        print("Unknown peer action. See: hermes peer --help", file=sys.stderr)
-        return 2
-    try:
-        peer_name, profile, peer, key = _resolve_peer_target(args.target)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    except (LookupError, PermissionError) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    base = _base_url(peer, profile)
-    if action in {"status", "stop"}:
-        return _peer_run_ctl(args, action, peer_name, profile, base, key)
-    message = _message_from_args(args)
-    if not message:
-        print("Message required (argument or stdin).", file=sys.stderr)
-        return 2
-    handler = _peer_run if action == "run" else _peer_dm
-    return handler(args, message, peer_name, profile, base, key)
+
+    if action in ("add", "set"):
+        name = (args.name or "").strip().lower()
+        if not _PEER_NAME_RE.match(name):
+            print(f"Invalid peer name: {name!r} (lowercase, digits, -, _; max 64)", file=sys.stderr)
+            return 2
+        url = (args.url or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            print("Peer --url must be an http(s) gateway base URL, e.g. http://spark.lan:8377", file=sys.stderr)
+            return 2
+        peers = _load_peers()
+        peers[name] = {"url": url.rstrip("/"), **({"note": args.note.strip()} if getattr(args, "note", "") else {})}
+        _save_peers(peers)
+        key = (getattr(args, "key", "") or "").strip()
+        if key:
+            from hermes_cli.config import save_env_value
+
+            save_env_value(_peer_key_env(name), key)
+            print(f"Peer '{name}' saved ({url}) — key stored as {_peer_key_env(name)} in ~/.hermes/.env")
+        else:
+            print(
+                f"Peer '{name}' saved ({url}). No key given — set the peer's API_SERVER_KEY with:\n"
+                f"  hermes peer add {name} --url {url} --key <key>\n"
+                f"  (or add {_peer_key_env(name)}=<key> to ~/.hermes/.env)"
+            )
+        return 0
+
+    if action in ("remove", "rm"):
+        name = (args.name or "").strip().lower()
+        peers = _load_peers()
+        if name not in peers:
+            print(f"No peer named '{name}'.", file=sys.stderr)
+            return 1
+        peers.pop(name)
+        _save_peers(peers)
+        print(f"Peer '{name}' removed (its {_peer_key_env(name)} entry in .env is kept; delete it manually if unused).")
+        return 0
+
+    if action in ("list", "ls", None):
+        peers = _load_peers()
+        if not peers:
+            print("No peers registered. Add one: hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>")
+            return 0
+        for name in sorted(peers):
+            entry = peers[name] if isinstance(peers[name], dict) else {}
+            has_key = "key set" if _peer_secret(name) else f"NO KEY ({_peer_key_env(name)} unset)"
+            note = f" — {entry.get('note')}" if entry.get("note") else ""
+            print(f"{name}\t{entry.get('url', '?')}\t[{has_key}]{note}")
+        return 0
+
+    if action == "dm":
+        try:
+            peer_name, profile = _parse_target(args.target)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        peers = _load_peers()
+        peer = peers.get(peer_name)
+        if not isinstance(peer, dict) or not peer.get("url"):
+            print(f"No peer named '{peer_name}'. Run: hermes peer list", file=sys.stderr)
+            return 1
+        key = _peer_secret(peer_name)
+        if not key:
+            print(
+                f"No API key for peer '{peer_name}'. Set it: hermes peer add {peer_name} "
+                f"--url <url> --key <key> (or add {_peer_key_env(peer_name)}=<key> to ~/.hermes/.env)",
+                file=sys.stderr,
+            )
+            return 1
+        message = (args.message or "").strip()
+        if not message and not sys.stdin.isatty():
+            message = sys.stdin.read().strip()
+        if not message:
+            print("Message required (argument or stdin).", file=sys.stderr)
+            return 2
+
+        base = _base_url(peer, profile)
+        try:
+            session_id = _ensure_bot_chat(base, key)
+            result = _request(
+                f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat",
+                key,
+                method="POST",
+                body={"message": message},
+                timeout=DM_TIMEOUT_S,
+            )
+        except urllib.error.HTTPError as exc:
+            print(f"Peer '{peer_name}' rejected the request (HTTP {exc.code}): {_http_error_detail(exc)}", file=sys.stderr)
+            return 1
+        except RuntimeError as exc:
+            print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
+            return 1
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"Could not reach peer '{peer_name}': {exc}", file=sys.stderr)
+            return 1
+
+        reply = ""
+        msg = result.get("message")
+        if isinstance(msg, dict):
+            reply = str(msg.get("content") or "")
+        if getattr(args, "json", False):
+            print(json.dumps({"peer": peer_name, "profile": profile, "session_id": result.get("session_id") or session_id, "reply": reply}))
+        else:
+            print(reply or "(no reply)")
+        return 0
+
+    print("Unknown peer action. See: hermes peer --help", file=sys.stderr)
+    return 2
 
 
 def build_peer_parser(subparsers) -> None:

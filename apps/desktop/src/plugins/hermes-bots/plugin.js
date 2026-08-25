@@ -402,7 +402,6 @@ function fallbackFocusedBotOwner(profile = $focusedBotProfile.get?.()) {
   }
 }
 
-const hasFocusedSessionOwnerSupport = Boolean(host.state.focusedSessionOwner)
 const $focusedBotOwner = host.state.focusedSessionOwner || {
   get: () => fallbackFocusedBotOwner(),
   listen: listener => {
@@ -11280,19 +11279,24 @@ function bindProfileSync(ownerStore) {
 }
 
 function resolveRoutineOwner(roster, focusedOwner, selected) {
-  if (hasFocusedSessionOwnerSupport && !focusedOwner) {
-    return null
-  }
-
+  // A null focused owner is NOT a failure: the SDK fails closed to null
+  // whenever the focused session has no unique bot owner (a normal chat,
+  // ambiguous owner hints) — the common case while the user browses the
+  // Bots pane. Fall through to the roster-clicked bot (the previously
+  // working scope) instead of dead-ending the pane on the unavailable
+  // placeholder for every agent (#94516).
+  const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
   const focusedBot = focusedOwner
     ? roster.find(bot => isActiveRosterBot(bot, focusedOwner))
     : null
 
   if (focusedOwner?.authoritative) {
+    // An authoritative focused owner wins, but only through its exact roster
+    // row. If that row is absent, fail closed instead of routing cron
+    // reads/mutations through a stale selection or an unscoped profile name.
     return focusedBot || null
   }
 
-  const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
   return focusedBot || selectedBot || (focusedOwner ? { name: focusedOwner.name } : null)
 }
 

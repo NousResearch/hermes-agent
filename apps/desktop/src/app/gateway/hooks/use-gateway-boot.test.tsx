@@ -234,7 +234,7 @@ function Harness({
 }: {
   beforeConnectionSwitch?: () => void
   refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
-  refreshSessions?: () => Promise<void>
+  refreshSessions?: (shouldPublish?: () => boolean) => Promise<void>
 } = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
@@ -719,6 +719,50 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.profile.get).toHaveBeenCalledTimes(profileReads)
     expect(desktop.api).toHaveBeenCalledTimes(profileRefreshes)
     expect(FakeWebSocket.instances).toHaveLength(socketCount)
+  })
+
+  it('passes switch ownership through a session refresh held across a newer switch', async () => {
+    const staleRefresh = deferred<void>()
+    const publications: string[] = []
+    let switchRefresh = 0
+
+    const refreshSessions = vi.fn(async (shouldPublish?: () => boolean) => {
+      // Initial boot remains a compatible zero-argument caller.
+      if (!shouldPublish) {
+        return
+      }
+
+      switchRefresh += 1
+      const label = switchRefresh === 1 ? 'settings-a' : 'settings-b'
+
+      if (switchRefresh === 1) {
+        await staleRefresh.promise
+      }
+
+      if (shouldPublish()) {
+        publications.push(label)
+      }
+    })
+
+    render(<Harness refreshSessions={refreshSessions} />)
+    await flushAsync()
+
+    act(() => connectionApplied?.())
+    await vi.waitFor(() => expect(switchRefresh).toBe(1))
+
+    act(() => connectionApplied?.())
+    await vi.waitFor(() => expect(switchRefresh).toBe(2))
+    await flushAsync()
+
+    expect(publications).toEqual(['settings-b'])
+
+    await act(async () => {
+      staleRefresh.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(publications).toEqual(['settings-b'])
+    expect($gatewaySwitching.get()).toBe(false)
   })
 
   it('a superseded Settings switch cannot publish delayed cwd or config work after the winner', async () => {

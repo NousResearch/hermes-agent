@@ -135,7 +135,7 @@ interface GatewayBootOptions {
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
   refreshHermesConfig: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
-  refreshSessions: () => Promise<void>
+  refreshSessions: (shouldPublish?: () => boolean) => Promise<void>
 }
 
 export function useGatewayBoot({
@@ -556,7 +556,7 @@ export function useGatewayBoot({
           seedDefaultCwd(ownsSwitch),
           refreshActiveProfile().catch(() => undefined),
           callbacksRef.current.refreshHermesConfig(false, ownsSwitch).catch(() => undefined),
-          callbacksRef.current.refreshSessions().catch(() => undefined)
+          callbacksRef.current.refreshSessions(ownsSwitch).catch(() => undefined)
         ])
 
         if (!ownsSwitch()) {

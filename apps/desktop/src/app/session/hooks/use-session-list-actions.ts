@@ -224,11 +224,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   }, [profileScope])
 
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (shouldPublish: () => boolean = () => true) => {
     const sessionProfile = sidebarProfileForScope(profileScope)
     const activationEpoch = gatewayActivationEpoch()
 
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
@@ -240,7 +240,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     // $sessionsLoading subscriber twice per turn for no visible change.
     const showLoading = $sessions.get().length === 0
 
-    if (showLoading) {
+    if (showLoading && shouldPublish()) {
       setSessionsLoading(true)
     }
 
@@ -270,6 +270,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       })
 
       if (
+        shouldPublish() &&
         refreshSessionsRequestRef.current === requestId &&
         sidebarProfileForScope(profileScopeRef.current) === sessionProfile &&
         gatewayActivationEpoch() === activationEpoch
@@ -332,16 +333,16 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
       }
     } finally {
-      // The request id is enough here: a newer refresh owns its own loading
-      // state, while a failed source activation still needs the old request to
-      // clear the spinner even though it advanced the gateway epoch.
-      if (showLoading && refreshSessionsRequestRef.current === requestId) {
+      // Request identity preserves the zero-argument refresh contract across a
+      // failed activation epoch; an explicit owner predicate is stronger and
+      // must never release a newer switch's loading barrier.
+      if (showLoading && shouldPublish() && refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
       }
     }
 
     // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-    if (sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
+    if (shouldPublish() && sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
       void refreshCronJobs()
     }
   }, [profileScope, refreshCronJobs])

@@ -1521,7 +1521,9 @@ export function closeSessionTile(storedSessionId: string) {
  */
 export function closeAllOpenSessionTiles(paneId: string): void {
   const tree = $layoutTree.get()
-  const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
+  // Copy the live group list. closeSessionTile can rewrite the layout
+  // tree; iterating the original array would skip every other pane.
+  const panes = [...((tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? [])]
 
   for (const id of panes) {
     if (id.startsWith(TILE_PANE_PREFIX)) {

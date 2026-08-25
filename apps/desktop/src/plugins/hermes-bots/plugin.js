@@ -11348,10 +11348,14 @@ function resolveRoutineOwner(roster, focusedOwner, selected) {
 function RoutinesPane() {
   const selected = useValue($selectedBot)
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
-  // A complete focused owner is authoritative. If its exact roster row is
-  // absent, fail closed instead of routing cron reads/mutations through a
+  // Subscribe instead of a bare read: BotsHomeView owns the roster fetch and
+  // can hydrate (or replace) rows after this pane mounted, so a .get()
+  // snapshot captured while the roster was still empty pinned the pane on
+  // "unavailable" until some unrelated atom happened to re-render it (#94483).
+  // A complete focused owner is still authoritative. If its exact roster row
+  // is absent, fail closed rather than routing cron reads/mutations through a
   // stale selection or an unscoped profile name.
-  const owner = resolveRoutineOwner($lastRoster.get(), focusedOwner, selected)
+  const owner = resolveRoutineOwner(useValue($lastRoster), focusedOwner, selected)
   const bot = String(owner?.name || focusedOwner?.name || 'default').trim() || 'default'
   const allMeta = useValue($botMeta)
   const meta = owner ? botRosterMeta(owner, allMeta) : null

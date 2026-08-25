@@ -248,6 +248,43 @@ def test_schema_does_not_expose_approval_token():
 # ── bounded embedded daemon ─────────────────────────────────────────────
 
 
+def test_macos_embedded_daemon_launches_through_cuadriver_app():
+    command = cb._embedded_daemon_spawn_command(
+        "/tmp/cua-driver",
+        ["serve", "--embedded", "--socket", "/tmp/private.sock"],
+        platform="darwin",
+        app_path="/Applications/CuaDriver.app",
+    )
+
+    assert command == [
+        "/usr/bin/open",
+        "-n",
+        "-a",
+        "/Applications/CuaDriver.app",
+        "--args",
+        "serve",
+        "--embedded",
+        "--socket",
+        "/tmp/private.sock",
+    ]
+
+
+def test_non_macos_embedded_daemon_keeps_direct_binary_launch():
+    command = cb._embedded_daemon_spawn_command(
+        "/tmp/cua-driver",
+        ["serve", "--embedded", "--socket", "/tmp/private.sock"],
+        platform="linux",
+    )
+
+    assert command == [
+        "/tmp/cua-driver",
+        "serve",
+        "--embedded",
+        "--socket",
+        "/tmp/private.sock",
+    ]
+
+
 def test_bounded_daemon_requires_a_manifest():
     with pytest.raises(ValueError, match="capability_manifest"):
         _EmbeddedCuaDaemon("cua-driver", "bounded")

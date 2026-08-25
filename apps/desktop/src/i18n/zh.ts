@@ -3134,6 +3134,7 @@ export const zh: Translations = {
     hide: '隐藏',
     openPreview: '打开预览',
     openInBrowser: '在浏览器中打开',
+    openInExternal: '在外部打开',
     linkHint: '⌘/Ctrl+点击在预览面板打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
     source: '源码',

@@ -131,7 +131,7 @@ test('a superseded roster open may create the canonical row but never navigate i
     }
   })
 
-  assert.equal(await runtime.createCanonicalChat('ops', () => current), 'new-stored')
+  assert.equal(await runtime.createCanonicalChat('ops', { openingStillCurrent: () => current }), 'new-stored')
   assert.deepEqual(opens, [])
 })
 
@@ -156,10 +156,10 @@ test('a newer same-bot open replaces the in-flight creation navigation guard', a
     }
   })
 
-  const first = runtime.createCanonicalChat('ops', () => firstCurrent)
+  const first = runtime.createCanonicalChat('ops', { openingStillCurrent: () => firstCurrent })
   await createStarted
   firstCurrent = false
-  const second = runtime.createCanonicalChat('ops', () => true)
+  const second = runtime.createCanonicalChat('ops', { openingStillCurrent: () => true })
   releaseCreate()
 
   assert.equal(await first, 'shared-stored')

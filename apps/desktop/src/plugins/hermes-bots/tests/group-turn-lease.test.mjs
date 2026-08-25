@@ -18,7 +18,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Harness mirroring group-chat-attachments.test.mjs, extended with a
  *  refcounted host.requestProfile/host.retainProfile pair so socket lease
  *  lifetimes are assertable. */
-function load({ failFirstSubmitWith = null, failEverySubmitWith = null, reply = 'hello from turn' } = {}) {
+function load({ failFirstSubmitWith = null, failEverySubmitWith = null, reply = 'hello from turn', replyMessages = null } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
@@ -114,7 +114,13 @@ function load({ failFirstSubmitWith = null, failEverySubmitWith = null, reply = 
         throw err
       }
       session.messages.push({ role: 'user', content: params.text })
-      session.messages.push({ role: 'assistant', content: reply })
+      if (replyMessages) {
+        for (const msg of replyMessages) {
+          session.messages.push(msg)
+        }
+      } else {
+        session.messages.push({ role: 'assistant', content: reply })
+      }
       return {}
     }
     return {}
@@ -269,4 +275,29 @@ test('hosts without retainProfile still run the turn (feature detection)', async
   const reply = await gc.runGroupChatMemberTurn('Room', ROUTED_MEMBER, 'hi', 't1', [])
 
   assert.equal(reply, 'legacy ok')
+})
+
+// #94376: a Codex intent-ack continuation nudge can land a substantive
+// answer, then get a synthetic "(pass)" reply to the nudge itself. The
+// substantive answer must still surface, not the trailing pass.
+test('a substantive answer followed by a synthetic continuation (pass) still surfaces the answer', async () => {
+  const gc = load({
+    replyMessages: [
+      { role: 'assistant', content: "Yes. I welcomed them, and I'll review their first assignments with them." },
+      { role: 'user', content: '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]' },
+      { role: 'assistant', content: '(pass)' }
+    ]
+  })
+
+  const reply = await gc.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'Did you welcome the new teammate?', 't1', [])
+
+  assert.equal(reply, "Yes. I welcomed them, and I'll review their first assignments with them.")
+})
+
+test('a genuine pass-only turn (no prior substantive answer) still reads as silent', async () => {
+  const gc = load({ reply: '(pass)' })
+
+  const reply = await gc.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'anything new?', 't1', [])
+
+  assert.equal(reply, '(pass)')
 })

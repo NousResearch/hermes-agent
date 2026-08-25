@@ -6720,6 +6720,42 @@ function isGroupPassText(text) {
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
 }
 
+/** #94376: pick the reply a finished turn should surface among the messages
+ *  appended since `before`. Scans newest-first and prefers the last
+ *  substantive (non-pass) assistant answer over a trailing pass — a Codex
+ *  intent-ack continuation nudge can land a complete answer and then get a
+ *  synthetic "(pass)" to the nudge itself, which must not hide the answer.
+ *  Returns null only when no assistant message appears in that range. */
+function pickGroupTurnReply(messages, before) {
+  let passText = null
+
+  for (let i = messages.length - 1; i >= before; i--) {
+    const msg = messages[i]
+
+    if (msg?.role !== 'assistant') {
+      continue
+    }
+
+    const text = typeof msg.content === 'string'
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
+        : msg?.text || ''
+    const replyText = String(text).trim()
+
+    if (isGroupPassText(replyText)) {
+      if (passText === null) {
+        passText = replyText
+      }
+      continue
+    }
+
+    return replyText
+  }
+
+  return passText
+}
+
 /** Deterministic @mention parse. Handles @name, @"two words" via display
  *  titles, and @everyone/@all. Names match case-insensitively against member
  *  profile names, display titles, and collapsed no-space forms. */
@@ -7742,25 +7778,16 @@ async function runGroupChatMemberTurnLeased(group, member, prompt, thread, image
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
+      const replyText = pickGroupTurnReply(messages, before)
 
-        if (msg?.role === 'assistant') {
-          const text = typeof msg.content === 'string'
-            ? msg.content
-            : Array.isArray(msg.content)
-              ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-              : msg?.text || ''
-          const replyText = String(text).trim()
+      if (replyText !== null) {
+        recordGroupActivity(group, {
+          kind: isGroupPassText(replyText) ? 'passed' : 'replied',
+          member: member.name,
+          thread
+        })
 
-          recordGroupActivity(group, {
-            kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-            member: member.name,
-            thread
-          })
-
-          return replyText
-        }
+        return replyText
       }
 
       recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
@@ -7841,33 +7868,20 @@ async function harvestStrandedGroupReply(group, member) {
     return
   }
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
+  const reply = pickGroupTurnReply(messages, strandedBefore)
 
-    if (msg?.role === 'assistant') {
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-          : msg?.text || ''
-      const reply = String(text).trim()
-
-      if (reply && !isGroupPassText(reply)) {
-        recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
-        appendGroupChatEntry(
-          group,
-          { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
-          reply,
-          strandedThread
-        )
-        updateGroupChat(group, r => {
-          r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
-          return r
-        })
-      }
-
-      return
-    }
+  if (reply && !isGroupPassText(reply)) {
+    recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
+    appendGroupChatEntry(
+      group,
+      { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+      reply,
+      strandedThread
+    )
+    updateGroupChat(group, r => {
+      r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+      return r
+    })
   }
 }
 

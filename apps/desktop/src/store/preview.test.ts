@@ -6,7 +6,6 @@ import {
   $previewServerRestartStatus,
   $previewTabs,
   $previewTarget,
-  adoptPersistedBrowserTab,
   beginPreviewServerRestart,
   closePreviewForSource,
   closePreviewMatching,

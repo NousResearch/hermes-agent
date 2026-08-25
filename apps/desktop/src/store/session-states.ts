@@ -1583,6 +1583,84 @@ export function discardSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
+/**
+ * Drop every persisted tile owned by a profile that is being deleted — the
+ * profile's own session-tile bucket and any Bot Mode tile whose ownerRoute
+ * points at it (matched by desktop profile name, or by exact connection /
+ * backend target profile when a source-scoped route is given).
+ *
+ * A leftover tile RESURRECTS the deleted profile on the next launch: Bot tab
+ * restore re-dials the profile's backend, whose ensure_hermes_home() re-creates
+ * the profile directory the delete just removed (hermes-agent#94235). Same
+ * discard (no ⌘⇧T) semantics as discardSessionTile — undoing the delete of the
+ * owning profile would resolve to a 404 again.
+ */
+export function dropTilesForProfile(
+  profile: string,
+  route?: { connectionId?: string; profile?: string; targetProfile?: string }
+): void {
+  const name = normalizeProfileKey(profile)
+  const routeProfile = String(route?.profile ?? '').trim()
+  const routeTarget = String(route?.targetProfile ?? '').trim()
+  const routeConnection = String(route?.connectionId ?? '').trim()
+
+  const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
+    if (!owner) {
+      return false
+    }
+
+    const ownerProfile = String(owner.profile ?? '').trim()
+    const ownerTarget = String(owner.targetProfile ?? '').trim()
+    const ownerConnection = String(owner.connectionId ?? '').trim()
+
+    if (routeProfile) {
+      // Source-scoped delete: the route's desktop profile name, backend target,
+      // and connection must all agree with the tile's owner route.
+      if (ownerProfile !== routeProfile) {
+        return false
+      }
+
+      if (routeTarget && ownerTarget !== routeTarget) {
+        return false
+      }
+
+      return !routeConnection || ownerConnection === routeConnection
+    }
+
+    return ownerProfile === name || ownerTarget === name
+  }
+
+  // The profile's own sessions bucket (Bot tiles live in the shared bucket
+  // and are keyed by ownerRoute, not by bucket).
+  delete tilesByProfile[name]
+
+  const botTiles = tilesByProfile[BOTS_TILE_BUCKET]
+
+  if (botTiles) {
+    const remaining = botTiles.filter(tile => !ownerMatches(tile.ownerRoute))
+
+    if (remaining.length > 0) {
+      tilesByProfile[BOTS_TILE_BUCKET] = remaining
+    } else {
+      delete tilesByProfile[BOTS_TILE_BUCKET]
+    }
+  }
+
+  // Live atom: drop the deleted profile's Bot tiles, and — when the deleted
+  // profile IS the live gateway's profile — the session tiles in view (they
+  // belong to that bucket; the caller re-homes afterwards).
+  const live = $sessionTiles.get()
+  const next = live.filter(tile =>
+    tile.workspaceMode === 'bots' ? !ownerMatches(tile.ownerRoute) : profileKey() !== name
+  )
+
+  if (next.length !== live.length) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
+}
+
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.
  *  Adoption alone is silent (won't steal the active tab), so restore has to
  *  front the pane explicitly. Skips ids that are live again (reopened / now

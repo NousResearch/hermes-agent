@@ -20,6 +20,7 @@ import {
   blankDraftTile,
   clearAllSessionStates,
   closeAllOpenSessionTiles,
+  dropTilesForProfile,
   focusedSessionNeedsRoute,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
@@ -401,7 +402,6 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
     $layoutTree.set(null)
     $sessionTiles.set([])
   })
-
   it('drops persisted bot tiles so a roster/profile rehydrate cannot restore them', () => {
     openSessionTile('chat-a', 'center', 'workspace', undefined, {
       workspaceMode: 'bots',
@@ -412,11 +412,8 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
       workspaceOwnerKey: 'bot:b'
     })
     $layoutTree.set(group(['workspace', tilePane('chat-a'), tilePane('chat-b')], { active: 'workspace', id: 'main' }))
-
     closeAllOpenSessionTiles('workspace')
-
     expect($sessionTiles.get()).toEqual([])
-
     // Profile swap re-reads the shared Bot bucket. Close All must have
     // emptied it, not only dismissed the tree panes.
     $activeGatewayProfile.set('other-profile')
@@ -424,7 +421,6 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
     $activeGatewayProfile.set('default')
     expect($sessionTiles.get()).toEqual([])
   })
-
   it('leaves session tiles stacked in a different zone open', () => {
     openSessionTile('keep', 'right', 'workspace')
     openSessionTile('close-me', 'center', 'workspace')
@@ -434,10 +430,105 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
         group([tilePane('keep')], { active: tilePane('keep'), id: 'right' })
       ])
     )
-
     closeAllOpenSessionTiles('workspace')
-
     expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['keep'])
+
+describe('dropTilesForProfile', () => {
+  const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
+  const BOTS_BUCKET = '__bots_workspace__'
+  const storedTiles = (): Record<string, unknown> => {
+    const raw = window.localStorage.getItem(TILES_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+  }
+  // The tile buckets are module-private and other suites leave persisted
+  // entries behind, so each test re-imports a FRESH session-states module
+  // (empty tilesByProfile + empty storage) instead of fighting the residue —
+  // the same isolation the browser gets between app launches.
+  type SessionStates = typeof import('@/store/session-states')
+  let mod: SessionStates
+  let activeGatewayProfile: { set: (name: string) => void }
+  beforeEach(async () => {
+    window.localStorage.clear()
+    vi.resetModules()
+    // Re-import the module graph so the private tile buckets start empty; the
+    // profile atom session-states subscribes to is the freshly loaded one too.
+    mod = await import('@/store/session-states')
+    const profile = await import('@/store/profile')
+    activeGatewayProfile = profile.$activeGatewayProfile
+    activeGatewayProfile.set('default')
+    mod.$sessionTiles.set([])
+  })
+  afterEach(() => {
+    window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+  it("drops the deleted profile's persisted session tiles from memory and storage", () => {
+    activeGatewayProfile.set('worker')
+    mod.openSessionTile('worker-session-1')
+    mod.openSessionTile('worker-session-2', 'left')
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['worker-session-1', 'worker-session-2'])
+    expect(storedTiles()).toHaveProperty('worker')
+    mod.dropTilesForProfile('worker')
+    expect(mod.$sessionTiles.get()).toEqual([])
+    expect(storedTiles()).not.toHaveProperty('worker')
+    // Session tiles of another profile survive the drop.
+    activeGatewayProfile.set('writer')
+    mod.openSessionTile('writer-session-1')
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['writer-session-1'])
+    expect(storedTiles()).toHaveProperty('writer')
+  })
+  it("drops Bot Mode tiles owned by a locally-deleted profile and keeps the other bots' tiles", () => {
+    mod.openSessionTile('bot-chat-1', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'researcher-1' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'researcher-1'
+    })
+    mod.openSessionTile('bot-chat-2', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'writer-1' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'writer-1'
+    })
+    mod.dropTilesForProfile('researcher-1')
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-chat-2'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['bot-chat-2'])
+  })
+  it('drops a source-scoped bot tile only for the exact route and keeps same-name agents elsewhere', () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+    mod.openSessionTile('bot-a', 'right', undefined, undefined, {
+      ownerRoute: route,
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'source-a::worker'
+    })
+    mod.openSessionTile('bot-b', 'right', undefined, undefined, {
+      ownerRoute: {
+        connectionId: 'source-b',
+        mode: 'remote' as const,
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'source-b::worker'
+    })
+    mod.openSessionTile('bot-local', 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: 'worker' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'local::worker'
+    })
+    mod.dropTilesForProfile('worker', route)
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-b', 'bot-local'])
+    expect(
+      (storedTiles()[BOTS_BUCKET] as Array<{ storedSessionId: string }>).map(tile => tile.storedSessionId)
+    ).toEqual(['bot-b', 'bot-local'])
   })
 })
 

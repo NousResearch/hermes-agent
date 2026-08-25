@@ -18,7 +18,7 @@ row sitting in the root store.
 import asyncio
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -126,6 +126,62 @@ def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_h
     asyncio.run(runner._primary_message_handler()(event))
 
     assert seen == [profile]
+    assert Path(get_hermes_home()) == root
+
+
+def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
+    """A shared bot authorizes with its own allowlist before using routed state.
+
+    Routed profiles commonly disable their Discord/Telegram adapters and carry
+    no platform credentials or allowlists. Scoping the complete cold-message
+    pipeline to that profile must not make the gateway reject a sender that the
+    live primary transport already admitted.
+    """
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from gateway.run import GatewayRunner
+
+    root, profile = multiplex_homes
+    (root / ".env").write_text("DISCORD_ALLOWED_USERS=user-1\n", encoding="utf-8")
+    (profile / ".env").write_text("", encoding="utf-8")
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    runner.pairing_stores = {}
+    seen = []
+
+    async def capture_scope_and_auth(event):
+        seen.append(
+            (
+                Path(get_hermes_home()),
+                runner._is_user_authorized_for_source(event.source),
+            )
+        )
+
+    runner._handle_message = capture_scope_and_auth
+    event = MessageEvent(
+        text="hello from the shared bot",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="routed-channel",
+            user_id="user-1",
+            chat_type="group",
+            profile="fitness",
+        ),
+    )
+
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        asyncio.run(runner._primary_message_handler()(event))
+    finally:
+        set_multiplex_active(previous_multiplex)
+
+    assert seen == [(profile, True)]
     assert Path(get_hermes_home()) == root
 
 

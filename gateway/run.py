@@ -15959,13 +15959,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Profile routes are normally stamped on ``event.source`` before this
         handler runs. Resolve the home per event so session lookup and transcript
         loading use the same profile store as the later agent run and persistence
-        path. Sources that bypass adapter routing are resolved here; genuinely
-        unrouted events retain the gateway's launch/default home.
+        path. Authorization still belongs to the primary transport profile: a
+        shared Discord/Telegram adapter can route the turn to a profile that
+        intentionally has no bot credential or platform allowlist. Preserve that
+        transport home on the live source so the auth gate does not re-check the
+        sender against the routed runtime's unrelated secret scope. Sources that
+        bypass adapter routing are resolved here; genuinely unrouted events retain
+        the gateway's launch/default home.
         """
         default_home = Path(get_hermes_home())
 
         async def _handler(event):
             source = event.source
+            # In-process only (SessionSource serialization ignores dynamic attrs).
+            # The route selects agent/session state, not which bot admitted the
+            # message. Keep those two trust domains separate.
+            source._authorization_profile_home = default_home
             if (
                 not getattr(source, "profile", None)
                 and getattr(source, "profile_route_rejected", False) is not True
@@ -16000,7 +16009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not has_hook("gateway_platform_event"):
                 return
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 return
             invoke_hook("gateway_platform_event", **event)
         except Exception:
@@ -16028,12 +16037,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _make_default_profile_platform_event_handler(self):
         """Scope primary-transport events to their routed multiplex profile."""
+        default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
+            source._authorization_profile_home = default_home
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
+
+    def _is_user_authorized_for_source(
+        self,
+        source: SessionSource,
+        *,
+        allow_adapter_delegation: bool = True,
+    ) -> bool:
+        """Authorize under the live transport's profile, not the routed runtime.
+
+        A primary adapter may route one chat into another profile's agent/session
+        namespace. That runtime profile need not (and normally should not) copy the
+        shared bot token or allowlist. The primary message/platform-event handlers
+        stamp the transport home as an in-process-only attribute before entering
+        the routed scope; consult it here for the narrow authorization read, then
+        restore the routed scope for the remainder of the turn.
+        """
+        def _check() -> bool:
+            # Preserve the historical one-argument seam used by plugins/tests;
+            # only pass the keyword for the explicit delegation-disabled path.
+            if allow_adapter_delegation:
+                return self._is_user_authorized(source)
+            return self._is_user_authorized(
+                source,
+                allow_adapter_delegation=False,
+            )
+
+        authorization_home = getattr(source, "_authorization_profile_home", None)
+        if authorization_home is not None:
+            with _profile_runtime_scope(Path(authorization_home)):
+                return _check()
+        return _check()
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):
@@ -16948,10 +16990,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
             # authorizes every member of the listed chat regardless of
             # sender). Defer to _is_user_authorized so that path runs.
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-        elif not self._is_user_authorized(source):
+        elif not self._is_user_authorized_for_source(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if (

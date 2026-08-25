@@ -51,6 +51,13 @@ interface BuildOpaqueProfileRoutesOptions {
   resolveSsh: (config: ProfileRouteConfig) => Promise<EffectiveSshRoute>
 }
 
+/** A 'connect-on-demand' local enumeration was intentionally deferred, not
+ * failed — it must not be treated as a failure or Bot Mode will synthesize
+ * cached local rows on remote-only workspaces where local was never dialed. */
+export function isLocalEnumerationFailure(error?: string): boolean {
+  return Boolean(error) && error !== 'connect-on-demand'
+}
+
 /** Return cached local profile names only when the local roster read failed. */
 export function localRouteFallbackProfiles(
   agents: RegistryProfileRouteAgent[],

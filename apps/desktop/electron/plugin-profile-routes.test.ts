@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildOpaqueProfileRoutes,
   buildRegistryProfileRoutes,
+  isLocalEnumerationFailure,
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
   registryGatewayWsUrl,
@@ -250,6 +251,20 @@ describe('buildRegistryProfileRoutes', () => {
     expect(registryGatewayWsUrl({ profile: 'research' }, 'ws://127.0.0.1:5151/api/ws?token=local')).toBe(
       'ws://127.0.0.1:5151/api/ws?token=local'
     )
+  })
+})
+
+describe('isLocalEnumerationFailure', () => {
+  it('does not treat an intentionally deferred local enumeration as a failure', () => {
+    expect(isLocalEnumerationFailure('connect-on-demand')).toBe(false)
+  })
+
+  it('treats any other enumeration error as a failure', () => {
+    expect(isLocalEnumerationFailure('ECONNREFUSED')).toBe(true)
+  })
+
+  it('treats a missing error as no failure', () => {
+    expect(isLocalEnumerationFailure(undefined)).toBe(false)
   })
 })
 

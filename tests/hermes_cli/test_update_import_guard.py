@@ -124,6 +124,18 @@ def test_import_guard_reports_probe_termination_by_default(monkeypatch, tmp_path
     assert error == "terminated before reporting import health (exit code 9)"
 
 
+def test_import_guard_reports_system_exit_by_default(monkeypatch, tmp_path):
+    """Catchable terminating imports must not complete with a healthy marker."""
+    (tmp_path / "consumer.py").write_text("raise SystemExit('stopped')\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "consumer"
+    assert error == "stopped"
+
+
 def test_import_guard_does_not_accept_forged_static_marker(monkeypatch, tmp_path):
     """Imported stdout cannot impersonate the per-probe completion marker."""
     (tmp_path / "consumer.py").write_text(

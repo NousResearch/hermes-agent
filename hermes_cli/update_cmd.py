@@ -711,13 +711,11 @@ def _critical_module_import_failures(
         "        if %r:\n"
         "            failures.append((name, str(exc)))\n"
         "    except BaseException as exc:\n"
-        "        if %r:\n"
-        "            failures.append((name, str(exc)))\n"
+        "        failures.append((name, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (
             _UPDATE_CRITICAL_MODULES,
             tuple(sorted(FIRST_PARTY_MODULE_ROOTS)),
-            report_runtime_errors,
             report_runtime_errors,
             marker,
         )
@@ -2498,7 +2496,9 @@ def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str] | None:
     return {path for path in result.stdout.split("\0") if path}
 
 
-def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...]:
+def _restored_python_paths(
+    git_cmd: list[str], cwd: Path
+) -> tuple[str, ...] | None:
     """Return restored ``.py`` paths changed from ``HEAD``.
 
     This deliberately validates Python source only; non-Python entry scripts
@@ -2512,10 +2512,14 @@ def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...]:
         encoding="utf-8",
         errors="surrogateescape",
     )
-    paths = set(changed.stdout.split("\0")) if changed.returncode == 0 else set()
+    if changed.returncode != 0:
+        print("  ⚠ Could not enumerate tracked Python files restored from the stash.")
+        return None
+    paths = set(changed.stdout.split("\0"))
     untracked = _git_untracked_paths(git_cmd, cwd)
-    if untracked is not None:
-        paths.update(path for path in untracked if path.endswith(".py"))
+    if untracked is None:
+        return None
+    paths.update(path for path in untracked if path.endswith(".py"))
     paths.discard("")
     return tuple(sorted(paths))
 
@@ -2669,6 +2673,15 @@ def _restore_stashed_changes(
         return False
 
     restored_python = _restored_python_paths(git_cmd, cwd)
+    if restored_python is None:
+        _reject_unsafe_stash_restore(
+            git_cmd,
+            cwd,
+            stash_ref,
+            preexisting_untracked,
+            "restored Python source discovery",
+            "could not determine which restored Python files require validation",
+        )
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(
         cwd, restored_python
     )

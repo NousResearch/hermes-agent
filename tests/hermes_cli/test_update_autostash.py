@@ -717,6 +717,49 @@ def test_restore_stays_parked_when_untracked_baseline_is_unknown(
     assert "git stash apply stash@{0}" in output
 
 
+def test_restore_rejects_unknown_restored_python_paths(
+    monkeypatch, tmp_path, capsys
+):
+    """A failed post-apply path query cannot skip restored syntax validation."""
+    import subprocess
+    from hermes_cli import update_cmd
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "consumer.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
+    monkeypatch.setattr(update_cmd, "_restored_python_paths", lambda *_args: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
+
+    assert exc_info.value.code == 1
+    assert source.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert git("status", "--porcelain").stdout == ""
+    assert git("stash", "list").stdout.strip()
+    output = capsys.readouterr().out
+    assert "restored Python source discovery" in output
+    assert "gateway was not restarted" in output
+
+
 def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     prompts = []
 

@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: betterstack
+description: 'Better Stack: logs, uptime monitors, incidents, and status pages.'
+source: https://betterstack.com/docs/getting-started/integrations/mcp/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.betterstack.com
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - better stack
+    - betterstack
+    - uptime monitor
+  hosts:
+    - betterstack.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Better Stack (or run `hermes mcp login betterstack`). Approve access,
+  then restart the session so tools load.
+
+  Heads-up: this server exposes a LARGE tool surface (~111 tools as of
+  Aug 2026 — roughly 40-60K tokens of schema if all stay enabled). The
+  install-time checklist starts fully checked; prune to the product areas
+  you actually use (logs, monitors, incidents...), or re-run later with:
+    hermes mcp configure betterstack

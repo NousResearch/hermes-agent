@@ -229,22 +229,22 @@ class TestTruncateSnapshot:
         content = Path(stored).read_text(encoding="utf-8")
         assert "STOREDSNAPSHOTSECRET" not in content
 
-    def test_extract_relevant_content_appends_stored_pointer(self):
-        """LLM-summarized snapshots also point at the stored full text."""
-        from unittest.mock import MagicMock
-        from tools.browser_tool import _extract_relevant_content
+    def test_truncated_snapshot_appends_stored_pointer(self):
+        """Truncated snapshots point at the stored full text for read_file paging."""
+        from tools.browser_tool import _truncate_snapshot
 
         snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+        result = _truncate_snapshot(snapshot, max_chars=500)
 
-        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
-            result = _extract_relevant_content(snapshot, "find the button")
-
-        assert result.startswith("Summary with button")
-        assert "Full snapshot" in result
+        assert "truncated" in result.lower()
         assert "read_file" in result
+
+    def test_no_llm_summarization_path_remains(self):
+        """Snapshots must never route through an auxiliary LLM (truncate-and-store only)."""
+        import tools.browser_tool as bt
+
+        assert not hasattr(bt, "_extract_relevant_content")
+        assert not hasattr(bt, "_get_extraction_model")
 
 
 # ---------------------------------------------------------------------------

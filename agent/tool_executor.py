@@ -123,8 +123,8 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
-# Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
-# guard does not preempt a slow-but-valid summarization attempt.
+# Generous ceiling for slow-but-valid tool work (large page fetches, slow
+# remote backends) so the batch guard does not preempt a legitimate attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough

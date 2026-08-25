@@ -195,7 +195,7 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """Resolve httpx ``verify`` for an auxiliary-client base_url.
 
     Mirrors the main client's TLS resolution so auxiliary calls (compression,
-    vision, web_extract, title generation, etc.) honor per-provider
+    vision, title generation, etc.) honor per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` config and the ``HERMES_CA_BUNDLE`` /
     ``SSL_CERT_FILE`` env conventions. Best-effort: any failure falls back to
     the httpx/certifi default (``True``).
@@ -5614,7 +5614,7 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     Only ``compression`` carries an explicit minimum today (the same
     ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
     ``check_compression_model_feasibility`` already enforces at startup).
-    Other tasks (``vision``, ``title_generation``, ``web_extract``,
+    Other tasks (``vision``, ``title_generation``,
     ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
     have no per-task context floor and the runtime chain must remain
     permissive for them.
@@ -7182,11 +7182,11 @@ def get_text_auxiliary_client(
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
     Args:
-        task: Optional task name ("compression", "web_extract") to check
+        task: Optional task name ("compression", "skills_hub") to check
               for a task-specific provider override.
 
     Callers may override the returned model via config.yaml
-    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
+    (e.g. auxiliary.compression.model, auxiliary.skills_hub.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -9439,7 +9439,7 @@ def _call_llm_impl(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
+        task: Auxiliary task name ("compression", "vision",
               "session_search", "skills_hub", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.

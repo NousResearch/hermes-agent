@@ -639,10 +639,10 @@ compression:
 | `AUXILIARY_VISION_MODEL` | 覆盖视觉任务的模型 |
 | `AUXILIARY_VISION_BASE_URL` | 视觉任务的直接 OpenAI 兼容端点 |
 | `AUXILIARY_VISION_API_KEY` | 与 `AUXILIARY_VISION_BASE_URL` 配对的 API 密钥 |
-| `AUXILIARY_WEB_EXTRACT_PROVIDER` | 覆盖网页提取/摘要的提供商 |
-| `AUXILIARY_WEB_EXTRACT_MODEL` | 覆盖网页提取/摘要的模型 |
-| `AUXILIARY_WEB_EXTRACT_BASE_URL` | 网页提取/摘要的直接 OpenAI 兼容端点 |
-| `AUXILIARY_WEB_EXTRACT_API_KEY` | 与 `AUXILIARY_WEB_EXTRACT_BASE_URL` 配对的 API 密钥 |
+
+:::note
+`AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 和浏览器快照不再使用辅助 LLM。长页面和快照会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
+:::
 
 对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥或 `OPENAI_API_KEY`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。
 

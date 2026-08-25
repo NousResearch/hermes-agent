@@ -866,10 +866,6 @@ export const ar = defineLocale({
           label: 'الرؤية',
           hint: 'تحليل الصور'
         },
-        web_extract: {
-          label: 'استخراج الويب',
-          hint: 'تلخيص الصفحات'
-        },
         compression: {
           label: 'الضغط',
           hint: 'ضغط السياق'

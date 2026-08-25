@@ -1074,7 +1074,6 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
-        web_extract: { label: 'Web extract', hint: 'Page summarization' },
         compression: { label: 'Compression', hint: 'Context compaction' },
         skills_hub: { label: 'Skills hub', hint: 'Skill search' },
         approval: { label: 'Approval', hint: 'Smart auto-approve' },

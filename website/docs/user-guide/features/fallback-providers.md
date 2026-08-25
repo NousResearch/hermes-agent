@@ -11,7 +11,7 @@ Hermes Agent has three layers of resilience that keep your sessions running when
 
 1. **[Credential pools](./credential-pools.md)** — rotate across multiple API keys for the *same* provider (tried first)
 2. **Primary model fallback** — automatically switches to a *different* provider:model when your main model fails
-3. **Auxiliary task fallback** — independent provider resolution for side tasks like vision, compression, and web extraction
+3. **Auxiliary task fallback** — independent provider resolution for side tasks like vision and compression
 
 Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys). This page covers cross-provider fallback. Both are optional and work independently.
 
@@ -194,7 +194,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Task | What It Does | Config Key |
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
-| Web Extract | Web page summarization | `auxiliary.web_extract` |
 | Compression | Context compression summaries | `auxiliary.compression` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
@@ -241,10 +240,6 @@ auxiliary:
     model: ""                     # e.g. "openai/gpt-4o"
     base_url: ""                  # direct endpoint (takes precedence over provider)
     api_key: ""                   # API key for base_url
-
-  web_extract:
-    provider: "auto"
-    model: ""
 
   compression:
     provider: "auto"
@@ -427,7 +422,6 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
-| Web extraction | Layered (see above) + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
 | Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |

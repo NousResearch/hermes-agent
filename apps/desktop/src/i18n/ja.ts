@@ -996,7 +996,6 @@ export const ja = defineLocale({
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
-        web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },
         compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
         skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
         approval: { label: '承認', hint: 'スマート自動承認' },

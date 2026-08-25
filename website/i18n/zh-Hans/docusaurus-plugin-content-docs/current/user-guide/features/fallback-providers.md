@@ -185,7 +185,6 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 | 任务 | 功能说明 | 配置键 |
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
-| 网页提取 | 网页内容摘要 | `auxiliary.web_extract` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
 | Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
@@ -198,7 +197,7 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 
 当任务的提供商设置为 `"auto"`（默认值）时，Hermes 按顺序尝试各提供商，直到找到可用的：
 
-**文本任务（压缩、网页提取等）：**
+**文本任务（压缩等）：**
 
 ```text
 OpenRouter → Nous Portal → 自定义端点 → Codex OAuth →
@@ -225,10 +224,6 @@ auxiliary:
     model: ""                     # 例如 "openai/gpt-4o"
     base_url: ""                  # 直接端点（优先于 provider）
     api_key: ""                   # base_url 的 API 密钥
-
-  web_extract:
-    provider: "auto"
-    model: ""
 
   compression:
     provider: "auto"
@@ -403,7 +398,6 @@ cronjob(
 | 辅助任务（任意）— auto 用户 | 容量错误时完整自动检测链（主 Agent 模型优先，然后提供商链） | `auxiliary.<task>.provider: auto` |
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
-| 网页提取 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.web_extract` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
 | Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |

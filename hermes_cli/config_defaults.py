@@ -1070,15 +1070,11 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
-        "web_extract": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
+        # Note: web_extract no longer uses an auxiliary LLM — pages are
+        # truncate-and-stored with a read_file pointer (no summarization),
+        # and browser snapshots follow the same pattern. The old
+        # ``auxiliary.web_extract.*`` block was removed here. Existing
+        # values in user config.yaml files are harmless leftovers and ignored.
         "compression": {
             "provider": "auto",
             "model": "",

@@ -529,12 +529,6 @@ def load_cli_config() -> Dict[str, Any]:
                 "base_url": "",
                 "api_key": "",
             },
-            "web_extract": {
-                "provider": "auto",
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            },
         },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
@@ -734,12 +728,6 @@ def load_cli_config() -> Dict[str, Any]:
             "model": "AUXILIARY_VISION_MODEL",
             "base_url": "AUXILIARY_VISION_BASE_URL",
             "api_key": "AUXILIARY_VISION_API_KEY",
-        },
-        "web_extract": {
-            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
         },
         "approval": {
             "provider": "AUXILIARY_APPROVAL_PROVIDER",

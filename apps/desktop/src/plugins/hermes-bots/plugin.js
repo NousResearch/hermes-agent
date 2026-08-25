@@ -2282,14 +2282,17 @@ function startHideSweepScheduler(ctx) {
     }
   })
 
-  ctx.onDispose(() => {
+  const teardown = () => {
     disposed = true
     stopGatewayListener()
     if (timer !== null) {
       clearTimeout(timer)
       timer = null
     }
-  })
+  }
+  if (typeof ctx.onDispose === 'function') {
+    ctx.onDispose(teardown)
+  }
   schedule()
 }
 

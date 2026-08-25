@@ -100,19 +100,43 @@ export function liveSessionScopes(): Set<string> {
 }
 
 /**
- * The exact registry scope that owns the foreground runtime, when known.
+ * Registry scopes owned by an open foreground surface, when known.
  *
  * The secondary-gateway pruner normally keeps only busy/needs-input work. A
- * source switch briefly changes the active gateway before the old foreground
- * runtime is cleared, though, and an idle conversation can otherwise look
- * disposable during that handoff. Preserve the owner for that narrow window;
- * tiles have their own persisted owner route and are handled separately.
+ * source switch briefly changes the active gateway before an idle conversation
+ * is cleared, so the primary runtime must survive that handoff. Open panes have
+ * the same ownership contract: a non-focused idle tile is still user-visible
+ * state and must not be evicted just because another pane has focus. Prefer the
+ * live event scope, with the tile's persisted route as the pre-bind fallback.
  */
 export function foregroundSessionScopes(): Set<string> {
-  const runtimeId = $activeSessionId.get()
-  const scope = runtimeId ? sessionScopeByRuntimeId.get(runtimeId) : undefined
+  const scopes = new Set<string>()
 
-  return scope ? new Set([scope]) : new Set()
+  const addRuntimeScope = (runtimeId: string | undefined) => {
+    const scope = runtimeId ? sessionScopeByRuntimeId.get(runtimeId) : undefined
+
+    if (scope) {
+      scopes.add(scope)
+    }
+  }
+
+  const addRouteScope = (route: SessionProfileRoute | undefined) => {
+    const connectionId = route?.connectionId?.trim()
+    const profile = route?.profile?.trim()
+
+    if (connectionId && profile) {
+      scopes.add(registryBackendScopeKey(connectionId, profile))
+    }
+  }
+
+  addRuntimeScope($activeSessionId.get() ?? undefined)
+
+  for (const tile of $sessionTiles.get()) {
+    addRuntimeScope(tile.runtimeId)
+    addRouteScope(tile.ownerRoute)
+  }
+
+  return scopes
 }
 
 // Stored session ids whose authoritative state is still busy, but whose

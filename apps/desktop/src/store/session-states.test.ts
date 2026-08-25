@@ -39,11 +39,13 @@ describe('foregroundSessionScopes', () => {
   beforeEach(() => {
     clearAllSessionStates()
     $activeSessionId.set(null)
+    $sessionTiles.set([])
   })
 
   afterEach(() => {
     clearAllSessionStates()
     $activeSessionId.set(null)
+    $sessionTiles.set([])
   })
 
   it('keeps the exact registry owner of an idle foreground runtime', () => {
@@ -55,6 +57,37 @@ describe('foregroundSessionScopes', () => {
 
   it('fails closed when the foreground runtime has no registered source', () => {
     $activeSessionId.set('legacy-runtime')
+
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
+  it('keeps every open pane owner, not only the focused runtime', () => {
+    recordSessionEventScope({ connectionId: 'cloud-a', profile: 'default', session_id: 'runtime-a' })
+    recordSessionEventScope({ connectionId: 'cloud-b', profile: 'default', session_id: 'runtime-b' })
+    $sessionTiles.set([
+      { runtimeId: 'runtime-a', storedSessionId: 'stored-a' },
+      {
+        ownerRoute: { connectionId: 'cloud-b', profile: 'default' },
+        storedSessionId: 'stored-b'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(
+      new Set(['conn:cloud-a::default', 'conn:cloud-b::default'])
+    )
+  })
+
+  it('releases an idle pane owner when the pane closes', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'cloud', profile: 'default' },
+        storedSessionId: 'stored-cloud'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+
+    $sessionTiles.set([])
 
     expect(foregroundSessionScopes()).toEqual(new Set())
   })

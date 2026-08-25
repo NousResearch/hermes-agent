@@ -40,6 +40,7 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -147,6 +148,20 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
 
     pruneSecondaryGateways(new Set(['conn:homelab::default']))
 
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
+  })
+
+  it('does not classify an explicit local registry source as legacy', async () => {
+    await openGatewayForAgent(null, 'writer')
+    await openGatewayForAgent('local', 'writer')
+
+    expect(gatewayMocks.closed).toEqual([])
+
+    closeLegacySecondaryGateways()
+
+    // The bare profile socket follows the v1 mode configuration and is
+    // retired. The explicit `local` registry socket is a v2 source and must
+    // survive the mode apply just like a registered remote source.
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
   })
 })

@@ -61,8 +61,8 @@ import {
 } from '@/store/session'
 import {
   $attentionSessionIds,
-  $workingSessionIds,
   $sessionTiles,
+  $workingSessionIds,
   foregroundSessionScopes,
   liveSessionScopes,
   openTileGatewayScopes,
@@ -811,6 +811,8 @@ export function useGatewayBoot({
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
+    const offSessionTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
     const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
 
@@ -1006,6 +1008,8 @@ export function useGatewayBoot({
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()
+      offActiveSession()
+      offSessionTiles()
       offActiveProfile()
       offTiles()
       window.removeEventListener('online', onOnline)

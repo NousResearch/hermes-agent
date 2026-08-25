@@ -1431,6 +1431,15 @@ function closeSecondariesWhere(shouldClose: (entry: Secondary) => boolean): void
   restoreActiveToPrimaryIfEvicted()
 }
 
+function isLegacySecondary(entry: Secondary): boolean {
+  // Every v2 registry route is created with an explicit connection id,
+  // including the registry's `local` source. A missing id is reserved for the
+  // old profile-only pool; the loose null check also retires HMR entries from
+  // builds that predate the field instead of leaving an old legacy socket
+  // behind during a mode apply.
+  return entry.connectionId == null
+}
+
 /**
  * Close only profile sockets that follow the legacy v1 connection config.
  *
@@ -1441,7 +1450,7 @@ function closeSecondariesWhere(shouldClose: (entry: Secondary) => boolean): void
  * retired because their endpoint is derived from the v1 config being changed.
  */
 export function closeLegacySecondaryGateways(): void {
-  closeSecondariesWhere(entry => entry.connectionId == null)
+  closeSecondariesWhere(isLegacySecondary)
 }
 
 export function closeSecondaryGateways(): void {

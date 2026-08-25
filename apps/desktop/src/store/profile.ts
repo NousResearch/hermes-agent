@@ -692,11 +692,28 @@ export function selectProfile(name: string): void {
   // #81094: any other failed switch must be visible too — the profile pill
   // stays on the previous profile and the user learns why the backend is
   // unreachable.
-  void activateOnCurrentSource(target).catch((error: unknown) => {
-    if (!notifyRemoteOverrideAuthFailure(target, error)) {
-      notifyError(error, `Failed to switch to profile "${target}"`)
-    }
-  })
+  //
+  // The profile rail is a live workspace switch, so it must not call
+  // profile.set() and reload the window. Once activation succeeds, remember
+  // the selection for the next Desktop launch through the persistence-only
+  // IPC instead (#79886). Registry-source picks name ANOTHER source's
+  // profiles, so only a primary-backend activation updates the startup
+  // preference.
+  const onPrimary = activeGatewayConnectionId() == null
+
+  void activateOnCurrentSource(target)
+    .then(() => {
+      if (onPrimary) {
+        return window.hermesDesktop?.profile?.remember(target)
+      }
+
+      return undefined
+    })
+    .catch((error: unknown) => {
+      if (!notifyRemoteOverrideAuthFailure(target, error)) {
+        notifyError(error, `Failed to switch to profile "${target}"`)
+      }
+    })
 }
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the

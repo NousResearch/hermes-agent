@@ -14105,6 +14105,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Persistence-only sibling of hermes:profile:set: records the profile the
+// Desktop should boot into next launch WITHOUT tearing down the backend or
+// reloading the window — the rail's live workspace switch already re-homed
+// the gateway (#79886).
+ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
+  profile: writeActiveDesktopProfile(name)
+}))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

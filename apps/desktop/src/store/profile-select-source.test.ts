@@ -91,3 +91,52 @@ describe('newSessionInProfile', () => {
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
   })
 })
+
+describe('selectProfile startup preference (#79886)', () => {
+  const rememberProfile = vi.fn(async (name: null | string) => ({ profile: name }))
+
+  beforeEach(() => {
+    rememberProfile.mockClear()
+    ;(globalThis as { window?: unknown }).window = {
+      hermesDesktop: { profile: { remember: rememberProfile } }
+    }
+  })
+
+  it('remembers the selected workspace for the next Desktop launch', async () => {
+    activeGatewayConnectionId.mockReturnValue(null)
+
+    selectProfile('tilly')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
+  })
+
+  it('waits for gateway activation before replacing the startup preference', async () => {
+    let resolveGateway!: () => void
+
+    activeGatewayConnectionId.mockReturnValue(null)
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<undefined>(resolve => {
+          resolveGateway = () => resolve(undefined)
+        })
+    )
+
+    selectProfile('tilly')
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly'))
+    expect(rememberProfile).not.toHaveBeenCalled()
+
+    resolveGateway()
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+  })
+
+  it('does not replace the startup preference for a registry-source pick', async () => {
+    activeGatewayConnectionId.mockReturnValue('mini')
+
+    selectProfile('researcher')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', 'researcher'))
+    expect(rememberProfile).not.toHaveBeenCalled()
+  })
+})

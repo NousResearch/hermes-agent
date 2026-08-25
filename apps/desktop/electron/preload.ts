@@ -214,6 +214,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
+    remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),

@@ -688,7 +688,9 @@ def _critical_module_import_failures(
     """
     from hermes_constants import FIRST_PARTY_MODULE_ROOTS
 
-    marker = "__HERMES_IMPORT_HEALTH__"
+    import secrets
+
+    marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
         "failures = []\n"
@@ -754,9 +756,18 @@ def _critical_module_import_failures(
         import json
 
         failures = json.loads(output.rsplit(marker, 1)[1])
+        if not isinstance(failures, list) or any(
+            not isinstance(item, list)
+            or len(item) != 2
+            or not all(isinstance(value, str) for value in item)
+            for item in failures
+        ):
+            raise ValueError("invalid import-health payload")
         return {str(module): str(detail) for module, detail in failures}
     except (TypeError, ValueError):
-        return {}
+        return {
+            "critical-module probe": "reported malformed import health data"
+        }
 
 
 def _validate_critical_modules_import(

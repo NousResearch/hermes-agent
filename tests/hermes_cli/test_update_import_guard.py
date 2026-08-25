@@ -124,6 +124,42 @@ def test_import_guard_reports_probe_termination_by_default(monkeypatch, tmp_path
     assert error == "terminated before reporting import health (exit code 9)"
 
 
+def test_import_guard_does_not_accept_forged_static_marker(monkeypatch, tmp_path):
+    """Imported stdout cannot impersonate the per-probe completion marker."""
+    (tmp_path / "consumer.py").write_text(
+        "import os, sys\n"
+        "sys.stdout.write('__HERMES_IMPORT_HEALTH__[]')\n"
+        "sys.stdout.flush()\n"
+        "os._exit(7)\n"
+    )
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 7)"
+
+
+def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
+    class Result:
+        returncode = 0
+        stdout = ""
+
+    def malformed(cmd, **_kwargs):
+        marker = cmd[-1].split("sys.stdout.write('\\n", 1)[1].split("'", 1)[0]
+        Result.stdout = f"{marker}{{}}"
+        return Result()
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", malformed)
+
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "reported malformed import health data"
+
+
 def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys):
     class Result:
         returncode = 1

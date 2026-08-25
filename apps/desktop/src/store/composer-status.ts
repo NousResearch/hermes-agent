@@ -377,11 +377,42 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
   writeBackground(sid, next)
 }
 
+/** Session ids the gateway has told us are gone. A session-scoped RPC against a
+ *  runtime the gateway no longer holds fails 4001 "session not found" — a
+ *  TERMINAL condition, not the transient socket loss the catch below assumes.
+ *
+ *  The status stack re-polls `process.list` every 5s while a running row is on
+ *  screen, so treating 4001 as transient meant re-sending the same dead id
+ *  forever: one runtime id accumulated 18,614 gateway rejections in a single day
+ *  (#94219 fallout). Latch the id here and skip it until something rebinds it. */
+const goneSessions = new Set<string>()
+
+/** A gone session is unrecoverable for THIS runtime id; a timeout or transport
+ *  blip is not. Only the former may stop the poll — misclassifying a transient
+ *  failure would silently freeze the status stack on a healthy session. */
+export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /session not found/i.test(message)
+}
+
+/** Clear the gone-latch. Called with a session id when a fresh runtime binds to
+ *  it (so polling resumes), or with no argument to reset everything (tests). */
+export function resetBackgroundPollingGuard(sid?: string): void {
+  if (sid) {
+    goneSessions.delete(sid)
+
+    return
+  }
+
+  goneSessions.clear()
+}
+
 /** Pull the session's live process snapshot from the gateway. */
 export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   const gateway = $gateway.get()
 
-  if (!sid || !gateway) {
+  if (!sid || !gateway || goneSessions.has(sid)) {
     return
   }
 
@@ -389,7 +420,15 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
     const result = await gateway.request<{ processes?: GatewayProcessEntry[] }>('process.list', { session_id: sid })
 
     reconcileBackgroundProcesses(sid, result?.processes ?? [])
-  } catch {
+  } catch (error) {
+    // A gone session never comes back under this runtime id: stop polling it,
+    // or the 5s timer hammers the gateway with 4001s for the window's lifetime.
+    if (isSessionGoneForBackgroundPolling(error)) {
+      goneSessions.add(sid)
+
+      return
+    }
+
     // Transient socket loss — the next trigger (event or poll) retries.
   }
 }

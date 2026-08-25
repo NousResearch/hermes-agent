@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $backgroundStatusBySession, dismissBackgroundProcess, reconcileBackgroundProcesses } from './composer-status'
+import {
+  $backgroundStatusBySession,
+  dismissBackgroundProcess,
+  isSessionGoneForBackgroundPolling,
+  reconcileBackgroundProcesses,
+  refreshBackgroundProcesses,
+  resetBackgroundPollingGuard
+} from './composer-status'
+import { $gateway } from './gateway'
 
 const SID = 'sess-1'
 
@@ -149,5 +157,109 @@ describe('reconcileBackgroundProcesses', () => {
     vi.advanceTimersByTime(5_000)
 
     expect(itemsOf('sess-arm')).toEqual([])
+  })
+})
+
+// ── Dead-session polling guard (#94219 fallout) ──────────────────────────────
+// The status stack polls `process.list` every 5s while a background row is on
+// screen. `process.list` is session-scoped: against a runtime id the gateway no
+// longer holds it returns 4001 "session not found". That failure was swallowed
+// as "transient socket loss", so the poll re-sent the SAME dead id every 5s for
+// the life of the window — 18,614 rejections against a single runtime id in one
+// day on a real machine, and the log line the user reads as "session not found".
+//
+// A gone session is terminal, not transient: stop polling it.
+describe('refreshBackgroundProcesses dead-session guard', () => {
+  beforeEach(() => {
+    $backgroundStatusBySession.set({})
+    resetBackgroundPollingGuard()
+  })
+
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('classifies a 4001 session-not-found as gone, and a timeout as transient', () => {
+    expect(isSessionGoneForBackgroundPolling(new Error('session not found'))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error('4001 session not found'))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error('Session Not Found'))).toBe(true)
+
+    // Transient failures must NOT latch the guard — the session may still be alive.
+    expect(isSessionGoneForBackgroundPolling(new Error('request timed out after 30s: process.list'))).toBe(false)
+    expect(isSessionGoneForBackgroundPolling(new Error('not connected'))).toBe(false)
+  })
+
+  it('stops re-polling a session after the gateway reports it gone', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    // First poll discovers the session is gone.
+    await refreshBackgroundProcesses(SID)
+    expect(request).toHaveBeenCalledTimes(1)
+
+    // Every subsequent tick must be suppressed. Before the fix these all went
+    // to the wire and each produced another gateway-side 4001.
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps polling after a transient failure', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 30s: process.list')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+
+    // A timeout is not proof of death — the poll must retry.
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not suppress a different, healthy session', async () => {
+    const request = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      if (params?.session_id === SID) {
+        throw new Error('session not found')
+      }
+
+      return { processes: [] }
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-healthy')
+    await refreshBackgroundProcesses('sess-healthy')
+
+    const targets = request.mock.calls.map(c => (c[1] as { session_id?: string } | undefined)?.session_id)
+    expect(targets.filter(t => t === SID)).toHaveLength(1)
+    expect(targets.filter(t => t === 'sess-healthy')).toHaveLength(2)
+  })
+
+  it('resumes polling a session that comes back (guard cleared on rebind)', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    expect(request).toHaveBeenCalledTimes(1)
+
+    // A fresh runtime bound to this session id clears the guard.
+    resetBackgroundPollingGuard(SID)
+    await refreshBackgroundProcesses(SID)
+
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

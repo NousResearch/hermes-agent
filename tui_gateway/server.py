@@ -384,6 +384,16 @@ _current_runtime_session_record: contextvars.ContextVar[dict | None] = (
     contextvars.ContextVar("hermes_gateway_runtime_session_record", default=None)
 )
 
+# JSON-RPC method being dispatched on this thread/task. Purely diagnostic: the
+# 4001 "session not found" warning below is the only signal a stale-runtime
+# retry loop leaves behind, and without the method name it cannot say WHICH
+# client poll is looping (a 5s `process.list` poll produced 18,614 rejections
+# against one id before the caller could be identified). Never used for
+# authorization — the method string is client-supplied.
+_current_rpc_method: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hermes_gateway_rpc_method", default=""
+)
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -2444,7 +2454,11 @@ def handle_request(req: dict) -> dict | None:
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
-    return fn(rid, params)
+    token = _current_rpc_method.set(method)
+    try:
+        return fn(rid, params)
+    finally:
+        _current_rpc_method.reset(token)
 
 
 def _current_session_steer_authority(
@@ -2894,8 +2908,9 @@ def _sess_nowait(params, rid):
     # report is diagnosable as "request arrived and was rejected" instead of
     # "request never arrived" (see #90428).
     logger.warning(
-        "session-scoped RPC rejected: session_id=%r not in memory "
+        "session-scoped RPC rejected: method=%s session_id=%r not in memory "
         "(detached/reaped runtime; client should resume the stored session), rid=%r",
+        _current_rpc_method.get() or "?",
         sid,
         rid,
     )

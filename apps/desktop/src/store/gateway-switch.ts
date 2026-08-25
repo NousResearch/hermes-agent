@@ -78,11 +78,37 @@ export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle
  */
 export function beginGatewaySwitch(): GatewaySwitchToken {
   const token = ++latestSwitchToken
-  $gatewaySwitching.set(true)
-  switchLifecycle?.beforeConnectionSwitch()
-  wipeSessionListsForGatewaySwitch()
+  let wipeStarted = false
 
-  return token
+  $gatewaySwitching.set(true)
+
+  try {
+    switchLifecycle?.beforeConnectionSwitch()
+    wipeStarted = true
+    wipeSessionListsForGatewaySwitch()
+
+    return token
+  } catch (error) {
+    // No caller received this token, so begin owns cleanup. Token-aware teardown
+    // preserves a newer recursively-started switch, if lifecycle code began one.
+    const stillOwnsSwitch = token === latestSwitchToken
+
+    endGatewaySwitch(token)
+
+    // A synchronous wipe has no rollback: once it starts, some outgoing-source
+    // stores may already be empty. Repaint the still-active source best-effort.
+    // A lifecycle failure happens before the wipe and leaves lists untouched.
+    // If a nested switch superseded this one, its owner is responsible instead.
+    if (wipeStarted && stillOwnsSwitch) {
+      try {
+        recoverActiveSourceAfterFailedGatewaySwitch()
+      } catch {
+        // Recovery must never replace the original commit failure.
+      }
+    }
+
+    throw error
+  }
 }
 
 /**

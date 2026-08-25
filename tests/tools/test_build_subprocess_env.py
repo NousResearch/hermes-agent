@@ -282,11 +282,8 @@ def test_local_environment_e2e_password_denial_and_passthrough(tmp_path, monkeyp
         env.cleanup()
 
 
-def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
-    """The Bitwarden token-name cache must be keyed by the active Hermes
-    home, not process-global — a gateway serving multiple profiles by
-    switching the context-local home per turn must match each profile's own
-    configured access_token_env name (egilewski P1)."""
+def test_bws_token_env_resolution_tracks_profile_and_config_revision(tmp_path):
+    """Bitwarden token-name resolution follows active profile and config edits."""
     import yaml
 
     import tools.environments.local as _local_mod
@@ -306,14 +303,11 @@ def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
 
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    # Fresh cache: no cross-test pollution.
-    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_by_home", {})
-
     token_a = set_hermes_home_override(str(profile_a))
     try:
         assert _local_mod._get_configured_bws_token_env() == "ALPHA_BWS_TOKEN"
         assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is True
-        assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is False
+        assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is True
     finally:
         reset_hermes_home_override(token_a)
 
@@ -321,7 +315,7 @@ def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
     try:
         assert _local_mod._get_configured_bws_token_env() == "BETA_BWS_TOKEN"
         assert _local_mod._is_hermes_internal_secret("BETA_BWS_TOKEN") is True
-        assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is False
+        assert _local_mod._is_hermes_internal_secret("ALPHA_BWS_TOKEN") is True
         # The default name stays internal even in a remapped profile: the
         # process-global os.environ can carry a default profile's token into
         # this profile's turn, and it must not cross the child boundary.
@@ -331,11 +325,20 @@ def test_bws_token_env_cache_is_scoped_per_profile(tmp_path, monkeypatch):
     finally:
         reset_hermes_home_override(token_b)
 
-    # Back on profile A the first resolution is still its own name (cache
-    # entries are isolated per home, not overwritten by the last visitor).
+    # Back on profile A, resolution returns A's own name and then follows a
+    # live config revision instead of pinning a shadow cache entry forever.
     token_a2 = set_hermes_home_override(str(profile_a))
     try:
         assert _local_mod._get_configured_bws_token_env() == "ALPHA_BWS_TOKEN"
+        refreshed_name = "ALPHA_BWS_TOKEN_REFRESHED"
+        (profile_a / "config.yaml").write_text(
+            yaml.dump(
+                {"secrets": {"bitwarden": {"access_token_env": refreshed_name}}}
+            ),
+            encoding="utf-8",
+        )
+        assert _local_mod._get_configured_bws_token_env() == refreshed_name
+        assert _local_mod._is_hermes_internal_secret(refreshed_name) is True
     finally:
         reset_hermes_home_override(token_a2)
 
@@ -352,8 +355,6 @@ def test_bws_token_env_remap_non_suffix_stripped(tmp_path, monkeypatch):
     config = {"secrets": {"bitwarden": {"access_token_env": "MY_BWS_TOKEN"}}}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Reset the per-home cache so the remap is picked up for this home.
-    monkeypatch.setattr(_local_mod, "_configured_bws_token_env_by_home", {})
 
     monkeypatch.setenv("MY_BWS_TOKEN", "0.remapped.token")
     monkeypatch.setenv("STRIPE_ACCESS_TOKEN", "sk_live_third_party")
@@ -378,3 +379,16 @@ def test_bws_token_env_remap_non_suffix_stripped(tmp_path, monkeypatch):
         assert is_env_passthrough("STRIPE_ACCESS_TOKEN")
     finally:
         clear_env_passthrough()
+
+
+def test_bws_shaped_bootstrap_token_stays_internal_if_config_read_fails(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    def _raise():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(config_mod, "read_raw_config", _raise)
+    monkeypatch.setenv("MY_BWS_TOKEN", "fake-bootstrap")
+
+    env = build_subprocess_env()
+    assert "MY_BWS_TOKEN" not in env

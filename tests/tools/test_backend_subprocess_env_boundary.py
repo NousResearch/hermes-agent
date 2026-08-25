@@ -34,6 +34,9 @@ _BLOCKED = {
     "GH_TOKEN": "fake-github-token",
     "AUXILIARY_VISION_API_KEY": "fake-aux-key",
     "GATEWAY_RELAY_SECRET": "fake-relay-secret",
+    "OP_SERVICE_ACCOUNT_TOKEN": "fake-op-service-account",
+    "OP_CONNECT_TOKEN": "fake-op-connect",
+    "OP_SESSION_TEST": "fake-op-session",
 }
 
 _SAFE = {
@@ -312,6 +315,106 @@ def test_singularity_image_build_gets_only_explicit_registry_auth(
     for key in (*_BLOCKED, *_CONTAINER_TUNNELS):
         assert key not in child_env
     assert child_env.get("HERMES_TEST_BENIGN") == "keep-me"
+
+
+def test_singularity_image_build_nonmultiplex_scope_overlays_ambient(
+    monkeypatch, tmp_path
+):
+    """Single-profile scopes preserve ambient fallback and override matching keys."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    _plant_parent_env(monkeypatch, tmp_path)
+    ambient_auth = {
+        key: f"ambient-{index}"
+        for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
+    }
+    for key, value in ambient_auth.items():
+        monkeypatch.setenv(key, value)
+    override_key = singularity_env._REGISTRY_AUTH_ENV_VARS[0]
+    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
+    calls = _capture_singularity_run(monkeypatch)
+
+    token = set_secret_scope({override_key: "scope-override"})
+    try:
+        singularity_env._get_or_build_sif(
+            "docker://example.invalid/nonmultiplex:latest", "apptainer"
+        )
+    finally:
+        reset_secret_scope(token)
+
+    child_env = calls[0][1]["env"]
+    assert child_env[override_key] == "scope-override"
+    for key, value in ambient_auth.items():
+        if key != override_key:
+            assert child_env[key] == value
+
+
+@pytest.mark.parametrize("target_mode", ["absent", "different"])
+def test_singularity_image_build_registry_auth_is_target_profile_scoped(
+    target_mode, monkeypatch, tmp_path
+):
+    """The image-build exception may source only the active target profile."""
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    _plant_parent_env(monkeypatch, tmp_path)
+    source_auth = {
+        key: f"source-{index}"
+        for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
+    }
+    for key, value in source_auth.items():
+        monkeypatch.setenv(key, value)
+
+    target_auth = (
+        {}
+        if target_mode == "absent"
+        else {
+            key: f"target-{index}"
+            for index, key in enumerate(singularity_env._REGISTRY_AUTH_ENV_VARS)
+        }
+    )
+    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
+    calls = _capture_singularity_run(monkeypatch)
+
+    set_multiplex_active(True)
+    token = set_secret_scope(target_auth)
+    try:
+        result = singularity_env._get_or_build_sif(
+            "docker://example.invalid/scoped:latest", "apptainer"
+        )
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)
+
+    assert result.endswith("example.invalid-scoped-latest.sif")
+    child_env = calls[0][1]["env"]
+    for key, source_value in source_auth.items():
+        assert child_env.get(key) != source_value
+        if target_mode == "absent":
+            assert key not in child_env
+        else:
+            assert child_env.get(key) == target_auth[key]
+
+
+def test_singularity_image_build_refuses_unscoped_multiplex_auth(
+    monkeypatch, tmp_path
+):
+    """Multiplex image builds fail closed if target authority is unavailable."""
+    from agent.secret_scope import set_multiplex_active
+
+    _plant_parent_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(singularity_env, "_get_apptainer_cache_dir", lambda: tmp_path)
+    set_multiplex_active(True)
+    try:
+        with pytest.raises(RuntimeError, match="active target-profile secret scope"):
+            singularity_env._get_or_build_sif(
+                "docker://example.invalid/unscoped:latest", "apptainer"
+            )
+    finally:
+        set_multiplex_active(False)
 
 
 def test_docker_explicit_forward_cannot_export_hermes_internal_secret(

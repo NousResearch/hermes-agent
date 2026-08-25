@@ -11,7 +11,7 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
@@ -36,13 +36,44 @@ _REGISTRY_AUTH_ENV_VARS = (
 )
 
 
+def _registry_auth_source() -> Mapping[str, str]:
+    """Return registry grants from the active target profile authority.
+
+    A multiplexed process must have a profile secret scope installed. Falling
+    back to process-global ``os.environ`` there would reintroduce the launch
+    profile's credentials after the generic child boundary already sanitized
+    them. Non-multiplex callers retain the historical ambient fallback.
+    """
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    scope = current_secret_scope()
+    multiplex_active = is_multiplex_active()
+    if scope is not None:
+        if multiplex_active:
+            return scope
+        source = dict(os.environ)
+        source.update({str(key): str(value) for key, value in scope.items()})
+        return source
+    if multiplex_active:
+        raise RuntimeError(
+            "Singularity image build requested without an active target-profile "
+            "secret scope while multiplexing is enabled"
+        )
+    return os.environ
+
+
 def _singularity_subprocess_env(*, include_registry_auth: bool = False) -> dict[str, str]:
     env = build_subprocess_env()
     if include_registry_auth:
+        auth_names = {name.upper() for name in _REGISTRY_AUTH_ENV_VARS}
+        for key in list(env):
+            if key.upper() in auth_names:
+                env.pop(key, None)
+        source = _registry_auth_source()
         for key in _REGISTRY_AUTH_ENV_VARS:
-            value = os.environ.get(key)
+            value = source.get(key)
             if value is not None:
-                env[key] = value
+                env[key] = str(value)
     return env
 
 

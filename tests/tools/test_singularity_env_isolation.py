@@ -1,13 +1,10 @@
-"""Tests for Singularity/Apptainer subprocess env isolation.
+"""Tests for Singularity/Apptainer subprocess environment isolation.
 
-Apptainer/Singularity's ``exec`` inherits the calling process's FULL
-environment into the container by default -- ``--cleanenv`` (passed to
-``instance start``) is not repeated on the per-command ``exec`` that
-``SingularityEnvironment._run_bash`` actually spawns. Unlike LocalEnvironment
-(``_make_run_env``) and DockerEnvironment (explicit ``-e`` forwarding), the
-Singularity backend never filtered the env at all, so every hermes provider
-API key / session token / gateway secret in the host process's environment
-was inherited by the container on every terminal command.
+Apptainer/Singularity control and ``exec`` processes would otherwise inherit
+the calling process environment. Hermes routes command execution through the
+shared ``_popen_bash`` sanitizer and supplies explicit sanitized mappings to
+lifecycle and image-build subprocesses. These tests assert those production
+boundaries without claiming native container-runtime verification.
 """
 
 from __future__ import annotations

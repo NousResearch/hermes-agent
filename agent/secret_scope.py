@@ -23,6 +23,22 @@ from typing import Dict, Mapping, Optional
 # Process-global (describes the deployment mode, not a per-task value): set once
 # at gateway startup when gateway.multiplex_profiles is true.
 _MULTIPLEX_ACTIVE: bool = False
+_ENV_KEYS_CASE_INSENSITIVE: bool = os.name == "nt"
+_FORWARDED_ENV_PREFIXES = ("APPTAINERENV_", "SINGULARITYENV_")
+
+
+def _env_name_key(name: str) -> str:
+    value = str(name)
+    changed = True
+    while changed:
+        changed = False
+        upper = value.upper()
+        for prefix in _FORWARDED_ENV_PREFIXES:
+            if upper.startswith(prefix):
+                value = value[len(prefix):]
+                changed = True
+                break
+    return value.upper() if _ENV_KEYS_CASE_INSENSITIVE else value
 
 
 def set_multiplex_active(active: bool) -> None:
@@ -227,11 +243,24 @@ class ProfileEnvBoundary:
         result = dict(env)
         if self.source_home == self.target_home:
             return result
+
+        result_keys = {_env_name_key(key): key for key in result}
+        target_values = {
+            _env_name_key(key): (key, value)
+            for key, value in self.target_values.items()
+        }
         for name in self.source_owned_names:
-            if name in self.target_values:
-                result[name] = self.target_values[name]
-            else:
-                result.pop(name, None)
+            normalized = _env_name_key(name)
+            existing_key = result_keys.get(normalized)
+            target = target_values.get(normalized)
+            if target is not None:
+                target_key, value = target
+                output_key = existing_key or target_key
+                result[output_key] = value
+                result_keys[normalized] = output_key
+            elif existing_key is not None:
+                result.pop(existing_key, None)
+                result_keys.pop(normalized, None)
         return result
 
 
@@ -278,7 +307,11 @@ def build_profile_env_boundary(
             from hermes_constants import get_hermes_home_override
 
             target_home = get_hermes_home_override() or source_home
-        except Exception:
+        except Exception as exc:
+            if _MULTIPLEX_ACTIVE:
+                raise RuntimeError(
+                    "target profile home could not be resolved while multiplexing"
+                ) from exc
             target_home = source_home
     source = Path(source_home).resolve()
     target = Path(target_home).resolve()

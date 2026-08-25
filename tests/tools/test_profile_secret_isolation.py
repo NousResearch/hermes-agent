@@ -13,6 +13,7 @@ from agent.secret_scope import (
     ProfileEnvBoundary,
     build_profile_env_boundary,
     build_profile_secret_scope,
+    get_profile_owned_secret_names,
     set_multiplex_active,
 )
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -21,6 +22,7 @@ from tools.environments.local import (
     LocalEnvironment,
     _make_run_env,
     build_subprocess_env,
+    hermes_subprocess_env,
 )
 
 
@@ -67,6 +69,69 @@ def test_boundary_removes_source_only_and_replaces_same_name(tmp_path):
     assert boundary.identity == str(target.resolve())
 
 
+def test_boundary_matches_windows_environment_names_case_insensitively(
+    tmp_path, monkeypatch
+):
+    import agent.secret_scope as secret_scope
+
+    monkeypatch.setattr(secret_scope, "_ENV_KEYS_CASE_INSENSITIVE", True)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    remove_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"Acme_Login"}),
+        target_values={},
+    )
+    removed = remove_boundary.sanitize(
+        {"ACME_LOGIN": "source-value", "Path": "C:/Windows/System32"}
+    )
+    assert "ACME_LOGIN" not in removed
+    assert removed["Path"] == "C:/Windows/System32"
+
+    replace_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"Acme_Login"}),
+        target_values={"acme_login": "target-value"},
+    )
+    replaced = replace_boundary.sanitize({"ACME_LOGIN": "source-value"})
+    assert replaced == {"ACME_LOGIN": "target-value"}
+
+    _write_profile(source, {"Path": "C:/bad", "Acme_Login": "source-value"})
+    assert get_profile_owned_secret_names(source) == frozenset({"Acme_Login"})
+
+
+def test_boundary_applies_ownership_to_container_forwarding_aliases(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    remove_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"DATABASE_URL"}),
+        target_values={},
+    )
+    assert remove_boundary.sanitize(
+        {"APPTAINERENV_DATABASE_URL": "source-value"}
+    ) == {}
+
+    replace_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"DATABASE_URL"}),
+        target_values={"DATABASE_URL": "target-value"},
+    )
+    assert replace_boundary.sanitize(
+        {"SINGULARITYENV_DATABASE_URL": "source-value"}
+    ) == {"SINGULARITYENV_DATABASE_URL": "target-value"}
+
+
 def test_make_run_env_applies_boundary_to_arbitrary_names(
     tmp_path, monkeypatch, multiplex_mode
 ):
@@ -85,6 +150,30 @@ def test_make_run_env_applies_boundary_to_arbitrary_names(
 
     assert _SOURCE_ONLY not in result
     assert result[_SHARED] == "beta-db"
+
+
+def test_nonterminal_model_driver_env_uses_target_profile_boundary(
+    tmp_path, monkeypatch, multiplex_mode
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_profile(
+        source,
+        {"OPENAI_API_KEY": "source-provider", "CUSTOM_CAP": "source-cap"},
+    )
+    _write_profile(target, {"OPENAI_API_KEY": "target-provider"})
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setenv("OPENAI_API_KEY", "source-provider")
+    monkeypatch.setenv("CUSTOM_CAP", "source-cap")
+
+    token = set_hermes_home_override(target)
+    try:
+        result = hermes_subprocess_env(inherit_credentials=True)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert result["OPENAI_API_KEY"] == "target-provider"
+    assert "CUSTOM_CAP" not in result
 
 
 def test_build_subprocess_env_supports_standalone_explicit_boundary(tmp_path):
@@ -215,6 +304,22 @@ def test_external_secret_source_failure_refuses_boundary(monkeypatch, tmp_path):
     monkeypatch.setattr(env_loader, "get_secret_source_values", _raise)
     with pytest.raises(RuntimeError, match="secret backend unavailable"):
         build_profile_env_boundary(tmp_path / "source", tmp_path / "target")
+
+
+def test_multiplex_target_home_resolution_failure_refuses_run(
+    monkeypatch, tmp_path, multiplex_mode
+):
+    source = tmp_path / "source"
+    _write_profile(source, {_SOURCE_ONLY: "alpha"})
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setenv(_SOURCE_ONLY, "alpha")
+
+    def _raise():
+        raise RuntimeError("profile context unavailable")
+
+    monkeypatch.setattr("hermes_constants.get_hermes_home_override", _raise)
+    with pytest.raises(RuntimeError, match="boundary could not be constructed"):
+        _make_run_env({})
 
 
 class _DummyEnvironment(BaseEnvironment):

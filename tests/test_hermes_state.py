@@ -1836,26 +1836,84 @@ class TestSchemaInit:
 
 
 class TestAsyncDelegationsSchemaAgreement:
-    """SCHEMA_SQL and the delegation tool's own DDL must declare the same
-    shape (#94691).
+    """One durable-shape authority for async_delegations (#94691).
 
-    The delegation tool carries its own CREATE TABLE for async_delegations
-    (plus a lazy ALTER for pre-existing tables). When its column list drifts
-    ahead of the canonical SCHEMA_SQL, two databases at the same
-    schema_version end up with different async_delegations shapes depending
-    only on whether the delegation tool ever ran — breaking rebuild/replay
-    pipelines that reconstruct state.db from the canonical schema.
+    The delegation tool used to carry its own CREATE TABLE + ALTER column
+    list; it drifted from SCHEMA_SQL (a same-name column with a different
+    shape depending on which authority touched the database first). The
+    tool's initializer now routes through the canonical reconciler, so
+    every opening order must land on the same canonical shape — compared
+    over FULL PRAGMA table_info metadata (type, notnull, dflt_value, pk),
+    not just column names, and with the canonical index set pinned.
     """
 
-    def _async_delegations_columns(self, conn):
+    def _table_info(self, conn):
+        return {
+            row[1]: (row[2], row[3], row[4], row[5])
+            for row in conn.execute(
+                "PRAGMA table_info(async_delegations)"
+            ).fetchall()
+        }
+
+    def _canonical_shape(self):
+        ref = __import__("sqlite3").connect(":memory:")
+        try:
+            from hermes_state_common import SCHEMA_SQL
+
+            ref.executescript(SCHEMA_SQL)
+            return self._table_info(ref), {
+                row[0]
+                for row in ref.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='async_delegations' AND sql IS NOT NULL"
+                ).fetchall()
+            }
+        finally:
+            ref.close()
+
+    def _legacy_db(self, db_path):
+        """A database created before origin_session_id existed, carrying a
+        pre-existing delegation row that must survive every opening order."""
         import sqlite3
 
-        rows = conn.execute(
-            "PRAGMA table_info(async_delegations)"
-        ).fetchall()
-        return {row[1] for row in rows}
+        from hermes_state_common import SCHEMA_SQL
 
-    def test_fresh_db_and_tool_schema_agree(self, tmp_path):
+        legacy_sql = SCHEMA_SQL.replace(
+            "    origin_session_id TEXT NOT NULL DEFAULT ''\n", ""
+        ).replace(
+            "    delivery_claimed_at REAL,\n",
+            "    delivery_claimed_at REAL\n",
+        )
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(legacy_sql)
+            conn.execute(
+                "INSERT INTO async_delegations (delegation_id, origin_session, origin_ui_session_id, state, dispatched_at, updated_at) VALUES ('legacy-1', 'sess-a', '', 'completed', 1.0, 1.0)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _assert_canonical(self, conn):
+        expected_cols, expected_indexes = self._canonical_shape()
+        live_cols = self._table_info(conn)
+        assert live_cols == expected_cols
+        live_indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='async_delegations' AND sql IS NOT NULL"
+            ).fetchall()
+        }
+        assert live_indexes == expected_indexes
+        row = conn.execute(
+            "SELECT delegation_id, IFNULL(origin_session_id, '<null>') FROM async_delegations WHERE delegation_id='legacy-1'"
+        ).fetchone()
+        if row is not None:
+            # The legacy row survived and the canonical '' default
+            # backfilled the added column (SQLite ADD COLUMN ... DEFAULT
+            # populates existing rows with the default).
+            assert row[1] == ""
+
+    def test_fresh_session_db_then_tool(self, tmp_path):
         import sqlite3
 
         from tools.async_delegation import _initialize_schema
@@ -1866,46 +1924,42 @@ class TestAsyncDelegationsSchemaAgreement:
 
         conn = sqlite3.connect(db_path)
         try:
-            canonical_cols = self._async_delegations_columns(conn)
-            # The drift column from the tool's DDL is present from the
-            # canonical fresh-install shape (#94691).
-            assert "origin_session_id" in canonical_cols
+            shape_before = self._table_info(conn)
             _initialize_schema(conn)
             conn.commit()
-            after_cols = self._async_delegations_columns(conn)
+            assert self._table_info(conn) == shape_before
+            self._assert_canonical(conn)
         finally:
             conn.close()
 
-        # Running the tool's schema initializer over a canonical database
-        # must not change the table's shape — the two authorities agree.
-        assert after_cols == canonical_cols
+    def test_legacy_store_then_session_db(self, tmp_path):
+        db_path = tmp_path / "legacy-state.db"
+        self._legacy_db(db_path)
 
-    def test_reconcile_backfills_drift_column_on_pre_tool_db(self, tmp_path):
-        """A database created before the column existed (canonical schema
-        without it, delegation tool never run) gets it backfilled by the
-        declarative reconciliation on the next writable open."""
+        db = SessionDB(db_path=db_path)
+        try:
+            self._assert_canonical(db._conn)
+        finally:
+            db.close()
+
+    def test_legacy_store_then_tool_then_session_db(self, tmp_path):
         import sqlite3
 
-        from hermes_state_common import SCHEMA_SQL
+        from tools.async_delegation import _initialize_schema
 
-        db_path = tmp_path / "legacy-state.db"
-        legacy_sql = SCHEMA_SQL.replace(
-            "    origin_session_id TEXT NOT NULL DEFAULT ''\n", ""
-        ).replace(
-            "    delivery_claimed_at REAL,\n",
-            "    delivery_claimed_at REAL\n",
-        )
+        db_path = tmp_path / "legacy-tool-state.db"
+        self._legacy_db(db_path)
+
         conn = sqlite3.connect(db_path)
         try:
-            conn.executescript(legacy_sql)
-            assert "origin_session_id" not in self._async_delegations_columns(conn)
+            _initialize_schema(conn)
+            conn.commit()
         finally:
             conn.close()
 
         db = SessionDB(db_path=db_path)
         try:
-            cols = self._async_delegations_columns(db._conn)
-            assert "origin_session_id" in cols
+            self._assert_canonical(db._conn)
         finally:
             db.close()
 

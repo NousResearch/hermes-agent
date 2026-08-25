@@ -1197,3 +1197,25 @@ class SessionSchemaMixin:
                     1 if entry.get("expiry_finalized") or entry.get("memory_flushed") else 0, str(session_id),
                 ),
             )
+
+
+def reconcile_state_schema(conn: sqlite3.Connection) -> None:
+    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape.
+
+    Single durable-shape authority for callers that open ``state.db``
+    outside SessionDB. The async-delegation tool used to carry its own
+    CREATE TABLE and ALTER column list for ``async_delegations``; it drifted
+    from SCHEMA_SQL (same-name columns with different nullability/defaults
+    depending on which authority touched the database first, #94691). This
+    helper instead replays the canonical DDL (every statement is
+    IF NOT EXISTS/idempotent) and reuses SessionDB's declarative column
+    reconciliation, so out-of-band openers can never grow a second
+    hand-maintained shape for the same durable tables.
+    """
+    conn.executescript(SCHEMA_SQL)
+    # _reconcile_columns only touches the staticmethod _parse_schema_columns,
+    # so a bare instance works; reusing it keeps one reconciliation
+    # implementation (one authority) instead of a near-copy on raw
+    # connections.
+    shim = object.__new__(SessionSchemaMixin)
+    shim._reconcile_columns(conn.cursor())

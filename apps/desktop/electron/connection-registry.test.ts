@@ -544,6 +544,24 @@ test('roster: unique profiles keep bare handles; duplicates get @name-device', (
   assert.equal(roster.length, 4)
 })
 
+test('roster: source profile metadata follows the connection-qualified row', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const vps = { id: 'vps', kind: 'remote' as const, label: 'VPS', url: 'http://vps:8642' }
+  const vpsMeta = {
+    display_name: 'Emma',
+    ui_meta: { 'hermes-bots': { title: 'Emma', shape: 'blobatar::sun', color: '#8b5cf6' } },
+    has_avatar: true
+  }
+
+  const roster = buildAgentRoster([
+    { connection: local, profiles: ['default'] },
+    { connection: vps, profiles: ['default'], profileMetadata: { default: vpsMeta } }
+  ])
+
+  assert.deepEqual(roster.find(agent => agent.connectionId === 'vps')?.profileMetadata, vpsMeta)
+  assert.equal(roster.find(agent => agent.connectionId === 'local')?.profileMetadata, undefined)
+})
+
 test('rememberSshEnumeration: live list wins, cache then seed default', () => {
   assert.deepEqual(rememberSshEnumeration({ profiles: ['bob', 'kai'] }, ['stale'], 'ssh'), {
     profiles: ['bob', 'kai']

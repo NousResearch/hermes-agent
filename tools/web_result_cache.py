@@ -29,6 +29,7 @@ Disable with ``web.cache_enabled: false``; both TTLs come from
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -152,9 +153,16 @@ class SearchMemo:
         with self._store_lock:
             lock = self._key_locks.get(key)
             if lock is None:
-                # Bound the lock table alongside the store.
+                # Bound the lock table alongside the store — but never evict
+                # a HELD lock: dropping one lets a concurrent identical
+                # request mint a fresh lock and issue a duplicate paid call
+                # (review finding on #94618). locked() under _store_lock is
+                # a safe snapshot because flight locks are only ever
+                # acquired by callers that already hold a reference.
                 if len(self._key_locks) > 256:
-                    self._key_locks.clear()
+                    self._key_locks = {
+                        k: v for k, v in self._key_locks.items() if v.locked()
+                    }
                 lock = threading.Lock()
                 self._key_locks[key] = lock
             return lock
@@ -227,26 +235,57 @@ def _save_index(index: dict) -> None:
                 reverse=True,
             )[:_INDEX_MAX_ENTRIES]
             index = dict(newest)
-        tmp = path.with_suffix(".tmp")
+        # Per-process tmp name: CLI, gateway, cron, and subagent processes
+        # all write this index; a shared fixed tmp filename would let two
+        # concurrent writers truncate each other mid-write. os.replace is
+        # atomic per writer, so the worst cross-process outcome is one
+        # writer's entry winning — a lost cache insert, never a torn file.
+        tmp = path.with_suffix(f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(index), encoding="utf-8")
         tmp.replace(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to save web extract cache index: %s", exc)
 
 
-def _url_digest(url: str, format: Optional[str]) -> str:
-    # format participates in the key: an html extract is not a markdown one.
-    raw = f"{url}\n{format or 'markdown'}"
+def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
+    # format AND provider participate in the key: an html extract is not a
+    # markdown one, and one backend's rendering of a page is not another's.
+    raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def extract_cache_get(url: str, format: Optional[str] = None) -> Optional[dict]:
+def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional[Path]:
+    """Dedicated cache file per (url, format, provider) entry.
+
+    Deliberately NOT the truncate-store file from ``_store_full_text`` — that
+    filename keys on URL alone, so html/markdown (or two providers') copies
+    of one URL would overwrite each other (review finding on #94618). The
+    truncate-store file keeps its role for read_file paging; these files
+    exist only for cache reuse and carry the full key in their name.
+    """
+    d = _cache_dir()
+    if d is None:
+        return None
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "page").replace(":", "_")
+        slug = re.sub(r"[^A-Za-z0-9._-]", "-", host)[:60].strip("-") or "page"
+    except Exception:  # noqa: BLE001
+        slug = "page"
+    return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
+
+
+def extract_cache_get(
+    url: str,
+    format: Optional[str] = None,
+    provider: str = "",
+) -> Optional[dict]:
     """Return {'url','title','content'} for a fresh cached page, else None."""
     if not cache_enabled():
         return None
     with _index_lock:
         index = _load_index()
-        entry = index.get(_url_digest(url, format))
+        entry = index.get(_url_digest(url, format, provider))
     if not entry:
         return None
     if (time.time() - float(entry.get("fetched_at", 0))) >= ttl_seconds():
@@ -276,28 +315,32 @@ def extract_cache_put(
     content: str,
     title: str = "",
     format: Optional[str] = None,
+    provider: str = "",
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse.
 
-    Pages larger than the truncate-store ceiling are NOT indexed for reuse:
-    the stored copy would be incomplete, and serving it back as if whole
-    would silently lose the tail. (The capped file is still written by the
-    truncate-store path for read_file paging — we just don't index it.)
+    Writes a dedicated per-(url, format, provider) cache file (see
+    ``_entry_file_path``) — never the URL-keyed truncate-store file, which
+    different formats/providers would overwrite. Pages larger than the
+    truncate-store ceiling are not cached: serving a capped copy back as if
+    whole would silently lose the tail.
     """
     if not cache_enabled() or not content:
         return
     try:
-        from tools.web_tools import MAX_STORED_TEXT_CHARS, _store_full_text
+        from tools.web_tools import MAX_STORED_TEXT_CHARS
         if len(content) > MAX_STORED_TEXT_CHARS:
             return
-        file_path = _store_full_text(url, content)
-        if not file_path:
+        file_path = _entry_file_path(url, format, provider)
+        if file_path is None:
             return
+        from tools.spill_safety import write_text_exclusive
+        write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
             index = _load_index()
-            index[_url_digest(url, format)] = {
+            index[_url_digest(url, format, provider)] = {
                 "url": url,
-                "file": file_path,
+                "file": str(file_path),
                 "title": title or "",
                 "fetched_at": time.time(),
             }

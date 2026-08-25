@@ -69,11 +69,11 @@ Repeat web calls within a short window are served from cache instead of the paid
 | Call | Cache | Scope |
 |------|-------|-------|
 | `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per process |
-| `web_extract` — same URL, same format | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
+| `web_extract` — same URL, same format, same provider | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
 
 Concurrent identical searches (a parallel subagent fan-out firing the same query at once) are **coalesced into a single backend request** — the first caller pays; the rest share the response. Requested search limits are bucketed up to 10/20/50/100 so near-identical requests (`limit=5` vs `limit=8`) share one entry, with each caller receiving its requested count.
 
-Only successful responses are cached. Failures always retry the backend, and responses served by the one-shot keyless rescue are never cached (the next call attempts your chosen backend again). Cached extracts re-run the normal truncation pipeline, so a different `char_limit` on the second call works off the same stored scrape.
+Only successful responses are cached. Failures always retry the backend, responses served by the one-shot keyless rescue are never cached (the next call attempts your chosen backend again), and URLs matched by your `security.website_blocklist` are never served from cache. Cached extracts re-run the normal truncation pipeline, so a different `char_limit` on the second call works off the same stored scrape.
 
 ```yaml
 # ~/.hermes/config.yaml

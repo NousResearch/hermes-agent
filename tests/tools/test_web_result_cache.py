@@ -147,26 +147,9 @@ def test_single_flight_coalesces_concurrent_identical_queries():
 
 # ── extract cache ────────────────────────────────────────────────────────
 
-def _put_and_get(url="https://example.com/a", content="hello world",
-                 fmt=None, **kw):
-    extract_cache_put(url, content, title="T", format=fmt, **kw)
-    return extract_cache_get(url, format=fmt)
-
-
-def test_extract_cache_roundtrip(monkeypatch, _isolated_cache):
-    # _store_full_text writes to the real hermes dir; redirect it here.
-    stored = {}
-
-    def fake_store(url, content):
-        p = _isolated_cache / "page.md"
-        p.write_text(content, encoding="utf-8")
-        stored["path"] = str(p)
-        return str(p)
-
-    import tools.web_tools as wt
-    monkeypatch.setattr(wt, "_store_full_text", fake_store)
-
-    hit = _put_and_get()
+def test_extract_cache_roundtrip(_isolated_cache):
+    extract_cache_put("https://example.com/a", "hello world", title="T")
+    hit = extract_cache_get("https://example.com/a")
     assert hit is not None
     assert hit["content"] == "hello world"
     assert hit["title"] == "T"
@@ -174,31 +157,40 @@ def test_extract_cache_roundtrip(monkeypatch, _isolated_cache):
 
 
 def test_extract_cache_expired_entry_is_miss(monkeypatch, _isolated_cache):
-    import tools.web_tools as wt
-    p = _isolated_cache / "page.md"
-    p.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(wt, "_store_full_text", lambda u, c: str(p))
     extract_cache_put("https://e.com", "x")
     monkeypatch.setattr(wrc, "ttl_seconds", lambda: 0.0)
     assert extract_cache_get("https://e.com") is None
 
 
-def test_extract_cache_format_participates_in_key(monkeypatch, _isolated_cache):
-    import tools.web_tools as wt
-    p = _isolated_cache / "page.md"
-    p.write_text("md", encoding="utf-8")
-    monkeypatch.setattr(wt, "_store_full_text", lambda u, c: str(p))
-    extract_cache_put("https://e.com", "md", format="markdown")
+def test_extract_cache_format_participates_in_key(_isolated_cache):
+    extract_cache_put("https://e.com", "md content", format="markdown")
     assert extract_cache_get("https://e.com", format="html") is None
     assert extract_cache_get("https://e.com", format="markdown") is not None
 
 
-def test_extract_cache_oversized_page_not_indexed(monkeypatch, _isolated_cache):
+def test_extract_cache_formats_do_not_overwrite_each_other(_isolated_cache):
+    """Regression (#94618 review finding 3): html and markdown copies of one
+    URL must be stored independently — the original implementation shared a
+    URL-keyed backing file, so the later write clobbered the earlier one."""
+    extract_cache_put("https://e.com/page", "# MARKDOWN VERSION", format="markdown")
+    extract_cache_put("https://e.com/page", "<h1>HTML VERSION</h1>", format="html")
+    md = extract_cache_get("https://e.com/page", format="markdown")
+    html = extract_cache_get("https://e.com/page", format="html")
+    assert md is not None and md["content"] == "# MARKDOWN VERSION"
+    assert html is not None and html["content"] == "<h1>HTML VERSION</h1>"
+
+
+def test_extract_cache_provider_participates_in_key(_isolated_cache):
+    """Switching extract backends within the TTL must not serve the old
+    backend's rendering (#94618 review, additional risk 3)."""
+    extract_cache_put("https://e.com/p", "firecrawl version", provider="firecrawl")
+    assert extract_cache_get("https://e.com/p", provider="tavily") is None
+    hit = extract_cache_get("https://e.com/p", provider="firecrawl")
+    assert hit is not None and hit["content"] == "firecrawl version"
+
+
+def test_extract_cache_oversized_page_not_indexed(_isolated_cache):
     import tools.web_tools as wt
-    monkeypatch.setattr(
-        wt, "_store_full_text",
-        lambda u, c: str(_isolated_cache / "should-not-happen.md"),
-    )
     big = "x" * (wt.MAX_STORED_TEXT_CHARS + 1)
     extract_cache_put("https://big.com", big)
     assert extract_cache_get("https://big.com") is None
@@ -239,10 +231,6 @@ def test_extract_cache_corrupt_index_is_empty(_isolated_cache):
 
 
 def test_extract_cache_disabled_by_config(monkeypatch, _isolated_cache):
-    import tools.web_tools as wt
-    p = _isolated_cache / "page.md"
-    p.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(wt, "_store_full_text", lambda u, c: str(p))
     extract_cache_put("https://e.com", "x")
     monkeypatch.setattr(wrc, "_web_config", lambda: {"cache_enabled": False})
     assert extract_cache_get("https://e.com") is None

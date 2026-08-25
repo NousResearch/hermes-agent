@@ -1552,6 +1552,10 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
         from tools.environments.base import sanitize_task_id_for_path
     except Exception:
         return ["default"]
+    # Explicit trusted-profiles opt-in: one shared container identity.
+    shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    if shared:
+        candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
     try:
         from hermes_cli.profiles import get_active_profile_name
 

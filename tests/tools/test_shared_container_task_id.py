@@ -253,3 +253,59 @@ def test_ssh_backend_keeps_session_scoping(monkeypatch):
         assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
     finally:
         clear_session_vars(tokens)
+
+
+# --- Trusted-profiles shared container opt-in (#84671) ------------------------
+
+
+def test_shared_key_unifies_profiles(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    tokens = set_session_vars(session_key="s1", profile="work")
+    try:
+        a = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_key="s2", profile="research")
+    try:
+        b = terminal_tool._resolve_container_task_id(None)
+    finally:
+        clear_session_vars(tokens)
+    assert a == b == "shared:team/workspace"
+
+
+def test_shared_key_applies_to_cli_no_session(monkeypatch):
+    # CLI (no session key) must land in the same shared container as gateway
+    # sessions, or the opt-in splits the container it exists to unify.
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    assert terminal_tool._resolve_container_task_id(None) == "shared:team/workspace"
+
+
+def test_empty_shared_key_keeps_profile_scoping(monkeypatch):
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    _persistent_docker(monkeypatch)
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "")
+    tokens = set_session_vars(session_key="s1", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "profile:work"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
+    # The opt-in is a persistent-Docker concept only: SSH keeps session
+    # scoping even when the key is set.
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
+    tokens = set_session_vars(session_key="sess-A", profile="work")
+    try:
+        assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
+    finally:
+        clear_session_vars(tokens)

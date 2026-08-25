@@ -16,10 +16,10 @@ _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
 
 _SKILL_VIEW_DEDUP_MESSAGE = (
-    "Skill content unchanged since it was loaded earlier in this "
-    "conversation — refer to the earlier skill_view result; it is still "
-    "current and complete. (Re-issued after context compression, this "
-    "returns the full content again.)")
+    "Skill content is already loaded and unchanged. Execute the loaded "
+    "instructions now with the required action tool, or answer from the "
+    "loaded content. Re-reading cannot make progress."
+)
 
 
 def dedup_skill_view(task_id, name, file_path, payload: dict, result: str) -> str | None:
@@ -37,9 +37,9 @@ def dedup_skill_view(task_id, name, file_path, payload: dict, result: str) -> st
         cache = _skill_view_tracker.setdefault(str(task_id), {})
         if cache.get(key) == digest:
             return json.dumps({
-                "success": True, "status": "unchanged", "name": resolved,
+                "success": False, "status": "deduplicated", "name": resolved,
                 "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,
-                "message": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
+                "error": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
         cache.pop(key, None)  # re-insert at the end: FIFO eviction keeps the recently served
         cache[key] = digest
         while len(cache) > _SKILL_VIEW_DEDUP_CAP:  # FIFO eviction

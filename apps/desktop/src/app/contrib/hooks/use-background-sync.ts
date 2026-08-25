@@ -75,23 +75,31 @@ export interface ActiveTranscriptRefreshDeps {
  * pair, so no resolution step is needed; refreshes are signature-gated per
  * tile so a no-change event costs nothing, and a busy tile is skipped (its own
  * stream owns the view while streaming).
+ *
+ * Sequencing note (#94255 review): all tiles SHARE one request sequence, so a
+ * second tick arriving mid-read invalidates every in-flight read from the
+ * first (latest-wins — same discipline as the main pane path). Under rapid
+ * tick bursts only the final tick lands updates; that is intended, since each
+ * tick re-reads from storage anyway.
  */
 export async function reconcileTileTranscripts({
   requestSequenceRef,
   busyRef,
   signatureRef,
-  updateSessionState
+  updateSessionState,
+  tiles: tilesOverride
 }: {
   busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   signatureRef: MutableRefObject<Map<string, string>>
+  tiles?: Array<{ storedSessionId: string; runtimeId?: string }>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
 }): Promise<void> {
-  const tiles = $sessionTiles.get()
+  const tiles = tilesOverride ?? $sessionTiles.get()
 
   for (const tile of tiles) {
     const storedSessionId = tile.storedSessionId
@@ -113,15 +121,24 @@ export async function reconcileTileTranscripts({
 
     const requestId = ++requestSequenceRef.current
 
+    // With a tiles override (test path), the live $sessionTiles check can't
+    // see the synthetic tile — treat override tiles as present.
+    const stillPresent = tilesOverride
+      ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+      : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+
     try {
       const latest = await getLatestSessionMessages(storedSessionId)
 
       if (
         requestId !== requestSequenceRef.current ||
         busyRef.current ||
-        $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId) === false
+        !stillPresent
       ) {
-        // Tile closed or superseded mid-read — discard.
+        // Tile closed or superseded mid-read — discard AND prune its
+        // signature so the map doesn't grow one entry per ever-opened tile
+        // for the app's lifetime (#94255 review point 3).
+        signatureRef.current.delete(`tile:${storedSessionId}`)
         continue
       }
 

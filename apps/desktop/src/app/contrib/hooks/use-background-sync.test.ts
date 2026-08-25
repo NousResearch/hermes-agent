@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
 import {
   $activeSessionId,
@@ -22,6 +23,7 @@ import {
 import {
   type ActiveTranscriptRefreshDeps,
   reconcileActiveTranscript,
+  reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
   resolveActiveTranscriptSession,
   useBackgroundSync,
@@ -188,6 +190,106 @@ describe('active transcript refresh', () => {
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'hidden external answer'
     })
+  })
+
+  it('reconciles a workspace TILE transcript when sessions.changed ticks (#94255 review: behavior, not source-grep)', async () => {
+    $changeEventsAvailable.set(true)
+    // The tile's runtime differs from the active session — it is NOT the main
+    // pane surface, so only the tile reconcile path may update it.
+    const TILE_RUNTIME_ID = 'runtime-tile'
+    const TILE_STORED_ID = 'stored-tile'
+    $activeSessionId.set('runtime-something-else')
+    $selectedStoredSessionId.set('stored-other')
+
+    const states = new Map<string, ReturnType<typeof createClientSessionState>>()
+    states.set(TILE_RUNTIME_ID, createClientSessionState(TILE_STORED_ID))
+
+    let updaterCallCount = 0
+
+    const updateSessionState: Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState'] = vi.fn(
+      (sessionId, updater) => {
+        updaterCallCount += 1
+        const current = {} as Parameters<typeof updater>[0]
+
+        return updater(current)
+      }
+    )
+    void updateSessionState
+
+    const signatureRef = { current: new Map<string, string>() }
+    const requestSequenceRef = { current: 0 }
+    const busyRef = { current: false }
+
+    vi.mocked(getLatestSessionMessages).mockImplementation(async (storedId: string) => {
+      if (storedId === TILE_STORED_ID) {
+        return {
+          messages: [
+            { content: 'tile question', role: 'user', timestamp: 1 },
+            { content: 'background delivery answer', role: 'assistant', timestamp: 2 }
+          ],
+          session_id: TILE_STORED_ID
+        } as never
+      }
+
+      return transcript('main-pane answer') as never
+    })
+
+    // Seed a tile so reconcileTileTranscripts has a target.
+    setSessions([]) // bot chats are hidden from $sessions — the whole point
+
+    await act(async () => {
+      await reconcileTileTranscriptsForTest({
+        tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+        busyRef,
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+    })
+
+    // Behavior assertions:
+    expect(updaterCallCount).toBeGreaterThan(0)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID)
+  })
+
+  it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {
+    $changeEventsAvailable.set(true)
+
+    const TILE_RUNTIME_ID = 'runtime-tile-2'
+    const TILE_STORED_ID = 'stored-tile-2'
+
+    const signatureRef = { current: new Map<string, string>() }
+    // Pre-seed the signature with what the mock returns → no-change tick.
+    const pre = {
+      messages: [
+        { content: 'q', role: 'user', timestamp: 1 },
+        { content: 'a', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: TILE_STORED_ID
+    }
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(pre as never)
+
+    // Compute the same signature the reconcile will compute, and pre-seed it.
+    const preSignature = sessionMessagesSignature(pre.messages as never)
+
+    signatureRef.current.set(`tile:${TILE_STORED_ID}`, preSignature)
+
+    const updateSessionState = vi.fn()
+    const busyRef = { current: false }
+    const requestSequenceRef = { current: 0 }
+
+    await act(async () => {
+      await reconcileTileTranscriptsForTest({
+        tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+        busyRef,
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+    })
+
+    expect(updateSessionState).not.toHaveBeenCalled()
   })
 
   it('refreshes a local/Desktop session when sessions.changed ticks', async () => {

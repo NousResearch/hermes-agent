@@ -127,6 +127,99 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, [27])  # Esc
         assert result is None
 
+    def test_down_arrow_escape_sequence_navigates(self):
+        """ANSI escape sequence for Down arrow (\\x1b[B) moves cursor down."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Second session", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "Third session", "preview": "", "last_active": time.time()},
+        ]
+        # Down arrow sequence (\x1b[B) then Enter (10)
+        keys = [27, ord("["), ord("B"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_ss3_down_arrow_escape_sequence_navigates(self):
+        """SS3 escape sequence for Down arrow (\\x1bOB) moves cursor down."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Second session", "preview": "", "last_active": time.time()},
+        ]
+        keys = [27, ord("O"), ord("B"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_up_arrow_escape_sequence_navigates(self):
+        """ANSI escape sequence for Up arrow (\\x1b[A) wraps/moves cursor up."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Second session", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "Third session", "preview": "", "last_active": time.time()},
+        ]
+        # Up arrow sequence (\x1b[A) wraps to s3, then Enter
+        keys = [27, ord("["), ord("A"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s3"
+
+    def test_ctrl_n_and_ctrl_p_navigation(self):
+        """Ctrl+N (14) moves down, Ctrl+P (16) moves up."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Second session", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "Third session", "preview": "", "last_active": time.time()},
+        ]
+        # Ctrl+N (down to s2), Ctrl+N (down to s3), Ctrl+P (up to s2), Enter
+        keys = [14, 14, 16, 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_ctrl_c_cancels_cleanly(self):
+        """Ctrl+C (3) exits cleanly and returns None."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [3])
+        assert result is None
+
+    def test_q_cancels_when_search_empty(self):
+        """'q' key cancels and exits when search filter is empty."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [ord("q")])
+        assert result is None
+
+    def test_q_typed_into_active_search(self):
+        """'q' key can be typed into an active search query (e.g. 'sql')."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Web scraper", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "sql query optimizer", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "Data pipeline", "preview": "", "last_active": time.time()},
+        ]
+        # Start filter with 's', then 'q', then 'l', then Enter
+        keys = [ord("s"), ord("q"), ord("l"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_j_and_k_navigate_when_search_empty(self):
+        """'j' (down) and 'k' (up) navigate when search filter is empty."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "Second session", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "Third session", "preview": "", "last_active": time.time()},
+        ]
+        # j (down to s2), j (down to s3), k (up to s2), Enter
+        keys = [ord("j"), ord("j"), ord("k"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
+
+    def test_j_and_k_typed_into_active_search(self):
+        """'j' and 'k' are appended to search query once search is active."""
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "First session", "preview": "", "last_active": time.time()},
+            {"id": "s2", "source": "cli", "title": "task runner", "preview": "", "last_active": time.time()},
+            {"id": "s3", "source": "cli", "title": "django server", "preview": "", "last_active": time.time()},
+        ]
+        # Start search with 't', then 'a', 's', 'k', then Enter -> matches s2
+        keys = [ord("t"), ord("a"), ord("s"), ord("k"), 10]
+        result = self._run_with_keys(sessions, keys)
+        assert result == "s2"
 
     def test_type_to_filter_then_enter(self):
         """Typing characters filters the list, Enter selects from filtered."""

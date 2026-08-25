@@ -378,6 +378,12 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 continue
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
+                # Same surfacing contract as the direct-completion path:
+                # this second rmtree destroys undeclared parent content
+                # just as silently as the first one did before #93164 —
+                # the deferred sweep is the exact case the feature exists
+                # to cover (flagged by the #93709 review).
+                _warn_and_event_discarded_scratch_content(conn, parent_id, wp)
                 release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)

@@ -991,6 +991,46 @@ def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_
     assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
 
 
+def test_deferred_parent_cleanup_also_signals(kanban_home, tmp_path, caplog):
+    """The deferred parent-sweep rmtree emits the same discarded-content
+    signal as the direct-completion path (#93164 review on #93709): a
+    parent whose cleanup waited on children would otherwise destroy its
+    undeclared files silently on the second rmtree path."""
+    import logging
+
+    child_dir = tmp_path / "persistent-child"
+    child_dir.mkdir()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(
+            conn, title="dir child", workspace_kind="dir",
+            workspace_path=str(child_dir),
+        )
+        kb.link_tasks(conn, parent, child)
+        parent_ws = kb.resolve_workspace(kb.get_task(conn, parent))
+        kb.set_workspace_path(conn, parent, parent_ws)
+        (parent_ws / "undeclared.md").write_text("q" * 2048)  # over the 1KB floor
+
+        with caplog.at_level(logging.WARNING, logger=kb._log.name):
+            kb.complete_task(conn, parent, result="handoff")  # deferred
+            assert "undeclared.md" not in caplog.text, (
+                "parent still deferred: no signal yet"
+            )
+            kb.complete_task(conn, child, result="built")     # triggers sweep
+
+        assert "undeclared.md" in caplog.text, (
+            "deferred sweep must surface the content it destroys"
+        )
+        events = [
+            e for e in kb.list_events(conn, parent)
+            if e.kind == "workspace_discarded_content"
+        ]
+        assert events, "the parent's board event must be appended too"
+        assert events[0].payload["file_count"] == 1
+
+    assert not parent_ws.exists()
+
+
 
 
 def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):

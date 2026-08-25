@@ -850,8 +850,6 @@ def test_peer_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, encodi
     assert not dm_file.exists()
 
 
-<<<<<<< HEAD
-=======
 def test_delivery_runner_forwards_one_substantive_reply_on_stdout(tmp_path, capsys):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("question", encoding="utf-8")
@@ -885,7 +883,6 @@ def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="child launch failed"):
         bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
     assert not dm_file.exists()
->>>>>>> 6066f848061 (test(bot-mode): enforce a single teammate reply path)
 
 
 def test_peer_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):

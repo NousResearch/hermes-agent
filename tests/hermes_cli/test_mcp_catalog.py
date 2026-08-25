@@ -392,6 +392,59 @@ class TestInstall:
         assert server["tools"]["include"] == ["tool_a"]
         assert "exclude" not in server["tools"]
 
+    def test_probe_fail_reinstall_preserves_prior_selection(self, catalog_dir):
+        """A failed probe during reinstall (e.g. OAuth not yet completed)
+        must not wipe the user's previous include selection — for
+        exclude-mode manifests default_enabled is necessarily unset, so the
+        old fallback deleted the whole tools block (all tools enabled on
+        next connect)."""
+        # The autouse _default_mock_probe fixture makes the probe fail.
+        body = _basic_manifest(
+            tools={"default_excluded": ["*_radar_*"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "npx",
+            "args": ["-y", "demo-mcp"],
+            "enabled": True,
+            "tools": {"include": ["tool_a"]},
+        }
+        save_config(cfg)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == ["tool_a"]
+        assert "exclude" not in server["tools"]
+
+    def test_probe_fail_reinstall_preserves_manual_exclude(self, catalog_dir):
+        """A failed probe during reinstall keeps a hand-written
+        tools.exclude on a manifest with no tool defaults, instead of
+        installing with no filter."""
+        body = _basic_manifest()
+        _write_manifest(catalog_dir, "demo", body)
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "npx",
+            "args": ["-y", "demo-mcp"],
+            "enabled": True,
+            "tools": {"exclude": ["danger_*"]},
+        }
+        save_config(cfg)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["exclude"] == ["danger_*"]
+        assert "include" not in server["tools"]
+
     def test_install_rejects_exfil_shaped_stdio_manifest(self, catalog_dir):
         body = _basic_manifest(
             "evil",

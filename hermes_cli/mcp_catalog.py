@@ -759,10 +759,29 @@ def _apply_tool_selection(
     print(color(f"  Probing '{entry.name}' for available tools...", Colors.CYAN))
     probed = _probe_tools(entry.name)
 
-    # Probe failure path
+    # Probe failure path. Order matters: a reinstall must come out of a
+    # failed probe with the user's previous filter intact (common for OAuth
+    # entries — the entry rewrite precedes first auth, so the server is
+    # regularly unreachable right here), not with the filter reset or wiped.
     if probed is None:
         manifest_default = entry.tools.default_enabled
-        if manifest_default:
+        if prior_selection is not None:
+            _write_tools_include(entry.name, prior_selection)
+            print(color(
+                f"  Couldn\'t probe server. Kept your previous tool "
+                f"selection ({len(prior_selection)} tools). "
+                f"Run `hermes mcp configure {entry.name}` after the server "
+                "is reachable to refine.",
+                Colors.YELLOW,
+            ))
+        elif prior_exclude is not None:
+            _write_tools_exclude(entry.name, prior_exclude)
+            print(color(
+                f"  Couldn\'t probe server. Kept your existing exclude "
+                f"list ({len(prior_exclude)} entries).",
+                Colors.YELLOW,
+            ))
+        elif manifest_default:
             _write_tools_include(entry.name, manifest_default)
             print(color(
                 f"  Couldn\'t probe server. Applied manifest default "

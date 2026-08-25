@@ -1709,7 +1709,22 @@ install_deps() {
         #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        #
+        # Strip UV_NO_CONFIG for this one invocation. The global export at
+        # script start (the #21269 sudo -u hygiene guard) also hides the
+        # project's own [tool.uv] policy — exclude-newer and its package
+        # exemptions — from uv. The resolver then runs under a different
+        # policy than the one uv.lock was resolved under, and --locked
+        # turns that mismatch fatal:
+        #   error: The lockfile at `uv.lock` needs to be updated, but
+        #   `--locked` was provided.
+        # Every fresh install then falls through to the non-hash-verified
+        # PyPI fallback tiers, defeating the point of Tier 0. Runtime code
+        # already strips UV_NO_CONFIG before its own locked syncs for the
+        # same reason (hermes_cli/managed_uv.py, "Locked sync must see
+        # project [tool.uv] exclude-newer"). The export stays in effect for
+        # every other uv call in this script.
+        if env -u UV_NO_CONFIG UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0

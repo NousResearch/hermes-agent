@@ -278,6 +278,18 @@ describe('localRouteFallbackProfiles', () => {
   it('does not synthesize local routes after a successful local enumeration', () => {
     expect(localRouteFallbackProfiles([], 'local', ['default'], false)).toEqual([])
   })
+
+  it('does not synthesize local routes for a deferred connect-on-demand enumeration', () => {
+    expect(
+      localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('connect-on-demand'))
+    ).toEqual([])
+  })
+
+  it('synthesizes local routes for a genuine local enumeration error', () => {
+    expect(
+      localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('ECONNREFUSED'))
+    ).toEqual(['default'])
+  })
 })
 
 describe('undialedSshRouteSeeds', () => {

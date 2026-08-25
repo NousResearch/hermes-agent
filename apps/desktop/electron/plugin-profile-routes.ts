@@ -53,7 +53,10 @@ interface BuildOpaqueProfileRoutesOptions {
 
 /** A 'connect-on-demand' local enumeration was intentionally deferred, not
  * failed — it must not be treated as a failure or Bot Mode will synthesize
- * cached local rows on remote-only workspaces where local was never dialed. */
+ * cached local rows on remote-only workspaces where local was never dialed.
+ * The sentinel is set by `enumerateRegistryAgentSources` in main.ts when
+ * `shouldDeferLocalEnumeration` (connection-registry.ts) defers the local
+ * source. */
 export function isLocalEnumerationFailure(error?: string): boolean {
   return Boolean(error) && error !== 'connect-on-demand'
 }

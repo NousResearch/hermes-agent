@@ -168,6 +168,20 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "of truth when the two differ."
 )
 
+# Variant injected when the skill tools are not in the session's toolset
+# (e.g. a Blank Slate install with the skills toolset disabled). Pointing the
+# model at skill_view() there would be a dangling reference — the docs URL is
+# the only actionable pointer.
+HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
+    "You run on Hermes Agent (by Nous Research). When the user needs help with "
+    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+    "it — or when you need to understand your own features, tools, or capabilities, "
+    "the documentation at https://hermes-agent.nousresearch.com/docs is the "
+    "authoritative reference and always holds the latest, most up-to-date "
+    "information. Point the user there (or read it yourself if you have a way to "
+    "fetch web content)."
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
@@ -562,6 +576,26 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- If you must proceed with incomplete information, label assumptions explicitly.\n"
     "</missing_context>"
 )
+
+
+def execution_guidance_text(valid_tool_names=None) -> str:
+    """Render OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset.
+
+    The block names ``web_search`` as the lookup tool for current facts; on
+    sessions without web tools (e.g. Blank Slate) that's a dangling
+    reference, so the web_search lines are dropped/adjusted. Deterministic
+    per-session (toolset is fixed at construction), so cache-safe.
+    """
+    text = OPENAI_MODEL_EXECUTION_GUIDANCE
+    if valid_tool_names is not None and "web_search" not in valid_tool_names:
+        text = text.replace(
+            "- Current facts (weather, news, versions) → use web_search\n", ""
+        )
+        text = text.replace(
+            "(search_files, web_search, read_file, etc.)",
+            "(search_files, read_file, etc.)",
+        )
+    return text
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
@@ -2177,6 +2211,11 @@ def _build_skills_system_prompt_inner(
     if not skills_by_category:
         result = ""
     else:
+        # "basic tools like web_search or terminal" — don't name web_search
+        # when the session has no web tools (dangling reference otherwise).
+        _basic_tools = "web_search or terminal"
+        if available_tools is not None and "web_search" not in available_tools:
+            _basic_tools = "terminal"
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
@@ -2207,7 +2246,7 @@ def _build_skills_system_prompt_inner(
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
+            f"even if you think you could handle the task with basic tools like {_basic_tools}. "
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"

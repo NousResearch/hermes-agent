@@ -530,6 +530,14 @@ DEFAULT_CONFIG = {
         #           is also excluded from the keyless ring)
         #   unset — auto: keyed when the API key is present, else the ring
         "provider_tier": {},
+        # TTL result caching for web_search + web_extract. Repeat searches
+        # (same query, same provider) within the TTL are served from an
+        # in-process memo; repeat extracts of the same URL are served from
+        # the cache/web full-text store. Concurrent identical searches
+        # (parallel subagents) coalesce into one vendor request. Only
+        # successful responses are cached.
+        "cache_enabled": True,
+        "cache_ttl_minutes": 20,
     },
 
     "browser": {

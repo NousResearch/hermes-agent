@@ -62,6 +62,30 @@ If you specifically need the live DOM rather than extracted markdown — for exa
 
 ---
 
+## Result caching
+
+Repeat web calls within a short window are served from cache instead of the paid backend — this saves credits and latency in the two patterns where duplicates are common: subagent fan-outs (several delegated agents researching the same topic) and the agent re-checking a page it read minutes ago.
+
+| Call | Cache | Scope |
+|------|-------|-------|
+| `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per process |
+| `web_extract` — same URL, same format | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
+
+Concurrent identical searches (a parallel subagent fan-out firing the same query at once) are **coalesced into a single backend request** — the first caller pays; the rest share the response. Requested search limits are bucketed up to 10/20/50/100 so near-identical requests (`limit=5` vs `limit=8`) share one entry, with each caller receiving its requested count.
+
+Only successful responses are cached. Failures always retry the backend, and responses served by the one-shot keyless rescue are never cached (the next call attempts your chosen backend again). Cached extracts re-run the normal truncation pipeline, so a different `char_limit` on the second call works off the same stored scrape.
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  cache_enabled: true      # default; set false to disable both caches
+  cache_ttl_minutes: 20    # freshness window, clamped 1–1440
+```
+
+If you're researching genuinely live data (scores, prices, breaking news) and need every call fresh, lower the TTL or set `web.cache_enabled: false`.
+
+---
+
 ## Setup
 
 ### Quick setup via `hermes tools`

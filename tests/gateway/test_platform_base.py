@@ -1252,3 +1252,111 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+class TestDockerSessionSandboxMediaTranslation:
+    """MEDIA from a session-scoped persistent Docker sandbox must resolve to
+    the host directory that container actually bind-mounts (#93950).
+
+    Contract: the gateway resolves the SAME directory
+    ``tools/environments/docker.py`` created — ``<sandboxes>/docker/<task>``
+    where ``<task>`` is ``sanitize_task_id_for_path("session:<key>")`` for
+    gateway sessions and the literal ``default`` otherwise.
+    """
+
+    SESSION_KEY = "agent:main:telegram:dm:123456"
+
+    @staticmethod
+    def _sandbox_dir(session_key: str):
+        from tools.environments.base import get_sandbox_dir, sanitize_task_id_for_path
+
+        task_id = f"session:{session_key}" if session_key else "default"
+        return get_sandbox_dir() / "docker" / sanitize_task_id_for_path(task_id)
+
+    def _enable_docker(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+
+    def test_session_scoped_workspace_media_translates(self, monkeypatch):
+        """A MEDIA tag pointing at the container's /workspace resolves to the
+        session's real host sandbox instead of being dropped."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir(self.SESSION_KEY) / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "chart.png"
+        produced.write_bytes(b"png")
+
+        resolved = BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/chart.png", session_key=self.SESSION_KEY
+        )
+
+        assert resolved == str(produced.resolve())
+
+    def test_missing_session_key_reproduces_93950_drop(self, monkeypatch):
+        """Pre-fix failure mode: with no delivering-session key the
+        translation collapses onto the (nonexistent) ``default`` sandbox and
+        the attachment is dropped even though the file exists."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir(self.SESSION_KEY) / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "out.png").write_bytes(b"png")
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path("/workspace/out.png")
+            is None
+        )
+
+    def test_default_sandbox_still_resolves_without_session_key(self, monkeypatch):
+        """CLI-created default sandboxes keep their historical resolution."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir("") / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "out.png"
+        produced.write_bytes(b"png")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png"
+        ) == str(produced.resolve())
+
+    def test_session_home_mount_translates_stray_root_writes(self, monkeypatch):
+        """/root/<file> lands in the session sandbox's home mount."""
+        self._enable_docker(monkeypatch)
+        home = self._sandbox_dir(self.SESSION_KEY) / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        produced = home / "note.txt"
+        produced.write_text("hi")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/note.txt", session_key=self.SESSION_KEY
+        ) == str(produced.resolve())
+
+    def test_session_home_credential_surface_still_refused(self, monkeypatch):
+        """The /root/.hermes exclusion survives session scoping: translating
+        the home mount must never expose the container's secret surface."""
+        self._enable_docker(monkeypatch)
+        home = self._sandbox_dir(self.SESSION_KEY) / "home"
+        secrets = home / ".hermes"
+        secrets.mkdir(parents=True, exist_ok=True)
+        (secrets / "auth.json").write_text("{}")
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(
+                "/root/.hermes/auth.json", session_key=self.SESSION_KEY
+            )
+            is None
+        )
+
+    def test_filter_passes_session_key_through(self, monkeypatch):
+        """The adapter filter used by _process_message_background forwards the
+        key, so extracted MEDIA tags survive filtering in one hop."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir(self.SESSION_KEY) / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "clip.mp4"
+        produced.write_bytes(b"mp4")
+
+        kept = BasePlatformAdapter.filter_media_delivery_paths(
+            [("/workspace/clip.mp4", False)], session_key=self.SESSION_KEY
+        )
+
+        assert kept == [(str(produced.resolve()), False)]

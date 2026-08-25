@@ -1531,8 +1531,32 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     return mounts
 
 
-def _default_docker_workspace_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/workspace`` mount."""
+def _docker_sandbox_dir_name(session_key: str = "") -> str:
+    """Host sandbox directory name for a session's persistent Docker container.
+
+    Mirrors ``_resolve_container_task_id(None)`` (tools/terminal_tool.py):
+    gateway sessions key their container ``session:<session_key>`` and
+    tools/environments/docker.py names the host directory after
+    :func:`sanitize_task_id_for_path` of that id. Contexts without a session
+    key share the historical ``default`` sandbox.
+
+    Takes the key explicitly because the delivery pipeline runs after
+    ``_handle_message_with_agent`` cleared the turn's session contextvars
+    (#93950) — an ambient lookup here would silently collapse onto
+    ``default`` and miss the session's real sandbox.
+    """
+    if not session_key:
+        return "default"
+    try:
+        from tools.environments.base import sanitize_task_id_for_path
+
+        return sanitize_task_id_for_path(f"session:{session_key}")
+    except Exception:
+        return "default"
+
+
+def _default_docker_workspace_host_root(session_key: str = "") -> Optional[Path]:
+    """Host path for this session's persistent ``/workspace`` mount."""
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return None
     if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
@@ -1558,20 +1582,22 @@ def _default_docker_workspace_host_root() -> Optional[Path]:
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=False)
+        root = (
+            get_sandbox_dir() / "docker" / _docker_sandbox_dir_name(session_key) / "workspace"
+        ).resolve(strict=False)
     except Exception:
         return None
     return root if root.is_dir() else None
 
 
-def _docker_persistent_home_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/root`` home mount.
+def _docker_persistent_home_host_root(session_key: str = "") -> Optional[Path]:
+    """Host path for this session's persistent ``/root`` home mount.
 
     Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
     (tools/environments/docker.py), so an agent that writes ``/root/out.png``
-    produced a real host file the gateway couldn't find. Same collapse rule as
-    the workspace mount: the gateway's container sharing resolves to the
-    ``default`` task sandbox.
+    produced a real host file the gateway couldn't find. The task directory
+    is derived from the delivering session's key so session-scoped sandboxes
+    resolve to the container that produced the file (#93950).
     """
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return None
@@ -1585,7 +1611,9 @@ def _docker_persistent_home_host_root() -> Optional[Path]:
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "home").resolve(strict=False)
+        root = (
+            get_sandbox_dir() / "docker" / _docker_sandbox_dir_name(session_key) / "home"
+        ).resolve(strict=False)
     except Exception:
         return None
     return root if root.is_dir() else None
@@ -1613,11 +1641,11 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
         return []
 
 
-def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
     """Translate a container-absolute path to its host path when possible.
 
     Uses longest-prefix match across configured ``docker_volumes``, the
-    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the default
+    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the session's
     persistent Docker ``/workspace`` host root, and the persistent ``/root``
     home mount.
     """
@@ -1638,13 +1666,13 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
     mounts = list(_parse_docker_volume_mounts())
     mounts.extend(_cache_dir_container_mounts())
     # Synthetic /workspace mount for default persistent sandbox / cwd bind.
-    default_ws = _default_docker_workspace_host_root()
+    default_ws = _default_docker_workspace_host_root(session_key)
     if default_ws is not None and not any(c.as_posix() == "/workspace" for _, c in mounts):
         mounts.append((default_ws, Path("/workspace")))
     # Synthetic /root mount for the persistent home bind. Cache mounts above
     # are longer prefixes, so /root/.hermes/... still translates to the host
     # cache — this only catches stray home writes like /root/out.png.
-    default_home = _docker_persistent_home_host_root()
+    default_home = _docker_persistent_home_host_root(session_key)
     if default_home is not None and not any(c.as_posix() == "/root" for _, c in mounts):
         # /root/.hermes/* that did NOT match a cache mount is the container's
         # credential/secret surface (.env, auth.json, ... are individually
@@ -1681,7 +1709,7 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
     return translated
 
 
-def validate_media_delivery_path(path: str) -> Optional[str]:
+def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
     Default mode (single-user / private gateway): accept any existing regular
@@ -1722,7 +1750,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
     # existence / denylist checks.
-    translated = _translate_docker_container_media_path(expanded)
+    translated = _translate_docker_container_media_path(expanded, session_key=session_key)
     if translated is not None:
         resolved = translated
     else:
@@ -4822,17 +4850,17 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str) -> Optional[str]:
+    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path)
+        return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
@@ -4840,12 +4868,12 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
+    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            safe_path = validate_media_delivery_path(raw)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
@@ -6384,7 +6412,7 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -6403,7 +6431,7 @@ class BasePlatformAdapter(ABC):
                     # system/command notices so config paths stay visible text
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
-                    local_files = self.filter_local_delivery_paths(local_files)
+                    local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
                     # Do NOT load the full SQLite transcript for ordinary text or
                     # explicit MEDIA tags.  History is needed only for bare local
                     # paths auto-detected above.  Run that synchronous DB/decode

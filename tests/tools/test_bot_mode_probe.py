@@ -120,7 +120,10 @@ def test_received_teammate_message_returns_one_current_turn_reply(tmp_path):
     )
     assert "transport already captures your final response" in inbound_contract
     assert "Use message_agent only to initiate a separate message" in inbound_contract
+    # The FYI exit must ride the transport's silence tokens, not a prose ack.
+    assert "intentional silence token" in inbound_contract
     assert "reply concisely via message_agent" not in inbound_contract
+    assert "staying silent is fine" not in inbound_contract
 
 
 def test_roster_lines_carry_roles(tmp_path):

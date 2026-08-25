@@ -1218,6 +1218,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         summary_lines.append(
             f"  (shareable screenshot saved to {screenshot_path})"
         )
+    if cap.note:
+        summary_lines.append(f"  ({cap.note})")
     if elements_file:
         summary_lines.append(
             f"  (full element tree with untruncated labels saved to "

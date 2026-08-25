@@ -301,6 +301,17 @@ you the saved file's path instead.
 Only the 20 most recent capture files are kept, and screenshots are never
 sent automatically — only when you ask for one.
 
+### Whole screen vs. desktop surface
+
+"Screenshot my screen" captures **everything currently displayed** — a
+composited grab of all visible windows, like pressing PrtScn. This image has
+no clickable elements, so to *act* on something in it the agent re-captures
+the specific app.
+
+Asking for the **desktop** instead targets the OS shell surface itself —
+wallpaper, desktop icons, taskbar — with its clickable elements, so requests
+like "open the Recycle Bin on my desktop" still work.
+
 ## Provider compatibility
 
 | Provider | Vision? | Works? | Notes |

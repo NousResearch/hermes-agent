@@ -310,14 +310,12 @@ export async function selectConnection(connectionId: string): Promise<void> {
             SWITCH_COMMIT_TIMEOUT_MS,
             `Timed out activating "${targetConnection.label}".`,
             error => {
-              // withTimeout does not cancel its input. Revoke this activation's
-              // ownership before publishing the timeout so a queued/stalled
-              // ensure cannot wake later and commit without a caller. If the
-              // gateway already published the target, the commit landed and its
-              // trailing descriptor resync remains a harmless fail-open straggler.
-              if (!targetIsActive()) {
-                activationController.abort(error)
-              }
+              // withTimeout does not cancel its input. Every timed-out owner
+              // loses future activation/publication rights, even when low-level
+              // activation already published the target and the commit remains
+              // fail-open. The shared activation signal suppresses any trailing
+              // descriptor/profile publication when stale work later settles.
+              activationController.abort(error)
             }
           )
         )
@@ -327,9 +325,9 @@ export async function selectConnection(connectionId: string): Promise<void> {
         await Promise.race([activation, timedActivation])
       } catch (error) {
         // The socket is activated and its descriptor published synchronously;
-        // only the best-effort descriptor resync trails it. A commit that timed
-        // out AFTER the new source became active has landed — the straggler is
-        // fail-open and cannot undo it.
+        // only best-effort descriptor resync trails it. A commit that timed out
+        // AFTER the new source became active has landed, so keep it fail-open;
+        // the timeout signal still revokes all trailing publication rights.
         if (!isTimeoutError(error) || !targetIsActive()) {
           throw error
         }

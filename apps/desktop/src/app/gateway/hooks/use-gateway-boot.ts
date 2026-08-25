@@ -443,27 +443,43 @@ export function useGatewayBoot({
     // session id against the wrong backend — the HUD then falls back to the
     // default profile's last session (#82285). The override wins over the
     // stored preference; absent, behavior is unchanged.
-    async function adoptPrimaryProfile() {
+    async function adoptPrimaryProfile(shouldPublish: () => boolean = () => true): Promise<boolean> {
       const override = windowProfileOverride()
 
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
+
+        if (!shouldPublish()) {
+          return false
+        }
+
         const key = normalizeProfileKey(profileKey)
         $activeGatewayProfile.set(key)
         setPrimaryGateway(gateway, key)
         void ensureGatewayForProfile(key)
       } catch {
+        if (!shouldPublish()) {
+          return false
+        }
+
         $activeGatewayProfile.set(normalizeProfileKey(override))
       }
+
+      return true
     }
 
     // Seed the working dir from the backend default on a fresh view (nothing
     // open yet). Shared by boot + soft switch.
-    async function seedDefaultCwd() {
+    async function seedDefaultCwd(shouldPublish: () => boolean = () => true) {
       await ensureDefaultWorkspaceCwd()
+
+      if (!shouldPublish()) {
+        return
+      }
+
       const remoteDefault = await desktopDefaultCwd().catch(() => null)
 
-      if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
+      if (shouldPublish() && remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
         setCurrentCwd(remoteDefault.cwd)
         setCurrentBranch(remoteDefault.branch || '')
       }
@@ -484,6 +500,7 @@ export function useGatewayBoot({
         // inside the error boundary: lifecycle/wipe setup can throw before a
         // token is returned and must follow the normal boot-failure path.
         switchToken = beginGatewaySwitch()
+        const ownsSwitch = () => !cancelled && switchToken !== null && isCurrentGatewaySwitch(switchToken)
         clearReconnectTimer()
         clearBootRetryTimer()
         bootRetryAttempt = 0
@@ -499,7 +516,7 @@ export function useGatewayBoot({
         // on its pinned profile's backend across a soft switch.
         const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
 
-        if (cancelled) {
+        if (!ownsSwitch()) {
           return
         }
 
@@ -513,9 +530,13 @@ export function useGatewayBoot({
           'Timed out re-minting the gateway WebSocket URL'
         )
 
+        if (!ownsSwitch()) {
+          return
+        }
+
         await gateway.connect(wsUrl)
 
-        if (cancelled) {
+        if (!ownsSwitch()) {
           return
         }
 
@@ -527,13 +548,21 @@ export function useGatewayBoot({
         // rail stale or (if a stale in-flight response landed) collapsed
         // (#85731). Best-effort like the rest: a failure keeps the cached
         // list rather than blanking the rail.
-        await adoptPrimaryProfile()
+        if (!(await adoptPrimaryProfile(ownsSwitch)) || !ownsSwitch()) {
+          return
+        }
+
         await Promise.all([
-          seedDefaultCwd(),
+          seedDefaultCwd(ownsSwitch),
           refreshActiveProfile().catch(() => undefined),
           callbacksRef.current.refreshHermesConfig().catch(() => undefined),
           callbacksRef.current.refreshSessions().catch(() => undefined)
         ])
+
+        if (!ownsSwitch()) {
+          return
+        }
+
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

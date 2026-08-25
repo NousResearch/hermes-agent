@@ -570,6 +570,90 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(setLastUsed).toHaveBeenCalledWith('coder-remote')
   })
 
+  it('a Settings switch superseded while reading its descriptor cannot publish over a newer Sessions switch', async () => {
+    const registryConnections: DesktopConnectionsRegistry = {
+      connections: [
+        { id: 'primary-vps', kind: 'remote', label: 'VPS', tokenPreview: '...t', tokenSet: true },
+        { id: 'coder-remote', kind: 'remote', label: 'Coder', tokenPreview: '...c', tokenSet: true }
+      ],
+      primary: 'primary-vps',
+      secureTokenStorage: true,
+      version: 2
+    }
+
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & Record<string, unknown>
+
+    const settingsConn = {
+      ...primaryConn,
+      connectionId: 'settings-a',
+      profile: 'settings-profile',
+      wsUrl: 'wss://settings-a.example.com/api/ws?token=a'
+    }
+
+    let releaseSettings: (connection: typeof settingsConn) => void = () => undefined
+
+    desktop.api = vi.fn(async ({ path }: { path: string }) =>
+      path === '/api/profiles/active' ? { active: 'coder', current: 'coder' } : { profiles: [] }
+    )
+    desktop.getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...coderConn,
+      connectionId,
+      profile,
+      registryScoped: true
+    }))
+    desktop.getGatewayWsUrlFor = vi.fn(async () => coderConn.wsUrl)
+    desktop.connections = {
+      list: vi.fn(async () => registryConnections),
+      setLastUsed: vi.fn(async (id: string) => ({ ok: true, registry: { ...registryConnections, lastUsed: id } }))
+    }
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    setConnectionsRegistry(registryConnections)
+    desktop.getConnection.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          releaseSettings = resolve
+        })
+    )
+
+    act(() => connectionApplied?.())
+    await vi.waitFor(() => expect(desktop.getConnection).toHaveBeenCalledTimes(2))
+
+    const sessionsSwitch = selectConnection('coder-remote')
+    await flushAsync()
+    await flushAsync()
+    await flushAsync()
+    await sessionsSwitch
+
+    expect(isActivePrimary()).toBe(false)
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.connectionId).toBe('coder-remote')
+
+    const wsUrlReads = desktop.getGatewayWsUrl.mock.calls.length
+    const profileReads = desktop.profile.get.mock.calls.length
+    const profileRefreshes = vi.mocked(desktop.api as ReturnType<typeof vi.fn>).mock.calls.length
+    const socketCount = FakeWebSocket.instances.length
+
+    await act(async () => {
+      releaseSettings(settingsConn)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    // Switch-token ownership governs every later publication, not just loading
+    // teardown: stale Settings work cannot publish/connect/refresh after B won.
+    expect(isActivePrimary()).toBe(false)
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.connectionId).toBe('coder-remote')
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(wsUrlReads)
+    expect(desktop.profile.get).toHaveBeenCalledTimes(profileReads)
+    expect(desktop.api).toHaveBeenCalledTimes(profileRefreshes)
+    expect(FakeWebSocket.instances).toHaveLength(socketCount)
+  })
+
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {
     // The reported repro: connected to backend A, the rail shows A's named
     // profiles; the user applies a different remote/Cloud connection (soft

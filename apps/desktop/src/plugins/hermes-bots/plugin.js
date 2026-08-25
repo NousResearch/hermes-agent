@@ -6698,7 +6698,10 @@ function knownGroups(metaByName) {
 // room messages that are NEW since it last saw the room.
 
 const GROUP_CHAT_MAX_ROUNDS = 3
+
+// #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.
 const GROUP_CHAT_MAX_MESSAGES = 10
+const GROUP_CHAT_MAX_CONTINUATIONS = 2
 const GROUP_CHAT_HISTORY_LIMIT = 24
 const GROUP_CHAT_MAX_MEMBERS = 6
 
@@ -7989,7 +7992,10 @@ function unaddressedGroupMentions(group, members, thread) {
   const room = $groupChats.get()[group] || { log: [] }
   const log = (room.log || []).filter(e => groupThreadOf(e) === thread)
 
-  // key → id of the entry that most recently cited this member.
+  // key → log INDEX of the entry that most recently cited this member.
+  // Entry ids are UUIDs (groupChatEntryId), NOT monotonic — index order is
+  // the only guaranteed ordering, and it is what "answered after the citing
+  // entry" actually means. (#94478 review)
   const citedAt = new Map()
 
   for (const entry of log) {
@@ -8010,7 +8016,7 @@ function unaddressedGroupMentions(group, members, thread) {
 
       // Never count a bot citing itself as a pending handoff.
       if (citingMemberKey && citingMemberKey !== key) {
-        citedAt.set(key, entry.id)
+        citedAt.set(key, log.indexOf(entry))
       }
     }
   }
@@ -8031,15 +8037,15 @@ function unaddressedGroupMentions(group, members, thread) {
     })()
 
     if (speakerKey) {
-      lastPostAt.set(speakerKey, entry.id)
+      lastPostAt.set(speakerKey, log.indexOf(entry))
     }
   }
 
   return [...citedAt.keys()].filter(key => {
-    const citedId = citedAt.get(key)
-    const answeredAt = lastPostAt.get(key)
+    const citedIdx = citedAt.get(key)
+    const answeredIdx = lastPostAt.get(key)
 
-    return answeredAt === undefined || answeredAt <= citedId
+    return answeredIdx === undefined || answeredIdx <= citedIdx
   })
 }
 
@@ -8052,6 +8058,7 @@ async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
+  let continuations = 0
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -8239,7 +8246,12 @@ async function runGroupChatRounds(group, members, thread) {
         // settled.
         const pendingKeys = unaddressedGroupMentions(group, members, thread)
 
-        if (pendingKeys.length) {
+        // #94478 review: bound continuation rounds independently of the
+        // message cap so a pathological mention chain can't consume the
+        // room's entire budget on back-and-forth handoffs.
+        continuations += 1
+
+        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
           const citedMembers = members.filter(member => pendingKeys.includes(groupMemberKey(member)))
 
           if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
@@ -8249,7 +8261,7 @@ async function runGroupChatRounds(group, members, thread) {
             )
 
             for (const member of continuationResponders) {
-              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
                 break
               }
 

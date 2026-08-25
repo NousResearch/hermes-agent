@@ -278,8 +278,8 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
                     "The model name has been accepted without verification.")
     if probe.get("suggested_base_url"):
         message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
-    # Anthropic-style proxies routinely lack /v1/models, so only they are accepted unverified.
-    return _verdict(anthropic_style, True, False, message)
+    # Chat-completions and Anthropic-style proxies may both omit /v1/models.
+    return _verdict(req.api_mode in ("chat_completions", "anthropic_messages"), True, False, message)
 
 
 def _static_catalog(normalized: str) -> list[str]:

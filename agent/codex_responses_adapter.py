@@ -742,9 +742,20 @@ def _chat_messages_to_responses_input(
 
         if role == "tool":
             raw_tool_call_id = msg.get("tool_call_id")
-            call_id, _ = _split_responses_tool_id(raw_tool_call_id)
+            call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
             if not isinstance(call_id, str) or not call_id.strip():
-                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                # Legacy fc_-only stored ids: canonicalize to the same
+                # ``call_<suffix>`` the assistant branch synthesizes above, so
+                # a >64-char pair clamps to the SAME surrogate on both sides.
+                # Hashing the raw ``fc_…`` here while the call side hashed
+                # ``call_<suffix>`` would break the pairing and 400 the replay.
+                if (
+                    isinstance(tool_response_item_id, str)
+                    and tool_response_item_id.startswith("fc_")
+                    and len(tool_response_item_id) > len("fc_")
+                ):
+                    call_id = f"call_{tool_response_item_id[len('fc_'):]}"
+                elif isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue

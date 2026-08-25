@@ -375,6 +375,37 @@ def test_chat_messages_to_responses_input_sanitizes_replayed_fn_name():
     assert call["call_id"] == output["call_id"] == "call_abc123"
 
 
+def test_chat_messages_to_responses_input_canonicalizes_fc_only_pair():
+    """A legacy fc_-only stored id must map the paired function_call and
+    function_call_output to the SAME call_id — including the oversized case
+    where both sides clamp to the same surrogate (#49224)."""
+    for fc_id in ("fc_short123", "fc_" + "a" * 64):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": fc_id,
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": fc_id,
+                "content": "some result",
+            },
+        ]
+
+        items = _chat_messages_to_responses_input(messages)
+
+        call = next(i for i in items if i.get("type") == "function_call")
+        output = next(i for i in items if i.get("type") == "function_call_output")
+        assert call["call_id"] == output["call_id"]
+        assert len(call["call_id"]) <= 64
+
+
 def test_preflight_codex_input_items_sanitizes_replayed_fn_name():
     """The preflight choke-point also coerces invalid replayed names
     (covers callers that build input items without the chat converter)."""

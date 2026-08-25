@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
@@ -62,10 +62,10 @@ describe('transcript tail cache', () => {
   })
 
   it('self-evicts a corrupt entry instead of returning garbage', () => {
-    window.localStorage.setItem('hermes.transcript-tail.v1:sess-bad', '{not json')
+    window.localStorage.setItem('hermes.transcript-tail.v2:sess-bad', '{not json')
 
     expect(loadTranscriptTail('sess-bad')).toBeNull()
-    expect(window.localStorage.getItem('hermes.transcript-tail.v1:sess-bad')).toBeNull()
+    expect(window.localStorage.getItem('hermes.transcript-tail.v2:sess-bad')).toBeNull()
   })
 
   it('drops a deleted session and wipes everything on a gateway re-home', () => {
@@ -110,7 +110,7 @@ describe('transcript tail cache', () => {
       savedAt: Date.now()
     }
 
-    window.localStorage.setItem('hermes.transcript-tail.v1:sess-poisoned', JSON.stringify(poisoned))
+    window.localStorage.setItem('hermes.transcript-tail.v2:sess-poisoned', JSON.stringify(poisoned))
 
     const loaded = loadTranscriptTail('sess-poisoned')
 
@@ -123,5 +123,74 @@ describe('transcript tail cache', () => {
     expect(ids).toHaveLength(2)
     expect(new Set(ids).size).toBe(2)
     expect(ids[0]).toBe('call-b')
+  })
+
+  // ── Profile scoping (#94828) ─────────────────────────────────────────────
+  // Stored session ids are only unique WITHIN a profile's state.db, and
+  // localStorage survives profile switches in the same window. An unscoped
+  // key lets profile A's tail be painted against profile B's backend — the
+  // view then retries a session id that does not exist there ("session not
+  // found") on every wake. The durable cache must carry the same
+  // {connectionId, profile} scope as its in-memory twin (transcript-tail.ts).
+  describe('profile scoping (#94828)', () => {
+    it('never returns a tail cached under another profile', () => {
+      saveTranscriptTail('sess-x', [msg('a')], { profile: 'ai-energy' })
+
+      expect(loadTranscriptTail('sess-x', { profile: 'ai-energy' })).toHaveLength(1)
+      expect(loadTranscriptTail('sess-x', { profile: 'default' })).toBeNull()
+      expect(loadTranscriptTail('sess-x')).toBeNull()
+    })
+
+    it('keeps same-id tails on different connections distinct', () => {
+      saveTranscriptTail('sess-y', [msg('local-row')], { connectionId: 'local', profile: 'default' })
+      saveTranscriptTail('sess-y', [msg('remote-row')], { connectionId: 'conn:mimir', profile: 'default' })
+
+      expect(loadTranscriptTail('sess-y', { connectionId: 'local', profile: 'default' })?.[0].id).toBe('local-row')
+      expect(loadTranscriptTail('sess-y', { connectionId: 'conn:mimir', profile: 'default' })?.[0].id).toBe(
+        'remote-row'
+      )
+    })
+
+    it('accepts a plain-profile string scope like the in-memory twin', () => {
+      saveTranscriptTail('sess-s', [msg('s')], 'rwa-africa')
+
+      expect(loadTranscriptTail('sess-s', 'rwa-africa')).toHaveLength(1)
+      expect(loadTranscriptTail('sess-s', 'other')).toBeNull()
+    })
+
+    it('drops only the scoped entry when a scope is given', () => {
+      saveTranscriptTail('sess-d', [msg('p1-row')], { profile: 'p1' })
+      saveTranscriptTail('sess-d', [msg('p2-row')], { profile: 'p2' })
+
+      dropTranscriptTail('sess-d', { profile: 'p1' })
+
+      expect(loadTranscriptTail('sess-d', { profile: 'p1' })).toBeNull()
+      expect(loadTranscriptTail('sess-d', { profile: 'p2' })).not.toBeNull()
+    })
+
+    it('purges pre-scoping v1 entries so a stale tail can never paint again', async () => {
+      const stale = {
+        messages: [{ id: 'old', parts: [{ text: 'x', type: 'text' }], role: 'assistant' }],
+        savedAt: Date.now()
+      }
+
+      window.localStorage.setItem('hermes.transcript-tail.v1:sess-legacy', JSON.stringify(stale))
+      window.localStorage.setItem('hermes.transcript-tail.v1-index', JSON.stringify(['sess-legacy']))
+
+      // Fresh module instance: the sweep runs once per window, and earlier
+      // tests in this file have already touched storage.
+      vi.resetModules()
+
+      try {
+        const fresh = await import('./transcript-tail-cache')
+
+        expect(fresh.loadTranscriptTail('sess-legacy')).toBeNull()
+        expect(fresh.loadTranscriptTail('sess-legacy', { profile: 'ai-energy' })).toBeNull()
+        expect(window.localStorage.getItem('hermes.transcript-tail.v1:sess-legacy')).toBeNull()
+        expect(window.localStorage.getItem('hermes.transcript-tail.v1-index')).toBeNull()
+      } finally {
+        vi.resetModules()
+      }
+    })
   })
 })

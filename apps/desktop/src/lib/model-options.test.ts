@@ -132,7 +132,10 @@ describe('requestModelOptions', () => {
     const gateway = {
       request: vi.fn(() => Promise.resolve(gatewayPayload))
     }
-    const request = vi.fn(() => Promise.resolve(routedPayload))
+    const request = vi.fn(() => Promise.resolve(routedPayload)) as unknown as <T>(
+      method: string,
+      params?: Record<string, unknown>
+    ) => Promise<T>
 
     await expect(
       requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })

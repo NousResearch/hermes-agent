@@ -21,10 +21,13 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessionsLoading,
+  getConfiguredDefaultProjectDir,
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+
+import { deferred } from '../../../test/deferred'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
@@ -226,14 +229,19 @@ function fakeDesktop() {
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  refreshHermesConfig = async () => undefined,
   refreshSessions
-}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
+}: {
+  beforeConnectionSwitch?: () => void
+  refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
+  refreshSessions?: () => Promise<void>
+} = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
-    refreshHermesConfig: async () => undefined,
+    refreshHermesConfig,
     refreshSessions: refreshSessions ?? (async () => undefined)
   })
 
@@ -379,7 +387,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
-  it('a stale failed Settings switch cannot disarm the newer switch loading owner', async () => {
+  it('a stale failed Settings switch cannot publish failure or disarm the newer switch owner', async () => {
     const desktop = fakeDesktop()
 
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
@@ -420,8 +428,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect(notifyError).toHaveBeenCalledWith(failureA, expect.any(String))
-    expect($desktopBoot.get().error).toBe(failureA.message)
+    expect(notifyError).not.toHaveBeenCalled()
+    expect($desktopBoot.get().error).toBeNull()
     expect($gatewaySwitching.get()).toBe(true)
     expect($sessionsLoading.get()).toBe(true)
 
@@ -430,10 +438,45 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await vi.advanceTimersByTimeAsync(0)
     })
 
+    expect(notifyError).toHaveBeenCalledTimes(1)
     expect(notifyError).toHaveBeenCalledWith(failureB, expect.any(String))
     expect($desktopBoot.get().error).toBe(failureB.message)
     expect($gatewaySwitching.get()).toBe(false)
     expect($sessionsLoading.get()).toBe(false)
+  })
+
+  it('does not publish a late Settings failure after a newer switch wins', async () => {
+    const desktop = fakeDesktop()
+
+    let rejectStale: (error: Error) => void = () => undefined
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+
+    desktop.getConnection.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectStale = reject
+        })
+    )
+
+    act(() => connectionApplied?.())
+    await vi.waitFor(() => expect(desktop.getConnection).toHaveBeenCalledTimes(2))
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewaySwitching.get()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+
+    await act(async () => {
+      rejectStale(new Error('late stale failure'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('reports a Settings switch setup failure and does not disarm a newer switch started by recovery UI', async () => {
@@ -465,6 +508,30 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(newerToken).not.toBeNull()
     expect($gatewaySwitching.get()).toBe(true)
     expect($sessionsLoading.get()).toBe(true)
+
+    endGatewaySwitch(newerToken ?? undefined)
+  })
+
+  it('a token-less setup failure cannot publish after a nested switch raised a newer barrier', async () => {
+    const failure = new Error('outer setup failed')
+    const beforeConnectionSwitch = vi.fn()
+    let newerToken: null | ReturnType<typeof beginGatewaySwitch> = null
+
+    beforeConnectionSwitch.mockImplementationOnce(() => {
+      newerToken = beginGatewaySwitch()
+      throw failure
+    })
+
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect(newerToken).not.toBeNull()
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($desktopBoot.get().error).toBeNull()
+    expect(notifyError).not.toHaveBeenCalled()
 
     endGatewaySwitch(newerToken ?? undefined)
   })
@@ -652,6 +719,82 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.profile.get).toHaveBeenCalledTimes(profileReads)
     expect(desktop.api).toHaveBeenCalledTimes(profileRefreshes)
     expect(FakeWebSocket.instances).toHaveLength(socketCount)
+  })
+
+  it('a superseded Settings switch cannot publish delayed cwd or config work after the winner', async () => {
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & Record<string, unknown>
+    const staleSanitize = deferred<{ cwd: string }>()
+    const staleConfig = deferred<void>()
+    const configPublications: string[] = []
+    let settingsRead = 0
+    let sanitizeRead = 0
+    let switchConfigRead = 0
+
+    const settings = {
+      getDefaultProjectDir: vi.fn(async () => {
+        settingsRead += 1
+
+        return {
+          defaultLabel: settingsRead === 1 ? '/settings-a' : '/settings-b',
+          dir: settingsRead === 1 ? '/settings-a' : '/settings-b',
+          resolvedCwd: settingsRead === 1 ? '/settings-a' : '/settings-b'
+        }
+      })
+    }
+
+    const sanitizeWorkspaceCwd = vi.fn((cwd: string) => {
+      sanitizeRead += 1
+
+      return sanitizeRead === 1 ? staleSanitize.promise : Promise.resolve({ cwd })
+    })
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const refreshHermesConfig = async (_force = false, shouldPublish?: () => boolean) => {
+      if (!shouldPublish) {
+        return
+      }
+
+      switchConfigRead += 1
+      const label = switchConfigRead === 1 ? 'settings-a' : 'settings-b'
+
+      if (switchConfigRead === 1) {
+        await staleConfig.promise
+      }
+
+      if (shouldPublish()) {
+        configPublications.push(label)
+      }
+    }
+
+    render(<Harness refreshHermesConfig={refreshHermesConfig} />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    desktop.settings = settings
+    desktop.sanitizeWorkspaceCwd = sanitizeWorkspaceCwd
+
+    act(() => connectionApplied?.())
+    await vi.waitFor(() => expect(sanitizeWorkspaceCwd).toHaveBeenCalledTimes(1))
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewaySwitching.get()).toBe(false)
+    expect(getConfiguredDefaultProjectDir()).toBe('/settings-b')
+    expect($currentCwd.get()).toBe('/settings-b')
+    expect(configPublications).toEqual(['settings-b'])
+
+    await act(async () => {
+      staleSanitize.resolve({ cwd: '/settings-a/stale' })
+      staleConfig.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(getConfiguredDefaultProjectDir()).toBe('/settings-b')
+    expect($currentCwd.get()).toBe('/settings-b')
+    expect(configPublications).toEqual(['settings-b'])
   })
 
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {

@@ -134,7 +134,7 @@ interface GatewayBootOptions {
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
-  refreshHermesConfig: () => Promise<void>
+  refreshHermesConfig: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
   refreshSessions: () => Promise<void>
 }
 
@@ -471,7 +471,7 @@ export function useGatewayBoot({
     // Seed the working dir from the backend default on a fresh view (nothing
     // open yet). Shared by boot + soft switch.
     async function seedDefaultCwd(shouldPublish: () => boolean = () => true) {
-      await ensureDefaultWorkspaceCwd()
+      await ensureDefaultWorkspaceCwd(shouldPublish)
 
       if (!shouldPublish()) {
         return
@@ -555,7 +555,7 @@ export function useGatewayBoot({
         await Promise.all([
           seedDefaultCwd(ownsSwitch),
           refreshActiveProfile().catch(() => undefined),
-          callbacksRef.current.refreshHermesConfig().catch(() => undefined),
+          callbacksRef.current.refreshHermesConfig(false, ownsSwitch).catch(() => undefined),
           callbacksRef.current.refreshSessions().catch(() => undefined)
         ])
 
@@ -566,16 +566,18 @@ export function useGatewayBoot({
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
-        if (!cancelled) {
+        const mayPublishFailure =
+          !cancelled &&
+          (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
+
+        if (mayPublishFailure) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
 
           // Only the current owner may lower loading. A failed begin returns no
           // token and cleans its own barrier internally; lower loading only when
           // that cleanup did not preserve a recursively-started newer switch.
-          if (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken)) {
-            setSessionsLoading(false)
-          }
+          setSessionsLoading(false)
 
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
         }

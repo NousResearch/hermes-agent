@@ -199,17 +199,24 @@ export type NewChatWorkspaceTarget = null | string | undefined
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
-export async function syncConfiguredDefaultProjectDir(): Promise<string> {
+export async function syncConfiguredDefaultProjectDir(
+  shouldPublish: () => boolean = () => true
+): Promise<string> {
   const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
 
   if (!settings) {
-    configuredDefaultProjectDir = ''
+    if (shouldPublish()) {
+      configuredDefaultProjectDir = ''
+    }
 
-    return ''
+    return configuredDefaultProjectDir
   }
 
   const { dir } = await settings()
-  configuredDefaultProjectDir = dir?.trim() || ''
+
+  if (shouldPublish()) {
+    configuredDefaultProjectDir = dir?.trim() || ''
+  }
 
   return configuredDefaultProjectDir
 }
@@ -217,21 +224,26 @@ export async function syncConfiguredDefaultProjectDir(): Promise<string> {
 /** Align the renderer workspace with the main-process default (home dir when
  *  packaged, optional Settings override). Clears stale install-dir paths that
  *  PR #37586's localStorage stickiness can preserve across the #37536 fix. */
-export async function ensureDefaultWorkspaceCwd(): Promise<void> {
+export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = () => true): Promise<void> {
   const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
 
-  if (!sanitize) {
+  if (!sanitize || !shouldPublish()) {
     return
   }
 
-  await syncConfiguredDefaultProjectDir()
+  await syncConfiguredDefaultProjectDir(shouldPublish)
+
+  if (!shouldPublish()) {
+    return
+  }
+
   const configured = getConfiguredDefaultProjectDir()
 
   // Transient: each source below is already remembered or comes from config, so
   // persisting would only promote a configured default into the per-backend
   // memory of what the user picked.
   const seedLiveCwd = (cwd: string) => {
-    if (cwd && !$activeSessionId.get()) {
+    if (shouldPublish() && cwd && !$activeSessionId.get()) {
       setCurrentCwdTransient(cwd)
     }
   }

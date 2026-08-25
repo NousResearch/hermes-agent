@@ -14,7 +14,7 @@ vi.mock('@/components/pane-shell/tree/store', async () => {
   return { $narrowViewport: atom(false) }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
-vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn() }))
+vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
@@ -105,7 +105,7 @@ vi.mock('@/store/gateway', async () => {
 
 const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
-const { deleteProfile } = await import('@/hermes')
+const { deleteProfile, hermesApi } = await import('@/hermes')
 
 const {
   activeGatewayConnectionId,
@@ -266,6 +266,43 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', 'profiles.list', {
       include_sessions: true
     })
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('reads and hides persisted sessions through the source primary without activating the profile', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    vi.mocked(hermesApi)
+      .mockResolvedValueOnce({ sessions: [{ id: 'bot-chat', profile: 'backend-worker', title: 'Bot Chat' }] })
+      .mockResolvedValueOnce({ ok: true, hidden: true })
+
+    await expect(host.listPersistedSessions(route, { profile: 'backend-worker', limit: 200 })).resolves.toMatchObject({
+      sessions: [{ id: 'bot-chat' }]
+    })
+    await expect(
+      host.setPersistedSessionHidden(route, { sessionId: 'bot-chat', profile: 'backend-worker', hidden: true })
+    ).resolves.toMatchObject({ ok: true, hidden: true })
+
+    expect(hermesApi).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        connectionId: 'source-a',
+        path: expect.stringContaining('/api/profiles/sessions?')
+      })
+    )
+    expect(hermesApi).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a',
+      path: '/api/sessions/bot-chat',
+      method: 'PATCH',
+      body: { hidden: true, profile: 'backend-worker' }
+    })
+    expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 

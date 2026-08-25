@@ -5053,3 +5053,22 @@ class TestSessionPatchUnread:
         # a string outside the accepted set to prove validation rejects it.
         resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
         assert resp.status_code == 422  # pydantic validation
+
+    def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200
+        assert resp.json()["hidden"] is True
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert all(s["id"] != "s1" for s in rows)
+
+        restored = self.auth_client.patch(
+            "/api/sessions/s1", json={"hidden": False}
+        )
+        assert restored.status_code == 200
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False
+
+    def test_patch_hidden_alone_is_accepted(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200

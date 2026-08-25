@@ -2233,8 +2233,66 @@ function fallbackSelectionAfterHide(name) {
  *  everything else — canonical Bot Chats are identified by name (the
  *  registry row titled "Bot Chat"), so the title sweep is what hides them;
  *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op
- *  on already-hidden rows) and feature-detected: older gateways lack
- *  session.set_hidden and simply keep the rows visible. */
+ *  on already-hidden rows) and feature-detected: older Desktop hosts defer
+ *  reconciliation rather than activating an absent profile backend. */
+function startHideSweepScheduler(ctx) {
+  let timer = null
+  let inflight = null
+  let pending = false
+  let disposed = false
+
+  const run = () => {
+    timer = null
+    if (disposed) {
+      return
+    }
+    if (inflight) {
+      pending = true
+      return
+    }
+
+    inflight = Promise.resolve()
+      .then(() => hideOwnedBotSessions())
+      .catch(() => undefined)
+      .finally(() => {
+        inflight = null
+        if (pending && !disposed) {
+          pending = false
+          schedule()
+        }
+      })
+  }
+  const schedule = () => {
+    if (disposed) {
+      return
+    }
+
+    try {
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+      timer = setTimeout(run, 0)
+    } catch {
+      run()
+    }
+  }
+  const stopGatewayListener = host.state.gateway.listen(state => {
+    if (state === 'open') {
+      schedule()
+    }
+  })
+
+  ctx.onDispose(() => {
+    disposed = true
+    stopGatewayListener()
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  })
+  schedule()
+}
+
 function hideOwnedBotSessions() {
   const roomEntries = Object.values($groupChats.get()).flatMap(room =>
     Object.entries(room?.sessions || {})
@@ -2272,13 +2330,26 @@ function hideOwnedBotSessions() {
 
   const known = Promise.all(
     rooms.map(({ owner, id }) =>
-      Promise.resolve(requestForBot(owner, 'session.set_hidden', { session_id: id, hidden: true })).catch(
-        () => undefined
-      )
+      hidePersistedBotSession(owner, id).catch(() => undefined)
     )
   )
 
   return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
+}
+
+/** Reconcile durable visibility through the source's primary REST backend.
+ *  Never fall back to requestForBot: that compatibility path activates an
+ *  absent profile backend, which is worse than deferring this best-effort sweep. */
+function hidePersistedBotSession(bot, sessionId, profileOverride = '') {
+  if (typeof host.setPersistedSessionHidden !== 'function') {
+    return Promise.resolve()
+  }
+
+  const route = botConnectionRoute(bot)
+  const fallback = String(bot?.name || '').trim() || 'default'
+  const profile = profileOverride || backendTargetProfile(route, fallback)
+
+  return Promise.resolve(host.setPersistedSessionHidden(route, { sessionId, profile, hidden: true }))
 }
 
 // Titles Bot Mode itself mints for its plumbing sessions. Bot-to-bot CLI
@@ -2322,10 +2393,14 @@ function isBotModeSweepCandidate(row, nowSeconds = Date.now() / 1000) {
  *  millisecond, or future timestamps fail closed and stay visible. session.list
  *  without include_hidden returns only visible rows, which keeps the sweep
  *  naturally idempotent.
- *  Remote-source bots route to their own connection via requestForBot.
- *  Feature-detected + fire-and-forget: older gateways without per-profile
- *  session.list / session.set_hidden simply reject and the sweep no-ops. */
+ *  Reads and writes go through the owning source's primary REST backend, which
+ *  opens persisted state directly and never starts an inactive profile backend.
+ *  Feature-detected + fire-and-forget: older Desktop hosts defer the sweep. */
 async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
+  if (typeof host.listPersistedSessions !== 'function' || typeof host.setPersistedSessionHidden !== 'function') {
+    return
+  }
+
   const cached = $lastRoster.get()
   let roster = Array.isArray(cached) && cached.length ? cached : null
 
@@ -2351,7 +2426,9 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
       }
 
       try {
-        const res = await requestForBot(bot, 'session.list', { profile: name, limit: PROFILE_SESSION_LIST_LIMIT })
+        const route = botConnectionRoute(bot)
+        const profile = backendTargetProfile(route, name)
+        const res = await host.listPersistedSessions(route, { profile, limit: PROFILE_SESSION_LIST_LIMIT })
         const rows = Array.isArray(res?.sessions) ? res.sessions : []
 
         await Promise.all(
@@ -2359,7 +2436,7 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
             .filter(row => isBotModeSweepCandidate(row, nowSeconds))
             .map(row =>
               Promise.resolve(
-                requestForBot(bot, 'session.set_hidden', { session_id: row.id, hidden: true, profile: name })
+                hidePersistedBotSession(bot, row.id, profile)
               ).catch(() => undefined)
             )
         )
@@ -15125,19 +15202,7 @@ export default {
     // rows were created before the always-hidden policy). Deferred a tick so
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
-    const scheduleHideSweep = () => {
-      try {
-        setTimeout(() => void hideOwnedBotSessions(), 0)
-      } catch {
-        void hideOwnedBotSessions()
-      }
-    }
-    host.state.gateway.listen(state => {
-      if (state === 'open') {
-        scheduleHideSweep()
-      }
-    })
-    scheduleHideSweep()
+    startHideSweepScheduler(ctx)
 
     ctx.register({
       id: 'pane',

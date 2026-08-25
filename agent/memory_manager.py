@@ -143,6 +143,22 @@ def inject_memory_provider_tools(agent: Any) -> int:
         if isinstance(tool, dict)
     }
     if not memory_provider_tools_exposed(agent):
+        # A provider is configured but the memory toolset is gated off
+        # (platform_toolsets / disabled_toolsets). Say so once — a silent
+        # return 0 here made #81014 undiagnosable: the provider looked
+        # "half on" with no clue which config key suppressed its tools.
+        _providers = [
+            p for p in (getattr(memory_manager, "providers", None) or [])
+            if getattr(p, "name", "") != "builtin"
+        ]
+        if _providers:
+            logger.info(
+                "Memory provider(s) %s configured but the 'memory' toolset is "
+                "gated off for this session (platform_toolsets / "
+                "agent.disabled_toolsets) — provider tools and system-prompt "
+                "block are both withheld.",
+                [getattr(p, "name", type(p).__name__) for p in _providers],
+            )
         return 0
 
     get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)

@@ -49,6 +49,7 @@ from agent.secret_scope import get_secret
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 from hermes_constants import get_hermes_home
+from hermes_time import now as _hermes_now
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
 
@@ -366,6 +367,16 @@ RETAIN_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional per-call tags to merge with configured default retain tags.",
             },
+            "occurred_at": {
+                "type": "string",
+                "description": (
+                    "When the remembered event actually happened, as an ISO-8601 date "
+                    "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
+                    "Pass this whenever the memory references a specific event time "
+                    "('yesterday', 'last Tuesday', 'on March 3rd') so Hindsight can "
+                    "anchor it on the timeline. Omit for timeless facts/preferences."
+                ),
+            },
         },
         "required": ["content"],
     },
@@ -540,8 +551,18 @@ def _normalize_observation_scopes(value: Any) -> Any:
 
 
 def _utc_timestamp() -> str:
-    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
+    """Return the UTC write/audit time for retain metadata."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _event_timestamp() -> str:
+    """Return the configured Hermes event time with an explicit UTC offset."""
+    event_time = _hermes_now()
+    # hermes_time.now() guarantees an aware datetime. Keep this fallback so a
+    # replacement clock cannot silently emit an offset-less Hindsight Event Date.
+    if event_time.tzinfo is None or event_time.utcoffset() is None:
+        event_time = event_time.astimezone()
+    return event_time.isoformat(timespec="seconds")
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -1975,7 +1996,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = datetime.now(timezone.utc).isoformat()
+        # Hindsight receives this pair as one conversation turn, so both
+        # messages intentionally share the same turn-level event timestamp.
+        now = _event_timestamp()
         return [
             {
                 "role": "user",
@@ -2026,11 +2049,17 @@ class HindsightMemoryProvider(MemoryProvider):
         metadata: Dict[str, str] | None = None,
         tags: List[str] | None = None,
         retain_async: bool | None = None,
+        occurred_at: str | None = None,
     ) -> Dict[str, Any]:
+        # The item-level timestamp is what the Hindsight server uses to resolve
+        # occurred_start/occurred_end (including relative phrases in content).
+        # An explicit occurred_at (from the retain tool) wins; otherwise default
+        # to the configured event clock so relative times still resolve (#93568).
         kwargs: Dict[str, Any] = {
             "bank_id": self._bank_id,
             "content": content,
             "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+            "timestamp": occurred_at.strip() if occurred_at and occurred_at.strip() else _event_timestamp(),
         }
         if context is not None:
             kwargs["context"] = context
@@ -2183,6 +2212,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                    occurred_at=args.get("occurred_at"),
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)

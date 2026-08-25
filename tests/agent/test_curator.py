@@ -525,6 +525,47 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 
+def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkeypatch):
+    """The prompt actually delivered to the reviewer must name every action
+    the read-before-write guard protects.
+
+    ``_background_review_read_before_write_guard`` refuses a background-review
+    write whose target was not loaded via ``skill_view`` in the same turn —
+    edit, patch, write_file over an existing file, and remove_file. The forked
+    reviewer only performs that read if the prompt tells it to, so a guard the
+    prompt never mentions is a silently jammed write channel rather than a
+    safety net: the run completes, writes nothing, and reads like a pass that
+    found nothing to consolidate.
+
+    The guard's runtime behavior is covered in
+    ``tests/tools/test_skill_manager_tool.py``; this asserts the instruction
+    survives prompt assembly and reaches the model.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    captured = {}
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    c.run_curator_review(synchronous=True, consolidate=True)
+
+    prompt = captured["prompt"]
+    assert "skill_view" in prompt
+    for action in ("edit", "patch", "write_file", "remove_file"):
+        assert f"action={action}" in prompt, (
+            "the delivered prompt never tells the reviewer to call skill_view "
+            f"before skill_manage action={action}, which the read-before-write "
+            "guard refuses without it"
+        )
+
+
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     from hermes_cli import curator as cli
     skills_dir = curator_env["home"] / "skills"

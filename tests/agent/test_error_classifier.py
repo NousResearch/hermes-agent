@@ -1,5 +1,7 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
+from types import SimpleNamespace
+
 import pytest
 from agent.error_classifier import (
     ClassifiedError,
@@ -17,10 +19,11 @@ from agent.error_classifier import (
 
 class MockAPIError(Exception):
     """Simulates an OpenAI SDK APIStatusError."""
-    def __init__(self, message, status_code=None, body=None):
+    def __init__(self, message, status_code=None, body=None, headers=None):
         super().__init__(message)
         self.status_code = status_code
         self.body = body or {}
+        self.response = SimpleNamespace(headers=headers or {})
 
 
 class MockTransportError(Exception):
@@ -272,6 +275,141 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
+
+    def test_anthropic_429_usage_limit_without_reset_is_billing(self):
+        e = MockAPIError(
+            "usage limit reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Your account has reached its usage limit.",
+                }
+            },
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_anthropic_429_usage_limit_with_reset_stays_rate_limit(self):
+        e = MockAPIError(
+            "usage limit reached; resets at 2026-08-24T10:00:00Z",
+            status_code=429,
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    @pytest.mark.parametrize(
+        ("reset_field", "reset_value"),
+        [
+            ("resets_in_seconds", 3600),
+            ("resets_at", "2026-08-24T10:00:00Z"),
+            ("reset_at", "2026-08-24T10:00:00Z"),
+            ("retry_after", 3600),
+        ],
+    )
+    def test_anthropic_429_usage_limit_with_structured_reset_stays_rate_limit(
+        self,
+        reset_field,
+        reset_value,
+    ):
+        e = MockAPIError(
+            "usage limit reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Your account has reached its usage limit.",
+                    reset_field: reset_value,
+                }
+            },
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    @pytest.mark.parametrize("header", ["Retry-After", "x-ratelimit-reset"])
+    def test_anthropic_429_usage_limit_with_reset_header_stays_rate_limit(self, header):
+        e = MockAPIError(
+            "usage limit reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Your account has reached its usage limit.",
+                }
+            },
+            headers={header: "3600"},
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_generic_quota_wall_is_billing(self):
+        # Broadened from the narrow "usage limit" core to the full
+        # _USAGE_LIMIT_PATTERNS: a bare "quota" / "limit exceeded" 429 with no
+        # reset signal is a hard wall, not a retryable throttle. (credit #39441)
+        for msg in ("Monthly quota reached.", "API key limit exceeded."):
+            e = MockAPIError(msg, status_code=429)
+            result = classify_api_error(e, provider="groq", model="llama-3")
+            assert result.reason == FailoverReason.billing, msg
+            assert result.retryable is False, msg
+
+    def test_429_insufficient_credits_is_billing(self):
+        e = MockAPIError("Insufficient credits remaining.", status_code=429)
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_rate_limit_phrase_never_promotes_to_billing(self):
+        # The exclusion guard: "Rate limit exceeded" contains the
+        # "limit exceeded" usage-limit substring, but an explicit rate-limit
+        # phrase must stay a retryable rate limit. (guard credit #39441)
+        for msg in (
+            "Rate limit exceeded, please slow down.",
+            "Too many requests; rate_limit hit.",
+        ):
+            e = MockAPIError(msg, status_code=429)
+            result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+            assert result.reason == FailoverReason.rate_limit, msg
+            assert result.retryable is True, msg
+
+    def test_codex_weekly_usage_limit_resets_in_stays_rate_limit(self):
+        # Codex surfaces "Weekly usage limit reached. Resets in 6hr 29min."
+        # "resets in" was NOT a transient signal before, so this wrongly read
+        # as terminal billing. (transient-signal credit #63021)
+        e = MockAPIError(
+            "Weekly usage limit reached. Resets in 6hr 29min.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5-codex")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "usage limit reached, reset after 3600s",
+            "usage limit reached, available in 42 minutes",
+            "usage limit reached; 20 requests per minute",
+        ],
+    )
+    def test_429_usage_limit_with_extra_transient_phrases_stays_rate_limit(self, phrase):
+        # Additional transient signals. (credit #74785)
+        e = MockAPIError(phrase, status_code=429)
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
 
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
@@ -1290,5 +1428,154 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
+
+
+class TestServerInjectedParameterRejection:
+    """A 400 blaming a parameter the client never sent is a server-side flake.
+
+    The Codex backend (chatgpt.com/backend-api/codex) intermittently adds
+    ``prompt_cache_retention`` to its own upstream call and then rejects it,
+    so an identical request succeeds on retry ~80% of the time.  Hermes never
+    sends that field on this route, so the 400 is not a deterministic
+    request-shape error and must stay retryable instead of aborting the turn.
+    """
+
+    RETENTION_BODY = {
+        "message": "prompt_cache_retention is not supported on this model",
+        "type": "invalid_request_error",
+        "param": "prompt_cache_retention",
+        "code": "invalid_parameter",
+    }
+
+    def test_codex_retention_400_is_retryable_server_error(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'prompt_cache_retention "
+            "is not supported on this model', 'type': 'invalid_request_error', "
+            "'param': 'prompt_cache_retention', 'code': 'invalid_parameter'}}",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            approx_tokens=546912,
+            context_length=272000,
+            num_messages=576,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        # Retrying the identical request is the recovery — do NOT enter the
+        # compression loop (the context was never the problem).
+        assert result.should_compress is False
+
+    def test_codex_retention_400_nested_error_body_is_retryable(self):
+        """The same rejection arrives wrapped in an ``error`` envelope too."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body={"error": dict(self.RETENTION_BODY)},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_codex_gateway_terse_retention_400_is_retryable(self):
+        """The Codex gateway's own validator uses a bare ``detail`` body."""
+        e = MockAPIError(
+            "Unsupported parameter: prompt_cache_retention",
+            status_code=400,
+            body={"detail": "Unsupported parameter: prompt_cache_retention"},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_small_session_retention_400_is_still_retryable(self):
+        """Must not depend on the context-size heuristic — a tiny request
+        gets the identical spontaneous rejection (reproduced live)."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e,
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            approx_tokens=50,
+            num_messages=1,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_other_unsupported_parameter_400_stays_non_retryable(self):
+        """Boundary: a genuine client-sent bad parameter is deterministic and
+        must keep failing fast as a format_error (the existing behaviour)."""
+        e = MockAPIError(
+            "Unsupported parameter: 'max_tokens' is not supported with this "
+            "model. Use 'max_completion_tokens' instead.",
+            status_code=400,
+            body={
+                "message": "Unsupported parameter: 'max_tokens' is not supported.",
+                "type": "invalid_request_error",
+                "param": "max_tokens",
+                "code": "unsupported_parameter",
+            },
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_retention_rejection_from_meta_host_stays_non_retryable(self):
+        """Boundary: on api.meta.ai / Bedrock Mantle Hermes DOES send
+        ``prompt_cache_retention`` deliberately, so a rejection there is a
+        real client-side request error and must not be retried blindly."""
+        e = MockAPIError(
+            "prompt_cache_retention is not supported on this model",
+            status_code=400,
+            body=dict(self.RETENTION_BODY),
+        )
+        result = classify_api_error(
+            e, provider="meta-ai", model="muse-spark-1.2",
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    @pytest.mark.parametrize("status_code", [500, 502])
+    def test_retention_rejection_via_5xx_proxy_is_retryable(self, status_code):
+        """Sibling path: a proxy in front of the route can surface the same
+        injected-parameter rejection as 5xx, where the request-validation
+        guard would also wrongly fail it fast as a format_error."""
+        e = MockAPIError(
+            "Unsupported parameter: prompt_cache_retention",
+            status_code=status_code,
+            body={"error": dict(self.RETENTION_BODY)},
+        )
+        result = classify_api_error(
+            e, provider="openai-codex", model="gpt-5.6-sol",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    @pytest.mark.parametrize("status_code", [500, 502])
+    def test_other_bad_parameter_via_5xx_stays_non_retryable(self, status_code):
+        """Boundary for the sibling path: the codex.nekos.me 502-on-bad-param
+        behaviour must keep failing fast (regression guard for that fix)."""
+        e = MockAPIError(
+            "Unknown parameter: 'frequency_penalty'",
+            status_code=status_code,
+            body={"error": {"message": "Unknown parameter: 'frequency_penalty'",
+                            "code": "unknown_parameter"}},
+        )
+        result = classify_api_error(e, provider="custom", model="m")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
 
 

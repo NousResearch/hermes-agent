@@ -463,6 +463,19 @@ class TestProtectedInstructionFiles:
         self._write(target, "second")
         assert len(approvals["calls"]) == 2
 
+    def test_cli_prompt_is_told_no_scope_persists(self, tmp_path, approvals):
+        """The prompt must not advertise a scope this gate discards.
+
+        Since nothing is persisted, a rendered "session"/"always" option
+        re-prompts on the very next write and reads as a broken gate
+        (#81887).
+        """
+        approvals["answer"] = "once"
+        self._write(tmp_path / "SOUL.md")
+        call = approvals["calls"][0]
+        assert call["allow_session"] is False
+        assert call["allow_permanent"] is False
+
     def test_regular_file_never_prompts(self, tmp_path, approvals):
         res = self._write(tmp_path / "notes.md", "hello")
         assert not res.get("error"), res
@@ -643,6 +656,35 @@ class TestProtectedInstructionFiles:
                 A.unregister_gateway_notify(session_key)
         finally:
             A.reset_current_session_key(token)
+
+    def test_gateway_payload_renders_only_once_and_deny(self, tmp_path):
+        """End-to-end: what this gate emits, a TUI/desktop client can render.
+
+        The transport used to derive its button set from ``allow_permanent``
+        alone, so it re-added a "session" scope the gate refuses to persist —
+        users tapped it and got re-prompted on every write (#81887). Asserting
+        the two layers together is what catches that drift.
+        """
+        import tools.approval as A
+        from tui_gateway.server import _approval_request_payload
+
+        session_key = "protected-files-payload-session"
+        token = A.set_current_session_key(session_key)
+        rendered = {}
+        try:
+            def notify(approval_data):
+                rendered.update(_approval_request_payload(approval_data))
+                A.resolve_gateway_approval(session_key, "once")
+
+            A.register_gateway_notify(session_key, notify)
+            try:
+                self._write(tmp_path / "SOUL.md", "gateway approved")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            A.reset_current_session_key(token)
+
+        assert rendered["choices"] == ["once", "deny"]
 
 
 if __name__ == "__main__":

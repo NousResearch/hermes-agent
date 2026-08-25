@@ -182,30 +182,42 @@ class TestNoSkillsOptOut:
 
 
     def test_delete_marker_re_enables_seeding(self, profile_env, monkeypatch):
-        """Deleting .no-bundled-skills opts the profile back in."""
+        """Deleting .no-bundled-skills opts the profile back into a full sync.
+
+        The sync subprocess runs in BOTH states: with the marker present,
+        sync_skills() itself seeds only the essential skills and reports
+        ``skipped_opt_out``; without it, a normal full sync happens.
+        """
         import subprocess as _sp
 
         profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
         assert has_bundled_skills_opt_out(profile_dir) is True
 
-        # First call: opted out, returns skipped dict without touching subprocess
+        # Marker present: the subprocess still runs (essential-only seeding
+        # happens inside sync_skills) and its skipped_opt_out flag surfaces.
         called = []
+        stdout_by_call = [
+            '{"copied": ["hermes-agent"], "skipped_opt_out": true}',
+            '{"copied": []}',
+        ]
         monkeypatch.setattr(
             "subprocess.run",
             lambda *a, **kw: (called.append(a), _sp.CompletedProcess(
-                args=a, returncode=0, stdout='{"copied": []}', stderr=""
+                args=a, returncode=0,
+                stdout=stdout_by_call[min(len(called) - 1, 1)], stderr="",
             ))[1],
         )
         r1 = seed_profile_skills(profile_dir, quiet=True)
         assert r1.get("skipped_opt_out") is True
-        assert called == []
+        assert r1.get("copied") == ["hermes-agent"]
+        assert len(called) == 1
 
-        # Delete marker → next call runs the real path
+        # Delete marker → next call is a normal full sync.
         (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
         assert has_bundled_skills_opt_out(profile_dir) is False
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
-        assert len(called) == 1
+        assert len(called) == 2
 
 
 # ===================================================================

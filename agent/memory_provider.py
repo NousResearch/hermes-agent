@@ -41,6 +41,12 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Version 1 is the historical, implicit contract every provider is already
+# on: best-effort on_pre_compress() with the raw message list. Version 2 is
+# the opt-in fail-closed checkpoint contract (normalized evidence handoff +
+# strict-mode failure propagation).
+PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
+
 # Default glyph for the deterministic memory indicators. Providers override
 # per-status with their own brand mark (e.g. Hindsight uses "👁️").
 INDICATOR_GLYPH = "🧠"
@@ -103,6 +109,12 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
 
 class MemoryProvider(ABC):
     """Abstract base class for memory providers."""
+
+    # Providers that durably checkpoint every successful on_pre_compress()
+    # call may opt into that host contract by setting the current version
+    # (PRE_COMPRESS_CHECKPOINT_API_VERSION). Version 1 is the implicit
+    # historical contract: best-effort semantics, raw message list.
+    pre_compress_checkpoint_api_version = 1
 
     @property
     @abstractmethod

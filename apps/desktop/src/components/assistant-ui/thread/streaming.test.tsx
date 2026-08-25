@@ -396,6 +396,34 @@ function RunningReasoningHarness() {
   )
 }
 
+// A turn that streams reasoning and then settles — the transition the
+// preview latch exists for. `settle()` flips the thread to not-running.
+function renderSettlingReasoning() {
+  let setRunning: ((running: boolean) => void) | undefined
+
+  function SettlingReasoningHarness() {
+    const [running, setRunningState] = useState(true)
+
+    setRunning = setRunningState
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: [assistantReasoningMessage('The user asked a question.', running)],
+      isRunning: running,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<SettlingReasoningHarness />)
+
+  return { container, settle: () => act(() => setRunning?.(false)) }
+}
+
 function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
@@ -510,6 +538,30 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
+  it('puts the turn duration on the action bar row instead of a line of its own', () => {
+    const settled = {
+      ...assistantMessage('All done.', false),
+      metadata: {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: { durationS: 12 }
+      }
+    } as ThreadMessage
+
+    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    const duration = container.querySelector('[data-slot="aui_turn-duration"]')
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+
+    // Same row as the (always-mounted) action bar: the footer's height is
+    // already reserved while the turn streams, so landing the duration there
+    // adds no height when the turn settles.
+    expect(duration).toBeTruthy()
+    expect(duration?.parentElement).toBe(actions?.parentElement)
+  })
+
   it('renders assistant provider errors inline', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
@@ -567,6 +619,48 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
     expect(container.textContent).not.toContain('```ts')
+  })
+
+  it('does not collapse a live thinking preview when the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('true')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container, settle } = renderSettlingReasoning()
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('keeps streaming reasoning collapsed by default when the preference is enabled', () => {

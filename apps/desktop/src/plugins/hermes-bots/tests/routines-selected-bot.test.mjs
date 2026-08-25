@@ -13,19 +13,23 @@ import vm from 'node:vm'
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-function load() {
+function load({ focusedSessionOwnerSupported = false, focusedSessionOwner = null } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => values.set(slot, value) }
     values.set(slot, initial)
     return slot
   }
+  const state = { profile: { listen: () => undefined } }
+  if (focusedSessionOwnerSupported) {
+    state.focusedSessionOwner = atom(focusedSessionOwner)
+  }
   const context = {
     atom,
     PALETTE_AREA: 'palette',
     COMPOSER_AREAS: { middleware: 'middleware' },
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
-    host: { state: { profile: { listen: () => undefined } } }
+    host: { state }
   }
   const source = pluginSource
     .replace(/^import\s+\*\s+as\s+sdk\s+from '@hermes\/plugin-sdk'\r?\n/m, '')
@@ -34,7 +38,13 @@ function load() {
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
-    .concat('\nglobalThis.__api = { bindProfileSync, $selectedBot };\n')
+    .concat(`
+      globalThis.__api = {
+        bindProfileSync,
+        resolveRoutineOwner: typeof resolveRoutineOwner === 'function' ? resolveRoutineOwner : undefined,
+        $selectedBot
+      };
+    `)
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   return context
 }
@@ -81,6 +91,17 @@ test('unit: bindProfileSync keeps forwarding live profile changes after (re)bind
   assert.equal($selectedBot.get(), 'researcher', 'live changes still flow through the listener')
 })
 
+test('unit: bindProfileSync follows connection changes for the same profile name', () => {
+  const { bindProfileSync, $selectedBot } = load().__api
+  const owner = fakeProfileStore({ connectionId: 'source-a', profile: 'default' })
+
+  bindProfileSync(owner)
+  assert.equal($selectedBot.get(), 'source-a::default')
+
+  owner.set({ connectionId: 'source-b', profile: 'default' })
+  assert.equal($selectedBot.get(), 'source-b::default')
+})
+
 test('unit: an empty/non-string current value is not seeded into $selectedBot', () => {
   const { bindProfileSync, $selectedBot } = load().__api
   const before = $selectedBot.get()
@@ -88,10 +109,51 @@ test('unit: an empty/non-string current value is not seeded into $selectedBot', 
   assert.equal($selectedBot.get(), before, 'falsy current value leaves $selectedBot untouched')
 })
 
-test('unit: register() wires the focused-profile ladder through bindProfileSync', () => {
+test('unit: an authoritative focused owner missing from the roster fails closed', () => {
+  const { resolveRoutineOwner } = load().__api
+  const roster = [{
+    connectionId: 'source-a',
+    name: 'default',
+    remoteSource: true,
+    sourceScoped: true
+  }]
+  const focusedOwner = {
+    authoritative: true,
+    connectionId: 'source-b',
+    name: 'worker'
+  }
+
+  assert.equal(resolveRoutineOwner(roster, focusedOwner, 'source-a::default'), null)
+})
+
+test('unit: an authoritative null focused owner disables routines instead of using selection', () => {
+  const { resolveRoutineOwner } = load({ focusedSessionOwnerSupported: true }).__api
+  const roster = [{
+    connectionId: 'source-a',
+    name: 'default',
+    remoteSource: true,
+    sourceScoped: true
+  }]
+
+  assert.equal(resolveRoutineOwner(roster, null, 'source-a::default'), null)
+})
+
+test('unit: a legacy SDK without focused owner support may use selection', () => {
+  const { resolveRoutineOwner } = load().__api
+  const roster = [{
+    connectionId: 'source-a',
+    name: 'default',
+    remoteSource: true,
+    sourceScoped: true
+  }]
+
+  assert.equal(resolveRoutineOwner(roster, null, 'source-a::default'), roster[0])
+})
+
+test('unit: register() wires the focused-owner ladder through bindProfileSync', () => {
   assert.match(
     pluginSource,
-    /const unbindProfileListener = bindProfileSync\(\$focusedBotProfile\)/,
-    'the reseeding helper must own the $focusedBotProfile subscription'
+    /const unbindProfileListener = bindProfileSync\(\$focusedBotOwner\)/,
+    'the reseeding helper must own the connection-qualified focused owner subscription'
   )
 })

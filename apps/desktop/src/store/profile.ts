@@ -13,7 +13,14 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  activeGatewayConnectionId,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile
+} from '@/store/gateway'
+import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -192,6 +199,16 @@ export const $activeGatewayProfile = atom<string>('default')
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
+export interface AgentProfileRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+// A draft remembers the source it was created for. The active gateway may
+// change before the first Send; the draft's owner must not change with it.
+export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
@@ -500,12 +517,30 @@ export function selectProfile(name: string): void {
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
+  $newChatRoute.set(null)
 
   if (switching) {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  // A profile with a remote override can fail to activate because the remote
+  // host rejected its saved token (rotated/revoked). That must surface as a
+  // "re-enter token" affordance, never a silently dead profile (#91349).
+  void activateOnCurrentSource(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
+}
+
+// Route a profile pick at the source the user is LOOKING at. $profiles is the
+// active gateway's list, so a pick made while a registry source is live names
+// one of THAT source's profiles. Sending it through the profile-only path
+// resolves the descriptor with a bare name (getConnection(profile)), which the
+// main process answers against the primary — so picking "researcher" on a
+// remote source opened a local backend of the same name and dropped the user
+// back home, making the pick look like it never took. A null connection id
+// means the primary is live, which is exactly the legacy path.
+function activateOnCurrentSource(target: string): Promise<void> {
+  const connectionId = activeGatewayConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -517,8 +552,30 @@ export function selectProfile(name: string): void {
 export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
+  $newChatRoute.set(null)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void activateOnCurrentSource(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
+}
+
+/** Start a draft owned by a specific registry agent. Foreground activation is
+ * only a presentation step; the route stays attached to the draft for the
+ * eventual session.create request. */
+export function newSessionInAgent(route: AgentProfileRoute): void {
+  const captured = {
+    ...route,
+    connectionId: route.connectionId.trim(),
+    profile: normalizeProfileKey(route.profile),
+    ...(route.targetProfile ? { targetProfile: normalizeProfileKey(route.targetProfile) } : {})
+  }
+
+  if (!captured.connectionId) {
+    throw new Error('Agent profile route is missing connectionId')
+  }
+
+  $newChatProfile.set(captured.profile)
+  $newChatRoute.set(captured)
+  requestFreshSession()
+  void ensureGatewayAgent(captured.connectionId, captured.profile)
 }
 
 export function setShowAllProfiles(value: boolean): void {

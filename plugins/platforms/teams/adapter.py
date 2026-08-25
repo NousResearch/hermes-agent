@@ -58,11 +58,29 @@ except ImportError:
 import importlib.util
 import sys as _sys
 
-try:
-    TEAMS_SDK_AVAILABLE = importlib.util.find_spec("microsoft_teams") is not None
-except ValueError:
-    # Test stubs may inject a module without ``__spec__``.
-    TEAMS_SDK_AVAILABLE = "microsoft_teams" in _sys.modules
+
+def _probe_teams_sdk_available() -> bool:
+    """True when ``microsoft_teams.apps`` is on sys.path, without importing it.
+
+    Sibling packages (microsoft-teams-api / common / cards) also live under
+    the ``microsoft_teams`` namespace, so ``find_spec("microsoft_teams")``
+    alone can be True while ``App`` is still unbound — connect() then
+    called None and logged ``'NoneType' object is not callable``.
+
+    Probe the parent first: ``find_spec("microsoft_teams.apps")`` raises
+    ``ModuleNotFoundError`` on 3.11+ when the parent namespace is absent,
+    which crashed plugin import and unregistered the Teams platform.
+    """
+    try:
+        if importlib.util.find_spec("microsoft_teams") is None:
+            return False
+        return importlib.util.find_spec("microsoft_teams.apps") is not None
+    except (ValueError, ModuleNotFoundError, ImportError):
+        # Test stubs may inject a module without ``__spec__``.
+        return "microsoft_teams.apps" in _sys.modules
+
+
+TEAMS_SDK_AVAILABLE = _probe_teams_sdk_available()
 ClientOptions = None  # type: ignore[assignment,misc]
 App = None  # type: ignore[assignment,misc]
 ActivityContext = None  # type: ignore[assignment,misc]
@@ -779,8 +797,13 @@ class TeamsAdapter(BasePlatformAdapter):
         # Defensive re-check: create_adapter() already ran the installer
         # (ensure_deps_fn) if deps were missing, but connect() can also be
         # reached via reconnect paths — re-run to bind SDK globals.
+        #
+        # Gate on App, not TEAMS_SDK_AVAILABLE. The latter is a find_spec
+        # probe and can be True from the microsoft_teams namespace without
+        # symbols ever being bound (check_teams_requirements returning
+        # False is ignored if we only inspect the flag).
         check_teams_requirements()
-        if not TEAMS_SDK_AVAILABLE:
+        if App is None or ClientOptions is None:
             self._set_fatal_error(
                 "MISSING_SDK",
                 "microsoft-teams-apps could not be installed. "
@@ -858,7 +881,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 f"Teams connection failed: {e}",
                 retryable=True,
             )
-            logger.error("[teams] Failed to connect: %s", e)
+            logger.error("[teams] Failed to connect: %s", e, exc_info=True)
             return False
 
     async def disconnect(self) -> None:

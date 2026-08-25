@@ -7,6 +7,7 @@ import {
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
+  findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   spliceRegistrySessionRows
 } from './profile-session-routing'
@@ -373,4 +374,44 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
   assert.equal(totals['hermes-claude'], 1)
   assert.equal(totals.default, 2) // untagged registry row counts under default
   assert.equal(totals.work, 1) // deduped row does not double-count
+})
+
+test('finds the remote owner profile for a hint-less session read (#85834)', async () => {
+  const owner = await findRemoteOwnerProfileForSession('sess-remote', ['vps-a', 'vps-b'], async profile => {
+    if (profile === 'vps-b') {
+      return { sessions: [{ id: 'sess-remote' }] } as never
+    }
+
+    return { sessions: [{ id: 'other' }] } as never
+  })
+
+  assert.equal(owner, 'vps-b')
+})
+
+test('remote owner lookup matches a compression lineage root id too', async () => {
+  const owner = await findRemoteOwnerProfileForSession('root-1', ['vps-a'], async () => {
+    return { sessions: [{ id: 'tip-2', _lineage_root_id: 'root-1' }] } as never
+  })
+
+  assert.equal(owner, 'vps-a')
+})
+
+test('remote owner lookup returns null when no remote lists the id or remotes fail', async () => {
+  const missing = await findRemoteOwnerProfileForSession('sess-x', ['vps-a'], async () => {
+    return { sessions: [{ id: 'other' }] } as never
+  })
+
+  assert.equal(missing, null)
+
+  const dead = await findRemoteOwnerProfileForSession('sess-x', ['vps-a'], async () => {
+    throw new Error('remote unavailable')
+  })
+
+  assert.equal(dead, null)
+
+  const noRemotes = await findRemoteOwnerProfileForSession('sess-x', [], async () => {
+    throw new Error('never called')
+  })
+
+  assert.equal(noRemotes, null)
 })

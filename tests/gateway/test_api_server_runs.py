@@ -34,21 +34,27 @@ from tools import approval as approval_mod
 
 
 @pytest.mark.parametrize(
-    ("smart_denied", "allow_permanent", "expected"),
+    ("smart_denied", "allow_session", "allow_permanent", "expected"),
     [
-        (False, True, ["once", "session", "always", "deny"]),
-        (False, False, ["once", "session", "deny"]),
-        (True, True, ["once", "deny"]),
-        (True, False, ["once", "deny"]),
+        (False, True, True, ["once", "session", "always", "deny"]),
+        (False, True, False, ["once", "session", "deny"]),
+        (False, False, True, ["once", "deny"]),
+        (False, False, False, ["once", "deny"]),
+        (True, True, True, ["once", "deny"]),
+        (True, False, False, ["once", "deny"]),
     ],
 )
 def test_approval_event_choices_follow_backend_capabilities(
-    smart_denied, allow_permanent, expected
+    smart_denied, allow_session, allow_permanent, expected
 ):
-    assert _approval_event_choices(
-        smart_denied=smart_denied,
-        allow_permanent=allow_permanent,
-    ) == expected
+    assert (
+        _approval_event_choices(
+            smart_denied=smart_denied,
+            allow_session=allow_session,
+            allow_permanent=allow_permanent,
+        )
+        == expected
+    )
 
 
 def _make_adapter(api_key: str = "") -> APIServerAdapter:

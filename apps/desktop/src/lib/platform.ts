@@ -17,3 +17,6 @@ export const isMacPlatform = (): boolean =>
 // default userAgent. Win32 / Windows NT are the real tokens.
 export const isWindowsPlatform = (): boolean =>
   typeof navigator !== 'undefined' && /win32|windows/i.test(navigator.platform || navigator.userAgent || '')
+
+export const isLinuxPlatform = (): boolean =>
+  typeof navigator !== 'undefined' && /linux/i.test(navigator.platform || navigator.userAgent || '')

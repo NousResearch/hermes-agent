@@ -790,6 +790,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/video-gen-provider-plugin',
                 'developer-guide/web-search-provider-plugin',
                 'developer-guide/browser-provider-plugin',
+                'developer-guide/terminal-environment-plugin',
               ],
             },
             'developer-guide/creating-skills',

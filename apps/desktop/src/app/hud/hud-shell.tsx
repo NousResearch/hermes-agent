@@ -10,10 +10,11 @@ import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 
 import { useHudClickThrough } from './click-through'
+import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
 import { hudTranscriptHeight } from './layout'
-import { useHudResizeHandle } from './resize-handle'
+import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
@@ -135,17 +136,51 @@ function useRecentActivity(): [boolean, () => void] {
 /**
  * True while the HUD must stay up regardless of the hold timer.
  *
- * Only a question: a clarify/approval/sudo/secret prompt is something the agent
- * cannot continue without, and letting it fade hands you a surface you cannot
- * use — zero opacity, and the window goes mouse-transparent under it, so the
- * prompt is neither readable nor clickable.
+ * Three things qualify:
  *
- * A merely BUSY session is not that. Pinning the band for the length of a turn
- * meant a HUD you had walked away from sat open across the screen for as long
- * as the agent worked; the answer arriving flashes it anyway.
+ * - A clarify/approval/sudo/secret prompt: something the agent cannot continue
+ *   without, and letting it fade hands you a surface you cannot use — zero
+ *   opacity, and the window goes mouse-transparent under it, so the prompt is
+ *   neither readable nor clickable.
+ * - The session being BUSY at all — thinking, calling a tool, streaming — plus
+ *   a grace window after the turn ends, so the answer you were waiting for is
+ *   still there when it arrives.
+ * - GAME OVERLAY MODE, unconditionally. Over a fullscreen game the HUD is the
+ *   chat frame, and a chat frame that erases itself a second after each line is
+ *   useless: you look back at it when there is a lull in the game, not when the
+ *   text happens to be fresh. This is what every in-game chat log does, and it
+ *   costs nothing here because the band over a game is bare text with no panel.
+ *
+ * Pinning on busy was deliberately avoided while the band brought its tinted
+ * sheet up with it — that put an opaque panel across the screen for as long as
+ * the agent worked. The sheet is a translucent scrim now, so a held band is
+ * legible text rather than a slab.
  */
-function useHudHeld(): boolean {
-  return useStore($activeSessionAwaitingInput)
+function useHudHeld(gameUnder: boolean): boolean {
+  const awaiting = useStore($activeSessionAwaitingInput)
+  const busy = useStore($busy)
+
+  // The reply landing must stay readable. Held for the whole turn AND for a
+  // grace window after it ends, tracked here rather than by re-arming
+  // `useRecentActivity`'s timer: that timer deliberately refuses to re-arm for
+  // ambient activity on an unfocused HUD, so the turn's own end could not buy a
+  // hold through it and the answer blinked out the instant it finished.
+  const [grace, setGrace] = useState(false)
+
+  useEffect(() => {
+    if (busy) {
+      setGrace(true)
+
+      return
+    }
+
+    // Falling edge: keep it up a moment longer, then let the fade have it.
+    const timer = setTimeout(() => setGrace(false), HUD_RECENT_HOLD_MS)
+
+    return () => clearTimeout(timer)
+  }, [busy])
+
+  return gameUnder || awaiting || busy || grace
 }
 
 /**
@@ -165,7 +200,11 @@ function useHudHeld(): boolean {
  */
 export function HudShell() {
   const [recent, holdBand] = useRecentActivity()
-  const held = useHudHeld()
+  // A fullscreen app (a game) is under the HUD: wear `data-hud-game` so the
+  // idle bar steps back to overlay opacity (see styles.css). Detection is
+  // main's — the page cannot see other apps' windows.
+  const gameUnder = useHudGameOverlay()
+  const held = useHudHeld(gameUnder)
 
   // Clicking away to another APP is the most common way the HUD is let go of,
   // and it fires no focusout: the composer stays document.activeElement while
@@ -329,15 +368,16 @@ export function HudShell() {
     }
   }, [])
 
-  useHudGlass(rootRef, recent || held, filled)
+  useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
 
-  // Corner resize handle. The window is created non-resizable so dragging can
+  // Edge/corner resize frame. The window is created non-resizable so dragging can
   // never be misread as a resize gesture (the Windows transparent-frameless
   // growth bug); the handle is the one sanctioned way to change size, driving
   // the same flip-resizable-for-the-call pattern the pet overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
+  const resizeDirections = hudResizeDirections(window.hermesDesktop?.hud?.windowing?.clientPlacement !== false)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-
@@ -358,6 +398,7 @@ export function HudShell() {
     <div
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
+      data-hud-game={gameUnder ? '' : undefined}
       data-hud-recent={recent || held ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
@@ -381,19 +422,20 @@ export function HudShell() {
 
       <WiredPane part="chatRoutes" />
 
-      {/* The resize handle: bottom-right corner, the one sanctioned way to
-          change the HUD's size. Invisible chrome — a hot corner, not a
-          button — so it never reads as part of the surface. `data-hud-grabbing`
-          is the same flag the composer drag raises: a gesture in progress owns
-          the window, so click-through can't hand the mouse away mid-resize
-          when the growing edge outruns the cursor. */}
-      <div
-        aria-hidden
-        className="absolute bottom-0 right-0 z-20"
-        data-hud-grabbing={hudResizing ? '' : undefined}
-        data-hud-resize=""
-        onPointerDown={onHudResizePointerDown}
-      />
+      {/* CanvasTTY-style resize frame. Windows/macOS/X11 get every edge and
+          corner; native Wayland gets the right/bottom handles it can honour
+          without forbidden global positioning. The handles are invisible
+          chrome with native cursors. `data-hud-grabbing` keeps click-through
+          from handing the pointer away while the window changes under it. */}
+      {resizeDirections.map(direction => (
+        <div
+          aria-hidden
+          data-hud-grabbing={hudResizing ? '' : undefined}
+          data-hud-resize={direction}
+          key={direction}
+          onPointerDown={event => onHudResizePointerDown(event, direction)}
+        />
+      ))}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
+import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -335,13 +336,15 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
     // Terminal error frames (status "error") carry the failure in
-    // structured fields: `error` is the message, and `partial` marks
-    // `text` as streamed output to keep rather than the error string.
+    // structured fields: `error` is the message, `partial` marks
+    // `text` as streamed output to keep rather than the error string, and
+    // `error_surface` (newer gateways) names the failing layer for the card.
     const failure =
       payload?.status === 'error'
         ? {
             error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
-            partial: Boolean(payload.partial)
+            partial: Boolean(payload.partial),
+            surface: parseErrorSurface(payload.error_surface)
           }
         : undefined
 

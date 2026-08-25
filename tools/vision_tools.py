@@ -625,25 +625,22 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 # provider accepts the image and we reject outright.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
 
-# Proactive embed cap (4 MB).  This is the size we resize an image DOWN to
-# before embedding it into conversation history, regardless of the 20 MB hard
-# ceiling.  Anthropic's per-image base64 limit is 5 MB; once an oversized image
-# is baked into history (e.g. a vision tool-result), it is re-sent on every
-# subsequent turn and permanently wedges the session with a 400 that retries
-# can't clear (the bad bytes are immutable history).  Capping at embed time —
-# with headroom under 5 MB — is the only durable fix.  Matches the post-failure
-# shrink target in agent.conversation_compression so behaviour is consistent
-# whether we resize proactively or reactively.
-_EMBED_TARGET_BYTES = 4 * 1024 * 1024
+# Proactive embed cap for conversation-history reuse.  Native vision_analyze
+# bakes the data-URL into the tool result, which is re-sent on every later
+# turn.  The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as
+# safety nets; those are one-shot viewing limits, not history-reuse sizes.
+# A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
+# tokens per image (#92699), so we size for model reading instead: 256 KB
+# keeps a 1568px screenshot cheap enough to ride the session (PNGs that
+# exceed it are downscaled further by the byte-budget ladder), well under
+# every provider's per-image limit.
+_EMBED_TARGET_BYTES = 256 * 1024
 
-# Proactive embed dimension cap (px, longest side).  Anthropic enforces an
-# 8000px per-side ceiling INDEPENDENTLY of the 5 MB byte cap — a tall full-page
-# screenshot can be well under 5 MB yet far over 8000px (e.g. 1200×12000 at
-# 0.06 MB), so the byte-only embed check above lets it slip into immutable
-# history un-resized and the session bricks on a non-retryable 400.  We cap at
-# 7900 (headroom under 8000) so the proactive resize shrinks tall small-byte
-# images before they are embedded.
-_EMBED_MAX_DIMENSION = 7900
+# Proactive embed dimension cap (px, longest side).  Anthropic still rejects
+# above 8000px independently of the byte cap, but its tokenizer downsamples
+# to a 1568px long edge — pixels past that cost wire bytes and never extra
+# model fidelity.  Cap at 1568 so history embeds match what the model sees.
+_EMBED_MAX_DIMENSION = 1568
 
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
@@ -796,7 +793,8 @@ def _build_scale_note(
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
                               max_dimension: Optional[int] = None,
-                              scale_out: Optional[dict] = None) -> str:
+                              scale_out: Optional[dict] = None,
+                              force_jpeg: bool = False) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
@@ -808,6 +806,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             count are forcibly downscaled even if they're under the byte
             budget.  Anthropic enforces an 8000 px per-side cap independently
             of the 5 MB byte cap.
+        force_jpeg: Re-encode as JPEG even for PNG input when a resize is
+            needed.  PNG has no quality ladder — its only shrink lever is
+            halving dimensions, which destroys text legibility on dense
+            screenshots.  History-reuse embeds (#92699) opt in so a text-heavy
+            screenshot keeps its readable resolution and shrinks via JPEG
+            quality instead.  Images already under both caps are returned
+            unchanged (still PNG).
 
     Returns the base64 data URL string.
     """
@@ -865,8 +870,14 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 max_base64_bytes / (1024 * 1024), max_dimension)
 
     mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
-    pil_format = "PNG" if mime == "image/png" else "JPEG"
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
+    # force_jpeg overrides for history-reuse embeds: a resize-needing PNG
+    # screenshot re-encodes as JPEG so the quality ladder can shrink bytes
+    # without halving resolution (text legibility, #92699).
+    if force_jpeg:
+        pil_format = "JPEG"
+    else:
+        pil_format = "PNG" if mime == "image/png" else "JPEG"
     out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
 
     try:
@@ -876,8 +887,10 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         if data_url is None:
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+    # JPEG cannot encode alpha or palette/grayscale-alpha modes; normalize
+    # anything that isn't already plain RGB/grayscale.  force_jpeg newly
+    # routes PNG inputs here, so exotic modes (LA/PA) must not crash save().
+    if pil_format == "JPEG" and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until both base64 fits AND pixel dimensions
@@ -1240,13 +1253,12 @@ async def _vision_analyze_native(
         )
 
         # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB OR over 8000px per side with a
-        # 400, and because history is immutable, an oversized embed
-        # permanently wedges the session — retries can't clear bytes (or
-        # pixels) that are already in the request.  Resize DOWN to the embed
-        # target (4 MB / 7900px, headroom under both ceilings) whenever the
-        # payload exceeds either limit, not just at the 20 MB hard ceiling.
+        # history and re-sent on every subsequent turn.  Resize DOWN to the
+        # history-reuse target whenever the payload exceeds either the byte
+        # or long-edge cap, not just at the 20 MB hard ceiling.  Anthropic
+        # still rejects >5 MB / >8000px with a non-retryable 400, but those
+        # are one-shot viewing limits — history embeds are sized smaller so
+        # repeated vision_analyze turns don't blow the context (#92699).
         _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
@@ -1258,6 +1270,7 @@ async def _vision_analyze_native(
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
                 scale_out=_scale_info,
+                force_jpeg=True,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a

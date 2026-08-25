@@ -33,6 +33,7 @@ import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
+  $connection,
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
@@ -40,13 +41,14 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
+  getSessionOwnerHint,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
 import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
-import { $transcriptTailBySessionId } from '@/store/transcript-tail'
+import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -264,10 +266,23 @@ function ChatRuntimeBoundary({
   const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
 
   const storedId = useStore(view.$storedId)
+  const connection = useStore($connection)
+  const activeProfile = useStore($activeGatewayProfile)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
   const transcriptTailStates = useStore($transcriptTailBySessionId)
-  const restBackfillAvailable = Boolean(storedId && transcriptTailStates[storedId]?.possiblyTruncated)
+  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
+
+  const ownerRoute = storedId
+    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+    : undefined
+
+  const tailProfile = ownerRoute
+    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
+    : undefined
+
+  const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
+  const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
   const expandWindow = useCallback(() => {
     // The store window still holds older messages: growing pages is enough.
@@ -276,9 +291,15 @@ function ChatRuntimeBoundary({
     // PREPEND it to the session store before growing, so the grown window has
     // something older to show. Fire-and-forget: the prepend lands through the
     // session-state write path and re-renders this boundary.
-    if (!windowStateRef.current?.window.windowed && runtimeId && storedId && transcriptBackfillAvailable(storedId)) {
+    if (
+      !windowStateRef.current?.window.windowed &&
+      runtimeId &&
+      storedId &&
+      transcriptBackfillAvailable(storedId, tailProfile)
+    ) {
       void backfillOlderTranscriptPage({
         storedSessionId: storedId,
+        profile: tailProfile,
         // Stale-response guard: a session switch remounts/re-keys this view;
         // checking the live atoms (not captured props) discards a page that
         // resolves after the user moved on — same pattern as isCurrentResume.
@@ -294,7 +315,7 @@ function ChatRuntimeBoundary({
     }
 
     setWindowPages(pages => pages + 1)
-  }, [runtimeId, storedId, view])
+  }, [runtimeId, storedId, tailProfile, view])
 
   const olderAvailable = windowed || restBackfillAvailable
 

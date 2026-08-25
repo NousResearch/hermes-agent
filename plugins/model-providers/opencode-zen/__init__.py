@@ -158,7 +158,48 @@ class OpenCodeGoProfile(ProviderProfile):
         return extra_body, top_level
 
 
-opencode_zen = ProviderProfile(
+def _build_ox_alpha_reasoning_extras(
+    reasoning_config: dict | None, model: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Shared Ox Alpha (x-preview-f-free) reasoning_effort translation.
+
+    Used by both the opencode-zen profile and the opencode-free keyless
+    profile — the model is reachable through either provider and the wire
+    contract is identical (low/high/max only; anything else 400s).
+    """
+    if _flat_model_name(model) != "x-preview-f-free":
+        return {}, {}
+    if not isinstance(reasoning_config, dict):
+        return {}, {}
+    if reasoning_config.get("enabled") is False:
+        return {}, {}
+
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    if not effort or effort == "none":
+        return {}, {}
+
+    from agent.reasoning_effort import (
+        OX_ALPHA_EFFORTS,
+        OX_ALPHA_OVERRIDES,
+        clamp_effort,
+    )
+
+    clamped = clamp_effort(effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
+    if clamped not in OX_ALPHA_EFFORTS:
+        return {}, {}
+    return {}, {"reasoning_effort": clamped}
+
+
+class OpenCodeZenProfile(ProviderProfile):
+    """OpenCode Zen - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return _build_ox_alpha_reasoning_extras(reasoning_config, model)
+
+
+opencode_zen = OpenCodeZenProfile(
     name="opencode-zen",
     aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),

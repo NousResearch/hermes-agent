@@ -55,7 +55,7 @@ export interface VirtualSessionListProps {
 // Matches the card's typical rendered height (four lines when a preview
 // exists) so long card lists don't jump under the scroll thumb before
 // self-measurement catches up.
-const CARD_ROW_ESTIMATE_PX = 66
+const CARD_ROW_ESTIMATE_PX = 74
 const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 

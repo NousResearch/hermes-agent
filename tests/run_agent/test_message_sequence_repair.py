@@ -169,6 +169,166 @@ def test_repair_keeps_tool_matching_only_call_id():
 
 
 
+def test_repair_keeps_tool_result_keyed_by_response_item_id():
+    """The normalized call id must still pair the raw Responses item id."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_ABC",
+                "call_id": "call_ABC",
+                "response_item_id": "fc_123",
+                "type": "function",
+                "function": {"name": "x", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "fc_123", "content": "result"},
+    ]
+
+    repairs = repair_message_sequence(_bare_agent(), messages)
+
+    assert repairs == 0
+    assert messages[-1]["content"] == "result"
+
+
+def test_coalesce_tool_call_id_uses_call_half_of_composite_id():
+    """Raw bridge ids must use their canonical call half for tool results."""
+    from agent.message_sanitization import coalesce_tool_call_id
+
+    assert coalesce_tool_call_id({"id": "call_ABC|fc_123"}) == "call_ABC"
+
+
+def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
+    """A valid parallel Responses batch must not become all unavailable stubs.
+
+    Responses/Codex calls can expose a response-item ``id`` (``fc_*``) and a
+    distinct pairing ``call_id`` (``call_*``). The execution path may key the
+    real result with either variant, but the pre-send sanitizer must recognize
+    both as the same assistant call. This is the minimal reproduction of the
+    reported all-results loss for a larger parallel batch.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    batch_size = 8
+    messages = [
+        {"role": "user", "content": "run the independent calls"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"fc_{i}",
+                    "call_id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+                for i in range(batch_size)
+            ],
+        },
+        *[
+            {
+                "role": "tool",
+                "tool_call_id": f"fc_{i}",
+                "content": f"real-result-{i}",
+            }
+            for i in range(batch_size)
+        ],
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    results = [msg for msg in out if msg.get("role") == "tool"]
+    assert [msg["tool_call_id"] for msg in results] == [
+        f"fc_{i}" for i in range(batch_size)
+    ]
+    assert [msg["content"] for msg in results] == [
+        f"real-result-{i}" for i in range(batch_size)
+    ]
+
+
+def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
+    """Consuming one alias group must not orphan a different parallel call."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    messages = [
+        {"role": "user", "content": "do both"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "call_id": "call_1",
+                    "response_item_id": "fc_1",
+                    "type": "function",
+                    "function": {"name": "x", "arguments": "{}"},
+                },
+                {
+                    "id": "call_2",
+                    "call_id": "call_2",
+                    "response_item_id": "fc_2",
+                    "type": "function",
+                    "function": {"name": "y", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "fc_2", "content": "r2"},
+    ]
+
+    repairs = repair_message_sequence(_bare_agent(), messages)
+
+    assert repairs == 0
+    assert [m["content"] for m in messages if m.get("role") == "tool"] == [
+        "r1", "r2"
+    ]
+
+
+def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
+    """A sibling-id replay must not replace the first real result."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_ABC",
+                "call_id": "call_ABC",
+                "response_item_id": "fc_123",
+                "type": "function",
+                "function": {"name": "x", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "fc_123", "content": "real"},
+        {"role": "tool", "tool_call_id": "call_ABC", "content": "replayed"},
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    assert [msg["content"] for msg in out if msg.get("role") == "tool"] == [
+        "real"
+    ]
+
+
+def test_tool_executor_uses_canonical_responses_pairing_id():
+    """The executor must emit the id used by the normalized assistant turn."""
+    from types import SimpleNamespace
+
+    from agent.tool_executor import _pairing_tool_call_id
+
+    assert _pairing_tool_call_id(
+        SimpleNamespace(id="fc_123", call_id="call_ABC")
+    ) == "call_ABC"
+    assert _pairing_tool_call_id(
+        SimpleNamespace(id="call_ABC|fc_123")
+    ) == "call_ABC"
+
+
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
 
 from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
@@ -503,6 +663,44 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     assert "second" in assistants[0]["content"]
 
 
+def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
+    """repair_message_sequence must not drop a valid tool result just because
+    the assistant's ``tool_calls`` entries are unserialized SDK objects
+    (e.g. ``ChatCompletionMessageToolCall``) instead of plain dicts.
+
+    Host-fed / pre-serialization histories (gateway multi-queue replay,
+    session resume) can carry SDK tool_call objects into this pass. The
+    dict-only ``tc.get(key)`` lookup previously left ``known_tool_ids``
+    empty for such messages, so the id-matching pass below misclassified
+    the legitimate tool result as an orphan and silently deleted it —
+    corrupting the persisted history and leaving the assistant's
+    tool_calls unanswered (itself a strict-provider HTTP 400 trigger)."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    class SDKToolCall:
+        def __init__(self, call_id):
+            self.id = call_id
+            self.call_id = None
+            self.function = type("F", (), {"name": "read_file", "arguments": "{}"})()
+
+    messages = [
+        {"role": "user", "content": "read the file"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [SDKToolCall("call_1")],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "file contents"},
+    ]
+    agent = type("Agent", (), {})()
+    repair_message_sequence(agent, messages)
+
+    roles = [m.get("role") for m in messages]
+    assert "tool" in roles, "legitimate tool result was dropped as a false orphan"
+    tool_msg = next(m for m in messages if m.get("role") == "tool")
+    assert tool_msg["content"] == "file contents"
+
+
 
 
 
@@ -563,3 +761,198 @@ def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
     assert "tool_calls" not in assistant2
     # Content should be preserved
     assert assistant2["content"] == "retrying"
+
+
+def test_repair_drops_duplicate_tool_result_keyed_on_sibling_id():
+    """A duplicate result must be dropped even when it uses the OTHER id variant.
+
+    A Codex/Responses ``tool_call`` carries both ``id`` (``fc_...``) and
+    ``call_id`` (``call_...``); both are registered so a result keyed on either
+    is recognised (#58168). The duplicate guard (#58327) consumed only the id
+    the first result referenced, leaving its sibling live — so a second result
+    keyed on that sibling sailed through and two tool messages were replayed
+    for a single call, re-creating the HTTP 400 the guard exists to prevent.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "fc_1", "call_id": "call_1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "first"},
+        {"role": "tool", "tool_call_id": "fc_1", "content": "duplicate"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["first"]
+
+
+def test_repair_keeps_both_results_for_two_codex_calls_mixed_keys():
+    """Consuming a call's sibling ids must not orphan a *different* call.
+
+    Two parallel Codex tool_calls answered via different id variants
+    (one by ``call_id``, one by ``id``) are both legitimate and must survive.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "fc_1", "call_id": "call_1", "type": "function",
+              "function": {"name": "f", "arguments": "{}"}},
+             {"id": "fc_2", "call_id": "call_2", "type": "function",
+              "function": {"name": "g", "arguments": "{}"}},
+         ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "fc_2", "content": "r2"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert [m["content"] for m in messages if m.get("role") == "tool"] == ["r1", "r2"]
+
+
+def test_sanitize_dedup_pass_keeps_batch_results_keyed_on_divergent_id():
+    """The step-3 dedup pass must not delete real results whose tool_call_id
+    matches the non-coalesced id variant.
+
+    A parallel batch of Codex/Responses-style tool_calls carries divergent
+    ``id`` (fc_...) and ``call_id`` (call_...). Step 2's variant-aware
+    matching preserves results keyed on either variant, but the dedup pass
+    tracked only the coalesced (call_id||id) value in
+    ``outstanding_call_ids`` — so every result keyed on ``id`` looked like it
+    answered no outstanding call and was deleted wholesale. Whole parallel
+    batches vanished with no stub at all (#93251, #55626 class).
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"fc_{i}", "call_id": f"call_{i}", "type": "function",
+             "function": {"name": "terminal", "arguments": "{}"}}
+            for i in range(4)
+        ]},
+    ] + [
+        {"role": "tool", "tool_call_id": f"fc_{i}", "content": f"REAL {i}"}
+        for i in range(4)
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == [
+        "REAL 0", "REAL 1", "REAL 2", "REAL 3",
+    ], "real batch results must survive the dedup pass"
+    assert not any("Result unavailable" in m["content"] for m in tool_msgs)
+
+
+def test_sanitize_dedup_pass_still_drops_result_replayed_on_sibling_id():
+    """Variant-aware dedup must still drop a SECOND result for an
+    already-answered call even when the replay uses the OTHER id variant
+    (strict providers 400 on duplicate tool_call_id)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_1", "call_id": "call_1", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "fc_1", "content": "first"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "sibling replay"},
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["first"]
+
+
+def test_sanitize_dedup_pass_rearms_constant_llamacpp_id():
+    """llama.cpp emits one constant id for every call; a fresh assistant call
+    re-arms the id so the second round's result still survives (#58327
+    outstanding-call semantics must be preserved by the variant-set change)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_K", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_K", "content": "round1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_K", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_K", "content": "round2"},
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["round1", "round2"]
+
+
+def test_sanitize_keeps_result_keyed_on_composite_bridge_id():
+    """A tool result keyed on the composite ``call|item`` bridge spelling
+    (#63000) must pair with a tool_call carrying the split id/call_id
+    fields — and vice versa."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    # Result keyed on composite; call carries split fields.
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_1", "call_id": "call_1", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1|fc_1", "content": "REAL"},
+    ]
+    out = sanitize_api_messages(messages)
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["REAL"]
+
+    # Call carries only the composite id; result keyed on the bare half.
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_2|fc_2", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_2", "content": "REAL bare"},
+    ]
+    out = sanitize_api_messages(messages)
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["REAL bare"]
+
+
+def test_compressor_sanitize_keeps_composite_keyed_pair():
+    """The compression sanitizer must apply the same alias expansion on the
+    RESULT side: a composite-keyed result pairs with its split-field call
+    instead of being dropped and its call stripped (#63000)."""
+    from agent.context_compressor import ContextCompressor
+
+    cc = ContextCompressor.__new__(ContextCompressor)
+    cc.quiet_mode = True
+    msgs = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_7", "call_id": "call_7", "type": "function",
+             "function": {"name": "s", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_7|fc_7", "content": "res"},
+        {"role": "user", "content": "next"},
+    ]
+    out = cc._sanitize_tool_pairs(msgs)
+    asst = next(m for m in out if m.get("role") == "assistant")
+    assert asst.get("tool_calls"), "valid tool_call must not be stripped"
+    assert [m["content"] for m in out if m.get("role") == "tool"] == ["res"]
+
+    # Negative control: composite orphan (matches nothing) still dropped.
+    msgs = [
+        {"role": "assistant", "content": "hi"},
+        {"role": "tool", "tool_call_id": "call_z|fc_z", "content": "orphan"},
+        {"role": "user", "content": "next"},
+    ]
+    out = cc._sanitize_tool_pairs(msgs)
+    assert not any(m.get("role") == "tool" for m in out)

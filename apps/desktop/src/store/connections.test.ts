@@ -113,6 +113,17 @@ describe('connection registry cache', () => {
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
   })
 
+  it('restores a remote registry primary through its exact connection id', async () => {
+    list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
+  })
+
   it('uses only the resolved descriptor identity for the active gateway', () => {
     setConnectionsRegistry({ ...registry, primary: 'homelab' })
     $connection.set({ connectionId: 'work-vps', mode: 'remote' })
@@ -241,5 +252,43 @@ describe('selectConnection', () => {
     expect($newChatProfile.get()).toBeNull()
     expect($pendingConnectionId.get()).toBeNull()
     expect(setLastUsed).not.toHaveBeenCalled()
+  })
+
+  it('boot-time restore leaves "All profiles" browse mode on (#93197)', async () => {
+    // Fresh boot: nothing active yet, registry restores last-used. The
+    // persisted showAllProfiles=true must survive the silent restore.
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    $showAllProfiles.set(true)
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
+  it('a user-initiated source switch still collapses "All profiles"', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    $showAllProfiles.set(true)
+
+    await selectConnection('homelab')
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect($showAllProfiles.get()).toBe(false)
+  })
+
+  it('never re-homes a live connection the registry cannot name', async () => {
+    // A window connected through the legacy v1 route carries an unqualified
+    // descriptor, so resolvedConnectionId — and therefore $activeConnectionId
+    // — is null. Restoring the registry primary over it would re-home a
+    // working remote onto local a few seconds after boot.
+    list.mockResolvedValueOnce({ ...registry, launchMode: 'primary', primary: 'local' })
+    $connection.set({ mode: 'remote', profile: 'default', registryScoped: false })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
+    expect($connection.get()?.mode).toBe('remote')
   })
 })

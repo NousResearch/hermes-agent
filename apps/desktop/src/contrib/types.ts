@@ -10,6 +10,13 @@ import type { ReactNode } from 'react'
 export type ContributionSource = 'core' | (string & {})
 
 /**
+ * Which workspace surface a contribution targets. `'sessions'` is the classic
+ * session workspace; `'bots'` scopes content to an individual bot identified
+ * by an opaque owner key.
+ */
+export type WorkspaceMode = 'sessions' | 'bots'
+
+/**
  * The single, uniform primitive every surface consumes. A bar renders these as
  * inline items via `<Slot>`; a dock renders them as stacked/tabbed panes via
  * `<PaneHost>`. Same shape either way -- the host decides how to present them.
@@ -40,4 +47,16 @@ export interface Contribution {
    * themes, commands — anything consumed by an engine rather than rendered.
    */
   data?: unknown
+  /**
+   * Which workspace surface this contribution belongs to. Omit for a global
+   * contribution that participates in every workspace (pre-existing behavior).
+   * Presentation ownership hint only.
+   */
+  workspaceMode?: WorkspaceMode
+  /**
+   * Exact opaque owner key within the `'bots'` surface (e.g. a
+   * connection-qualified profile id). Never parsed here; compared exactly.
+   * Presentation ownership hint only.
+   */
+  workspaceOwnerKey?: string
 }

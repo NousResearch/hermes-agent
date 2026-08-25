@@ -178,11 +178,19 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
 # pid + window_id), and there is no MCP tool that captures the entire virtual
 # desktop or an arbitrary monitor as one image. But the OS shell surfaces
 # themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
-# that show up in `list_windows`, so "show me my screen" / "click the taskbar"
-# is reachable by targeting those windows. When `app` is one of these
-# sentinels, capture() resolves to the desktop/shell window instead of an
-# application window.
-_SCREEN_CAPTURE_SENTINELS = {"screen", "desktop", "fullscreen", "full screen", "all"}
+# that show up in `list_windows`, so "click the taskbar" is reachable by
+# targeting those windows.
+#
+# Two distinct whole-screen intents, two lanes:
+#   * app="screen" (or "fullscreen"/"full screen"/"all") → a real composited
+#     capture of everything currently displayed, via cua-driver's
+#     `get_desktop_state`. Pixels only — no element tree.
+#   * app="desktop" → the OS shell/desktop window (wallpaper + icons) resolved
+#     through list_windows, WITH interactable elements (desktop icons).
+_FULL_SCREEN_SENTINELS = {"screen", "fullscreen", "full screen", "all"}
+_DESKTOP_SHELL_SENTINELS = {"desktop"}
+# Backwards-compatible union — membership means "some whole-screen intent".
+_SCREEN_CAPTURE_SENTINELS = _FULL_SCREEN_SENTINELS | _DESKTOP_SHELL_SENTINELS
 
 # Known shell/desktop window identifiers across platforms. Matched
 # case-insensitively as a substring against both the window's app_name and
@@ -2207,6 +2215,12 @@ class _CuaDriverSession:
         "list_windows",
     })
 
+    # Set when an MCP call timed out (#74799): a timed-out session is
+    # wedged for all later calls, so it is torn down and recreated before
+    # the next non-lifecycle call_tool. Class-level default so tests that
+    # bypass __init__ see a healthy (non-suspect) session.
+    _timeout_suspect = False
+
     @classmethod
     def _transport_replay_is_safe(cls, name: str) -> bool:
         return name in cls._TRANSPORT_REPLAY_SAFE_TOOLS
@@ -2233,7 +2247,53 @@ class _CuaDriverSession:
             "isError": True,
         }
 
+    @staticmethod
+    def _timeout_outcome(name: str, exc: Exception) -> Dict[str, Any]:
+        """Fail-closed result for an MCP call that hit its deadline (#74799).
+
+        The action MAY have taken effect on the remote screen before the
+        response was lost — the same effect_disposition=unknown principle as
+        ``_unknown_transport_outcome`` — so the timed-out call is never
+        silently replayed here; the caller decides after taking fresh state.
+        """
+        message = (
+            f"cua-driver MCP call {name} timed out; the action outcome is "
+            "unknown and may still have taken effect on the remote screen. "
+            "The session has been marked suspect and will be recreated before "
+            "the next computer-use call. Take fresh state before deciding "
+            "whether to act again."
+        )
+        return {
+            "data": message,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": {
+                "ok": False,
+                "code": "timeout_outcome_unknown",
+                "message": message,
+                "operation": name,
+                "next_step": "fresh_state",
+                "detail": str(exc),
+            },
+            "isError": True,
+        }
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior MCP timeout (#74799) marks the session suspect: it may be
+        # wedged for every later call. Recreate it before this call so a
+        # single timeout never poisons the rest of the computer-use session.
+        # Healthy sessions (flag clear) are never restarted here.
+        if self._timeout_suspect and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session suspect after earlier MCP timeout; "
+                "recreating before %s",
+                name,
+            )
+            with self._lock:
+                self._restart_session_locked()
+            self._timeout_suspect = False
+            self._restore_declared_session_after_transport_reset(timeout)
+
         # A prior session may have died (MCP drop / driver crash): its
         # lifecycle coro reset _started to False in its finally (#55048).
         if not self._started and name not in self._LIFECYCLE_CALLS:
@@ -2250,6 +2310,18 @@ class _CuaDriverSession:
                 timeout=timeout,
             )
         except Exception as e:
+            if isinstance(e, concurrent.futures.TimeoutError):
+                # MCP deadline hit (#74799): the session is suspect and must
+                # be recreated before the next call. Fail closed — the action
+                # may have taken effect on the remote screen, so never replay
+                # it here; surface the uncertainty instead (#74799).
+                self._timeout_suspect = True
+                logger.warning(
+                    "cua-driver MCP timed out on %s; marking session suspect "
+                    "for recreation before the next call",
+                    name,
+                )
+                return self._timeout_outcome(name, e)
             if self._is_transient_daemon_error(e):
                 if not self._transport_replay_is_safe(name):
                     self._notify_transport_reset()
@@ -2857,6 +2929,103 @@ class CuaDriverBackend(ComputerUseBackend):
             and app_lower in str(w.get("title", "")).lower()
         ]
 
+    def _capture_full_screen(self, mode: str) -> CaptureResult:
+        """Capture the whole displayed screen via cua-driver's desktop lane.
+
+        Uses `get_desktop_state` — a composited grab of everything currently
+        on screen (like PrtScn) — instead of resolving a single window through
+        `list_windows`. This is what "screenshot my screen" means: previously
+        the `screen` sentinel resolved to the OS shell window (Progman /
+        WorkerW on Windows), which is the wallpaper + icons layer and never
+        shows the windows stacked above it.
+
+        Bonus resilience (2ndNatureAI, #60081): this lane works even when
+        Windows UIA enumeration (`list_windows` / `list_apps`) hangs
+        (trycua/cua#2110/#2113), because it never enumerates.
+
+        Returns pixels only — a composited image has no single accessibility
+        tree, so `elements` is always empty regardless of requested mode. The
+        result carries a `note` telling the model how to reach the
+        interactive lanes.
+        """
+        self._clear_active_target()
+        previous_scope: Optional[str] = None
+        try:
+            cfg = self._session.call_tool(
+                "get_config", {"session": self._session_id}, timeout=10.0,
+            )
+            sc = cfg.get("structuredContent") or {}
+            if isinstance(sc, dict):
+                val = sc.get("capture_scope")
+                if isinstance(val, str):
+                    previous_scope = val
+        except Exception as e:
+            logger.debug("cua-driver get_config before full-screen capture failed: %s", e)
+
+        try:
+            if previous_scope != "desktop":
+                self._session.call_tool(
+                    "set_config",
+                    {"key": "capture_scope", "value": "desktop",
+                     "session": self._session_id},
+                    timeout=10.0,
+                )
+            out = self._call_capture_tool(
+                "get_desktop_state", {"session": self._session_id},
+            )
+        finally:
+            if previous_scope and previous_scope != "desktop":
+                try:
+                    self._session.call_tool(
+                        "set_config",
+                        {"key": "capture_scope", "value": previous_scope,
+                         "session": self._session_id},
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logger.debug("cua-driver restore capture_scope failed: %s", e)
+
+        png_b64, image_mime_type = _image_from_tool_result(out)
+        if not png_b64:
+            return self._failed_capture(
+                mode,
+                "<get_desktop_state returned no image; the driver may "
+                "predate the desktop capture lane — try "
+                "capture(app='<AppName>') for a specific window>",
+            )
+        structured = out.get("structuredContent") or {}
+        width = int(structured.get("screenshot_width")
+                    or structured.get("screen_width") or 0)
+        height = int(structured.get("screenshot_height")
+                     or structured.get("screen_height") or 0)
+        png_bytes_len = 0
+        try:
+            raw = base64.b64decode(png_b64, validate=False)
+            png_bytes_len = len(raw)
+            detected_width, detected_height = _image_dimensions_from_bytes(raw)
+            if detected_width and detected_height:
+                width = detected_width
+                height = detected_height
+        except Exception:
+            png_bytes_len = len(png_b64) * 3 // 4
+        return CaptureResult(
+            mode="vision",
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=[],
+            app="screen",
+            window_title="Full screen (composited)",
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+            note=(
+                "full-screen capture has no interactable elements; to act on "
+                "what you see, call capture(app='<AppName>') for that app's "
+                "clickable element list, or capture(app='desktop') for the "
+                "desktop shell (wallpaper icons / taskbar) with elements"
+            ),
+        )
+
     # ── Capture ────────────────────────────────────────────────────
     def capture(
         self,
@@ -2885,6 +3054,19 @@ class CuaDriverBackend(ComputerUseBackend):
             pid = None
         if _is_placeholder_id(window_id):
             window_id = None
+        # Step 0: explicit full-screen capture — a composited grab of
+        # everything displayed, via get_desktop_state. Bypasses window
+        # enumeration entirely (also keeps screenshots working when Windows
+        # UIA enumeration hangs — trycua/cua#2110/#2113, #60081).
+        # app='desktop' intentionally does NOT take this lane: it resolves to
+        # the shell/desktop window below so desktop icons stay clickable.
+        if (
+            pid is None
+            and window_id is None
+            and app
+            and app.strip().lower() in _FULL_SCREEN_SENTINELS
+        ):
+            return self._capture_full_screen(mode)
         # An exact pid/window pair is both the stable capture_after target and
         # the escape hatch when app/window discovery is unavailable on X11.
         if pid is not None or window_id is not None:
@@ -2923,13 +3105,12 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if pid is None and window_id is None and app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
-            # Whole-screen / desktop request. cua-driver has no virtual-desktop
-            # capture tool, so resolve to the OS shell/desktop window (the
-            # desktop backdrop or the taskbar/menu-bar), which list_windows
-            # does surface. This makes "show me my screen" and "click the
-            # taskbar" work; a single image still can't span multiple monitors
-            # — that's a driver limitation, not a wrapper one.
+        if pid is None and window_id is None and app and app.strip().lower() in _DESKTOP_SHELL_SENTINELS:
+            # Desktop-shell request (app='desktop'): resolve to the OS
+            # shell/desktop window (the desktop backdrop or the
+            # taskbar/menu-bar) via list_windows. Unlike the full-screen lane
+            # above, this carries the shell's interactable elements (desktop
+            # icons), so "click the taskbar" / "open the recycle bin" work.
             def _is_desktop_window(w: Dict[str, Any]) -> bool:
                 haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
                 return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)

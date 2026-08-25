@@ -32,7 +32,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;\nglobalThis.__botConnectionRoute = botConnectionRoute;\nglobalThis.__resolveBotConnectionRoute = resolveBotConnectionRoute;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -230,25 +230,74 @@ test('default rows use source identity without borrowing another source title', 
   const { __botRosterKey: key, __botRosterMeta: metaFor, __displayName: name } = runtime()
   const remote = {
     name: 'default',
-    connectionId: 'personal',
+    connectionId: 'other',
     connectionLabel: 'Personal',
     remoteSource: true,
     sourceScoped: true
   }
-  const active = { ...remote, remoteSource: undefined }
-  const metadata = { default: { title: 'Active workspace' } }
+  const active = { ...remote, connectionId: 'personal', remoteSource: undefined }
+  const metadata = {
+    default: { title: 'Legacy local only' },
+    'personal::default': { title: 'Active workspace' }
+  }
 
-  assert.equal(metaFor(remote, metadata), null)
+  assert.equal(metaFor(remote, metadata), undefined)
   assert.equal(name(remote, metaFor(remote, metadata)), 'Personal')
-  assert.equal(key(remote), 'personal::default')
+  assert.equal(key(remote), 'other::default')
 
   // The ACTIVE gateway's own default is the user's main agent — annotation
   // (sourceScoped + connection fields) must NOT rename it to a connection
   // label. Titled: the title wins. Untitled: it stays "Hermes". Regression:
   // remote-gateway desktops showed the main agent as an IP-derived label
   // with no shortname (Aug 17 2026 report).
-  assert.equal(name(active, metadata.default), 'Active workspace')
+  assert.equal(name(active, metadata['personal::default']), 'Active workspace')
   assert.equal(name(active, undefined), 'Hermes')
+})
+
+test('botRosterMeta: a group roster row orphaned by a deleted connection does not throw', () => {
+  const { __botRosterMeta: metaFor } = runtime()
+  // Mirrors the persisted `group-chats` descriptor left behind once its
+  // connection is removed: remoteSource is still true, but connectionId is
+  // gone, so botConnectionRoute has nothing to resolve. This must not crash
+  // rendering the group (#93492) just because one member is unroutable.
+  const orphaned = { name: 'halakukhan', handle: 'halakukhan', connectionId: null, remoteSource: true }
+
+  assert.doesNotThrow(() => metaFor(orphaned, {}))
+  assert.equal(metaFor(orphaned, {}), null)
+})
+
+test('resolveBotConnectionRoute: typed status for resolved / owner_removed / not_scoped, and strict botConnectionRoute still fails closed', () => {
+  const { __resolveBotConnectionRoute: resolve, __botConnectionRoute: strictRoute } = runtime()
+  const orphaned = { name: 'halakukhan', connectionId: null, remoteSource: true }
+  const owned = { name: 'halakukhan', connectionId: 'conn-1', remoteSource: true }
+  const local = { name: 'default' }
+
+  // Passive resolver: typed status, never throws.
+  assert.equal(resolve(orphaned).status, 'owner_removed')
+  assert.equal(resolve(owned).status, 'resolved')
+  assert.equal(resolve(owned).route.connectionId, 'conn-1')
+  assert.equal(resolve(local).status, 'not_scoped')
+
+  // Strict wrapper used by real dispatch (requestForBot, session creation)
+  // must still fail closed on the same orphaned row -- the split only moves
+  // the *passive* lookup off this throw, it does not remove it.
+  assert.throws(() => strictRoute(orphaned), /has no connection owner/)
+  assert.equal(strictRoute(owned).connectionId, 'conn-1')
+})
+
+test('botRosterMeta: an unrelated failure while resolving meta for a live route still propagates', () => {
+  const { __botRosterMeta: metaFor } = runtime()
+  const owned = { name: 'halakukhan', connectionId: 'conn-1', remoteSource: true }
+  // A metaByName lookup that throws for reasons that have nothing to do with
+  // connection ownership must not be caught by botRosterMeta -- only the
+  // owner_removed status is treated as "no meta for this row".
+  const explodingMetaByName = new Proxy({}, {
+    get() {
+      throw new Error('unrelated invariant failure')
+    }
+  })
+
+  assert.throws(() => metaFor(owned, explodingMetaByName), /unrelated invariant failure/)
 })
 
 test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {
@@ -264,7 +313,14 @@ test('filterBots: matches the source device name for remote rows', () => {
   const { __filterBots: filterBots } = runtime()
   const roster = [
     { name: 'research' },
-    { name: 'research', remoteSource: true, connectionLabel: 'Homelab', handle: 'research-homelab' }
+    {
+      name: 'research',
+      connectionId: 'homelab',
+      connectionLabel: 'Homelab',
+      handle: 'research-homelab',
+      remoteSource: true,
+      sourceScoped: true
+    }
   ]
 
   const hits = filterBots(roster, {}, 'homelab')
@@ -650,4 +706,13 @@ test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself',
 
   assert.equal(hits.length, 1)
   assert.equal(hits[0].connectionId, 'mac-mini')
+})
+
+test('source contract: active roster queries use the SDK ambient owner route', () => {
+  assert.doesNotMatch(source, /activeBotRoute/)
+  assert.equal(
+    source.match(/requestForBot\(activeBot, 'profiles\.list', \{\}\)/g)?.length,
+    2,
+    'roster hydration and the session sweep must both use the upstream ambient-owner route'
+  )
 })

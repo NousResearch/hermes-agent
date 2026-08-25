@@ -56,6 +56,16 @@ interface Secondary {
   reconnecting: boolean
   /** True when a foreground/prewarmed consumer owns this entry beyond one RPC. */
   retained: boolean
+  /**
+   * Bot-relay retainers pinning this socket open across drain ticks (#93594).
+   * The relay's drain loop RPCs every registered connection on an interval;
+   * without retention each tick dialed and tore down a fresh WebSocket per
+   * connection (refcount hit 0 → dispose). Counted, not boolean, so relay
+   * retention can never clobber (or be clobbered by) the foreground
+   * `retained` flag. Only non-local registry routes are ever counted here —
+   * see retainGatewayForRelay.
+   */
+  relayRetainCount: number
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
@@ -216,6 +226,24 @@ export function activeGatewayConnectionId(): null | string {
   }
 
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
+}
+
+/**
+ * Registry connections currently served by a live (open-socket) secondary.
+ * Used by the reconnect path when the restarted primary's own registry
+ * identity is unknown: Bot runtimes owned by these connections are provably
+ * NOT the restarted backend and keep their bindings; everything else re-resumes.
+ */
+export function liveSecondaryConnectionIds(): Set<string> {
+  const live = new Set<string>()
+
+  for (const entry of g.secondaries.values()) {
+    if (entry.connectionId && isOpen(entry.gateway)) {
+      live.add(entry.connectionId)
+    }
+  }
+
+  return live
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -381,6 +409,27 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
+    // The re-dialed backend may have respawned and re-minted runtime ids —
+    // busy flags recorded from THIS socket's pre-drop events would then never
+    // receive their terminal busy:false, leaving the session's running arc
+    // armed forever (#53902/#73082 stale-flag half). Scoped: only runtimes
+    // whose events arrived on this connection are reconciled; live work on
+    // other sockets is untouched, and a genuinely live turn here re-asserts
+    // busy on its next event. Lazy import: a static edge here closes a module
+    // cycle (session-states → … → gateway) that leaves nanostores atoms
+    // undefined at init for whichever module loads second. Best-effort catch:
+    // under partial vi.mock('@/hermes') harnesses the transitive graph can
+    // fail to load — a skipped reconcile there must not surface as an
+    // unhandled rejection (the real graph always loads in production).
+    void import('@/store/session-states')
+      .then(({ reconcileBusyStatesOnReconnect, resetTileRuntimeBindings }) => {
+        reconcileBusyStatesOnReconnect(entry.scope)
+        resetTileRuntimeBindings({
+          connectionId: entry.connectionId || 'local',
+          profile: entry.profile
+        })
+      })
+      .catch(() => undefined)
   } catch (error) {
     // The registry no longer knows this connection (removed while we were
     // backing off), or Electron's deletion guard reports the profile itself
@@ -447,6 +496,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reconnectAttempt: 0,
     reconnecting: false,
     retained: false,
+    relayRetainCount: 0,
     wantOpen: true,
     activationLeaseUntil: 0
   }
@@ -543,7 +593,7 @@ async function gatewayForProfile(
       released = true
       entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-      if (entry.activeRequests === 0 && !entry.retained && g.activeKey !== entry.scope) {
+      if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
         disposeSecondary(entry)
 
         if (g.secondaries.get(entry.scope) === entry) {
@@ -607,13 +657,15 @@ export async function requestGatewayForAgent<T>(
   connectionId: null | string,
   profile: string,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -639,11 +691,13 @@ export async function requestGatewayForAgent<T>(
       await openSecondary(entry)
     }
 
-    return await entry.gateway.request<T>(method, params)
+    return await (timeoutMs === undefined && signal === undefined
+      ? entry.gateway.request<T>(method, params)
+      : entry.gateway.request<T>(method, params, timeoutMs, signal))
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-    if (entry.activeRequests === 0 && !entry.retained && g.activeKey !== entry.scope) {
+    if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -651,6 +705,147 @@ export async function requestGatewayForAgent<T>(
       }
     }
   }
+}
+
+// ── Bot-relay socket retention (#93594) ─────────────────────────────────────
+// The desktop bot relay RPCs EVERY registered connection on its drain loop.
+// Each of those calls runs through requestGatewayForAgent's per-request lease,
+// so a connection with no other consumer dialed a fresh WebSocket and tore it
+// down again on every tick — a connect/disconnect pair per connection per tick
+// flooding the gateway logs. While the relay is active, its routes hold a
+// counted retention that keeps the pooled socket (and its existing
+// scheduleReconnect/backoff machinery) alive across ticks; stopBotRelay (and
+// plugin dispose) releases it, restoring the dispose-at-refcount-0 behavior.
+
+/** True when the bot relay currently pins this entry open. Number guard:
+ *  dev-HMR entries predate the field. */
+function relayRetained(entry: Secondary): boolean {
+  return Number.isFinite(entry.relayRetainCount) && entry.relayRetainCount > 0
+}
+
+/**
+ * Pin the pooled socket for one relay route open across drain ticks. Returns
+ * a once-only release. Local routes (null/empty or explicit `local` source)
+ * are deliberately EXEMPT and get a no-op release: their Electron-spawned
+ * backend answers to the idle reaper, and a relay pin would keep the
+ * touch-loop pinging it forever, resurrecting backends the reaper is meant to
+ * reclaim (see the retireLocalProfileGateways note). Local relay traffic is
+ * either the primary socket (no churn) or a short-lived local dial — never
+ * the remote reconnect flood this retention exists to stop.
+ */
+export function retainGatewayForRelay(connectionId: null | string, profile: string): () => void {
+  const key = normKey(profile)
+  const connection = String(connectionId ?? '').trim()
+
+  if (!connection || connection === 'local') {
+    return () => undefined
+  }
+
+  const scope = registryBackendScopeKey(connection, key)
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, connection)
+
+  if (!Number.isFinite(entry.relayRetainCount)) {
+    entry.relayRetainCount = 0
+  }
+
+  entry.relayRetainCount += 1
+  entry.wantOpen = true
+
+  let released = false
+
+  return () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    entry.relayRetainCount = Math.max(0, (entry.relayRetainCount || 0) - 1)
+
+    if (
+      entry.relayRetainCount === 0 &&
+      entry.activeRequests === 0 &&
+      !entry.retained &&
+      g.activeKey !== entry.scope &&
+      g.secondaries.get(entry.scope) === entry
+    ) {
+      disposeSecondary(entry)
+      g.secondaries.delete(entry.scope)
+    }
+  }
+}
+
+/**
+ * Hold `profile`'s socket open across a multi-RPC sequence without activating
+ * it (#93602). Every requestGatewayForProfile/requestGatewayForAgent call is a
+ * per-request lease: at refcount 0 a non-retained secondary is disposed, so a
+ * session-scoped sequence (session.create → attach → prompt.submit) minted a
+ * runtime id on a socket that closed between calls — the gateway detached the
+ * session on WS disconnect and the next RPC hit 4001 "not in memory". Callers
+ * acquire this lease before the first session-scoped RPC and release it in a
+ * `finally`; the refcount keeps the socket (and the session it minted) alive
+ * for the whole sequence. Primary/shared-primary routes return a no-op release.
+ */
+export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+  const key = normKey(profile)
+  const scope = registryBackendScopeKey(connectionId, key)
+
+  if (scope === key) {
+    // Plain-profile route: gatewayForProfile's request lease IS the retain —
+    // hold it until the caller releases.
+    const route = await gatewayForProfile(key, true)
+
+    return route.release
+  }
+
+  if (!window.hermesDesktop?.getConnectionFor) {
+    // No registry dialing in this build — nothing to hold; the request path
+    // will throw its own actionable error.
+    return () => undefined
+  }
+
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, connectionId)
+
+  // Existing dev-HMR entries predate request leases/ownership.
+  if (!Number.isFinite(entry.activeRequests)) {
+    entry.activeRequests = 0
+  }
+
+  if (typeof entry.retained !== 'boolean') {
+    entry.retained = true
+  }
+
+  entry.wantOpen = true
+  entry.activeRequests += 1
+
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+
+    if (entry.activeRequests === 0 && !entry.retained && !relayRetained(entry) && g.activeKey !== entry.scope) {
+      disposeSecondary(entry)
+
+      if (g.secondaries.get(entry.scope) === entry) {
+        g.secondaries.delete(entry.scope)
+      }
+    }
+  }
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return release
 }
 
 // Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
@@ -843,11 +1038,20 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 // activation before reporting the gateway as unavailable.
 const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
-// Wake signal (sleep/network/visibility): nudge every live secondary back open.
-export function reconnectSecondaryGateways(): void {
+// Recovery signal: nudge every live secondary back open. Power-resume/network
+// signals can force sockets that still report open to retire before redialing.
+export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
   for (const entry of g.secondaries.values()) {
-    if (!entry.wantOpen || isOpen(entry.gateway)) {
+    if (!entry.wantOpen) {
       continue
+    }
+
+    if (isOpen(entry.gateway)) {
+      if (!forceOpenSockets) {
+        continue
+      }
+
+      entry.gateway.close()
     }
 
     entry.reconnectAttempt = 0
@@ -907,6 +1111,10 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
       entry.activeRequests > 0 ||
+      // Bot-relay retention (#93594): the relay pins its remote routes for
+      // its whole active lifetime; the live-work pruner must not undo that
+      // pin between drain ticks or the socket churn returns.
+      relayRetained(entry) ||
       // Mid-dial activation target: the profile being switched TO is not yet
       // active and has no live work, so without this lease any recompute
       // during its cold spawn disposed the entry and the click died silently

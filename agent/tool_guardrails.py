@@ -68,7 +68,6 @@ MUTATING_TOOL_NAMES = frozenset(
 STALL_GUARD_REPEATABLE_TOOLS = frozenset(
     {
         "process",
-        "bfl_flux3_get_result",
     }
 )
 

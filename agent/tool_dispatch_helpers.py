@@ -531,6 +531,13 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+def _normalize_tool_call_id(tool_call_id: Any) -> Any:
+    """Normalize a composite bridge id to its canonical call-id half."""
+    if isinstance(tool_call_id, str) and "|" in tool_call_id:
+        return tool_call_id.split("|", 1)[0].strip()
+    return tool_call_id
+
+
 def make_tool_result_message(
     name: str,
     content: Any,
@@ -557,6 +564,10 @@ def make_tool_result_message(
     The outer list itself is rebuilt rather than returned by identity, so
     callers should compare by value, not by ``is``.
     """
+    # Keep the constructor safe for every caller, including replay recovery
+    # paths that do not go through the live executor's canonical-id helper.
+    tool_call_id = _normalize_tool_call_id(tool_call_id)
+
     # Order matters: detect provider-side elision on the RAW content and
     # append the notice first, THEN wrap — so the notice lives inside the
     # untrusted block next to the data it describes, appended exactly once

@@ -118,8 +118,49 @@ def _base_subprocess_env() -> dict:
     # needs Hermes's import path.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
+    # Same class of hazard, PATH flavor: profile-spawned workers (kanban
+    # bots, cron jobs) can hand down a PATH of only version-manager dirs,
+    # which kills the uv trampoline before the CLI's Python starts. Floor
+    # the PATH so coreutils are always reachable (see below).
+    env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
     return env
+
+
+def _floor_subprocess_path(path: str) -> str:
+    """Guarantee core system dirs survive onto the CLI subprocess PATH.
+
+    Profile workers can inherit a PATH holding only version-manager dirs
+    (observed: the nvm node dir repeated 7x, nothing else). That is fatal
+    for the uv-installed browser-use binary: its POSIX sh trampoline
+    resolves ``dirname``/``realpath`` through PATH, so without /usr/bin it
+    dies with ``realpath: not found … exec: /python: not found`` (exit
+    127) before its own Python ever starts. Reuses browser_tool's
+    ``_merge_browser_path`` floor — same hazard, same sane-dir list — and
+    falls back to appending FHS bin dirs if that import is unavailable.
+    Windows .cmd shims don't trampoline through PATH, so no-op there.
+    """
+    if os.name == "nt":
+        return path
+    try:
+        from tools.browser_tool import _merge_browser_path
+
+        return _merge_browser_path(path or "")
+    except Exception:
+        pass
+    parts = [p for p in (path or "").split(os.pathsep) if p]
+    existing = set(parts)
+    for directory in (
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ):
+        if directory not in existing and os.path.isdir(directory):
+            parts.append(directory)
+    return os.pathsep.join(parts)
 
 
 def _read_browser_cfg() -> dict:
@@ -418,13 +459,25 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         from pathlib import Path
 
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
             _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
         if not _should_use_native_vision_fast_path():
             return None
-        data_url = _resize_image_for_vision(Path(path))
+        # History-reuse cap (#92699): this data URL bakes into the tool
+        # result and is re-sent on every later turn — same policy as the
+        # vision_analyze / browser_vision native embeds (256 KB / 1568 px,
+        # JPEG quality ladder instead of PNG dimension-halving).
+        data_url = _resize_image_for_vision(
+            Path(path),
+            mime_type="image/png",
+            max_base64_bytes=_EMBED_TARGET_BYTES,
+            max_dimension=_EMBED_MAX_DIMENSION,
+            force_jpeg=True,
+        )
         text = json.dumps(result, ensure_ascii=False)
         return {
             "_multimodal": True,

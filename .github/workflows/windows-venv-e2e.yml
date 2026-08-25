@@ -1,0 +1,61 @@
+name: Windows venv-holder live E2E
+
+# ON-DEMAND ONLY (fleet-update #91277, venv-holder consolidation work).
+#
+# Runs the live venv-holder E2E suite on a real windows-latest runner:
+# spawns actual processes with realistic Hermes argv shapes and drives the
+# REAL detection/classification/exemption code against the live process
+# table — the coverage that cannot exist on the Linux lanes and that the
+# maintainer cannot exercise locally before the work reaches main.
+#
+# Deliberately NOT wired to pull_request/main: it fires only on pushes to
+# wine2e/** working branches, so it costs nothing on normal PRs. Delete or
+# keep dormant after the venv-holder work lands.
+
+on:
+  push:
+    branches:
+      - "wine2e/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-venv-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  venv-holder-e2e:
+    name: venv-holder live E2E (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
+
+      - name: Run venv-holder live E2E
+        shell: bash
+        run: |
+          set -uo pipefail
+          uv run --no-sync python -m pytest \
+            tests/hermes_cli/test_venv_holder_windows_live.py \
+            -o addopts= -v -p no:cacheprovider

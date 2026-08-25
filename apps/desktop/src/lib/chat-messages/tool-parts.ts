@@ -333,6 +333,221 @@ export function upsertToolPart(
   return next
 }
 
+export interface PendingClarifyProjection {
+  messages: ChatMessage[]
+  streamId: string
+}
+
+export interface SettledClarifyProjection {
+  messages: ChatMessage[]
+  streamId: string | null
+}
+
+interface PendingClarifyLocation {
+  messageIndex: number
+  partIndex: number
+}
+
+function findPendingClarifyLocation(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload
+): PendingClarifyLocation | null {
+  const stableId = toolId(payload)
+  const matchValues = toolPayloadMatchValues(payload)
+  let solePending: PendingClarifyLocation | null = null
+  let pendingCount = 0
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.parts[partIndex]
+
+      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
+        continue
+      }
+
+      pendingCount += 1
+      solePending = { messageIndex, partIndex }
+
+      const exactId = Boolean(stableId && part.toolCallId === stableId)
+      const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
+
+      if (exactId || contextual) {
+        return { messageIndex, partIndex }
+      }
+    }
+  }
+
+  // Older/sparse projections can lose the identifying args. One session can
+  // only block on one clarify at a time, so a sole open clarify is still the
+  // authoritative row even without a usable correlation value.
+  return pendingCount === 1 ? solePending : null
+}
+
+function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call' }>): Record<string, unknown> {
+  const args = recordFromUnknown(part.args) ?? {}
+  const questions = Array.isArray(args.questions) ? args.questions : []
+
+  if (questions.length > 0) {
+    return {
+      responses: questions.map(entry => ({
+        question: firstStringField(recordFromUnknown(entry) ?? {}, ['question']),
+        user_response: ''
+      })),
+      timed_out: true
+    }
+  }
+
+  return {
+    question: firstStringField(args, ['question']),
+    user_response: ''
+  }
+}
+
+/** Mark one pending clarify as timed out/settled without ending a later phase
+ * of the same assistant turn. `keepMessageRunning` keeps the containing message
+ * open for subsequent deltas while the clarify part itself becomes settled. */
+export function settlePendingClarifyToolCall(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  keepMessageRunning: boolean,
+  occurredAt = Date.now() / 1000
+): SettledClarifyProjection {
+  const clarifyPayload = { ...payload, name: 'clarify' }
+  const location = findPendingClarifyLocation(messages, clarifyPayload)
+
+  if (!location) {
+    return { messages, streamId: null }
+  }
+
+  const message = messages[location.messageIndex]
+  const part = message.parts[location.partIndex]
+
+  if (part.type !== 'tool-call') {
+    return { messages, streamId: null }
+  }
+
+  const parts = [...message.parts]
+  parts[location.partIndex] = {
+    ...part,
+    completedAt: occurredAt,
+    result: skippedClarifyResult(part)
+  }
+
+  const next = [...messages]
+  next[location.messageIndex] = { ...message, parts, pending: keepMessageRunning }
+
+  return { messages: next, streamId: message.id }
+}
+
+/** Remove ephemeral clarify liveness before writing the durable transcript-tail
+ * cache. A synthetic request-id part is dropped; a provider-authored call stays
+ * visible but loses its local `pending` bit until an authoritative resume
+ * snapshot re-arms it. */
+export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], requestId?: string): ChatMessage[] {
+  let changed = false
+  const next: ChatMessage[] = []
+
+  for (const message of messages) {
+    const hasOpenClarify = message.parts.some(
+      part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+    )
+
+    if (!hasOpenClarify) {
+      next.push(message)
+
+      continue
+    }
+
+    const parts = message.parts.filter(
+      part =>
+        !(
+          requestId &&
+          part.type === 'tool-call' &&
+          part.toolName === 'clarify' &&
+          part.result === undefined &&
+          part.toolCallId === requestId
+        )
+    )
+
+    changed = true
+
+    if (parts.length > 0) {
+      next.push({ ...message, parts, pending: false })
+    }
+  }
+
+  return changed ? next : messages
+}
+
+/**
+ * Re-arm a clarify request against a transcript that may already have been
+ * hydrated from REST/session.resume.
+ *
+ * Provider transcript shapes differ: Codex commonly persists a tool-only
+ * assistant row, while DeepSeek can persist visible assistant text and the
+ * clarify call on the same row. The clarify request id is distinct from the
+ * provider's tool-call id and can arrive when `state.streamId` is null, so the
+ * generic live-stream mutator would append a second assistant row at the tail.
+ * Match the existing open clarify by its question(s), keep that row's provider
+ * tool id/position, and mark it running. If the backend projection omitted the
+ * tool call, attach it to trailing assistant commentary or seed one tail row as
+ * a last resort.
+ */
+export function restorePendingClarifyToolCall(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  const clarifyPayload = { ...payload, name: 'clarify' }
+  const location = findPendingClarifyLocation(messages, clarifyPayload)
+
+  if (location) {
+    const message = messages[location.messageIndex]
+
+    if (message.pending) {
+      return { messages, streamId: message.id }
+    }
+
+    const next = [...messages]
+    next[location.messageIndex] = { ...message, pending: true }
+
+    return { messages: next, streamId: message.id }
+  }
+
+  const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt)
+  const tailIndex = messages.findLastIndex(message => !message.hidden)
+  const tail = messages[tailIndex]
+
+  if (tail?.role === 'assistant') {
+    const next = [...messages]
+    next[tailIndex] = {
+      ...tail,
+      parts: [...completeOpenStreamParts(tail.parts, occurredAt), ...parts],
+      pending: true
+    }
+
+    return { messages: next, streamId: tail.id }
+  }
+
+  const streamId = nextLiveToolId('clarify-message')
+
+  return {
+    messages: [
+      ...messages,
+      {
+        id: streamId,
+        role: 'assistant',
+        parts,
+        pending: true,
+        timestamp: occurredAt
+      }
+    ],
+    streamId
+  }
+}
+
 /**
  * Turn-settle reconciliation: close every tool-call part that never received
  * its completion event. A `tool.complete` lost to a degraded websocket
@@ -576,4 +791,54 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
 
     return changed ? { ...message, parts } : message
   })
+}
+
+/**
+ * Ensure no two `tool-call` parts of a SINGLE message share a `toolCallId`.
+ *
+ * assistant-ui's `useResources` derives one resource key per content part
+ * (`toolCallId-<id>`) and throws `Duplicate key <key> in useResources` on a
+ * collision, which the desktop error boundary turns into a renderer crash loop
+ * that blanks the window (#87857). Two paths can produce a message whose parts
+ * carry the same id: the streaming reducer appends the same tool-call part
+ * twice under a specific optimistic-update ordering, and coalescing tool-only
+ * assistant turns can fold two parts with the same id into one message. Neither
+ * passes through {@link withUniqueToolCallIds} — that runs only on the static
+ * `toChatMessages` output, not the live runtime boundary — so the dedup is
+ * applied again at the point ChatMessages are converted for the runtime.
+ *
+ * The scope is deliberately per-message (a fresh seen-set each call): the
+ * assistant-ui key space is per-message, so a `toolCallId` shared across
+ * different messages is not a collision and must not be renamed. Only the
+ * later duplicate within one message is renamed, mirroring the list-level
+ * helper. Returns the same reference when nothing changes, so the runtime
+ * repository's identity cache is preserved for the common no-duplicate case.
+ */
+export function withUniqueToolCallIdsWithinMessage(message: ChatMessage): ChatMessage {
+  let seen: null | Set<string> = null
+  let changed = false
+
+  const parts = message.parts.map((part, index) => {
+    if (part.type !== 'tool-call' || !part.toolCallId) {
+      return part
+    }
+
+    if (seen === null) {
+      seen = new Set<string>()
+    }
+
+    if (!seen.has(part.toolCallId)) {
+      seen.add(part.toolCallId)
+
+      return part
+    }
+
+    changed = true
+    const uniqueId = `${part.toolCallId}-dup-${index}`
+    seen.add(uniqueId)
+
+    return { ...part, toolCallId: uniqueId } as ChatMessagePart
+  })
+
+  return changed ? { ...message, parts } : message
 }

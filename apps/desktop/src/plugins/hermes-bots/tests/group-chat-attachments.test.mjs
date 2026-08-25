@@ -50,7 +50,13 @@ function load(turnScript) {
         if (method === 'session.resume') {
           const session = resolveSession(params.profile, params.session_id)
           if (!session) {
-            throw new Error(`session not found: ${params.session_id}`)
+            // Shaped like the real gateway's JsonRpcGatewayError (`.code`,
+            // apps/shared/src/json-rpc-gateway.ts) so ensureGroupChatSession's
+            // fail-closed `.code !== 4007` check sees the same "genuinely
+            // not found" signal production does.
+            const err = new Error(`session not found: ${params.session_id}`)
+            err.code = 4007
+            throw err
           }
           return {
             session_id: session.runtime,

@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -169,8 +169,18 @@ _ensure_teams_mock()
 _teams_mod = load_plugin_adapter("teams")
 
 _teams_mod.AIOHTTP_AVAILABLE = True
-# SDK import is deferred (#62935); bind mocked symbols the same way connect() does.
-assert _teams_mod.check_teams_requirements() is True
+# SDK import is deferred (#62935); bind mocked symbols the same way connect()
+# does, but skip the real lazy-installer so collection does not pip-install
+# microsoft-teams-apps.
+
+
+def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
+    target_globals.update(importer())
+    return True
+
+
+with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+    assert _teams_mod.check_teams_requirements() is True
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 
 # Ensure SDK symbols that were None (import failed on Python <3.12) are
@@ -349,9 +359,11 @@ class TestTeamsConnect:
     @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         # Simulate the SDK being unavailable AND not installable (offline /
         # locked-down env): the lazy-installer can't rebind the globals, so
-        # TEAMS_SDK_AVAILABLE stays False and connect() must fail.
+        # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
             "tools.lazy_deps.ensure_and_bind",
             lambda *_a, **_k: False,
@@ -361,6 +373,27 @@ class TestTeamsConnect:
         ))
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.anyio
+    async def test_connect_fails_when_namespace_exists_but_app_unbound(self, monkeypatch):
+        """find_spec('microsoft_teams') can be true from sibling packages
+        without microsoft-teams-apps. connect() must not call App() while
+        it is still None — that was ``'NoneType' object is not callable``.
+        """
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
+        monkeypatch.setattr(_teams_mod, "App", None)
+        monkeypatch.setattr(_teams_mod, "ClientOptions", None)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind",
+            lambda *_a, **_k: False,
+        )
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        result = await adapter.connect()
+        assert result is False
+        assert adapter._app is None
 
 
 # ---------------------------------------------------------------------------

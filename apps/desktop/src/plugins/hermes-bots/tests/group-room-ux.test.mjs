@@ -31,6 +31,33 @@ test('room composer is a textarea with Enter=submit, Shift+Enter=newline (#89884
   assert.match(component, /insert\(options\[active\]\.handle\)/)
 })
 
+test('room composer swallows IME composition Enters before submit/mention (#93528)', () => {
+  // macOS Chinese IME: Enter that confirms a candidate word fires a keydown
+  // the composer mistook for a send — the message went out mid-composition.
+  // The guard must run BEFORE the popover branch AND the submit branch, and
+  // cover both Chromium's isComposing flag and the keyCode 229 legacy
+  // VK_PROCESSKEY that macOS IMEs emit after compositionend.
+  const start = source.indexOf('function GroupMentionInput')
+  const nextFn = source.indexOf('\nfunction ', start + 1)
+  const component = source.slice(start, nextFn)
+
+  const guard = component.indexOf('event.nativeEvent?.isComposing || event.keyCode === 229')
+  assert.ok(guard >= 0, 'IME guard present in GroupMentionInput')
+  const afterGuard = component.slice(guard)
+  // Guard returns immediately (no mention insert, no submit)...
+  assert.match(afterGuard.slice(0, 80), /return/)
+  // ...and it sits before both the popover branch and the submit branch.
+  assert.ok(afterGuard.indexOf('if (open) {') > 0, 'guard precedes popover branch')
+  assert.ok(component.indexOf("event.key === 'Enter' && !event.shiftKey") > guard, 'guard precedes submit branch')
+})
+
+test('clarify free-text input swallows IME composition Enters (#93528)', () => {
+  const clarify = source.slice(source.indexOf('function GroupClarifyCard'), source.indexOf('function openGroupChat'))
+  const guard = clarify.indexOf('event.nativeEvent?.isComposing || event.keyCode === 229')
+  assert.ok(guard >= 0, 'IME guard present in GroupClarifyCard')
+  assert.ok(clarify.indexOf("event.key === 'Enter' && questions.length === 1") > guard, 'guard precedes submit branch')
+})
+
 test('both room composers wire onSubmitDraft (#89884)', () => {
   assert.match(source, /onSubmitDraft: submit,/)
   assert.match(source, /onSubmitDraft: \(\) => submitReply\(id\),/)

@@ -1,4 +1,5 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, render, renderHook } from '@testing-library/react'
+import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useHudComposerDrag } from './composer-drag'
@@ -10,6 +11,7 @@ const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDeskt
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
 const moveBy = vi.fn()
+const setWorkspaceTransfer = vi.fn()
 
 function setWindowSize(width: number, height: number) {
   Object.defineProperty(window, 'outerWidth', { configurable: true, value: width })
@@ -30,8 +32,9 @@ function pressTarget() {
 beforeEach(() => {
   vi.useFakeTimers()
   moveBy.mockClear()
+  setWorkspaceTransfer.mockClear()
   setWindowSize(620, 320)
-  desktopWindow.hermesDesktop = { hud: { moveBy } } as unknown as Window['hermesDesktop']
+  desktopWindow.hermesDesktop = { hud: { moveBy, setWorkspaceTransfer } } as unknown as Window['hermesDesktop']
 })
 
 afterEach(() => {
@@ -63,6 +66,7 @@ describe('useHudComposerDrag', () => {
     act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, screenX: 110, screenY: 210 })))
 
     expect(moveBy).toHaveBeenCalledWith({ x: 10, y: 10, width: 620, height: 320 })
+    expect(setWorkspaceTransfer).not.toHaveBeenCalled()
 
     // A window that drifted wider mid-drag must not feed its new size back in —
     // that is exactly how the Windows growth compounded.
@@ -88,5 +92,93 @@ describe('useHudComposerDrag', () => {
     act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, screenX: 102, screenY: 201 })))
 
     expect(moveBy).not.toHaveBeenCalled()
+    expect(setWorkspaceTransfer).not.toHaveBeenCalled()
+  })
+
+  it('spans X11 workspaces only for an armed grab, then pins to the current desktop on release', () => {
+    const target = pressTarget()
+
+    const { result } = renderHook(() => useHudComposerDrag(true, { controlDrag: true, workspaceTransfer: true }))
+
+    act(() =>
+      result.current.onPointerDown({
+        button: 0,
+        ctrlKey: true,
+        currentTarget: target,
+        pointerId: 9,
+        preventDefault: vi.fn(),
+        screenX: 100,
+        screenY: 200
+      } as never)
+    )
+
+    expect(setWorkspaceTransfer).toHaveBeenLastCalledWith(true)
+
+    act(() => void window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9 })))
+
+    expect(setWorkspaceTransfer).toHaveBeenLastCalledWith(false)
+  })
+
+  it('moves immediately with Ctrl over selected text without destroying the selection', () => {
+    function Harness() {
+      const { onPointerDown } = useHudComposerDrag(true, { controlDrag: true })
+
+      return createElement(
+        'form',
+        { 'data-testid': 'composer', onPointerDownCapture: onPointerDown },
+        createElement(
+          'div',
+          { contentEditable: true, 'data-testid': 'editor', suppressContentEditableWarning: true, tabIndex: 0 },
+          'selected text stays selected'
+        )
+      )
+    }
+
+    const { getByTestId } = render(createElement(Harness))
+    const editor = getByTestId('editor')
+    const text = editor.firstChild!
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 13)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const down = new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      buttons: 1,
+      cancelable: true,
+      ctrlKey: true,
+      pointerId: 7,
+      screenX: 300,
+      screenY: 180
+    })
+
+    act(() => void editor.dispatchEvent(down))
+
+    expect(down.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(editor)
+    expect(selection.toString()).toBe('selected text')
+
+    const dragStart = new Event('dragstart', { bubbles: true, cancelable: true })
+    const selectStart = new Event('selectstart', { bubbles: true, cancelable: true })
+    act(() => void editor.dispatchEvent(dragStart))
+    act(() => void editor.dispatchEvent(selectStart))
+
+    expect(dragStart.defaultPrevented).toBe(true)
+    expect(selectStart.defaultPrevented).toBe(true)
+
+    act(
+      () =>
+        void window.dispatchEvent(
+          new PointerEvent('pointermove', { buttons: 1, cancelable: true, pointerId: 7, screenX: 301, screenY: 182 })
+        )
+    )
+
+    expect(moveBy).toHaveBeenCalledWith({ x: 1, y: 2, width: 620, height: 320 })
+    expect(document.activeElement).toBe(editor)
+    expect(selection.toString()).toBe('selected text')
   })
 })

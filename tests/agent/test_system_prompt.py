@@ -24,6 +24,11 @@ def _make_agent(**overrides):
         platform="",
         pass_session_id=False,
         session_id="",
+        # build_system_prompt drains pending truncation warnings and
+        # forwards each to this; a warning left in the ContextVar by an
+        # earlier test file (they share one thread's context under plain
+        # pytest) must not make this stub AttributeError.
+        _emit_status=lambda *_args, **_kwargs: None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -285,6 +290,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
@@ -484,3 +490,61 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestMemoryProviderSystemPromptGating:
+    """Issue #81014: the provider's ``system_prompt_block()`` must be gated
+    on the same ``memory_provider_tools_enabled`` check as tool injection.
+    Otherwise the agent receives instructions for tools that don't exist in
+    its tool surface.
+    """
+
+    @staticmethod
+    def _make_fake_manager(prompt_block: str):
+        """Build a MemoryManager-like object exposing only what
+        ``build_system_prompt_parts`` touches."""
+        from unittest.mock import MagicMock
+        mgr = MagicMock()
+        mgr.build_system_prompt.return_value = prompt_block
+        return mgr
+
+    def _agent(self, *, enabled_toolsets, disabled_toolsets, prompt_block):
+        return _make_agent(
+            valid_tool_names=["skills_list"],
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            _memory_manager=self._make_fake_manager(prompt_block),
+        )
+
+    def test_block_injected_when_memory_toolset_enabled(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=["memory"],
+            disabled_toolsets=None,
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=["memory"], disabled_toolsets=None)
+        assert block in full
+
+    def test_block_dropped_when_memory_toolset_disabled(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=None,
+            disabled_toolsets=["memory"],
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=None, disabled_toolsets=["memory"])
+        assert block not in full
+
+    def test_block_dropped_when_memory_not_in_enabled_toolsets(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=["web_search"],
+            disabled_toolsets=None,
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=["web_search"], disabled_toolsets=None)
+        assert block not in full

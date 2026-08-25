@@ -1,35 +1,63 @@
-import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+
+export interface SessionProfileRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+export type SessionOwnerScope = undefined | null | string | SessionProfileRoute
 
 // ── Session-scoped RPC routing (the #89206 class) ───────────────────────────
-// A session-scoped RPC (session.resume / session.activate / session.usage)
-// only means anything on the backend that OWNS the session's profile. The
-// ambient "active gateway" is a moving target: between the profile-swap await
-// and the RPC dispatch, a concurrent switch, an idle-reap eviction, a failed
-// dial, or a connection edit can re-point the active route at another
-// backend. Dispatching on it anyway lands the RPC on a backend that has never
-// heard of the session — it 404s or times out, the renderer burns its bounded
-// retries, and the user sees "retries gave up" while the session's own
-// backend is healthy (blank Bot Chats, dead wake-ups; local pool and SSH
-// alike). These helpers make the owning profile, resolved at REQUEST time,
-// the routing authority.
+// A session-scoped RPC (session.resume / session.activate / session.usage /
+// prompt.submit) only means anything on the backend that OWNS the session's
+// profile. A session's profile is a PROPERTY OF THE SESSION, not of whatever
+// the window is currently showing. The "active gateway" is a moving target
+// (a concurrent switch, an idle-reap eviction, a failed dial, or a connection
+// edit re-points it) AND, for a hidden/unlisted session, it is simply the
+// WRONG backend — one that never owned the session. Dispatching there 404s or
+// times out while the session's own backend is healthy (blank Bot Chats, dead
+// wake-ups; local pool and SSH alike).
+//
+// So: a KNOWN owner is always routed to its own profile's socket — there is no
+// "same as active, so use ambient" shortcut, because "active" carries no
+// routing authority. Only a genuinely UNKNOWN owner (a fresh draft with no
+// session yet, or truly global chrome) falls to the ambient dispatcher, and
+// callers are expected to resolve the owner (cross-profile probe) before they
+// reach that case for a real session.
 
 const normKey = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
-/**
- * True when a session-scoped RPC must be pinned to `ownerProfile`'s own
- * socket because the active gateway currently serves a different profile.
- * A null/empty owner means the session's profile is unknown — route ambient
- * (the pre-multi-profile behavior) rather than guessing.
- */
-export function sessionRpcNeedsProfileRoute(
-  ownerProfile: null | string | undefined,
-  activeProfile: string = activeGatewayProfileKey()
-): boolean {
-  if (ownerProfile == null || !String(ownerProfile).trim()) {
-    return false
+const isRoute = (owner: SessionOwnerScope): owner is SessionProfileRoute =>
+  Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
+
+function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {
+  if (!route.targetProfile || !Object.prototype.hasOwnProperty.call(params, 'profile')) {
+    return params
   }
 
-  return normKey(ownerProfile) !== normKey(activeProfile)
+  return { ...params, profile: route.targetProfile }
+}
+
+/**
+ * True when a session-scoped RPC must be pinned to `ownerProfile`'s own socket.
+ *
+ * A KNOWN owner (route or profile name) always needs its own socket: the
+ * session belongs to that profile regardless of what the window is showing.
+ * There is deliberately NO comparison against the active profile — "active" is
+ * presentation state, never a routing authority. Only a null/empty owner (a
+ * fresh draft with no session, or global chrome) routes ambient.
+ */
+export function sessionRpcNeedsProfileRoute(ownerProfile: SessionOwnerScope | undefined): boolean {
+  if (isRoute(ownerProfile)) {
+    // A descriptor is an immutable ownership claim. Even an explicitly local
+    // route must not collapse to the ambient request: another connection can
+    // expose the same profile name, and activation is UI state only.
+    return Boolean(ownerProfile.connectionId.trim())
+  }
+
+  return ownerProfile != null && Boolean(String(ownerProfile).trim())
 }
 
 /**
@@ -39,7 +67,7 @@ export function sessionRpcNeedsProfileRoute(
  * The route is decided at CALL time, not at swap time.
  */
 export function requestForSessionProfile<T>(
-  ownerProfile: null | string | undefined,
+  ownerProfile: SessionOwnerScope | undefined,
   ambientRequest: <R>(
     method: string,
     params?: Record<string, unknown>,
@@ -51,6 +79,20 @@ export function requestForSessionProfile<T>(
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
+  if (isRoute(ownerProfile)) {
+    const connectionId = ownerProfile.connectionId.trim()
+
+    if (!connectionId) {
+      return Promise.reject(new Error('Session owner route is missing connectionId'))
+    }
+
+    const routedParams = routeParams(ownerProfile, params)
+
+    return timeoutMs === undefined && signal === undefined
+      ? requestGatewayForAgent<T>(connectionId, normKey(ownerProfile.profile), method, routedParams)
+      : requestGatewayForAgent<T>(connectionId, normKey(ownerProfile.profile), method, routedParams, timeoutMs, signal)
+  }
+
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
     // Forward the extra args only when the caller actually supplied them. The
     // ambient dispatcher is a plain gateway request whose arity callers assert

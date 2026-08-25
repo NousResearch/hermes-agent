@@ -1071,7 +1071,10 @@ class TestOpenRouterPaidLaneGuard:
     def test_is_free_model(self):
         from agent.auxiliary_client import _is_free_model
         assert _is_free_model("nvidia/nemotron-3-ultra-550b-a55b:free")
+        # Stealth-preview SKUs are free-tier without a :free suffix (issue #91843).
+        assert _is_free_model("stealth/ox-alpha")
         assert not _is_free_model("google/gemini-3.6-flash")
+        assert not _is_free_model("my-stealth/model")
         assert not _is_free_model("")
         assert not _is_free_model(None)
 
@@ -2827,6 +2830,9 @@ class TestCodexAdapterReasoningTranslation:
 
         def _create(**kwargs):
             captured_kwargs.update(kwargs)
+            # #93650 routes bulk fields through extra_body; fold them back in
+            # so assertions read the effective wire body the SDK would send.
+            captured_kwargs.update(kwargs.get("extra_body") or {})
             return _FakeCreateStream()
 
         real_client = MagicMock()
@@ -2910,6 +2916,9 @@ class TestCodexAdapterPromptCacheKey:
 
         def _create(**kwargs):
             captured_kwargs.update(kwargs)
+            # #93650 routes bulk fields through extra_body; fold them back in
+            # so assertions read the effective wire body the SDK would send.
+            captured_kwargs.update(kwargs.get("extra_body") or {})
             return _FakeCreateStream()
 
         real_client = MagicMock()
@@ -3025,6 +3034,9 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
 
         def _create(**kwargs):
             captured_kwargs.update(kwargs)
+            # #93650 routes bulk fields through extra_body; fold them back in
+            # so assertions read the effective wire body the SDK would send.
+            captured_kwargs.update(kwargs.get("extra_body") or {})
             return _FakeCreateStream()
 
         real_client = MagicMock()
@@ -3309,7 +3321,11 @@ class TestCodexAuxiliaryToolMessageConversion:
         fake_client = SimpleNamespace(responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
         adapter.create(messages=messages, model="gpt-5.5")
-        return fake_client.responses.kwargs
+        # #93650 routes bulk fields through extra_body; fold them back in so
+        # assertions read the effective wire body the SDK would send.
+        kwargs = dict(fake_client.responses.kwargs)
+        kwargs.update(kwargs.pop("extra_body", None) or {})
+        return kwargs
 
     def test_tool_history_never_leaks_role_tool(self):
         messages = [

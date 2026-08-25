@@ -93,9 +93,43 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
-_PROFILE_URI = "viking://user/memories/profile.md"
-_PREFERENCES_URI = "viking://user/memories/preferences"
-_ENTITIES_URI = "viking://user/memories/entities"
+# Explicit-uid URIs are canonical and work under every OpenViking auth mode
+# (dev/ROOT, trusted/USER, api-key) on every server version. The `~` home
+# alias only expands for USER/ADMIN roles (#4167/#4196): the DEFAULT dev auth
+# mode resolves every request as ROOT, and the canonical parser rejects `~`
+# with 400 — so `~` must not be the primary spelling the plugin emits. The
+# user space is resolved client-side from /api/v1/system/status (server-
+# asserted), mirroring the upstream first-party plugin pattern (#91995).
+_PROFILE_SUFFIX = "memories/profile.md"
+_PREFERENCES_SUFFIX = "memories/preferences"
+_ENTITIES_SUFFIX = "memories/entities"
+
+
+def _resolve_user_space(client, *, timeout: Optional[float] = None) -> Optional[str]:
+    """Server-asserted current user for explicit-uid URIs.
+
+    Return ``None`` when the probe fails or reports no user. Callers can use a
+    configured fallback for that operation, but must not cache an unverified
+    identity because a later probe can succeed.
+    """
+    try:
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        status = client.get("/api/v1/system/status", **kwargs)
+        result = (status or {}).get("result") or {}
+        user = str(result.get("user") or "").strip()
+        if user:
+            return user
+    except Exception:
+        logger.debug(
+            "OpenViking user-space probe failed; using configured fallback for "
+            "this operation and retrying later",
+            exc_info=True,
+        )
+    return None
+
+
+def _user_scoped_uri(user_space: str, suffix: str) -> str:
+    return f"viking://user/{user_space}/{suffix}"
 _SESSION_START_LIST_PARAMS = {
     "output": "agent",
     "recursive": True,
@@ -573,7 +607,7 @@ BROWSE_SCHEMA = {
             },
             "path": {
                 "type": "string",
-                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://user/memories/'.",
+                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://~/memories/'.",
             },
         },
         "required": ["action"],
@@ -2237,6 +2271,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        # Server-asserted user space for explicit-uid URIs (#91995). Key the
+        # cache on the connection snapshot so all clients built from the same
+        # snapshot share the resolved user. /reload can swap endpoint,
+        # credentials, and identity on this provider instance — a different
+        # snapshot invalidates the cache automatically.
+        self._user_space_cache: Optional[tuple[Any, str]] = None
         self._hermes_home = ""
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
@@ -3871,9 +3911,47 @@ class OpenVikingMemoryProvider(MemoryProvider):
         ).lstrip()
         return f"{head}{marker}{tail}" if tail else _head_only()
 
+    def _user_space(self, client=None, *, timeout: Optional[float] = None) -> str:
+        """Resolve the user space, caching only a confirmed connection identity."""
+        active = client if client is not None else getattr(self, "_client", None)
+        # Key the cache on the connection snapshot, not the client object.
+        # _new_client() builds fresh _VikingClient objects from the same
+        # snapshot, so object-identity keying would miss the cache on every
+        # write. The snapshot tuple is published atomically under
+        # _client_refresh_lock and changes on every config reload.
+        snapshot = getattr(self, "_conn_snapshot", None)
+        cached = getattr(self, "_user_space_cache", None)
+        if active is not None and cached is not None and cached[0] == snapshot:
+            return cached[1]
+
+        if active is not None:
+            resolved = _resolve_user_space(active, timeout=timeout)
+            if resolved:
+                # Only publish when the snapshot hasn't changed under us.
+                current_snapshot = getattr(self, "_conn_snapshot", None)
+                if snapshot is not None and snapshot is current_snapshot:
+                    self._user_space_cache = (snapshot, resolved)
+                return resolved
+
+        configured = str(
+            getattr(active, "_user", "")
+            or getattr(self, "_user", "")
+            or "default"
+        ).strip()
+        return configured or "default"
+
+    def _session_start_uris(self, user: Optional[str] = None) -> tuple:
+        user = user or self._user_space()
+        return (
+            _user_scoped_uri(user, _PROFILE_SUFFIX),
+            _user_scoped_uri(user, _PREFERENCES_SUFFIX),
+            _user_scoped_uri(user, _ENTITIES_SUFFIX),
+        )
+
     def _read_session_start_profile(
         self,
         client: _VikingClient,
+        uri: str,
         *,
         deadline: float,
         request_timeout: float,
@@ -3882,7 +3960,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             timeout = self._remaining_recall_timeout(deadline, request_timeout)
             resp = client.get(
                 "/api/v1/content/read",
-                params={"uri": _PROFILE_URI},
+                params={"uri": uri},
                 timeout=timeout,
             )
         except Exception as e:
@@ -3921,8 +3999,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not active_client:
             return {}
 
+        try:
+            identity_timeout = self._remaining_recall_timeout(deadline, request_timeout)
+            user = self._user_space(active_client, timeout=identity_timeout)
+        except Exception:
+            return {"profile": None, "preferences": [], "entities": []}
+        uris = self._session_start_uris(user)
+
         profile = self._read_session_start_profile(
             active_client,
+            uris[0],
             deadline=deadline,
             request_timeout=request_timeout,
         )
@@ -3932,16 +4018,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "profile": profile,
             "preferences": self._list_session_start_memories(
                 active_client,
-                _PREFERENCES_URI,
+                uris[1],
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
             "entities": self._list_session_start_memories(
                 active_client,
-                _ENTITIES_URI,
+                uris[2],
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
+            "uris": uris,
         }
 
     @staticmethod
@@ -3949,11 +4036,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         profile: str,
         preference_lines: List[str],
         entity_lines: List[str],
+        profile_uri: str = "viking://user/default/memories/profile.md",
     ) -> str:
         lines: List[str] = []
         if profile:
             lines.extend([
-                f'<user-profile uri="{_PROFILE_URI}">',
+                f'<user-profile uri="{profile_uri}">',
                 profile,
                 "</user-profile>",
             ])
@@ -4009,7 +4097,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         preferences: List[Dict[str, str]],
         entities: List[Dict[str, str]],
         token_budget: int,
+        uris: Optional[tuple] = None,
     ) -> str:
+        profile_uri, preferences_uri, entities_uri = uris or (
+            _user_scoped_uri("default", _PROFILE_SUFFIX),
+            _user_scoped_uri("default", _PREFERENCES_SUFFIX),
+            _user_scoped_uri("default", _ENTITIES_SUFFIX),
+        )
         profile = profile.strip()
         if not profile and not preferences and not entities:
             return ""
@@ -4019,6 +4113,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             placeholder if profile else "",
             [placeholder] if preferences else [],
             [placeholder] if entities else [],
+            profile_uri=profile_uri,
         )
         placeholder_count = int(bool(profile)) + int(bool(preferences)) + int(bool(entities))
         overhead_units = cls._token_units(scaffold) - placeholder_count
@@ -4037,13 +4132,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         else:
             preference_budget = available_units
         preference_lines, preference_units = cls._format_memory_listing(
-            _PREFERENCES_URI,
+            preferences_uri,
             preferences,
             preference_budget,
         )
         available_units -= preference_units
         entity_lines, _ = cls._format_memory_listing(
-            _ENTITIES_URI,
+            entities_uri,
             entities,
             available_units,
         )
@@ -4052,6 +4147,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             profile_text,
             preference_lines,
             entity_lines,
+            profile_uri=profile_uri,
         )
 
     def _session_start_memory_context(self, session_id: str) -> str:
@@ -4077,6 +4173,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             preferences=raw_parts.get("preferences") or [],
             entities=raw_parts.get("entities") or [],
             token_budget=self._profile_token_budget(),
+            uris=raw_parts["uris"],
         )
 
     @staticmethod
@@ -4776,10 +4873,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
             old_session_id, new_id, parent_session_id, reset,
         )
 
-    def _build_memory_uri(self, subdir: str) -> str:
+    def _build_memory_uri(self, subdir: str, *, client=None, timeout: Optional[float] = None) -> str:
         """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        # Explicit-uid URIs are canonical under every auth mode; the uid-less
+        # `viking://user/peers/...` shorthand was removed upstream (#4196) and
+        # `viking://~/...` only expands for USER/ADMIN roles, not dev/ROOT.
+        active_client = client if client is not None else getattr(self, "_client", None)
+        agent = str(
+            getattr(active_client, "_agent", "")
+            or getattr(self, "_agent", "")
+            or _DEFAULT_AGENT
+        ).strip()
+        return _user_scoped_uri(
+            self._user_space(active_client, timeout=timeout),
+            f"peers/{agent}/memories/{subdir}/mem_{slug}.md",
+        )
 
     def on_memory_write(
         self,
@@ -4793,11 +4902,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        try:
+            # Keep identity resolution, URI construction, and the write on one
+            # connection snapshot even if the active profile reloads.
+            client = self._new_client()
+        except Exception as e:
+            logger.debug("OpenViking memory mirror client creation failed: %s", e)
+            return
 
         def _write():
             try:
-                client = self._new_client()
+                uri = self._build_memory_uri(
+                    subdir, client=client, timeout=_RECALL_MIN_TIMEOUT_SECONDS,
+                )
                 client.post("/api/v1/content/write", {
                     "uri": uri,
                     "content": content,
@@ -5149,13 +5266,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         category = args.get("category", "")
         subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        client = self._ensure_client()
+        if not client:
+            return tool_error("OpenViking server not connected")
+        uri = self._build_memory_uri(subdir, client=client)
 
         # Write directly via content/write API.
         # This creates the file, stores the content, and queues vector indexing
         # in a single call — no dependency on session commit / VLM extraction.
         try:
-            result = self._client.post("/api/v1/content/write", {
+            result = client.post("/api/v1/content/write", {
                 "uri": uri,
                 "content": content,
                 "mode": "create",

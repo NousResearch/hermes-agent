@@ -18,7 +18,7 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
+import { $previewServerRestart, failPreviewServerRestart, noteBrowserPage, type PreviewTarget } from '@/store/preview'
 
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
@@ -385,6 +385,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const navigateTo = useCallback(
     (url: string) => {
       setLoadError(null)
+      // The reach probe below is a round-trip of its own, and `did-start-loading`
+      // can't fire until it resolves — so own the loading state from the moment
+      // we accept the address, or the bar sits idle over a request in flight.
+      setLoading(true)
       // Typed addresses get the same loopback reach as agent-opened ones — on a
       // remote gateway `localhost:5173` is usually the dev server the user is
       // there to look at, not something on their own laptop.
@@ -746,6 +750,18 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const syncHistory = () =>
       setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
 
+    // Tell the strip what this Browser is showing, so its tab renames itself
+    // like a tab anywhere else. Deliberately NOT written back into the tab's
+    // target: the guest is built from `target.url`, so that would rebuild the
+    // webview mid-navigation and throw away the history.
+    const notePage = () => {
+      if (target.kind !== 'url' || !tabId) {
+        return
+      }
+
+      noteBrowserPage(tabId, { title: webview.getTitle?.() ?? '', url: webview.getURL?.() || target.url })
+    }
+
     const onNavigate = (event: Event) => {
       const detail = event as Event & { url?: string }
 
@@ -753,6 +769,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         setLoadError(null)
         setCurrentUrl(detail.url)
       }
+
+      notePage()
 
       // Ask the webview rather than counting navigations: the guest page can
       // move itself (redirects, history.pushState, a link into a new document),
@@ -794,6 +812,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       // cancelled navigation) still settles the history — resync so the
       // buttons can't be left stale.
       syncHistory()
+      notePage()
     }
 
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
@@ -885,6 +904,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
     webview.addEventListener('did-stop-loading', onStop)
+    // SPAs title themselves long after the load settles, and a route change
+    // renames the page without navigating at all.
+    webview.addEventListener('page-title-updated', notePage)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -898,9 +920,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
+      webview.removeEventListener('page-title-updated', notePage)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
 
   return (
     <aside

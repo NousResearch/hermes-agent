@@ -618,6 +618,86 @@ def test_approval_response_correlates_request_id(server, monkeypatch):
     assert calls == [("agent-1", "once", {"resolve_all": False, "request_id": "req-1"})]
 
 
+def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
+    """A stale live sid must not 4001 an approval answer when the request_id
+    resolves to a live session (durable-identity fallback, #91684)."""
+    from tools import approval
+
+    live = {"session_key": "agent-live", "history": []}
+    server._sessions["ui-live"] = live
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "req-91684"}] if key == "agent-live" else [],
+    )
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-fallback",
+            "method": "approval.respond",
+            "params": {
+                "session_id": "gone-sid",
+                "request_id": "req-91684",
+                "choice": "once",
+            },
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("agent-live", "once", {"resolve_all": False, "request_id": "req-91684"})
+    ]
+
+
+def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
+    """session_id holding a STORED id maps to the live runtime record."""
+    from tools import approval
+
+    live = {"session_key": "stored-91684", "history": []}
+    server._sessions["ui-stored"] = live
+    calls = []
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r-stored",
+            "method": "approval.respond",
+            "params": {"session_id": "stored-91684", "choice": "deny"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [
+        ("stored-91684", "deny", {"resolve_all": False, "request_id": None})
+    ]
+
+
+def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    response = server.handle_request(
+        {
+            "id": "r-nope",
+            "method": "approval.respond",
+            "params": {"session_id": "nope", "request_id": "req-x", "choice": "once"},
+        }
+    )
+
+    assert response["error"]["code"] == 4001
+
+
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples

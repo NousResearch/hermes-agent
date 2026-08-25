@@ -374,3 +374,36 @@ export async function fetchRemoteProfileSessions(
     offset: requestedOffset
   }
 }
+
+/**
+ * #85834: which remote profile owns `sessionId`, when a /api/sessions/{id}
+ * caller supplied no profile hint. Reads the same per-remote lists the list
+ * endpoints splice into the sidebar (each fetch is per-profile, so a hit IS
+ * the owner). Dead remotes contribute nothing; returns null when no remote
+ * lists the id — the intercept then falls through to the local backend
+ * exactly as before.
+ */
+export async function findRemoteOwnerProfileForSession(
+  sessionId: string,
+  remoteProfiles: readonly string[],
+  listForProfile: (profile: string, searchParams: URLSearchParams) => Promise<SessionListResponse | null>
+): Promise<null | string> {
+  if (!sessionId || remoteProfiles.length === 0) {
+    return null
+  }
+
+  const params = new URLSearchParams()
+  params.set('limit', '200')
+  params.set('offset', '0')
+
+  const matches = await Promise.all(
+    remoteProfiles.map(async profile => {
+      const list = await listForProfile(profile, params).catch(() => null)
+      const rows = Array.isArray(list?.sessions) ? (list.sessions as Array<Record<string, unknown>>) : []
+
+      return rows.some(row => row?.id === sessionId || row?._lineage_root_id === sessionId) ? profile : null
+    })
+  )
+
+  return matches.find(profile => profile !== null) ?? null
+}

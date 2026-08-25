@@ -31,25 +31,39 @@ if _DEBUG_INTERRUPT:
     # Force our own logger back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
-# Set of thread idents that have been interrupted.
+# Set of thread idents that have been interrupted, plus an optional
+# user-safe cause for each signal. The cause deliberately does not contain an
+# incoming user's message text.
 _interrupted_threads: set[int] = set()
+_interrupt_reasons: dict[int, str] = {}
 _lock = threading.Lock()
 
 
-def set_interrupt(active: bool, thread_id: int | None = None) -> None:
+def set_interrupt(
+    active: bool,
+    thread_id: int | None = None,
+    *,
+    reason: str | None = None,
+) -> None:
     """Set or clear interrupt for a specific thread.
 
     Args:
         active: True to signal interrupt, False to clear it.
         thread_id: Target thread ident.  When None, targets the
                    current thread (backward compat for CLI/tests).
+        reason: Optional user-safe cause for the interrupt.
     """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
         if active:
             _interrupted_threads.add(tid)
+            if reason:
+                _interrupt_reasons[tid] = reason
+            else:
+                _interrupt_reasons.pop(tid, None)
         else:
             _interrupted_threads.discard(tid)
+            _interrupt_reasons.pop(tid, None)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
@@ -68,6 +82,13 @@ def is_interrupted() -> bool:
     tid = threading.current_thread().ident
     with _lock:
         return tid in _interrupted_threads
+
+
+def get_interrupt_reason() -> str | None:
+    """Return the user-safe interrupt cause for the current thread, if known."""
+    tid = threading.current_thread().ident
+    with _lock:
+        return _interrupt_reasons.get(tid)
 
 
 def clear_current_thread_interrupt() -> None:

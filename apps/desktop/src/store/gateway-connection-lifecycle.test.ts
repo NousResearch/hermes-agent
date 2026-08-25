@@ -21,6 +21,11 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
+const reconnectStateMocks = vi.hoisted(() => ({
+  reconcileBusyStatesOnReconnect: vi.fn(),
+  resetTileRuntimeBindings: vi.fn()
+}))
+
 vi.mock('@/hermes', () => ({
   setApiRequestConnection: vi.fn(),
   HermesGateway: class {
@@ -44,6 +49,7 @@ vi.mock('@/store/session', () => ({
   setGatewayState: vi.fn()
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
@@ -173,6 +179,28 @@ describe('disposeSecondariesForConnection', () => {
   })
 })
 
+describe('secondary reconnect runtime scope', () => {
+  it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+    const socket = gatewayMocks.instances[0]
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+
+    await vi.waitFor(() =>
+      expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+        connectionId: 'homelab',
+        profile: 'writer'
+      })
+    )
+    expect(reconnectStateMocks.reconcileBusyStatesOnReconnect).toHaveBeenCalledWith('conn:homelab::writer')
+  })
+})
+
 describe('retireLocalProfileGateways', () => {
   it('retires both local profile scopes without touching the same-named remote agent', async () => {
     const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
@@ -215,6 +243,29 @@ describe('retireLocalProfileGateways', () => {
     expect(gatewayMocks.instances).toHaveLength(2)
     expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
     expect(gatewayMocks.instances[1].close).not.toHaveBeenCalled()
+  })
+})
+
+describe('reconnectSecondaryGateways', () => {
+  it('force-redials an open secondary whose transport may be half-open after wake', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+
+    await vi.waitFor(() => {
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    })
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(getConnectionFor).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
   })
 })
 

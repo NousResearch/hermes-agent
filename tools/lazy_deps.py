@@ -1230,12 +1230,19 @@ def ensure_and_bind(
     """
     try:
         ensure(feature, prompt=prompt)
-    except (FeatureUnavailable, Exception):
+    except FeatureUnavailable as exc:
+        logger.warning("%s", exc)
+        return False
+    except Exception as exc:
+        logger.warning("Failed to ensure feature %r: %s", feature, exc)
         return False
 
     try:
         bindings = importer()
-    except ImportError:
+    except ImportError as exc:
+        logger.warning(
+            "Failed to import feature %r after install: %s", feature, exc
+        )
         return False
 
     target_globals.update(bindings)

@@ -123,6 +123,60 @@ class TestSubprocessEnvironment:
         assert "PYTHONHOME" not in env
         assert env["KEEP_ME"] == "yes"
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    def test_subprocess_env_floors_version_manager_only_path(self, monkeypatch):
+        """Profile workers (kanban bots, cron) can inherit a PATH of only
+        version-manager dirs (observed in the wild: one nvm dir repeated
+        7x). The uv browser-use trampoline resolves dirname/realpath
+        through PATH, so /usr/bin must be guaranteed or the CLI dies
+        'realpath: not found' (exit 127) before its Python starts."""
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {
+            "PATH": os.pathsep.join(
+                ["/home/u/.nvm/versions/node/v24.18.0/bin"] * 7
+            ),
+        }
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+
+        env = bu_cli._base_subprocess_env()
+
+        parts = env["PATH"].split(os.pathsep)
+        assert "/usr/bin" in parts
+        assert "/bin" in parts
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    def test_floor_preserves_existing_entries_and_order(self):
+        """The floor only adds dirs — never drops or reorders what the
+        caller's environment already had."""
+        original = "/opt/toolchain/bin:/usr/bin:/snap/bin"
+        merged = bu_cli._floor_subprocess_path(original).split(os.pathsep)
+
+        assert set(original.split(os.pathsep)) <= set(merged)
+        positions = [merged.index(p) for p in original.split(os.pathsep)]
+        assert positions == sorted(positions)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
+    def test_floor_survives_missing_sibling_helper(self, monkeypatch):
+        """If browser_tool stops exporting _merge_browser_path, the floor
+        degrades to appending FHS bin dirs instead of vanishing."""
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {
+            "PATH": "/home/u/.nvm/versions/node/v24.18.0/bin"
+        }
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+
+        env = bu_cli._base_subprocess_env()
+
+        parts = env["PATH"].split(os.pathsep)
+        assert "/usr/bin" in parts
+        assert "/home/u/.nvm/versions/node/v24.18.0/bin" in parts
+
 
 class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):

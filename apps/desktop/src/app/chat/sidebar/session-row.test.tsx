@@ -21,6 +21,11 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       sidebar: {
+        messageCount: (count: number) => `${count} messages`,
+        toolCallCount: (count: number) => `${count} tool calls`,
+        projects: {
+          home: 'Home'
+        },
         row: {
           ageMin: 'm',
           ageNow: 'now',
@@ -31,6 +36,7 @@ vi.mock('@/i18n', () => ({
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
           sessionRunning: 'Running',
+          todoProgress: 'Tasks completed',
           waitingForAnswer: 'Waiting for answer'
         }
       },
@@ -150,9 +156,10 @@ const handoffAvatar = (container: HTMLElement) =>
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
   render(
     <SidebarSessionRow
+      card={extra?.card}
       isPinned={false}
       isSelected={false}
       onArchive={noop}
@@ -386,5 +393,34 @@ describe('SidebarSessionRow', () => {
     const avatar = handoffAvatar(container)
     expect(avatar).toBeTruthy()
     expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
+  })
+})
+
+describe('Inbox-style session card', () => {
+  it('gives truncated card lines room for glyph ink instead of clipping them', () => {
+    renderRow(
+      makeSession({
+        cwd: '/Users/tomek/pursuit-support-agent',
+        message_count: 133,
+        model: 'gpt-4.1',
+        title: 'Ruff lint and pytest verification'
+      }),
+      { card: true }
+    )
+
+    const workspace = screen.getByText('pursuit-support-agent')
+    const title = screen.getByText('Ruff lint and pytest verification').parentElement
+    const footer = screen.getByText('GPT-4.1').parentElement
+
+    expect(title).toBeTruthy()
+    expect(footer).toBeTruthy()
+
+    for (const el of [workspace, title!, footer!]) {
+      expect(el.className).not.toMatch(/\bleading-none\b/)
+      expect(el.className).toMatch(/leading-\[1\.35\]/)
+    }
+
+    expect(workspace.className).toMatch(/\btruncate\b/)
+    expect(screen.getByText('133 messages')).toBeTruthy()
   })
 })

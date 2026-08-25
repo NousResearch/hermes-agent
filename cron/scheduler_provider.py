@@ -394,6 +394,27 @@ def fire_overdue_jobs(
         if overdue_seconds < grace_minutes * 60:
             continue
         job_id = str(job.get("id") or "")
+        # One-shot jobs share the module-wide policy: more than
+        # ONESHOT_GRACE_SECONDS past their run time means "will never fire"
+        # (create/update/resume/recovery and, since #89571, the due-scan all
+        # enforce it). The misfire backstop must not resurrect them hours
+        # late after downtime — that's #93526.
+        schedule = job.get("schedule") or {}
+        if str(schedule.get("kind") or "") == "once":
+            from cron.jobs import ONESHOT_GRACE_SECONDS
+
+            if overdue_seconds > ONESHOT_GRACE_SECONDS:
+                logger.warning(
+                    "Misfire catch-up: one-shot job %s (%s) was due %s "
+                    "(%.0f min overdue) — outside the %ss one-shot grace "
+                    "window, not firing.",
+                    job_id,
+                    job.get("name") or "unnamed",
+                    next_run_at,
+                    overdue_seconds / 60,
+                    ONESHOT_GRACE_SECONDS,
+                )
+                continue
         logger.warning(
             "Misfire catch-up: job %s (%s) was due %s (%.0f min overdue) and "
             "no external fire arrived — firing locally.",

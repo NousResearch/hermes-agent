@@ -1256,6 +1256,89 @@ class TestCuaDriverSessionReconnect:
         assert session._reconnect_log == ["stop", "start"]
         assert len(bridge.calls) == 1
 
+    def test_timeout_marks_session_suspect_without_replaying(self):
+        """An MCP timeout fails closed: outcome unknown, no silent replay (#74799)."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise concurrent.futures.TimeoutError()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        # Uncertainty surfaced in the error shape: the action MAY have taken
+        # effect on the remote screen before the deadline hit.
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "timeout_outcome_unknown"
+        assert result["structuredContent"]["next_step"] == "fresh_state"
+        assert "unknown" in result["data"]
+        # The timed-out call was NOT replayed and the session was not
+        # eagerly torn down — recreation is deferred to the next call.
+        assert len(bridge.calls) == 1
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is True
+
+    def test_suspect_session_is_recreated_before_next_call(self):
+        """The next call_tool tears down + recreates the suspect session first."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.timeout = True
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                if self.timeout:
+                    raise concurrent.futures.TimeoutError()
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        session.call_tool("get_window_state", {"window_id": 42})
+        assert session._timeout_suspect is True
+
+        bridge.timeout = False
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+
+        # Recreate-before-call: stop/start happened ahead of the second call,
+        # and only one call per call_tool — no replay of either operation.
+        assert session._reconnect_log == ["stop", "start"]
+        assert [c for c in bridge.calls] == [
+            ("call", "get_window_state", {"window_id": 42}),
+            ("call", "list_apps", {}),
+        ]
+        # Flag cleared: subsequent calls do not trigger another restart.
+        assert session._timeout_suspect is False
+        session.call_tool("list_windows", {})
+        assert session._reconnect_log == ["stop", "start"]
+
+    def test_healthy_session_is_never_restarted(self):
+        """Negative probe: a clean call must not touch the session lifecycle."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is False
+
     def test_mutation_does_not_cross_to_cli_on_transient_proxy_error(self):
         class FakeBridge:
             def run(self, value, timeout=None):

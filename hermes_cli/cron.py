@@ -63,6 +63,27 @@ def _active_cron_provider_name() -> str:
         return "builtin"
 
 
+def _builtin_gateway_liveness() -> Optional[bool]:
+    """Tri-state liveness of the builtin cron scheduler's trigger.
+
+    Single source of truth shared by the CLI (``_warn_if_gateway_not_running``)
+    and the ``cronjob`` model tool (#87033): the builtin ticker only runs
+    inside the gateway process, so a scheduled job with no live gateway can
+    never fire. Non-builtin providers (e.g. Chronos) fire through their own
+    machinery and are deliberately exempt — a missing gateway process means
+    nothing for them, so they report active. ``None`` = probe failed; callers
+    must not claim either way.
+    """
+    try:
+        if _active_cron_provider_name() != "builtin":
+            return True  # external provider fires jobs without the gateway
+        from hermes_cli.gateway import find_gateway_pids
+
+        return bool(find_gateway_pids())
+    except Exception:
+        return None
+
+
 def _warn_if_gateway_not_running() -> None:
     """Warn that scheduled jobs won't fire unless the gateway is running.
 
@@ -78,16 +99,9 @@ def _warn_if_gateway_not_running() -> None:
     any non-builtin provider; the gateway-process heuristic only speaks to the
     built-in ticker's trigger.
     """
-    try:
-        if _active_cron_provider_name() != "builtin":
-            return
-
-        from hermes_cli.gateway import find_gateway_pids
-
-        if find_gateway_pids():
-            return
-    except Exception:
-        # If we can't determine gateway state, stay quiet rather than nag.
+    # _builtin_gateway_liveness never raises (it maps probe failures to None),
+    # so no guard is needed here — False is the only warn-worthy state.
+    if _builtin_gateway_liveness() is not False:
         return
 
     print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
@@ -560,6 +574,29 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_resume(args) -> int:
+    """Resume a paused job or explicitly re-arm a completed one-shot."""
+    if bool(getattr(args, "run_at", None)) == bool(getattr(args, "run_now", False)):
+        if getattr(args, "run_at", None) or getattr(args, "run_now", False):
+            print(color("Use exactly one of --at or --run-now.", Colors.RED))
+            return 1
+        return _job_action("resume", args.job_id, "Resumed")
+    from cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot
+
+    run_at = _hermes_now().isoformat() if args.run_now else args.run_at
+    try:
+        job = rearm_oneshot(args.job_id, run_at)
+    except (AmbiguousJobReference, ValueError) as exc:
+        print(color(f"Failed to re-arm job: {exc}", Colors.RED))
+        return 1
+    if not job:
+        print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+    print(color(f"Re-armed job: {job.get('name', args.job_id)} ({args.job_id})", Colors.GREEN))
+    print(f"  Next run: {job.get('next_run_at')}")
+    return 0
+
+
 def cron_notepad(args) -> int:
     """Handle ``hermes cron notepad <job_id> [get|set|delete|list]``.
 
@@ -656,7 +693,7 @@ def cron_command(args):
         return _job_action("pause", args.job_id, "Paused")
 
     if subcmd == "resume":
-        return _job_action("resume", args.job_id, "Resumed")
+        return cron_resume(args)
 
     if subcmd == "run":
         return _job_action("run", args.job_id, "Triggered")

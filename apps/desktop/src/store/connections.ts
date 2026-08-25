@@ -126,6 +126,17 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 
   restoreAttempted = true
 
+  // Residual drift: a window can be live on a source the registry cannot name
+  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
+  // read-only userData that rejected the healed write). $activeConnectionId is
+  // null there, so the preferred-id guard below would miss and "restore" the
+  // registry primary over a connection that is already up and painting —
+  // re-homing the user onto a different backend seconds after boot. The
+  // registry has no claim on a source it does not know; leave the live one be.
+  if ($connection.get() && $activeConnectionId.get() === null) {
+    return registry
+  }
+
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
@@ -157,6 +168,12 @@ export async function selectConnection(connectionId: string): Promise<void> {
   if (!registry || !targetConnection) {
     return
   }
+
+  // A user-initiated source switch collapses "All profiles" browse mode: the
+  // picker is a concrete-source action. The silent boot-time restore (below,
+  // from initializeConnectionsRegistry) is not — it must leave the persisted
+  // browse-mode preference alone so it survives restart (#93197).
+  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
@@ -207,7 +224,11 @@ export async function selectConnection(connectionId: string): Promise<void> {
     if (revision === switchRevision) {
       await rememberConnection(connectionId)
       wipeSessionListsForGatewaySwitch()
-      $showAllProfiles.set(false)
+
+      if (!restoreOnBoot) {
+        $showAllProfiles.set(false)
+      }
+
       $newChatProfile.set(targetProfile)
       requestFreshSession()
       await refreshActiveProfile()

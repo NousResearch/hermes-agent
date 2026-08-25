@@ -65,6 +65,10 @@ class CaptureResult:
     # When None, downstream consumers fall back to base64-prefix
     # sniffing for back-compat with older drivers.
     image_mime_type: Optional[str] = None
+    # Optional guidance appended to the human-readable summary — used by
+    # capture lanes that intentionally return no elements (e.g. full-screen
+    # composited grabs) to tell the model how to reach an interactive lane.
+    note: str = ""
 
 
 @dataclass

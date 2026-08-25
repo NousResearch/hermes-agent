@@ -461,6 +461,18 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             "",
         ))
 
+    deferral = stats.get("fts_rebuild_deferral")
+    if isinstance(deferral, dict):
+        attempts = deferral.get("attempts")
+        pids = deferral.get("holder_pids") or []
+        lines.append((
+            "warn",
+            f"state.db FTS repair is blocked after {attempts or '?'} "
+            f"deferral(s) by PID(s) {pids or 'unknown'}",
+            "(stop the listed processes, then run 'hermes sessions "
+            "optimize-storage' with the gateway stopped)",
+        ))
+
     # Advisory: oversized database. Suggest auto_prune, and — when the v23
     # FTS rebuild is pending OR the DB still carries the legacy inline
     # trigram layout (fts_storage_version marker absent) — the offline
@@ -2240,6 +2252,34 @@ def run_doctor(args):
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:
             check_info("Vercel persistence: ephemeral filesystem")
+
+    # Plugin-registered terminal backends (if one is the active backend)
+    if terminal_env not in {
+        "local", "docker", "singularity", "modal", "managed_modal",
+        "daytona", "vercel_sandbox", "ssh",
+    }:
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(terminal_env)
+        except Exception:
+            _provider = None
+        if _provider is None:
+            _fail_and_issue(
+                f"Unknown terminal backend '{terminal_env}'",
+                "(no built-in or plugin backend by that name)",
+                "Fix terminal.backend in config.yaml, or install/enable the plugin that provides it",
+                issues,
+            )
+        else:
+            for _ok, _label, _detail in _provider.doctor_checks():
+                if _ok:
+                    check_ok(_label, _detail)
+                else:
+                    _fail_and_issue(_label, _detail, _detail.strip("()"), issues)
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

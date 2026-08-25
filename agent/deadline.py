@@ -542,3 +542,32 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         except Exception:
             continue
     return signalled
+
+
+class SuspectableBackend:
+    """Protocol for backends whose connection state can be *poisoned* by a
+    race (teardown-vs-keepalive, auth-lock corruption) without the backend
+    itself being dead.
+
+    The contract is **cheap-mark, lazy-verify**: noticing a poisoned state
+    must never do I/O — ``mark_suspect`` just latches a reason string. The
+    NEXT caller pays for verification once, via ``ensure_healthy``: a cheap
+    health probe that either clears the suspicion (backend was fine) or
+    forces a reconnect/recycle before the call proceeds. This is what keeps
+    a single race from permanently parking a connection (#81051/#77765/
+    #84132): instead of parking on the ambiguous event, the backend is
+    marked suspect and recycled exactly once on next use.
+    """
+
+    def mark_suspect(self, reason: str) -> None:
+        """Latch a suspicion about this backend. Must be cheap (no I/O)."""
+        raise NotImplementedError
+
+    async def ensure_healthy(self, timeout: float = 5.0) -> bool:
+        """Verify a suspect backend before reuse.
+
+        Returns True when the backend is healthy (clearing the suspicion);
+        returns False after forcing a reconnect/recycle so the caller's
+        normal no-session path handles the rebuild. Must not raise.
+        """
+        raise NotImplementedError

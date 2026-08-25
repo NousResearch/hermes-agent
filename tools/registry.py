@@ -305,11 +305,30 @@ def _prune_check_fn_caches(now: float) -> None:
 def check_fn_cache_scope() -> Optional[str]:
     """Return the active profile key when availability is profile-scoped.
 
+    Browser-controller availability is request-bound and can change on every
+    attach/detach. A fully bound browser-control request therefore bypasses both
+    this check cache and model_tools' outer definition cache; the same sentinel
+    is consumed by both layers. This prevents one Browser session's live tools
+    from leaking into any unrelated session.
+
     Single-profile processes intentionally keep the historical process-wide
     cache. A multiplex gateway installs a Hermes-home override for every
     profile turn, so the canonical profile key is the stable isolation
     boundary across repeated turns for that profile.
     """
+    try:
+        from gateway.session_context import get_session_env
+
+        browser_identity = (
+            get_session_env("HERMES_SESSION_ID", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL", ""),
+            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""),
+        )
+        if all(str(value or "").strip() for value in browser_identity):
+            return CHECK_FN_CACHE_BYPASS
+    except Exception:
+        pass
+
     try:
         from agent.secret_scope import is_multiplex_active
 

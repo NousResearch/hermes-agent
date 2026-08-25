@@ -16,6 +16,8 @@ export interface ClarifyRequest {
   question: string
   choices: string[] | null
   multiSelect: boolean
+  /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
+  receivedAt?: number
   sessionId: string | null
   /** Batch (multi-question) clarify: present instead of question/choices. */
   questions?: ClarifyQuestion[]

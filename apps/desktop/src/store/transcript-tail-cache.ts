@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/lib/chat-messages'
+import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
 // ── Durable transcript-tail cache (#89206 "feels instant" layer) ────────────
 // The in-memory warm cache (sessionStateByRuntimeIdRef) makes same-window
@@ -153,7 +154,13 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
       throw new Error('empty')
     }
 
-    return parsed.messages
+    // Repair, don't just trust: a tail persisted by an older build (or by a
+    // producer bug) can carry two `tool-call` parts with one `toolCallId`
+    // inside a single message. This path paints DIRECTLY into the view, and a
+    // poisoned entry is re-read identically on every launch — the "one pane
+    // permanently broken" shape of #87857. Renaming at read keeps already-
+    // affected installs from crash-looping forever on upgraded builds.
+    return parsed.messages.map(withUniqueToolCallIdsWithinMessage)
   } catch {
     try {
       store.removeItem(PREFIX + id)

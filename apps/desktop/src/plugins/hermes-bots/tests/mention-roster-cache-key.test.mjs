@@ -186,19 +186,17 @@ test('mention completions offer remote @name-device handles from the suffixed ca
   assert.ok(inserts.includes('@default-vera'), `expected @default-vera in ${JSON.stringify(inserts)}`)
 })
 
-test('the middleware resolves a remote @name-device mention and routes delivery over Connections', async () => {
+test('the middleware identifies a remote @name-device mention without delivering (identification-only)', async () => {
   const { handler, delivered } = load()
   const result = await handler({ text: '@default-vera what is the disk space on the server?' })
 
-  assert.match(result.text, /stay on this device/i)
+  assert.match(result.text, /@mentions resolved from the Bot Mode roster/)
   assert.match(result.text, /@default-vera/)
-  // No local CLI handoff is composed for remote bots — only the note's
-  // "do not run hermes -p" instruction must mention the phrase.
+  // No CLI handoff is composed and the renderer performs NO delivery — the
+  // agent owns messaging via its message_agent tool.
   assert.doesNotMatch(result.text, /hermes -p '?default/)
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.ok(delivered.length > 0, 'remote delivery dispatched')
-  assert.equal(delivered[0][0], 'vera')
-  assert.equal(delivered[0][1], 'default')
+  assert.equal(delivered.length, 0, 'middleware must not deliver over Connections')
 })
 
 test('a roster cached under another connection id still resolves (fallback entry)', () => {

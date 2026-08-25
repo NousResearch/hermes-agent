@@ -461,6 +461,40 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
+def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
+    """Validate any ``bot-chat[:<profile>]`` deliver elements at create time.
+
+    Bot Chat delivery is machine-local: the named profile must exist on THIS
+    machine (the one whose scheduler will fire the job). Failing loudly here
+    beats a per-run ``last_delivery_error`` at 3am — especially for Desktop
+    clients whose merged multi-gateway rosters may show same-named profiles
+    from other machines. Returns an error string or None.
+    """
+    if not deliver:
+        return None
+    try:
+        from cron.scheduler import parse_bot_chat_deliver_token
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+    except Exception:
+        return None  # validation is best-effort; resolution re-checks at fire time
+    for part in str(deliver).split(","):
+        profile_arg = parse_bot_chat_deliver_token(part.strip())
+        if profile_arg is None or not profile_arg:
+            continue  # not a bot-chat token, or bare token (own profile)
+        try:
+            canon = normalize_profile_name(profile_arg)
+        except Exception:
+            return f"invalid bot-chat profile name '{profile_arg}'"
+        if not profile_exists(canon):
+            return (
+                f"bot-chat delivery profile '{profile_arg}' not found on this "
+                "gateway's machine. Bot Chat delivery is machine-local — use a "
+                "profile that exists here (hermes profile list), or omit the "
+                "name (deliver='bot-chat') for the job's own profile."
+            )
+    return None
+
+
 def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     """Resolve ``origin`` to a concrete target for cron-context creates.
 
@@ -1189,6 +1223,39 @@ def _apply_continuity(
     return refs or None
 
 
+def _gateway_liveness_notice(plural: bool = False) -> dict:
+    """Build the ``gateway_running``/``warning`` payload for tool results.
+
+    Thin adapter over the shared CLI helper ``hermes_cli.cron._builtin_gateway_liveness``
+    (#87033) so the CLI and this tool can never disagree about what "scheduler
+    active" means. Returns ``{"gateway_running": False, "warning": ...}`` when
+    the builtin ticker has no gateway process to run it, ``{"gateway_running":
+    None}`` when the probe failed, and ``{"gateway_running": True}`` when the
+    scheduler is active. ``plural`` rewords the warning for multi-job results
+    (the ``list`` action).
+    """
+    try:
+        from hermes_cli.cron import _builtin_gateway_liveness
+
+        _gw = _builtin_gateway_liveness()
+    except Exception:
+        return {"gateway_running": None}
+    subject = "these jobs are saved" if plural else "this job is saved"
+    if _gw is False:
+        return {
+            "gateway_running": False,
+            "warning": (
+                f"The Hermes gateway is not running — {subject} "
+                "but will NOT fire until the gateway is started "
+                "(hermes gateway install / hermes gateway start). "
+                "Tell the user the task is scheduled but not active yet."
+            ),
+        }
+    if _gw is None:
+        return {"gateway_running": None}
+    return {"gateway_running": True}
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -1265,6 +1332,12 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
 
+            # bot-chat deliver targets are machine-local: named profiles must
+            # exist here, and a bad name should fail the CREATE, not the run.
+            bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+            if bot_chat_error:
+                return tool_error(bot_chat_error, success=False)
+
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
@@ -1328,26 +1401,37 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
-            return json.dumps(
-                {
-                    "success": True,
-                    "job_id": job["id"],
-                    "name": job["name"],
-                    "skill": job.get("skill"),
-                    "skills": job.get("skills", []),
-                    "schedule": job["schedule_display"],
-                    "repeat": _repeat_display(job),
-                    "deliver": job.get("deliver", "local"),
-                    "next_run_at": job["next_run_at"],
-                    "job": _format_job(job),
-                    "message": _create_message,
-                },
-                indent=2,
-            )
+            # Gateway liveness surfacing (#87033): the builtin scheduler's
+            # ticker lives in the gateway process, so a job created with no
+            # gateway running is stored but will never fire. Tell the model
+            # here — the CLI already warns, but the agent path saw only a
+            # clean success and confidently told the user it was scheduled.
+            _result = {
+                "success": True,
+                "job_id": job["id"],
+                "name": job["name"],
+                "skill": job.get("skill"),
+                "skills": job.get("skills", []),
+                "schedule": job["schedule_display"],
+                "repeat": _repeat_display(job),
+                "deliver": job.get("deliver", "local"),
+                "next_run_at": job["next_run_at"],
+                "job": _format_job(job),
+                "message": _create_message,
+                **_gateway_liveness_notice(),
+            }
+            return json.dumps(_result, indent=2)
 
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            _result = {"success": True, "count": len(jobs), "jobs": jobs}
+            # Same silent-inert-job class as create (#87033): an agent
+            # inspecting existing jobs in a gateway-less environment must
+            # learn they are not firing, not just see a clean list. An empty
+            # list has nothing inert — stay quiet (and skip the probe).
+            if jobs:
+                _result.update(_gateway_liveness_notice(plural=True))
+            return json.dumps(_result, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -1486,9 +1570,16 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
                 updates["prompt"] = prompt
-            if name is not None:
+            if name is not None and name.strip():
+                # Blank name is a no-op, not a clear. The `is not None` sentinel
+                # treats every supplied field as an explicit edit, and a model
+                # that re-sends the whole schema with type-default empties ("", [], 0)
+                # then wipes fields it never meant to touch.
                 updates["name"] = name
             if deliver is not None:
+                bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+                if bot_chat_error:
+                    return tool_error(bot_chat_error, success=False)
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
@@ -1684,7 +1775,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), 'bot-chat' (inject the output into this profile's canonical Bot Chat as a real message — the bot reads it, acts on it, and responds in that chat; 'bot-chat:<profile>' targets another local profile's Bot Chat, costing that bot an agent turn per run), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all', 'bot-chat:research'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time (and never includes bot-chat targets), so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

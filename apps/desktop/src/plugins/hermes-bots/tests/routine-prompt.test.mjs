@@ -160,12 +160,12 @@ test('robustness: routine input rejects NUL before cron creation', () => {
   assert.match(__routines.routineInputError('Normal title', 'Bad\0instruction'), /NUL.*U\+0000/)
   assert.match(
     pluginSource,
-    /const inputError = routineInputError\(title, task\)[\s\S]*if \(inputError\)[\s\S]*setError\(inputError\)[\s\S]*return[\s\S]*host\.request\('cron\.manage'/
+    /const inputError = routineInputError\(title, task\)[\s\S]*if \(inputError\)[\s\S]*setError\(inputError\)[\s\S]*return[\s\S]*requestForBot\(bot, 'cron\.manage'/
   )
 })
 
 test('regression: Create Cronjob passes the active profile to routinePrompt', () => {
-  assert.match(pluginSource, /prompt: routinePrompt\(bot, title, task, activeProfile\)/)
+  assert.match(pluginSource, /prompt: routinePrompt\(profile, title, task, activeProfile\)/)
   const { __routines } = load()
   const instruction = 'Keep "quoted" output intact'
   assert.equal(__routines.routinePrompt('ops', 'Check', instruction, 'ops'), instruction)

@@ -6,9 +6,10 @@ import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd, $gatewayState } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
-import { useGatewayBoot } from './use-gateway-boot'
+import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -23,6 +24,21 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
+let powerResume: null | (() => void) = null
+
+describe('primaryRuntimeConnectionId', () => {
+  it('uses the registry identity when the primary connection has one', () => {
+    expect(primaryRuntimeConnectionId({ connectionId: ' tower ', mode: 'remote' })).toBe('tower')
+  })
+
+  it('uses the stable local identity for an app-managed backend', () => {
+    expect(primaryRuntimeConnectionId({ mode: 'local' })).toBe('local')
+  })
+
+  it('returns null for an unknown remote identity so the caller falls back to live-connection scoping', () => {
+    expect(primaryRuntimeConnectionId({ mode: 'remote' })).toBeNull()
+  })
+})
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -33,6 +49,12 @@ class FakeWebSocket {
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
   static mode: 'open' | 'fail' = 'open'
   static instances: FakeWebSocket[] = []
+  // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
+  // the request (the half-open-socket simulation — connection looks OPEN but
+  // every RPC hangs until its per-call timeout); 'method-not-found' answers
+  // the JSON-RPC error a PRE-ping backend returns (a healthy, version-skewed
+  // response that must NOT trigger a reconnect).
+  static pingMode: 'pong' | 'silent' | 'method-not-found' = 'pong'
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -72,6 +94,35 @@ class FakeWebSocket {
     this.emit('close', {})
   }
 
+  send(data: string) {
+    let frame: { id?: unknown; method?: string }
+
+    try {
+      frame = JSON.parse(data) as { id?: unknown; method?: string }
+    } catch {
+      return
+    }
+
+    if (frame.method !== 'ping') {
+      return
+    }
+
+    if (FakeWebSocket.pingMode === 'pong') {
+      this.emit('message', {
+        data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { pong: true } })
+      })
+    } else if (FakeWebSocket.pingMode === 'method-not-found') {
+      this.emit('message', {
+        data: JSON.stringify({
+          jsonrpc: '2.0',
+          id: frame.id,
+          error: { code: -32601, message: 'Method not found' }
+        })
+      })
+    }
+    // 'silent': swallow — a healthy socket answers, a half-open one never does.
+  }
+
   private emit(type: string, ev: unknown) {
     for (const fn of this.listeners[type] ?? []) {
       fn(ev)
@@ -82,6 +133,7 @@ class FakeWebSocket {
 const primaryConn = {
   authMode: 'token' as const,
   baseUrl: 'https://vps.example.com',
+  connectionId: 'primary-vps',
   profile: 'default',
   token: 't',
   wsUrl: 'wss://vps.example.com/api/ws?token=t'
@@ -90,12 +142,15 @@ const primaryConn = {
 const coderConn = {
   authMode: 'token' as const,
   baseUrl: 'https://coder.example.com',
+  connectionId: 'coder-remote',
   profile: 'coder',
   token: 'c',
   wsUrl: 'wss://coder.example.com/api/ws?token=c'
 }
 
 function fakeDesktop() {
+  let bootProgressHandler: ((payload: Record<string, unknown>) => void) | null = null
+
   return {
     getConnection: vi.fn(async (profile?: null | string) => {
       const key = (profile ?? '').trim()
@@ -113,7 +168,17 @@ function fakeDesktop() {
       running: true as boolean,
       timestamp: Date.now()
     })),
-    onBootProgress: vi.fn(() => () => undefined),
+    onBootProgress: vi.fn(callback => {
+      bootProgressHandler = callback
+
+      return () => {
+        bootProgressHandler = null
+      }
+    }),
+    // Test helper: fire a post-boot progress event through the real subscription.
+    emitBootProgress(payload: Record<string, unknown>) {
+      bootProgressHandler?.(payload)
+    },
     onBackendExit: vi.fn(() => () => undefined),
     onConnectionApplied: vi.fn(callback => {
       connectionApplied = callback
@@ -122,7 +187,13 @@ function fakeDesktop() {
         connectionApplied = null
       }
     }),
-    onPowerResume: vi.fn(() => () => undefined),
+    onPowerResume: vi.fn(callback => {
+      powerResume = callback
+
+      return () => {
+        powerResume = null
+      }
+    }),
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -164,10 +235,13 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(null)
   $profiles.set([])
+  $sessionTiles.set([])
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
+  powerResume = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -202,6 +276,7 @@ afterEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(null)
   $profiles.set([])
+  $sessionTiles.set([])
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -340,11 +415,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    // Burn a couple backoff cycles BEFORE the escalation threshold (<6 attempts,
-    // ~the first ~15s). This is the window where stock and fixed behave the
-    // same: socket down, hook retrying, gatewayState non-open, boot.error still
-    // null → CONNECTING covers the screen with no recovery surface. (Past ~45s
-    // the fix raises boot.error; that's asserted in the next test.)
+    // Burn a couple backoff cycles BEFORE the escalation threshold. Socket
+    // down, hook retrying, gatewayState non-open, boot.error still null so
+    // chat stays usable (no CONNECTING / no couldn't-start overlay).
     await advanceBackoff()
 
     expect($gatewayState.get()).not.toBe('open')
@@ -353,7 +426,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
   })
 
-  it('FIX: after the prolonged drop the hook raises a recoverable boot error (the escape hatch)', async () => {
+  it('FIX: after a prolonged drop the chat stays unlocked (toast, not boot.error)', async () => {
     render(<Harness />)
     await flushAsync()
     expect($desktopBoot.get().error).toBeNull()
@@ -362,17 +435,21 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    // Walk the backoff past the >=6 attempt threshold (~45s of failures).
-    for (let i = 0; i < 8; i += 1) {
+    // Walk the backoff well past the historical 45s threshold and into the
+    // current multi-minute escalate window. Chat must stay unlocked either way.
+    for (let i = 0; i < 24; i += 1) {
       await advanceBackoff()
     }
 
-    // The hook surfaced the recoverable error → BootFailureOverlay (Use local
-    // gateway / Sign in / Retry) becomes reachable instead of CONNECTING.
-    expect($desktopBoot.get().error).toBeTruthy()
+    // Transport blips must NOT take the full-screen "couldn't start" overlay —
+    // users were locked out of reading/drafting for the whole reconnect window.
+    expect($desktopBoot.get().error).toBeNull()
+    expect($gatewayState.get()).not.toBe('open')
+    // Still retrying.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
   })
 
-  it('FIX: a successful reconnect clears the recoverable error', async () => {
+  it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {
     render(<Harness />)
     await flushAsync()
 
@@ -380,11 +457,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < 24; i += 1) {
       await advanceBackoff()
     }
 
-    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().error).toBeNull()
 
     // The remote comes back: next reconnect attempt opens.
     FakeWebSocket.mode = 'open'
@@ -392,6 +469,122 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('a getConnection() that hangs on reconnect does not permanently latch the backoff loop (#93454)', async () => {
+    // Repro: a remote gateway drops, the backoff loop kicks off a reconnect,
+    // and the IPC round-trip into main (desktop.getConnection) never settles
+    // — e.g. a wedged revalidation after a liveness-probe trip, even though
+    // the backend itself answers fine. Without an internal timeout on that
+    // await, `reconnecting` never clears and every later
+    // scheduleReconnect()/attemptReconnect() early-returns forever, so the UI
+    // stays stuck until the app is restarted.
+    const desktop = fakeDesktop()
+    const originalGetConnection = desktop.getConnection
+    let callCount = 0
+
+    desktop.getConnection = vi.fn((profile?: null | string) => {
+      callCount += 1
+
+      // The initial boot call succeeds; every reconnect attempt after the
+      // drop hangs indefinitely.
+      return callCount === 1 ? originalGetConnection(profile) : new Promise(() => undefined)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(callCount).toBe(1)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    expect(callCount).toBe(2)
+    expect($gatewayState.get()).not.toBe('open')
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // await must reject so the `reconnecting` guard clears and the backoff
+    // loop schedules another attempt, instead of latching forever on the
+    // still-pending first hang.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    await advanceBackoff()
+
+    expect(callCount).toBeGreaterThanOrEqual(3)
+  })
+
+  it('a revalidateConnection() that hangs on reconnect does not permanently latch the backoff loop (#93454)', async () => {
+    // Same failure mode as the getConnection() repro above, but for the OTHER
+    // unbounded IPC await in the same try block: a wedged revalidation after a
+    // liveness-probe trip (the PR's own named trigger) must also unlatch.
+    const desktop = fakeDesktop()
+    let revalidateCallCount = 0
+
+    desktop.revalidateConnection = vi.fn(() => {
+      revalidateCallCount += 1
+
+      // Every reconnect attempt after the drop hangs indefinitely; getConnection
+      // itself stays fast so this isolates the revalidate call specifically.
+      return new Promise(() => undefined)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const callsBeforeDrop = desktop.getConnection.mock.calls.length
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    expect(revalidateCallCount).toBe(1)
+    expect($gatewayState.get()).not.toBe('open')
+    // Still stuck behind the hung revalidate — execution never reached
+    // getConnection() at all.
+    expect(desktop.getConnection.mock.calls.length).toBe(callsBeforeDrop)
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // revalidate await must reject (swallowed, as it always was for a genuine
+    // rejection) so execution proceeds to getConnection() and the socket
+    // reopens, instead of latching on the still-pending revalidate forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(callsBeforeDrop)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('rebinds Bot tabs owned by the restarted primary without touching another gateway', async () => {
+    render(<Harness />)
+    await flushAsync()
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'primary-vps', mode: 'remote', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-primary-dead',
+        storedSessionId: 'primary-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'primary-vps::writer'
+      },
+      {
+        ownerRoute: { connectionId: 'coder-remote', mode: 'remote', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-secondary-live',
+        storedSessionId: 'secondary-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'coder-remote::coder'
+      }
+    ])
+
+    act(() => FakeWebSocket.instances[0].drop())
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    const [primaryBot, secondaryBot] = $sessionTiles.get()
+
+    expect(primaryBot).not.toHaveProperty('runtimeId')
+    expect(secondaryBot).toMatchObject({ runtimeId: 'runtime-secondary-live' })
   })
 
   it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {
@@ -421,6 +614,69 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('power resume force-redials a half-open primary socket that still reports OPEN', async () => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    const staleSocket = FakeWebSocket.instances[0]
+
+    expect(staleSocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect($gatewayState.get()).toBe('open')
+    expect(powerResume).not.toBeNull()
+
+    // macOS can discard the TCP connection during sleep without updating the
+    // renderer WebSocket object. Leave readyState OPEN, swallow the liveness
+    // ping (a half-open socket never answers), and emit only resume. The wake
+    // path no longer blind-closes an open-looking socket — it probes first and
+    // closes only when the probe times out.
+    FakeWebSocket.pingMode = 'silent'
+    act(() => powerResume?.())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    expect(staleSocket.readyState).toBe(FakeWebSocket.CLOSED)
+    // The probe-driven close schedules the regular backoff reconnect, which
+    // revalidates the (possibly dead) remote descriptor before re-dialing.
+    await advanceBackoff()
+    expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('FIX: post-boot ticket-mint boot-progress errors do not lock the UI', async () => {
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      emitBootProgress: (payload: Record<string, unknown>) => void
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+
+    // Main re-emits the exact transient ticket error after a liveness rebuild.
+    // That used to promote into BootFailureOverlay and lock reading/drafting.
+    act(() => {
+      desktop.emitBootProgress({
+        error: 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
+        message: 'Desktop boot failed',
+        phase: 'backend.error',
+        progress: 94,
+        running: false,
+        timestamp: Date.now()
+      })
+    })
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
   })
 
   it('FIX: a failed session-list fetch during boot is non-fatal — the app still boots', async () => {
@@ -634,5 +890,67 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // Still no retry later: a missing capability is not a transient failure.
     await advanceBackoff()
     expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('wake probe: an open-looking but unresponsive socket is force-closed and reconnected', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Half-open socket: connectionState reads 'open' (no close event) but the
+    // backend never answers — the sleep/wake TCP black hole.
+    FakeWebSocket.pingMode = 'silent'
+
+    // A wake signal (power resume / network online / window visible) nudges
+    // reconnectNow. With the socket still reporting open it must PROBE rather
+    // than skip; the swallowed ping times out and forces the socket down.
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+    // The probe timeout (5s) force-closed the socket → 'closed' → the backoff
+    // timer schedules a reconnect; let it fire and re-dial.
+    await advanceBackoff()
+
+    // A fresh socket was dialed.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('wake probe: a healthy socket answers the ping and stays untouched', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Default FakeWebSocket behavior: answer pings with a pong frame.
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    // Probe succeeded → no forced close, no reconnect, connection untouched.
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('wake probe: a pre-ping backend (-32601) is healthy, not reconnected', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // Version skew: this gateway predates the ping method. The error response
+    // proves the socket is alive; forcing a reconnect would loop forever.
+    FakeWebSocket.pingMode = 'method-not-found'
+
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
   })
 })

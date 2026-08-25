@@ -684,10 +684,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                     remote_spillover_dirs.add(mapped_spillover_dir)
                 visible_cache_base = get_agent_visible_cache_base()
                 if visible_cache_base:
+                    # ``_resolve_path_for_task`` expands ``~`` before this
+                    # classification, so normalize the backend root the same way.
+                    resolved_visible_base = _expand_tilde(visible_cache_base)
                     remote_spillover_dirs.add(
                         posixpath.normpath(
                             posixpath.join(
-                                visible_cache_base,
+                                resolved_visible_base,
                                 "cache",
                                 "spillover",
                                 PERSISTED_SPILLOVER_SUBDIR,

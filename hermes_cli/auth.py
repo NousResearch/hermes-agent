@@ -122,6 +122,11 @@ ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+# Codex-only durable role marker for a proven legacy singleton alias.
+# Value is a role label, never token material.  PooledCredential persists it
+# through extra-key round-trip (``codex_lineage`` in ``_EXTRA_KEYS``).
+CODEX_LINEAGE_KEY = "codex_lineage"
+CODEX_LINEAGE_SINGLETON_ALIAS = "singleton_alias"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
@@ -3924,14 +3929,19 @@ def _sync_codex_pool_entries(
             # Singleton-seeded mirror — always refresh.
             refresh_this_entry = True
         elif source == "manual:device_code":
-            # Refresh only if this entry's existing access_token matches the
-            # previous singleton access_token (i.e. it is a true alias of the
-            # singleton from the #33000 workaround era).  An entry with its
-            # own distinct token material is an independent account and must
-            # be left alone (#39236).
-            refresh_this_entry = bool(
+            # A true legacy alias is proven either by durable lineage from a
+            # prior equality match, or by the historical previous-access-token
+            # equality rule (#33538 / #39236).  Already-diverged unmarked
+            # manuals stay independent — no inference from labels/timestamps.
+            proven_alias = (
+                entry.get(CODEX_LINEAGE_KEY) == CODEX_LINEAGE_SINGLETON_ALIAS
+            )
+            historical_alias = bool(
                 prev_at and entry.get("access_token") == prev_at
             )
+            refresh_this_entry = proven_alias or historical_alias
+            if historical_alias:
+                entry[CODEX_LINEAGE_KEY] = CODEX_LINEAGE_SINGLETON_ALIAS
         else:
             # ``manual:api_key`` and any future non-device-code sources.
             refresh_this_entry = False

@@ -559,7 +559,11 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     if base_dir is not None:
         roots = (base_dir,)
     else:
-        machine_root = get_desktop_ssh_runtime_root()
+        if sys.platform == "win32":
+            from hermes_cli.windows_ssh_runtime import _root
+            machine_root = _root()
+        else:
+            machine_root = get_desktop_ssh_runtime_root()
         configured_root = get_default_hermes_root() / _REMOTE_LOCK_SUBDIR
         roots = (machine_root,) if machine_root == configured_root else (machine_root, configured_root)
     for root in roots:

@@ -175,7 +175,12 @@ def test_lock_owned_serve_pids_uses_machine_root_for_named_profile(
     )
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(machine_root / "profiles" / "reviewer"))
+    profile_home = machine_root / "profiles" / "reviewer"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    (profile_home / "desktop-ssh" / oid).mkdir(parents=True)
+    (profile_home / "desktop-ssh" / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(8888, oid, nonce))
+    )
 
     assert _lock_owned_serve_pids() == {7777}
 

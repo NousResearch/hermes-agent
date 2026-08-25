@@ -1983,17 +1983,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
         with session._lock:
             session.mark_exited(rc)
-        logger.info(
-            "Reconciled session %s: direct child exited with code %s but reader "
-            "was still blocked (orphaned pipe). Flipped to exited.",
-            session.id, rc)
+        logger.info("Reconciled session %s: direct child exited with code %s but reader was still blocked "
+                    "(orphaned pipe). Flipped to exited.", session.id, rc)
         self._move_to_finished(session)
 
     @staticmethod
     def _status_head(session: ProcessSession) -> dict:
         return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
 
-    def poll(self, session_id: str) -> dict:
+    def poll(self, session_id: str, acknowledge: bool = False) -> dict:
         """Check status and get new output for a background process."""
         session = self.get(session_id)
         if session is None or self._uncollected_gone(session):
@@ -2009,12 +2007,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "uptime_seconds": int(time.time() - session.started_at), "output_preview": output_preview}
         if exited:
             result.update(self._exit_fields(session))
-            # Read-only: record in _poll_observed (CLI inline dedup) but NOT in
-            # _completion_consumed, or a status check would suppress the watcher's
-            # autonomous delivery turn. See __init__. A preview taken before the reader's
-            # final drain is partial and must not suppress the full completion.
+            # Read-only unless acknowledged: _poll_observed is CLI inline dedup only; a plain status check must
+            # not suppress the watcher's autonomous turn (#10156), an acknowledged handled result must (#94455).
+            # A preview taken before the reader's final drain is partial and must not suppress the completion.
             if not finalizing:
                 self._poll_observed.add(session_id)
+                if acknowledge:
+                    self._completion_consumed.add(session.id)
         if session.detached and not session.output_log:
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result
@@ -2616,6 +2615,7 @@ PROCESS_SCHEMA = {
                 "type": "integer",
                 "description": "Log line offset (default: last 200)."
             },
+            "acknowledge": {"type": "boolean", "description": "'poll' on an exited process: you handled its result, so skip its notify_on_complete turn."},
             "limit": {
                 "type": "integer",
                 "description": "Max log lines.",
@@ -2681,7 +2681,7 @@ def _list_processes(task_id) -> dict:
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
 # actions are redacted; stdin actions return only status.
 _SESSION_ACTIONS = {
-    "poll": (lambda sid, a: process_registry.poll(sid), True),
+    "poll": (lambda sid, a: process_registry.poll(sid, acknowledge=a.get("acknowledge") is True), True),
     "log": (lambda sid, a: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200)), True),
     "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout")), True),
     "kill": (lambda sid, a: process_registry.kill_process(sid), True),

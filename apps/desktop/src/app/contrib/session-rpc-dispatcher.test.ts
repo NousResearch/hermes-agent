@@ -30,6 +30,7 @@ vi.mock('@/app/session/hooks/use-session-actions/utils', async importActual => (
 }))
 
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
+const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
 const { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } = await import('@/store/session')
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
@@ -50,11 +51,13 @@ function dispatcher(ambientRequest = vi.fn(async () => ({ ambient: true }))) {
 
 beforeEach(() => {
   gatewayMocks.activeConnectionId = 'local'
+  $connectionsRegistry.set({ connections: [{ id: 'local' }] } as never)
   $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
   probe.resolveSessionOwner.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
+  $connectionsRegistry.set(null)
   setSessions([])
   $sessionTiles.set([])
   $profiles.set([])
@@ -88,6 +91,7 @@ describe('createSessionRpcDispatcher: fail closed', () => {
 
   it('keeps the legacy single-backend Desktop on the ambient socket: no registry source, one profile', async () => {
     gatewayMocks.activeConnectionId = null
+    $connectionsRegistry.set(null)
     $profiles.set([{ name: 'default' }] as never)
     const { ambientRequest, request } = dispatcher()
 
@@ -97,12 +101,14 @@ describe('createSessionRpcDispatcher: fail closed', () => {
 
   it('fails closed as soon as there is somewhere to misroute to: a second profile, or a live registry source', async () => {
     gatewayMocks.activeConnectionId = null
+    $connectionsRegistry.set(null)
     $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
     await expect(dispatcher().request('session.resume', { session_id: 'stored-x' })).rejects.toSatisfy(
       isSessionOwnerResolutionError
     )
 
     gatewayMocks.activeConnectionId = 'local'
+    $connectionsRegistry.set({ connections: [{ id: 'local' }] } as never)
     $profiles.set([{ name: 'default' }] as never)
     await expect(dispatcher().request('session.resume', { session_id: 'stored-x' })).rejects.toSatisfy(
       isSessionOwnerResolutionError

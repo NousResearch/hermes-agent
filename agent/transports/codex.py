@@ -9,7 +9,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +70,24 @@ _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 # rename on the wire (hermes_<name>), map back in normalize_response so
 # Hermes dispatch is unaffected.
 _OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+
+# xAI reserves ``tool_search`` server-side for Grok's own native Tool Search
+# and rejects *any* client function declared with that name:
+#   HTTP 400 {"code":"invalid-argument","error":"The function name
+#   tool_search is reserved for the tool_search tool"}
+# Hermes's progressive-disclosure bridge registers exactly that literal
+# (``tools.tool_search.TOOL_SEARCH_NAME``), and assembly is not provider
+# gated, so with ``tools.tool_search.enabled: auto`` a grok turn dies the
+# moment the catalog crosses the threshold — mid-session, and only for
+# sessions large enough to activate the bridge. Same treatment as the two
+# collisions above. ``tool_describe`` / ``tool_call`` are not reserved.
+# Refs #95003.
+_XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 _RESERVED_ALIAS_TO_NAME = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in _OPENCODE_RESERVED_TOOL_NAMES
+    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
 }
 
 
@@ -100,11 +114,19 @@ def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
         return False
 
 
-def _rename_reserved_tools_for_opencode(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Alias OpenCode-reserved client function names on the wire."""
+def _alias_reserved_tools(
+    response_tools: List[Dict[str, Any]],
+    reserved_names: Tuple[str, ...],
+) -> List[Dict[str, Any]]:
+    """Alias provider-reserved client function names on the wire.
+
+    Single owner for every reserved-name collision on this transport; the
+    reverse mapping lives in :data:`_RESERVED_ALIAS_TO_NAME`, applied in
+    ``normalize_response`` so Hermes dispatch never sees the alias.
+    """
     rewritten: List[Dict[str, Any]] = []
     for tool in response_tools:
-        if isinstance(tool, dict) and tool.get("name") in _OPENCODE_RESERVED_TOOL_NAMES:
+        if isinstance(tool, dict) and tool.get("name") in reserved_names:
             aliased = dict(tool)
             aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
             rewritten.append(aliased)
@@ -626,7 +648,17 @@ class ResponsesApiTransport(ProviderTransport):
         # function names (HTTP 400 "custom function name 'X' is reserved",
         # #85589). Alias them on the wire; normalize_response maps them back.
         if response_tools and _is_opencode_responses_backend(params):
-            response_tools = _rename_reserved_tools_for_opencode(response_tools)
+            response_tools = _alias_reserved_tools(
+                response_tools, _OPENCODE_RESERVED_TOOL_NAMES
+            )
+
+        # xAI reserves ``tool_search`` for its native server-side tool and
+        # rejects the client declaration outright (#95003). Alias it on the
+        # wire; normalize_response maps it back before dispatch.
+        if is_xai_responses and response_tools:
+            response_tools = _alias_reserved_tools(
+                response_tools, _XAI_RESERVED_TOOL_NAMES
+            )
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``

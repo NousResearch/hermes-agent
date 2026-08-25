@@ -349,12 +349,27 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         fetch_ok = False  # Offline or timeout — don't use stale refs
 
-    # When the fetch fails, the local origin/main tracking ref is stale.
-    # Comparing HEAD against it can report "0 behind" (up to date) even when
-    # upstream has moved forward — the exact stale-cache symptom in #82166.
-    # Return None so the caller knows the check was inconclusive and doesn't
-    # cache a false "up to date".
+    # When the fetch fails, the local origin/main tracking ref is stale. It
+    # cannot prove *currentness* (a 0 behind-count may just mean the stale ref
+    # hasn't caught up), but if it already shows HEAD behind, that is sound
+    # evidence an update exists — the ref was good at some point in the past.
+    # Return the positive stale count; return None (inconclusive) otherwise so
+    # the caller doesn't cache a false "up to date". (#82166, review #92578)
     if not fetch_ok:
+        if not is_shallow:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-list", "--count", "HEAD..origin/main"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=5,
+                    cwd=str(repo_dir),
+                )
+                if result.returncode == 0:
+                    behind = int(result.stdout.strip())
+                    if behind > 0:
+                        return behind
+            except Exception:
+                pass
         return None
 
     if is_shallow:

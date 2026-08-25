@@ -59,12 +59,12 @@ def test_prefetch_non_blocking():
 
 
 def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
-    """When git fetch fails, _check_via_local_git must return None instead of
-    comparing against stale origin/main refs (#82166).
+    """When git fetch fails and the stale origin/main ref is not ahead,
+    _check_via_local_git must return None (#82166).
 
-    Without this fix, a fetch failure silently falls through to
-    ``git rev-list --count HEAD..origin/main`` using the stale tracking ref,
-    which can report 0 (up to date) even when upstream has moved forward.
+    A stale tracking ref cannot prove *currentness* (rev-list 0 just means
+    the ref hasn't caught up), so returning None is the honest inconclusive
+    result — and the caller must not cache it as "up to date".
     """
     from hermes_cli import banner
 
@@ -80,17 +80,109 @@ def test_check_via_local_git_fetch_failure_returns_none(tmp_path, monkeypatch):
             return "false"
         return None
 
-    # Simulate fetch failure (returncode != 0)
+    # Fetch fails (returncode != 0); stale rev-list reports 0 behind
     failed_proc = MagicMock()
     failed_proc.returncode = 1
     failed_proc.stdout = ""
     failed_proc.stderr = "fatal: could not reach remote"
 
+    stale_zero_proc = MagicMock()
+    stale_zero_proc.returncode = 0
+    stale_zero_proc.stdout = "0"
+
+    def mock_run(args, **kwargs):
+        if args[:2] == ["git", "fetch"]:
+            return failed_proc
+        if args[:2] == ["git", "rev-list"]:
+            return stale_zero_proc
+        raise AssertionError(f"unexpected subprocess.run: {args}")
+
     monkeypatch.setattr(banner, "_git_stdout", mock_git_stdout)
-    monkeypatch.setattr(banner.subprocess, "run", MagicMock(return_value=failed_proc))
+    monkeypatch.setattr(banner.subprocess, "run", mock_run)
 
     result = banner._check_via_local_git(repo_dir)
-    assert result is None, "Fetch failure must return None, not a stale behind-count"
+    assert result is None, (
+        "Fetch failure with stale 0-behind must return None, not 'up to date'"
+    )
+
+
+def test_check_via_local_git_fetch_failure_keeps_positive_stale_count(tmp_path, monkeypatch):
+    """A failed fetch must preserve sound evidence: if the stale origin/main
+    ref already shows HEAD behind, that positive count is still an update
+    signal and must be returned (review #92578)."""
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def mock_git_stdout(args, *, cwd, timeout=5):
+        if args[:2] == ["remote", "get-url"]:
+            return "https://github.com/NousResearch/hermes-agent.git"
+        if args[:2] == ["rev-parse", "--is-shallow-repository"]:
+            return "false"
+        return None
+
+    failed_proc = MagicMock()
+    failed_proc.returncode = 1
+    failed_proc.stdout = ""
+    failed_proc.stderr = "fatal: could not reach remote"
+
+    stale_behind_proc = MagicMock()
+    stale_behind_proc.returncode = 0
+    stale_behind_proc.stdout = "5"
+
+    def mock_run(args, **kwargs):
+        if args[:2] == ["git", "fetch"]:
+            return failed_proc
+        if args[:2] == ["git", "rev-list"]:
+            return stale_behind_proc
+        raise AssertionError(f"unexpected subprocess.run: {args}")
+
+    monkeypatch.setattr(banner, "_git_stdout", mock_git_stdout)
+    monkeypatch.setattr(banner.subprocess, "run", mock_run)
+
+    result = banner._check_via_local_git(repo_dir)
+    assert result == 5, "Stale positive behind-count must be preserved on fetch failure"
+
+
+def test_check_via_local_git_fetch_failure_rev_list_error_returns_none(tmp_path, monkeypatch):
+    """If the stale rev-list itself fails, the check stays inconclusive (None)."""
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def mock_git_stdout(args, *, cwd, timeout=5):
+        if args[:2] == ["remote", "get-url"]:
+            return "https://github.com/NousResearch/hermes-agent.git"
+        if args[:2] == ["rev-parse", "--is-shallow-repository"]:
+            return "false"
+        return None
+
+    failed_proc = MagicMock()
+    failed_proc.returncode = 1
+    failed_proc.stdout = ""
+    failed_proc.stderr = "fatal: could not reach remote"
+
+    bad_rev_list = MagicMock()
+    bad_rev_list.returncode = 128
+    bad_rev_list.stdout = ""
+    bad_rev_list.stderr = "fatal: ambiguous argument 'HEAD..origin/main'"
+
+    def mock_run(args, **kwargs):
+        if args[:2] == ["git", "fetch"]:
+            return failed_proc
+        if args[:2] == ["git", "rev-list"]:
+            return bad_rev_list
+        raise AssertionError(f"unexpected subprocess.run: {args}")
+
+    monkeypatch.setattr(banner, "_git_stdout", mock_git_stdout)
+    monkeypatch.setattr(banner.subprocess, "run", mock_run)
+
+    result = banner._check_via_local_git(repo_dir)
+    assert result is None
 
 
 def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):

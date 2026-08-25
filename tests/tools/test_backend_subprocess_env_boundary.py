@@ -26,10 +26,6 @@ from tools.environments import ssh as ssh_env
 
 _BLOCKED = {
     "BWS_ACCESS_TOKEN": "fake-bws-bootstrap",
-    "DB_PASSWORD": "fake-db-password",
-    "PGPASSWORD": "fake-pg-password",
-    "MYSQL_PWD": "fake-mysql-password",
-    "PASSWORD": "fake-bare-password",
     "OPENAI_API_KEY": "fake-provider-key",
     "GH_TOKEN": "fake-github-token",
     "AUXILIARY_VISION_API_KEY": "fake-aux-key",
@@ -37,6 +33,13 @@ _BLOCKED = {
     "OP_SERVICE_ACCOUNT_TOKEN": "fake-op-service-account",
     "OP_CONNECT_TOKEN": "fake-op-connect",
     "OP_SESSION_TEST": "fake-op-session",
+}
+
+_USER_PASSWORDS = {
+    "DB_PASSWORD": "fake-db-password",
+    "PGPASSWORD": "fake-pg-password",
+    "MYSQL_PWD": "fake-mysql-password",
+    "PASSWORD": "fake-bare-password",
 }
 
 _SAFE = {
@@ -53,7 +56,6 @@ _CONTAINER_TUNNELS = {
     "APPTAINERENV_BWS_ACCESS_TOKEN": "fake-tunneled-bws",
     "SINGULARITYENV_GH_TOKEN": "fake-tunneled-github",
     "APPTAINERENV_OPENAI_API_KEY": "fake-tunneled-provider",
-    "SINGULARITYENV_DB_PASSWORD": "fake-tunneled-password",
 }
 
 
@@ -82,13 +84,20 @@ def _capture_popen(monkeypatch):
 
 def _plant_parent_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    for key, value in {**_SAFE, **_BLOCKED, **_CONTAINER_TUNNELS}.items():
+    for key, value in {
+        **_SAFE,
+        **_BLOCKED,
+        **_USER_PASSWORDS,
+        **_CONTAINER_TUNNELS,
+    }.items():
         monkeypatch.setenv(key, value)
 
 
 def _assert_child_env_is_sanitized(child_env: dict[str, str]) -> None:
     for key in (*_BLOCKED, *_CONTAINER_TUNNELS):
         assert key not in child_env, f"{key} crossed the child-process boundary"
+    for key, value in _USER_PASSWORDS.items():
+        assert child_env.get(key) == value, f"user shell variable {key} was removed"
     for key, value in _SAFE.items():
         assert child_env.get(key) == value, f"benign control {key} was not preserved"
 
@@ -151,7 +160,7 @@ def test_shared_popen_boundary_sanitizes_caller_supplied_base_env(monkeypatch, t
     """An explicit overlay cannot re-open the boundary or skip benign controls."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     calls = _capture_popen(monkeypatch)
-    supplied = {**_SAFE, **_BLOCKED, **_CONTAINER_TUNNELS}
+    supplied = {**_SAFE, **_BLOCKED, **_USER_PASSWORDS, **_CONTAINER_TUNNELS}
 
     base_env._popen_bash(["bash", "-c", "true"], env=supplied)
 
@@ -190,8 +199,9 @@ def test_mixed_case_credential_names_are_denied_for_windows_semantics(
     assert terminal_env.get("Safe_Control") == "keep-me"
     assert terminal_env.get("Path", "").endswith("C:/Windows/System32")
     assert not {k for k in base if k.casefold() in {
-        "bws_access_token", "db_password", "openai_api_key", "gh_token"
+        "bws_access_token", "openai_api_key", "gh_token"
     }} & set(terminal_env)
+    assert terminal_env["Db_PaSsWoRd"] == "fake-password"
 
     with patch.dict(os.environ, base, clear=True):
         for inherit_credentials in (False, True):
@@ -200,7 +210,7 @@ def test_mixed_case_credential_names_are_denied_for_windows_semantics(
             )
             assert "gH_tOkEn" not in nonterminal_env
             assert "bWs_AcCeSs_ToKeN" not in nonterminal_env
-            assert "Db_PaSsWoRd" not in nonterminal_env
+            assert nonterminal_env["Db_PaSsWoRd"] == "fake-password"
             provider_present = any(
                 k.casefold() == "openai_api_key" and v == "fake-provider"
                 for k, v in nonterminal_env.items()

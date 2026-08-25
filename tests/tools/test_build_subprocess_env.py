@@ -140,8 +140,8 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     assert env2["PATH"].split(os.pathsep).count(bin_dir) == 1
 
 
-def test_e2e_child_never_sees_bws_token_or_password(tmp_path, monkeypatch):
-    """BWS bootstrap tokens and password-shaped values stay out of children."""
+def test_e2e_child_strips_bws_but_preserves_single_profile_password(tmp_path, monkeypatch):
+    """Single-profile children deny Hermes bootstrap auth, not user passwords."""
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -160,11 +160,11 @@ def test_e2e_child_never_sees_bws_token_or_password(tmp_path, monkeypatch):
     )
     result = json.loads(out.stdout)
     assert result["bws"] is False
-    assert result["pw"] is False
+    assert result["pw"] is True
 
 
-def test_hermes_subprocess_env_strips_bws_token_and_password(monkeypatch):
-    """Non-terminal child environments also strip these values by default."""
+def test_hermes_subprocess_env_strips_bws_but_preserves_password(monkeypatch):
+    """Non-terminal single-profile children retain user shell passwords."""
     from tools.environments.local import hermes_subprocess_env
 
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
@@ -172,13 +172,11 @@ def test_hermes_subprocess_env_strips_bws_token_and_password(monkeypatch):
 
     env = hermes_subprocess_env()
     assert "BWS_ACCESS_TOKEN" not in env
-    assert "DB_PASSWORD" not in env
+    assert env["DB_PASSWORD"] == "db-pass-9f2c1a"
 
 
-def test_hermes_subprocess_env_strips_password_with_inherit_credentials(monkeypatch):
-    """*_PASSWORD values are stripped unconditionally on the non-terminal
-    factory even when the caller opts into credential inheritance — a
-    model-driving CLI has no legitimate use for a DB/redis/postgres password."""
+def test_hermes_subprocess_env_inherit_credentials_keeps_user_password(monkeypatch):
+    """Model-driver compatibility does not erase unrelated single-profile state."""
     from tools.environments.local import hermes_subprocess_env
 
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.abc123.def456:xyz789")
@@ -186,7 +184,7 @@ def test_hermes_subprocess_env_strips_password_with_inherit_credentials(monkeypa
 
     env = hermes_subprocess_env(inherit_credentials=True)
     assert "BWS_ACCESS_TOKEN" not in env
-    assert "DB_PASSWORD" not in env
+    assert env["DB_PASSWORD"] == "db-pass-9f2c1a"
 
 
 def test_terminal_path_keeps_passthrough_db_password(monkeypatch):
@@ -204,29 +202,56 @@ def test_terminal_path_keeps_passthrough_db_password(monkeypatch):
         clear_env_passthrough()
 
 
-def test_make_run_env_strips_password_by_default(monkeypatch):
-    """The LocalEnvironment terminal spawn factory (_make_run_env) must
-    strip *_PASSWORD values even when they are not in the static blocklist —
-    the exact gap egilewski flagged: _sanitize_subprocess_env protected the
-    build_subprocess_env/background path, but the live terminal path merged
-    os.environ without the credential-shaped password predicate."""
+def test_make_run_env_preserves_single_profile_password(monkeypatch):
+    from agent.secret_scope import set_multiplex_active
     from tools.environments.local import _make_run_env
 
-    monkeypatch.setenv("DB_PASSWORD", "db-pass-9f2c1a")
-    monkeypatch.setenv("REDIS_PASSWORD", "redis-pass-77aa")
-    monkeypatch.setenv("PGPASSWORD", "pg-pass-e11")
-    monkeypatch.setenv("MYSQL_PWD", "mysql-pwd-4d2")
-    monkeypatch.setenv("PASSWORD", "bare-pass-8c1")
+    set_multiplex_active(False)
+    monkeypatch.setenv("DB_PASSWORD", "single-profile-password")
+    result = _make_run_env({})
+    assert result["DB_PASSWORD"] == "single-profile-password"
+
+
+def test_make_run_env_strips_source_passwords_at_profile_boundary(
+    tmp_path, monkeypatch
+):
+    """Password-shaped source values are denied only when authority crosses."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.environments.local import _make_run_env
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    password_values = {
+        "DB_PASSWORD": "db-pass-9f2c1a",
+        "REDIS_PASSWORD": "redis-pass-77aa",
+        "PGPASSWORD": "pg-pass-e11",
+        "MYSQL_PWD": "mysql-pwd-4d2",
+        "PASSWORD": "bare-pass-8c1",
+    }
+    (source / ".env").write_text(
+        "".join(f"{key}={value}\n" for key, value in password_values.items()),
+        encoding="utf-8",
+    )
+    (target / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    for key, value in password_values.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setenv("MY_HARMLESS_VAR", "keep-me")
-    monkeypatch.setenv("PWD", "C:\\some\\cwd")  # shell cwd var must survive
+    monkeypatch.setenv("PWD", "C:\\some\\cwd")
 
-    env = _make_run_env({})
+    set_multiplex_active(True)
+    token = set_hermes_home_override(target)
+    try:
+        env = _make_run_env({})
+    finally:
+        reset_hermes_home_override(token)
+        set_multiplex_active(False)
 
-    assert "DB_PASSWORD" not in env
-    assert "REDIS_PASSWORD" not in env
-    assert "PGPASSWORD" not in env
-    assert "MYSQL_PWD" not in env
-    assert "PASSWORD" not in env
+    for key in password_values:
+        assert key not in env
     assert env.get("MY_HARMLESS_VAR") == "keep-me"
     assert env.get("PWD") == "C:\\some\\cwd"
 
@@ -251,16 +276,31 @@ def test_make_run_env_keeps_passthrough_db_password(monkeypatch):
     os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
     reason="Requires bash; CI sandbox may strip it.",
 )
-def test_local_environment_e2e_password_denial_and_passthrough(tmp_path, monkeypatch):
-    """End-to-end LocalEnvironment execution: a real terminal child must
-    NOT see a *_PASSWORD value by default, and MUST see it once explicitly
-    registered as passthrough — proving the _make_run_env filter closes the
-    live spawn sink, not just the helper factories."""
+def test_local_environment_e2e_profile_password_denial_and_passthrough(
+    tmp_path, monkeypatch
+):
+    """Real A→B execution denies source password and permits target passthrough."""
+    from agent.secret_scope import (
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
     from tools.environments.local import LocalEnvironment
 
-    monkeypatch.setenv("DB_PASSWORD", "db-pass-e2e-77")
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / ".env").write_text("DB_PASSWORD=source-password\n", encoding="utf-8")
+    (target / ".env").write_text("DB_PASSWORD=target-password\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setenv("DB_PASSWORD", "source-password")
 
+    set_multiplex_active(True)
+    token = set_hermes_home_override(target)
+    secret_token = set_secret_scope({"DB_PASSWORD": "target-password"})
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
     try:
         denied = env.execute(
@@ -272,7 +312,7 @@ def test_local_environment_e2e_password_denial_and_passthrough(tmp_path, monkeyp
         register_env_passthrough(["DB_PASSWORD"])
         try:
             allowed = env.execute(
-                'if [ "$DB_PASSWORD" = "db-pass-e2e-77" ]; then echo "PASSTHROUGH"; else echo "MISSING"; fi'
+                'if [ "$DB_PASSWORD" = "target-password" ]; then echo "PASSTHROUGH"; else echo "MISSING"; fi'
             )
             assert allowed["returncode"] == 0
             assert "PASSTHROUGH" in allowed.get("output", "")
@@ -280,6 +320,9 @@ def test_local_environment_e2e_password_denial_and_passthrough(tmp_path, monkeyp
             clear_env_passthrough()
     finally:
         env.cleanup()
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(token)
+        set_multiplex_active(False)
 
 
 def test_bws_token_env_resolution_tracks_profile_and_config_revision(tmp_path):

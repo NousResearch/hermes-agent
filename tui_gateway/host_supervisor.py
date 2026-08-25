@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
-from tools.environments.local import hermes_subprocess_env
+from tools.environments.local import build_subprocess_env, hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 

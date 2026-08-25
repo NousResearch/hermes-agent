@@ -244,22 +244,27 @@ class ProfileEnvBoundary:
         if self.source_home == self.target_home:
             return result
 
-        result_keys = {_env_name_key(key): key for key in result}
+        result_keys: dict[str, list[str]] = {}
+        for key in result:
+            result_keys.setdefault(_env_name_key(key), []).append(key)
         target_values = {
             _env_name_key(key): (key, value)
             for key, value in self.target_values.items()
         }
-        for name in self.source_owned_names:
-            normalized = _env_name_key(name)
-            existing_key = result_keys.get(normalized)
+        source_names = {_env_name_key(name) for name in self.source_owned_names}
+        for normalized in source_names:
+            physical_keys = result_keys.get(normalized, [])
             target = target_values.get(normalized)
             if target is not None:
                 target_key, value = target
-                output_key = existing_key or target_key
+                output_key = physical_keys[0] if physical_keys else target_key
+                for physical_key in physical_keys:
+                    result.pop(physical_key, None)
                 result[output_key] = value
-                result_keys[normalized] = output_key
-            elif existing_key is not None:
-                result.pop(existing_key, None)
+                result_keys[normalized] = [output_key]
+            else:
+                for physical_key in physical_keys:
+                    result.pop(physical_key, None)
                 result_keys.pop(normalized, None)
         return result
 

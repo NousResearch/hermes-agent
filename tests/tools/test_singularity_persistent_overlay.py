@@ -10,6 +10,35 @@ from tools.environments import singularity as singularity_env
 from tools.environments.path_utils import sanitize_task_id_for_path
 
 
+def test_snapshot_registry_is_scoped_to_active_profile(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+
+    token_a = set_hermes_home_override(profile_a)
+    try:
+        singularity_env._save_snapshots({"task-a": "/overlay/a"})
+        assert singularity_env._load_snapshots() == {"task-a": "/overlay/a"}
+    finally:
+        reset_hermes_home_override(token_a)
+
+    token_b = set_hermes_home_override(profile_b)
+    try:
+        assert singularity_env._load_snapshots() == {}
+        singularity_env._save_snapshots({"task-b": "/overlay/b"})
+    finally:
+        reset_hermes_home_override(token_b)
+
+    token_a2 = set_hermes_home_override(profile_a)
+    try:
+        assert singularity_env._load_snapshots() == {"task-a": "/overlay/a"}
+    finally:
+        reset_hermes_home_override(token_a2)
+
+
 def _stub_singularity(monkeypatch, tmp_path):
     monkeypatch.setattr(
         singularity_env, "_ensure_singularity_available", lambda: "/usr/bin/apptainer"

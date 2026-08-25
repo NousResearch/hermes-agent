@@ -577,6 +577,32 @@ class TestForceEnvOptIn:
 
         assert "APPTAINERENV_PLUGIN_AUTH_TOKEN" not in result_env
 
+    def test_nonterminal_plugin_and_nested_wrapper_secrets_are_denied(self):
+        from tools.environments.local import hermes_subprocess_env
+
+        planted = {
+            "PLUGIN_AUTH_TOKEN": "direct-plugin",
+            "plugin_auth_token": "mixed-plugin",
+            "APPTAINERENV_PLUGIN_AUTH_TOKEN": "wrapped-plugin",
+            "SINGULARITYENV_APPTAINERENV_PLUGIN_AUTH_TOKEN": "nested-plugin",
+            "APPTAINERENV_SINGULARITYENV_GH_TOKEN": "nested-tier1",
+            "PATH": "/usr/bin",
+        }
+        with (
+            patch.dict(os.environ, planted, clear=True),
+            patch(
+                "tools.environments.local._plugin_terminal_env_strip_keys",
+                return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+            ),
+        ):
+            for inherit_credentials in (False, True):
+                result_env = hermes_subprocess_env(
+                    inherit_credentials=inherit_credentials
+                )
+                for key in planted:
+                    if key != "PATH":
+                        assert key not in result_env
+
 
 class TestActiveVenvMarkerStripping:
     """Active-virtualenv markers must not leak into terminal subprocesses (#23473).

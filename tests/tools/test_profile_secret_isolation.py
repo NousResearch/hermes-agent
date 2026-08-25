@@ -11,6 +11,7 @@ import pytest
 
 from agent.secret_scope import (
     ProfileEnvBoundary,
+    _env_name_key as secret_scope_name_key,
     build_profile_env_boundary,
     build_profile_secret_scope,
     get_profile_owned_secret_names,
@@ -132,6 +133,55 @@ def test_boundary_applies_ownership_to_container_forwarding_aliases(tmp_path):
     ) == {"SINGULARITYENV_DATABASE_URL": "target-value"}
 
 
+@pytest.mark.parametrize(
+    "aliases",
+    [
+        [
+            ("DATABASE_URL", "direct-source"),
+            ("APPTAINERENV_DATABASE_URL", "apptainer-source"),
+            ("SINGULARITYENV_DATABASE_URL", "singularity-source"),
+        ],
+        [
+            ("SINGULARITYENV_DATABASE_URL", "singularity-source"),
+            ("APPTAINERENV_DATABASE_URL", "apptainer-source"),
+            ("DATABASE_URL", "direct-source"),
+        ],
+    ],
+)
+def test_boundary_removes_or_replaces_all_duplicate_normalized_aliases(
+    aliases: list[tuple[str, str]], tmp_path
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    base: dict[str, str] = dict([*aliases, ("PATH", "/usr/bin")])
+
+    remove_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"DATABASE_URL"}),
+        target_values={},
+    )
+    assert remove_boundary.sanitize(base) == {"PATH": "/usr/bin"}
+
+    replace_boundary = ProfileEnvBoundary(
+        source_home=source,
+        target_home=target,
+        source_owned_names=frozenset({"DATABASE_URL"}),
+        target_values={"DATABASE_URL": "target-value"},
+    )
+    replaced = replace_boundary.sanitize(base)
+    matching = {
+        key: value
+        for key, value in replaced.items()
+        if secret_scope_name_key(key) == "DATABASE_URL"
+    }
+    assert matching and set(matching.values()) == {"target-value"}
+    assert len(matching) == 1
+    assert replaced["PATH"] == "/usr/bin"
+
+
 def test_make_run_env_applies_boundary_to_arbitrary_names(
     tmp_path, monkeypatch, multiplex_mode
 ):
@@ -186,12 +236,16 @@ def test_nonterminal_model_driver_receives_target_only_provider_not_other_secret
         target,
         {
             "OPENAI_API_KEY": "target-only-provider",
+            "AWS_ACCESS_KEY_ID": "target-only-aws",
             "TELEGRAM_BOT_TOKEN": "target-messaging-token",
+            "BROWSERBASE_API_KEY": "target-tool-token",
         },
     )
     monkeypatch.setenv("HERMES_HOME", str(source))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("BROWSERBASE_API_KEY", raising=False)
 
     token = set_hermes_home_override(target)
     try:
@@ -200,7 +254,9 @@ def test_nonterminal_model_driver_receives_target_only_provider_not_other_secret
         reset_hermes_home_override(token)
 
     assert result["OPENAI_API_KEY"] == "target-only-provider"
+    assert result["AWS_ACCESS_KEY_ID"] == "target-only-aws"
     assert "TELEGRAM_BOT_TOKEN" not in result
+    assert "BROWSERBASE_API_KEY" not in result
 
 
 def test_build_subprocess_env_supports_standalone_explicit_boundary(tmp_path):

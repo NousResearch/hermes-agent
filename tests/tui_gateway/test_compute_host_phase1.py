@@ -134,6 +134,89 @@ def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     assert not registry.exists()
 
 
+def test_supervisor_spawn_keeps_final_child_env_sanitized(tmp_path, monkeypatch):
+    import tui_gateway.host_supervisor as supervisor_mod
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / ".env").write_text(
+        "OPENAI_API_KEY=source-provider\nCUSTOM_CAP=source-cap\n",
+        encoding="utf-8",
+    )
+    (target / ".env").write_text(
+        "OPENAI_API_KEY=target-provider\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    for key, value in {
+        "OPENAI_API_KEY": "source-provider",
+        "CUSTOM_CAP": "source-cap",
+        "GH_TOKEN": "source-github",
+        "DB_PASSWORD": "source-password",
+        "BWS_ACCESS_TOKEN": "source-bws",
+        "OP_SERVICE_ACCOUNT_TOKEN": "source-op",
+        "APPTAINERENV_SINGULARITYENV_GH_TOKEN": "source-wrapped",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    captured: dict = {}
+
+    class _Proc:
+        pid = 4242
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+    class _NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "host.json",
+        argv=[sys.executable, "-c", ""],
+        env={"GH_TOKEN": "unsafe-constructor-override", "SAFE_OVERRIDE": "keep"},
+        expected_hermes_home=str(target),
+        autostart=False,
+    )
+
+    def _fake_popen(*args, **kwargs):
+        captured["env"] = dict(kwargs["env"])
+        supervisor._hello = {"boot_id": "test"}
+        supervisor._hello_event.set()
+        return _Proc()
+
+    monkeypatch.setattr(supervisor_mod, "_Thread", _NoopThread)
+    monkeypatch.setattr(supervisor_mod.subprocess, "Popen", _fake_popen)
+
+    set_multiplex_active(True)
+    token = set_hermes_home_override(target)
+    try:
+        supervisor._spawn_locked(reason="test")
+    finally:
+        reset_hermes_home_override(token)
+        set_multiplex_active(False)
+
+    child_env = captured["env"]
+    assert child_env["OPENAI_API_KEY"] == "target-provider"
+    assert child_env["SAFE_OVERRIDE"] == "keep"
+    for key in (
+        "CUSTOM_CAP",
+        "GH_TOKEN",
+        "DB_PASSWORD",
+        "BWS_ACCESS_TOKEN",
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "APPTAINERENV_SINGULARITYENV_GH_TOKEN",
+    ):
+        assert key not in child_env
+
+
 def _make_compress_host_session(events: list) -> dict:
     class _Agent:
         model = "host-model"

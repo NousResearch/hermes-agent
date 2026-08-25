@@ -5150,8 +5150,14 @@ This compaction should PRIORITISE preserving all information related to the focu
             _is_streaming_closed = _is_connection_error(e)
             # Provider returned HTTP 200 with empty or whitespace body (e.g.
             # degraded proxy channel / upstream provider fault; #94448).
-            _is_empty_content = (
-                isinstance(e, RuntimeError) and "empty content" in _err_str
+            _is_empty_content = isinstance(e, RuntimeError) and (
+                "empty content" in _err_str
+                # Sibling terminal "no usable response" shapes from the
+                # auxiliary boundary's _validate_llm_response (#7264): a None
+                # response or a malformed/missing choices[0].message — same
+                # degraded-provider class (#94448).
+                or "llm returned none response" in _err_str
+                or "llm returned invalid response" in _err_str
             )
             # Authentication, permission, and exhausted-quota failures are NOT
             # transient or fixable by retrying the same request. Flag them so

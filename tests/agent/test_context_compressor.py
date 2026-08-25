@@ -966,6 +966,61 @@ class TestAuthFailureAborts:
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
 
+        # Cooldown re-entry must keep aborting, same as network/auth —
+        # _generate_summary() returns None from the cooldown early-return
+        # without re-asserting the flag, so compress() must still see it.
+        second = c.compress(msgs, current_tokens=999999)
+        assert second == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+
+    def test_auxiliary_none_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): the auxiliary boundary's own
+        terminal "None response" error is the same degraded-provider class
+        and must ABORT, not fall through to the destructive fallback."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError("Auxiliary compression: LLM returned None response"),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
+
+    def test_auxiliary_invalid_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): malformed/missing
+        choices[0].message terminal error must ABORT the same way."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError(
+                "Auxiliary compression: LLM returned invalid response "
+                "(type=str): 'oops'. Expected object with .choices[0].message "
+                "— check provider adapter or custom endpoint compatibility."
+            ),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
+
 
 class TestSummaryFallbackToMainModel:
     """When ``summary_model`` differs from the main model and the summary LLM

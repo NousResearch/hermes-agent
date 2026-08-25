@@ -4,7 +4,7 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
@@ -12,6 +12,7 @@ import {
   blankDraftTile,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
   nextSessionTileForWorkspace,
@@ -625,5 +626,51 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
 
     expect(ambient).toHaveBeenCalledTimes(1)
     expect(ambient.mock.calls[0]).toEqual(['approval.respond', { choice: 'once', session_id: 'unknown-session' }])
+  })
+})
+
+describe('isSessionRemote (#94640)', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+  })
+  afterEach(() => {
+    $sessionTiles.set([])
+    setSessions([])
+    $connection.set(null)
+  })
+
+  it('falls back to the ambient connection when the session has no known owner route', () => {
+    $connection.set({ mode: 'remote' } as never)
+    expect(isSessionRemote('unknown-session')).toBe(true)
+
+    $connection.set({ mode: 'local' } as never)
+    expect(isSessionRemote('unknown-session')).toBe(false)
+  })
+
+  it("prefers the session's OWN owner route over an ambient connection of a different mode", () => {
+    // The window's active/ambient connection is local, but this session
+    // belongs to a registered secondary REMOTE connection (Bot Mode / the
+    // unified Sessions list). Composer image uploads must still upload
+    // bytes for it — reading ambient mode here shipped a client-local
+    // composer-images path to the remote backend (#94640).
+    $connection.set({ mode: 'local' } as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'homelab', mode: 'remote', profile: 'default' },
+        runtimeId: 'rt-1',
+        storedSessionId: 'stored-1'
+      }
+    ])
+
+    expect(isSessionRemote('rt-1')).toBe(true)
+    expect(isSessionRemote('stored-1')).toBe(true)
+  })
+
+  it('falls back to ambient when the owner is a bare pool profile (no connectionId/mode)', () => {
+    $connection.set({ mode: 'remote' } as never)
+    setSessions([{ id: 'stored-2', profile: 'loki' } as never])
+
+    expect(isSessionRemote('stored-2')).toBe(true)
   })
 })

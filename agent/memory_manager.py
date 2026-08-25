@@ -37,6 +37,10 @@ from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VE
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
+# Providers that predate the checkpoint-API attribute are implicitly on the
+# historical best-effort contract (API v1).
+_LEGACY_PRE_COMPRESS_API_VERSION = 1
+
 logger = logging.getLogger(__name__)
 
 # How long shutdown_all() waits for in-flight background sync/prefetch work
@@ -1064,7 +1068,11 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider_version = int(
-                    getattr(provider, "pre_compress_checkpoint_api_version", 0)
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
                 )
             except (TypeError, ValueError):
                 continue
@@ -1076,29 +1084,45 @@ class MemoryManager:
         self,
         messages: List[Dict[str, Any]],
         *,
+        evidence_messages: Optional[List[Dict[str, Any]]] = None,
         require_checkpoint: bool = False,
         checkpoint_api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION,
     ) -> str:
         """Notify all providers before context compression.
 
         Returns combined text from providers to include in the compression
-        summary prompt. Empty string if no provider contributes. When
-        ``require_checkpoint`` is true, at least one provider advertising the
-        requested checkpoint API must return successfully; its exception is
-        propagated so the caller can preserve the uncompressed transcript.
+        summary prompt. Empty string if no provider contributes.
+
+        ``messages`` is the raw transcript — the historical (API v1)
+        contract every existing provider receives unchanged.
+        ``evidence_messages`` is the host-normalized direct-evidence list
+        handed only to providers that opted into checkpoint API v2+; when
+        omitted, v2 providers receive the raw list too.
+
+        When ``require_checkpoint`` is true, at least one provider
+        advertising the requested checkpoint API must return successfully;
+        its exception is propagated so the caller can preserve the
+        uncompressed transcript.
         """
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:
             try:
                 provider_version = int(
-                    getattr(provider, "pre_compress_checkpoint_api_version", 0)
+                    getattr(
+                        provider,
+                        "pre_compress_checkpoint_api_version",
+                        _LEGACY_PRE_COMPRESS_API_VERSION,
+                    )
                 )
             except (TypeError, ValueError):
-                provider_version = 0
+                provider_version = _LEGACY_PRE_COMPRESS_API_VERSION
             is_checkpoint_provider = provider_version >= checkpoint_api_version
+            provider_messages = messages
+            if is_checkpoint_provider and evidence_messages is not None:
+                provider_messages = evidence_messages
             try:
-                result = provider.on_pre_compress(messages)
+                result = provider.on_pre_compress(provider_messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:

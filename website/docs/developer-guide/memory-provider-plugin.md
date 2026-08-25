@@ -136,7 +136,7 @@ class MyMemoryProvider(MemoryProvider):
 host logs the failure and compression proceeds. That is the right default for
 insight extraction — and the wrong one for a provider whose job is to archive
 transcript evidence to a durable store *before* the lossy rewrite. For that
-case the host offers an opt-in checkpoint contract (API v1):
+case the host offers an opt-in checkpoint contract (API v2):
 
 ```python
 from agent.memory_provider import MemoryProvider
@@ -144,8 +144,9 @@ from agent.memory_provider import MemoryProvider
 class MyArchivingProvider(MemoryProvider):
     # Opt in: every successful on_pre_compress() return means the durable
     # checkpoint is committed. Raise on any failure — do not return partial
-    # success. Version 0 (the inherited default) keeps best-effort semantics.
-    pre_compress_checkpoint_api_version = 1
+    # success. Version 1 (the inherited default) is the implicit historical
+    # contract: best-effort semantics, raw message list.
+    pre_compress_checkpoint_api_version = 2
 
     def on_pre_compress(self, messages):
         ids = self._archive(messages)   # must be durable before returning
@@ -173,7 +174,10 @@ refused at agent init — the codex agent compacts its own thread with no
 truthful pre-compaction boundary, so a required checkpoint cannot be
 guaranteed there.
 
-What your provider receives in both modes is normalized direct evidence:
+What your provider receives depends on its declared API version. Version 1
+providers (the implicit default — every pre-existing provider) keep the
+historical contract: the raw message list, exactly as before. Version 2
+checkpoint providers receive normalized direct evidence instead:
 user/assistant text rows only — tool results, system messages, the
 `tool_calls` payload of assistant messages (their prose is kept), and prior
 compaction summaries are filtered host-side. Prior summaries are recognized

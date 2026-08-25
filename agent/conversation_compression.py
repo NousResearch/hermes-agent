@@ -3014,7 +3014,10 @@ def compress_context(
         # instead of silently discarding the provider's return value.
         memory_context = ""
         memory_manager = getattr(agent, "_memory_manager", None)
-        direct_messages = _direct_messages_for_pre_compress_memory(messages)
+        # Raw messages remain the historical (API v1) provider contract; the
+        # normalized evidence list is handed only to API v2+ checkpoint
+        # providers inside MemoryManager.on_pre_compress().
+        evidence_messages = _direct_messages_for_pre_compress_memory(messages)
         if checkpoint_required:
             supports_checkpoint = getattr(
                 memory_manager, "supports_pre_compress_checkpoint", None
@@ -3037,7 +3040,8 @@ def compress_context(
                 )
             try:
                 _maybe_ctx = memory_manager.on_pre_compress(
-                    direct_messages,
+                    messages,
+                    evidence_messages=evidence_messages,
                     require_checkpoint=True,
                     checkpoint_api_version=PRE_COMPRESS_CHECKPOINT_API_VERSION,
                 )
@@ -3053,7 +3057,9 @@ def compress_context(
                 memory_context = sanitize_memory_context(_maybe_ctx)
         elif memory_manager:
             try:
-                _maybe_ctx = memory_manager.on_pre_compress(direct_messages)
+                _maybe_ctx = memory_manager.on_pre_compress(
+                    messages, evidence_messages=evidence_messages
+                )
                 if isinstance(_maybe_ctx, str):
                     memory_context = sanitize_memory_context(_maybe_ctx)
             except Exception:

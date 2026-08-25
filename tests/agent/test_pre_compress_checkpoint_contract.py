@@ -60,8 +60,34 @@ class _FailingLegacyProvider(_BaseStubProvider):
         raise RuntimeError("legacy best-effort failure")
 
 
-def test_provider_base_class_defaults_to_best_effort_api_version_zero():
-    assert MemoryProvider.pre_compress_checkpoint_api_version == 0
+def test_provider_base_class_defaults_to_implicit_historical_api_version_one():
+    assert MemoryProvider.pre_compress_checkpoint_api_version == 1
+    assert PRE_COMPRESS_CHECKPOINT_API_VERSION == 2
+
+
+def test_v1_providers_receive_raw_messages_and_v2_receive_evidence():
+    """The historical (v1) contract is untouched: raw message list.
+
+    Only providers that opted into checkpoint API v2 receive the
+    host-normalized evidence handoff.
+    """
+    manager = MemoryManager()
+    legacy = _BaseStubProvider("legacy")
+    manager.add_provider(legacy)
+    raw = [
+        {"role": "user", "content": "evidence"},
+        {"role": "tool", "content": "tool output", "tool_call_id": "t1"},
+    ]
+    evidence = [{"role": "user", "content": "evidence"}]
+
+    manager.on_pre_compress(raw, evidence_messages=evidence)
+    assert legacy.pre_compress_calls == [raw]
+
+    durable_manager = MemoryManager()
+    durable = _CheckpointProvider("durable")
+    durable_manager.add_provider(durable)
+    durable_manager.on_pre_compress(raw, evidence_messages=evidence)
+    assert durable.pre_compress_calls == [evidence]
 
 
 def test_direct_messages_filter_keeps_only_direct_source_evidence():

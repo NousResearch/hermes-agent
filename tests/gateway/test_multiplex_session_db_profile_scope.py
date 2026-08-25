@@ -15,6 +15,7 @@ that reproduces the report; it fails against the pre-fix code with the session
 row sitting in the root store.
 """
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -22,8 +23,13 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import GatewayConfig
+from gateway.platforms.base import MessageEvent, Platform, SessionSource
 from gateway.session import SessionStore
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 
 
 @pytest.fixture
@@ -85,6 +91,104 @@ def test_store_uses_root_db_when_no_profile_scope_is_active(multiplex_homes):
     store = _make_store(root)
 
     assert Path(store._db.db_path) == root / "state.db"
+
+
+def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_homes):
+    """Primary-adapter routes must scope the complete message pipeline.
+
+    Session lookup and transcript loading happen inside ``_handle_message``,
+    before the later agent-only scope.  A handler that captures the process
+    root therefore reads an empty root transcript for routed channels.
+    """
+    from gateway.run import GatewayRunner
+
+    root, profile = multiplex_homes
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    seen = []
+
+    async def capture_scope(event):
+        seen.append(Path(get_hermes_home()))
+
+    runner._handle_message = capture_scope
+    event = MessageEvent(
+        text="second turn",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="routed-channel",
+            user_id="user-1",
+            profile="fitness",
+        ),
+    )
+
+    asyncio.run(runner._primary_message_handler()(event))
+
+    assert seen == [profile]
+    assert Path(get_hermes_home()) == root
+
+
+def test_two_primary_routed_turns_reload_profile_transcript(multiplex_homes):
+    """A second routed turn sees the first turn in the profile database."""
+    from gateway.profile_routing import ProfileRoute
+    from gateway.run import GatewayRunner
+    from hermes_state import SessionDB
+
+    root, profile = multiplex_homes
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        profile_routes=[
+            ProfileRoute(
+                name="fitness-channel",
+                platform="discord",
+                profile="fitness",
+                chat_id="routed-channel",
+            )
+        ],
+    )
+    observed_histories = []
+    session_id = "routed-two-turn-session"
+
+    async def run_turn(event):
+        db = SessionDB()
+        try:
+            history = db.get_messages(session_id)
+            observed_histories.append(
+                [(message["role"], message["content"]) for message in history]
+            )
+            if not history:
+                db.create_session(session_id, "discord")
+                db.append_message(session_id, "user", event.text)
+                db.append_message(session_id, "assistant", "first response")
+        finally:
+            db.close()
+
+    runner._handle_message = run_turn
+    handler = runner._primary_message_handler()
+
+    def event(text):
+        return MessageEvent(
+            text=text,
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="routed-channel",
+                user_id="user-1",
+            ),
+        )
+
+    asyncio.run(handler(event("first turn")))
+    asyncio.run(handler(event("second turn")))
+
+    assert observed_histories == [
+        [],
+        [("user", "first turn"), ("assistant", "first response")],
+    ]
+    assert session_id in _session_ids(profile / "state.db")
+    assert session_id not in _session_ids(root / "state.db")
 
 
 def test_db_handle_follows_the_active_profile_scope(multiplex_homes):

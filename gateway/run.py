@@ -15954,10 +15954,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope primary-adapter messages to their routed multiplex profile.
+
+        Profile routes are normally stamped on ``event.source`` before this
+        handler runs. Resolve the home per event so session lookup and transcript
+        loading use the same profile store as the later agent run and persistence
+        path. Sources that bypass adapter routing are resolved here; genuinely
+        unrouted events retain the gateway's launch/default home.
+        """
+        default_home = Path(get_hermes_home())
 
         async def _handler(event):
+            source = event.source
+            if (
+                not getattr(source, "profile", None)
+                and getattr(source, "profile_route_rejected", False) is not True
+            ):
+                from gateway.profile_routing import ProfileRouteRejected
+
+                try:
+                    source.profile = self._profile_name_for_source(source)
+                except ProfileRouteRejected:
+                    source.profile_route_rejected = True
+
+            profile_home = (
+                self._resolve_profile_home_for_source(source)
+                if getattr(source, "profile", None)
+                else default_home
+            )
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 

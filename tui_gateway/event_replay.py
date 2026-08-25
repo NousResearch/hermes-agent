@@ -19,7 +19,16 @@ Design constraints honored:
 from __future__ import annotations
 
 import threading
+import uuid
 from collections import OrderedDict, deque
+
+# Process identity for the replay contract. Seq counters live in-process, so
+# a gateway restart silently resets them to 1 while clients still hold high
+# watermarks — events_since(sid, 97) then returns [] with truncated=False and
+# the client believes it missed nothing (and its stale watermark makes every
+# future replay empty too). The epoch lets clients detect the restart and
+# reset their watermarks.
+_REPLAY_EPOCH = uuid.uuid4().hex
 
 # Replay ring per session. A long turn emits ~hundreds of token events; this
 # covers several minutes of streaming plus all control events.
@@ -28,9 +37,16 @@ _REPLAY_BUFFER_MAX = 512
 _REPLAY_SESSIONS_MAX = 64
 
 _replay_lock = threading.Lock()
-# sid -> OrderedDict-ish deque of (seq, frame_params_dict_without_seq)
+# sid -> deque of (seq, event_object) where event_object is the frame's
+# ``params`` dict (bare event: type/session_id/seq/payload) — the exact shape
+# the client's dispatch path consumes.
 _replay_buffers: "OrderedDict[str, deque]" = OrderedDict()
 _replay_next_seq: dict[str, int] = {}
+
+
+def replay_epoch() -> str:
+    """Opaque token identifying this server process's seq numbering."""
+    return _REPLAY_EPOCH
 
 
 def _stamp_event(obj: dict) -> None:
@@ -56,16 +72,34 @@ def _stamp_event(obj: dict) -> None:
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
                 _oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
                 _replay_next_seq.pop(_oldest_sid, None)
-        buf.append((seq, obj))
+        buf.append((seq, params))
 
 
 def events_since(sid: str, last_seen: int) -> list[dict]:
-    """Return recorded event FRAMES with seq > last_seen for *sid*, in order."""
+    """Return recorded EVENT OBJECTS with seq > last_seen for *sid*, in order.
+
+    Shape contract: each element is the frame's ``params`` dict — a bare event
+    object with top-level ``type`` / ``session_id`` / ``seq`` — because that is
+    exactly what the client's dispatch path consumes. Returning the full
+    JSON-RPC envelope here would make every replayed event fail the client's
+    ``event.type`` gate and be silently dropped.
+    """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
         if not buf:
             return []
-        return [frame for seq, frame in buf if seq > last_seen]
+        return [event for seq, event in buf if seq > last_seen]
+
+
+def is_truncated(sid: str, last_seen: int) -> bool:
+    """True when events between *last_seen* and the ring's oldest retained
+    seq were evicted — the client must refetch history instead of trusting
+    the replay to be gap-free."""
+    with _replay_lock:
+        buf = _replay_buffers.get(sid or "")
+        if not buf:
+            return False
+        return last_seen + 1 < buf[0][0]
 
 
 def latest_seq(sid: str) -> int:

@@ -60,10 +60,28 @@ def test_events_since_returns_only_newer_frames_in_order():
         event_replay._stamp_event(f)
 
     got = events_since("s1", 3)
-    assert [f["params"]["seq"] for f in got] == [4, 5]
-    assert events_since("s1", 0) == frames
+    assert [e["seq"] for e in got] == [4, 5]
+    assert events_since("s1", 0) == [f["params"] for f in frames]
     assert events_since("s1", 99) == []
     assert latest_seq("s1") == 5
+
+
+def test_events_since_returns_client_dispatchable_event_objects():
+    """Cross-language contract: the client's replay loop dispatches an element
+    only when it has a TOP-LEVEL ``type`` (json-rpc-gateway.ts fetchReplay:
+    ``if (!event?.type) continue``). Returning full JSON-RPC envelopes here
+    makes every replayed event silently droppable — the original #94219 bug.
+    """
+    event_replay._stamp_event(_frame("s1"))
+    (event,) = events_since("s1", 0)
+
+    # Bare event object, not an envelope.
+    assert event["type"] == "message.delta"
+    assert event["session_id"] == "s1"
+    assert event["seq"] == 1
+    assert "jsonrpc" not in event
+    assert "method" not in event
+    assert "params" not in event
 
 
 def test_unknown_session_returns_empty():
@@ -129,7 +147,8 @@ def test_truncation_detection_semantics():
     assert oldest > 1  # eviction happened
 
     # Client saw everything up to just before the buffer → NOT truncated.
-    last_seen_full = oldest - 1
-    assert not (last_seen_full + 1 < oldest)
+    assert not event_replay.is_truncated("s1", oldest - 1)
     # Client saw seq 5, buffer starts later → truncated.
-    assert (5 + 1 < oldest)
+    assert event_replay.is_truncated("s1", 5)
+    # Unknown session: nothing evicted, nothing truncated.
+    assert not event_replay.is_truncated("nope", 0)

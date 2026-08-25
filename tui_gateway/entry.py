@@ -20,6 +20,7 @@ import traceback
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
+from tui_gateway.event_replay import replay_epoch
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
 
@@ -447,7 +448,13 @@ def main():
         "params": {
             "type": "gateway.ready",
             # change_events: see tui_gateway/ws.py — clients demote legacy polls.
-            "payload": {"skin": resolve_skin(), "change_events": True},
+            # replay_epoch: restart detection for the WS replay contract (the
+            # stdio TUI ignores it).
+            "payload": {
+                "skin": resolve_skin(),
+                "change_events": True,
+                "replay_epoch": replay_epoch(),
+            },
         },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")

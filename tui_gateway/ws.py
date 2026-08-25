@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from tui_gateway import server
+from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
@@ -378,6 +379,10 @@ async def handle_ws(
                         "skin": skin_payload,
                         "change_events": True,
                         "heartbeat": True,
+                        # Replay-contract process identity: lets reconnecting
+                        # clients detect a backend restart and reset their
+                        # per-session seq watermarks (see event_replay).
+                        "replay_epoch": replay_epoch(),
                     },
                 },
             }

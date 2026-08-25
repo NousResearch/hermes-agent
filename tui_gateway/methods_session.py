@@ -3655,18 +3655,16 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import event_replay
 
     frames = event_replay.events_since(sid, last_seen)
-    # Truncated when the buffer's OLDEST retained seq is past last_seen+1 —
-    # i.e. events between last_seen and the buffer start were evicted.
-    truncated = False
-    with event_replay._replay_lock:
-        buf = event_replay._replay_buffers.get(sid)
-        if buf and last_seen + 1 < buf[0][0]:
-            truncated = True
     return _ok(rid, {
-        "events": [f for f in frames],
+        "events": frames,
         "latest_seq": event_replay.latest_seq(sid),
-        "truncated": truncated,
+        "truncated": event_replay.is_truncated(sid, last_seen),
         "count": len(frames),
+        # Restart detection: seq counters are in-process, so after a gateway
+        # restart a client's old high watermark would silently match nothing.
+        # Clients compare this against the epoch they learned at gateway.ready
+        # and reset watermarks on mismatch.
+        "epoch": event_replay.replay_epoch(),
     })
 
 

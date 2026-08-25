@@ -5740,17 +5740,29 @@ def _configure_mcp_tools_interactive(config: dict):
             else:
                 labels.append(tool_name)
 
-        # Determine which tools are currently enabled
+        # Determine which tools are currently enabled. Use the SAME matching
+        # semantics as runtime registration (tools/mcp_tool.py): exact names
+        # or fnmatch globs — a literal `in` check renders glob excludes
+        # (e.g. "*team_member*" from catalog default_excluded manifests) as
+        # if nothing were excluded.
+        try:
+            from tools.mcp_tool import matches_name_filter as _match_filter
+        except ImportError:  # pragma: no cover — defensive fallback
+            def _match_filter(tool_name, patterns):
+                return tool_name in patterns
+
         pre_selected: Set[int] = set()
         tool_names = [t[0] for t in tools]
+        include_set = {str(p) for p in include_list} if include_list else None
+        exclude_set = {str(p) for p in exclude_list} if exclude_list else None
         for i, tool_name in enumerate(tool_names):
-            if include_list:
+            if include_set:
                 # Include mode: only included tools are selected
-                if tool_name in include_list:
+                if _match_filter(tool_name, include_set):
                     pre_selected.add(i)
-            elif exclude_list:
+            elif exclude_set:
                 # Exclude mode: everything except excluded
-                if tool_name not in exclude_list:
+                if not _match_filter(tool_name, exclude_set):
                     pre_selected.add(i)
             else:
                 # No filter: all enabled
@@ -5767,23 +5779,57 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        # Compute new include list (the chosen tools). We standardize on
-        # tools.include across the codebase (catalog installs, hermes mcp
-        # configure, and this UI) so a server\'s on-disk config shape doesn\'t
-        # depend on which UI the user touched last.
-        chosen_names = [tool_names[i] for i in sorted(chosen)]
-
         # Update config
         srv_cfg = mcp_servers.setdefault(server_name, {})
         tools_cfg = srv_cfg.setdefault("tools", {})
 
-        if len(chosen) == len(tools):
+        exclude_mode = bool(exclude_set) and not include_set
+
+        if len(chosen) == len(tools) and not exclude_mode:
             # All tools enabled — clear filters (cleanest config shape; the
             # server\'s native tool set is the active set, and any tools the
             # server adds later are auto-enabled).
             tools_cfg.pop("exclude", None)
             tools_cfg.pop("include", None)
+        elif exclude_mode:
+            # Exclude-mode server (catalog default_excluded / hand-written
+            # tools.exclude): stay in exclude mode — do NOT demote the
+            # dynamic filter to a frozen include list. Unchecked tools are
+            # added as literal excludes; re-checked literals are dropped;
+            # glob patterns are preserved (they intentionally keep matching
+            # tools the vendor ships later).
+            old_exclude = sorted(exclude_set or set())
+            glob_entries = [p for p in old_exclude
+                            if "*" in p or "?" in p or "[" in p]
+            literal_entries = {p for p in old_exclude if p not in glob_entries}
+            unchecked = {tool_names[i] for i in range(len(tools))
+                         if i not in chosen}
+            checked = {tool_names[i] for i in chosen}
+            new_literals = (literal_entries - checked) | {
+                tn for tn in unchecked
+                if not _match_filter(tn, set(old_exclude))
+            }
+            new_exclude = glob_entries + sorted(new_literals)
+            glob_shadowed = sorted(
+                tn for tn in checked
+                if glob_entries and _match_filter(tn, set(glob_entries))
+            )
+            if glob_shadowed:
+                _print_warning(
+                    f"  {server_name}: {len(glob_shadowed)} re-enabled "
+                    f"tool(s) still match glob exclude pattern(s) "
+                    f"{glob_entries} and stay excluded — edit "
+                    f"mcp_servers.{server_name}.tools.exclude in config.yaml "
+                    "to enable them."
+                )
+            if not new_exclude:
+                tools_cfg.pop("exclude", None)
+                tools_cfg.pop("include", None)
+            else:
+                tools_cfg["exclude"] = new_exclude
+                tools_cfg.pop("include", None)
         else:
+            chosen_names = [tool_names[i] for i in sorted(chosen)]
             tools_cfg["include"] = chosen_names
             # Drop any legacy exclude block — we\'re include-mode now.
             tools_cfg.pop("exclude", None)

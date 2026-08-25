@@ -35,6 +35,9 @@ post_install: |
   Klaviyo (or run `hermes mcp login klaviyo`). Approve access,
   then restart the session so tools load.
 
-  Requires an Owner/Admin/Manager Klaviyo role. Large tool surface;
-  append ?core-tools-only=true to mcp_servers.klaviyo.url in config.yaml
-  for the trimmed ~40-tool core set.
+  Requires an Owner/Admin/Manager Klaviyo role.
+
+  Hermes pins the trimmed ~40-tool core surface plus Klaviyo's
+  prompt-injection mitigation via URL params. For the full 262-tool
+  surface, remove the query params from mcp_servers.klaviyo.url in
+  config.yaml.

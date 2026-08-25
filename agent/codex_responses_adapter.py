@@ -325,6 +325,24 @@ def _sanitize_replayed_fn_name(name: str) -> str:
     return coerced[:64] or "fn"
 
 
+def _canonical_call_id_from_fc(response_item_id: Any) -> Optional[str]:
+    """Map an ``fc_…`` response-item id to its canonical ``call_<suffix>``.
+
+    Both sides of a replayed pair — the assistant ``function_call`` and the
+    tool ``function_call_output`` — must derive the SAME call_id from an
+    fc_-only stored id, or an oversized pair clamps to two different
+    surrogates and the API rejects the output as unmatched.  Keep every
+    caller on this single helper.
+    """
+    if (
+        isinstance(response_item_id, str)
+        and response_item_id.startswith("fc_")
+        and len(response_item_id) > len("fc_")
+    ):
+        return f"call_{response_item_id[len('fc_'):]}"
+    return None
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -704,13 +722,8 @@ def _chat_messages_to_responses_input(
                         if not isinstance(call_id, str) or not call_id.strip():
                             call_id = embedded_call_id
                         if not isinstance(call_id, str) or not call_id.strip():
-                            if (
-                                isinstance(embedded_response_item_id, str)
-                                and embedded_response_item_id.startswith("fc_")
-                                and len(embedded_response_item_id) > len("fc_")
-                            ):
-                                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
-                            else:
+                            call_id = _canonical_call_id_from_fc(embedded_response_item_id)
+                            if call_id is None:
                                 _raw_args = str(fn.get("arguments", "{}"))
                                 call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
                         call_id = call_id.strip()
@@ -747,15 +760,8 @@ def _chat_messages_to_responses_input(
                 # Legacy fc_-only stored ids: canonicalize to the same
                 # ``call_<suffix>`` the assistant branch synthesizes above, so
                 # a >64-char pair clamps to the SAME surrogate on both sides.
-                # Hashing the raw ``fc_…`` here while the call side hashed
-                # ``call_<suffix>`` would break the pairing and 400 the replay.
-                if (
-                    isinstance(tool_response_item_id, str)
-                    and tool_response_item_id.startswith("fc_")
-                    and len(tool_response_item_id) > len("fc_")
-                ):
-                    call_id = f"call_{tool_response_item_id[len('fc_'):]}"
-                elif isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                call_id = _canonical_call_id_from_fc(tool_response_item_id)
+                if call_id is None and isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue

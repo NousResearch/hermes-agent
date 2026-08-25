@@ -59,7 +59,12 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
         ]
     )
 
-    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    assert result == {
+        "requested": ["coder", "default"],
+        "succeeded": ["coder", "default"],
+        "failed": [],
+    }
 
     assert len(calls) == 1
     argv, kwargs = calls[0]
@@ -81,7 +86,10 @@ def test_abort_recovery_does_not_claim_success_when_fresh_process_fails(monkeypa
     )
     plan = SimpleNamespace(runtimes=[_runtime("default", "systemd")])
 
-    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    assert result["requested"] == ["default"]
+    assert result["succeeded"] == []
+    assert result["failed"] == ["default"]
 
 
 def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatch):
@@ -96,11 +104,12 @@ def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatc
         runtimes=[_runtime("default", "systemd"), _runtime("coder", "systemd")]
     )
 
-    assert update_cmd._recover_gateway_restart_after_abort(
+    result = update_cmd._recover_gateway_restart_after_abort(
         plan,
         gateway_mode=False,
         skip_profiles={"default"},
     )
+    assert result == {"requested": ["coder"], "succeeded": ["coder"], "failed": []}
     assert json.loads(calls[0][1]["input"]) == {"profiles": ["coder"]}
 
 
@@ -117,7 +126,10 @@ def test_abort_recovery_rejects_partial_json_success(monkeypatch):
         runtimes=[_runtime("default", "systemd"), _runtime("coder", "systemd")]
     )
 
-    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    assert result["requested"] == ["coder", "default"]
+    assert result["succeeded"] == ["default"]
+    assert result["failed"] == ["coder"]
 
 
 def test_abort_recovery_rejects_malformed_json_success(monkeypatch):
@@ -128,7 +140,10 @@ def test_abort_recovery_rejects_malformed_json_success(monkeypatch):
     )
     plan = SimpleNamespace(runtimes=[_runtime("default", "systemd")])
 
-    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    assert result["requested"] == ["default"]
+    assert result["succeeded"] == []
+    assert result["failed"] == ["default"]
 
 
 def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):
@@ -140,8 +155,24 @@ def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):
     )
     plan = SimpleNamespace(runtimes=[_runtime("manual-box", "manual")])
 
-    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
+    result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
+    assert result == {"requested": [], "succeeded": [], "failed": []}
     assert calls == []
+
+
+def test_service_matching_is_exact_for_overlapping_profile_names():
+    assert update_cmd._gateway_service_matches_profile(
+        "foo", "hermes-gateway-foo.service"
+    )
+    assert not update_cmd._gateway_service_matches_profile(
+        "foo", "hermes-gateway-foobar.service"
+    )
+    assert update_cmd._gateway_service_matches_profile(
+        "default", "ai.hermes.gateway"
+    )
+    assert not update_cmd._gateway_service_matches_profile(
+        "default", "ai.hermes.gateway-foo"
+    )
 
 
 def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):

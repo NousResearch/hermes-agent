@@ -5592,6 +5592,29 @@ def _surviving_gateway_pids_after_failed_restart():
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 
+def _gateway_service_matches_profile(profile: str, service: object) -> bool:
+    """Match an exact gateway service/label to a profile.
+
+    Profile names must not be matched as substrings: ``foo`` must not claim
+    that ``hermes-gateway-foobar.service`` was already restarted.  These are
+    the service/label shapes produced by the existing systemd, launchd, and
+    s6 lifecycle implementations.
+    """
+    name = str(service).removesuffix(".service")
+    if profile == "default":
+        return name in {
+            "hermes-gateway",
+            "ai.hermes.gateway",
+            "gateway",
+            "gateway-default",
+        }
+    return name in {
+        f"hermes-gateway-{profile}",
+        f"ai.hermes.gateway-{profile}",
+        f"gateway-{profile}",
+    }
+
+
 def _gateway_restart_recovery_profiles(
     plan, *, skip_profiles: set[str] | None = None
 ) -> list[str]:
@@ -5621,7 +5644,7 @@ def _gateway_restart_recovery_profiles(
 
 def _recover_gateway_restart_after_abort(
     plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None
-) -> bool:
+) -> dict[str, list[str]]:
     """Retry supervised gateway restarts from a clean Python process.
 
     ``hermes update`` normally performs the fleet restart in the interpreter
@@ -5635,12 +5658,12 @@ def _recover_gateway_restart_after_abort(
     Only profiles classified as supervisor-owned by the pre-update inventory
     are handed off.  A manual gateway must remain running and be reported for
     explicit operator action rather than being killed without a relaunch
-    authority.  Returns True only when the recovery child reports success for
-    every handed-off profile.
+    authority.  The returned protocol is persisted in the update receipt so
+    operators can distinguish a spawn failure from a per-profile failure.
     """
     profiles = _gateway_restart_recovery_profiles(plan, skip_profiles=skip_profiles)
     if not profiles:
-        return False
+        return {"requested": [], "succeeded": [], "failed": []}
 
     command = [
         sys.executable,
@@ -5662,7 +5685,7 @@ def _recover_gateway_restart_after_abort(
         systemd_run = shutil.which("systemd-run")
         if not systemd_run:
             logger.warning("Cannot isolate fresh gateway recovery from the gateway cgroup")
-            return False
+            return {"requested": profiles, "succeeded": [], "failed": profiles}
         command = [
             systemd_run,
             "--user",
@@ -5695,11 +5718,11 @@ def _recover_gateway_restart_after_abort(
         result = subprocess.run(command, **kwargs)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Fresh gateway restart recovery failed: %s", exc)
-        return False
+        return {"requested": profiles, "succeeded": [], "failed": profiles}
 
     if result.returncode != 0:
         logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
-        return False
+        return {"requested": profiles, "succeeded": [], "failed": profiles}
 
     try:
         recovery_result = json.loads(result.stdout or "")
@@ -5707,7 +5730,7 @@ def _recover_gateway_restart_after_abort(
         failed = recovery_result.get("failed")
     except (AttributeError, TypeError, ValueError):
         logger.warning("Fresh gateway restart recovery returned invalid JSON")
-        return False
+        return {"requested": profiles, "succeeded": [], "failed": profiles}
 
     if (
         not isinstance(succeeded, list)
@@ -5717,13 +5740,17 @@ def _recover_gateway_restart_after_abort(
         or failed
     ):
         logger.warning("Fresh gateway restart recovery returned incomplete profiles")
-        return False
+        return {
+            "requested": profiles,
+            "succeeded": succeeded if isinstance(succeeded, list) else [],
+            "failed": failed if isinstance(failed, list) else profiles,
+        }
 
     print(
         "  ✓ Retried supervised gateway restart(s) in a fresh process: "
         + ", ".join(profiles)
     )
-    return True
+    return {"requested": profiles, "succeeded": succeeded, "failed": []}
 
 
 def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
@@ -8766,24 +8793,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if not isinstance(profile, str):
                     continue
                 if any(
-                    profile in str(service)
-                    or (profile == "default" and "hermes-gateway" in str(service))
+                    _gateway_service_matches_profile(profile, service)
                     for service in restarted_services
                 ):
                     _already_restarted_profiles.add(profile)
-            _recovery_profiles = _gateway_restart_recovery_profiles(
-                _pre_update_plan,
-                skip_profiles=_already_restarted_profiles,
-            )
-            _recovered = _recover_gateway_restart_after_abort(
+            _recovery_result = _recover_gateway_restart_after_abort(
                 _pre_update_plan,
                 gateway_mode=gateway_mode,
                 skip_profiles=_already_restarted_profiles,
             )
-            if _recovered:
+            _recovery_profiles = list(_recovery_result.get("requested") or [])
+            _recovery_succeeded = set(_recovery_result.get("succeeded") or [])
+            _recovered = not _recovery_profiles or (
+                _recovery_succeeded == set(_recovery_profiles)
+                and not _recovery_result.get("failed")
+            )
+            if _recovery_succeeded:
                 relaunched_profiles.extend(
                     profile
-                    for profile in _recovery_profiles
+                    for profile in sorted(_recovery_succeeded)
                     if profile not in relaunched_profiles
                 )
             _planned_gateway_runtimes = [
@@ -8796,11 +8824,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 runtime.profile for runtime in _planned_gateway_runtimes
             }
             _covered_gateway_profiles = _already_restarted_profiles | set(
-                _recovery_profiles
+                _recovery_succeeded
             )
             _all_gateway_profiles_are_safe_to_recover = all(
                 runtime.profile in _already_restarted_profiles
-                or runtime.supervisor in _FRESH_RESTART_SUPERVISORS
+                or getattr(runtime, "supervisor", None) in _FRESH_RESTART_SUPERVISORS
                 for runtime in _planned_gateway_runtimes
             )
             _recovery_complete = bool(_planned_gateway_profiles) and (
@@ -8835,6 +8863,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     failed_units=failed_or_stale_units,
                     incomplete=gateway_fleet_restart_incomplete,
                     phase_error=str(e),
+                    fresh_recovery=_recovery_result,
                 )
             except Exception:
                 pass

@@ -55,6 +55,54 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
+        # Windows spells the CLI with an executable suffix, and npm-style
+        # shims install `hermes.cmd` / `hermes.ps1` beside the `.exe`.
+        # Anchoring Branch A on the bare name let every one of these walk past
+        # a guard that stops `hermes gateway restart`. The guard is gated on
+        # PID-file ownership, not on platform, so the bypass was live for any
+        # supervised gateway running on Windows.
+        "hermes.exe gateway restart",
+        "hermes.cmd gateway stop",
+        "hermes.bat gateway restart",
+        "hermes.ps1 gateway uninstall",
+        "HERMES.EXE gateway restart",
+        r"C:\tools\hermes.exe gateway stop",
+        r".\hermes.exe gateway restart",
+        # Quoted and wrapped spellings reach the same place via the
+        # tokenizing rescan; pin them so the suffix survives that path too.
+        r'"C:\Program Files\hermes.exe" gateway restart',
+        "cmd /c hermes.exe gateway restart",
+        'powershell -Command "hermes.exe gateway restart"',
+    ])
+    def test_windows_executable_suffix_is_caught(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # `taskkill` / `Stop-Process` are the Windows spellings of pkill.
+        # `\bp?kill\b` cannot reach inside `taskkill` — there is no word
+        # boundary between the two `k`s — so they need naming outright.
+        "taskkill /F /IM hermes-gateway.exe",
+        "Stop-Process -Name hermes-gateway -Force",
+        "stop-process -name hermes-gateway",
+    ])
+    def test_windows_process_kill_forms_are_caught(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # The suffix must not widen the match. `start` stays deliberately
+        # benign, an unrelated process is not the gateway, and the word-tail
+        # exclusion still holds once a suffix is attached.
+        "hermes.exe gateway start",
+        "hermes.exe chat",
+        "taskkill /F /IM notepad.exe",
+        "Stop-Process -Name chrome",
+        "my-hermes.exe gateway restart",
+        "hermesexe gateway restart",
+    ])
+    def test_windows_forms_do_not_overmatch(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
         # #62891: a blocked direct restart/kill laundered through a NEW
         # launchd keepalive job wrapping a helper script, instead of a
         # direct kickstart/unload/stop/restart on the existing service.

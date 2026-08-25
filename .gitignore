@@ -213,3 +213,6 @@ native/fts5_cjk/*.so
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
 .skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/

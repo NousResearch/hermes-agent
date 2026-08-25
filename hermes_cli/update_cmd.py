@@ -5588,6 +5588,126 @@ def _surviving_gateway_pids_after_failed_restart():
         logger.debug("Could not probe for surviving gateways after update: %s", exc)
         return None
 
+
+_FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
+
+
+def _gateway_restart_recovery_profiles(
+    plan, *, skip_profiles: set[str] | None = None
+) -> list[str]:
+    """Return supervised gateway profiles that a fresh process may restart.
+
+    The update inventory is captured before the checkout changes.  It is the
+    only safe source here: re-importing ``hermes_cli.gateway`` in the failing
+    interpreter is exactly what can raise the original ``ImportError``. Manual
+    gateways are intentionally excluded because no supervisor is available to
+    bring them back after a stop.
+    """
+    profiles: set[str] = set()
+    skip_profiles = skip_profiles or set()
+    try:
+        for runtime in getattr(plan, "runtimes", ()) or ():
+            if (
+                getattr(runtime, "kind", None) == "gateway"
+                and getattr(runtime, "supervisor", None) in _FRESH_RESTART_SUPERVISORS
+            ):
+                profile = getattr(runtime, "profile", None)
+                if isinstance(profile, str) and profile and profile not in skip_profiles:
+                    profiles.add(profile)
+    except Exception as exc:
+        logger.debug("Could not prepare fresh gateway restart profiles: %s", exc)
+    return sorted(profiles)
+
+
+def _recover_gateway_restart_after_abort(
+    plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None
+) -> bool:
+    """Retry supervised gateway restarts from a clean Python process.
+
+    ``hermes update`` normally performs the fleet restart in the interpreter
+    that started before ``git pull``.  If that phase raises while importing the
+    new tree, a warning alone leaves the old gateway alive against new files on
+    disk.  The recovery boundary launches the existing per-profile
+    ``gateway restart`` command through a new interpreter, preserving its
+    platform-specific drain and service-manager logic without inheriting the
+    stale ``sys.modules`` graph.
+
+    Only profiles classified as supervisor-owned by the pre-update inventory
+    are handed off.  A manual gateway must remain running and be reported for
+    explicit operator action rather than being killed without a relaunch
+    authority.  Returns True only when the recovery child reports success for
+    every handed-off profile.
+    """
+    profiles = _gateway_restart_recovery_profiles(plan, skip_profiles=skip_profiles)
+    if not profiles:
+        return False
+
+    command = [
+        sys.executable,
+        "-m",
+        "hermes_cli.update_restart_recovery",
+        "--stdin",
+    ]
+    env = os.environ.copy()
+    env["HERMES_UPDATE_RESTART_RECOVERY"] = "1"
+    for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
+        env.pop(marker, None)
+
+    # A gateway-triggered update may run inside the gateway's systemd cgroup.
+    # Put the recovery process in a transient user scope before it asks systemd
+    # to restart that gateway, otherwise KillMode can terminate the recovery
+    # process together with the old service. If systemd-run is unavailable,
+    # fail closed rather than pretending the in-cgroup child is independent.
+    if gateway_mode and sys.platform == "linux":
+        systemd_run = shutil.which("systemd-run")
+        if not systemd_run:
+            logger.warning("Cannot isolate fresh gateway recovery from the gateway cgroup")
+            return False
+        command = [
+            systemd_run,
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--",
+            *command,
+        ]
+
+    kwargs = {
+        "input": json.dumps({"profiles": profiles}),
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "check": False,
+        "env": env,
+        "timeout": max(120, 30 + 90 * len(profiles)),
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        result = subprocess.run(command, **kwargs)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Fresh gateway restart recovery failed: %s", exc)
+        return False
+
+    if result.returncode == 0:
+        print(
+            "  ✓ Retried supervised gateway restart(s) in a fresh process: "
+            + ", ".join(profiles)
+        )
+        return True
+
+    logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
+    return False
+
+
 def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     """Print a recovery warning when the whole restart phase raised.
 
@@ -7843,6 +7963,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # needed to forward already-restarted units to
         # ``_finish_dashboard_update_cleanup`` (review on #83595).
         restarted_services: list = []
+        # Keep these restart bookkeeping collections defined even when the
+        # phase raises before its platform-specific imports initialize them.
+        # The abort recovery and the fleet reconciliation both consume the
+        # pre-update plan in that early-failure shape.
+        failed_or_stale_units: list = []
+        relaunched_profiles: list = []
+        externally_supervised_profiles: list = []
         # Same outside-the-try treatment: the post-restart fleet version
         # check consults killed_pids to decide whether to wait for
         # freshly-restarted gateways to settle, and the phase's except
@@ -8612,7 +8739,63 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # its replacement was never verified — the same fail-open contract
             # this fix closes — so we must still fail closed on ``[]``.
             _surviving = _surviving_gateway_pids_after_failed_restart()
-            if _restart_phase_failure_is_incomplete(
+            _already_restarted_profiles = set(relaunched_profiles)
+            _already_restarted_profiles.update(externally_supervised_profiles)
+            for runtime in getattr(_pre_update_plan, "runtimes", ()) or ():
+                if getattr(runtime, "kind", None) != "gateway":
+                    continue
+                profile = getattr(runtime, "profile", None)
+                if not isinstance(profile, str):
+                    continue
+                if any(
+                    profile in str(service)
+                    or (profile == "default" and "hermes-gateway" in str(service))
+                    for service in restarted_services
+                ):
+                    _already_restarted_profiles.add(profile)
+            _recovery_profiles = _gateway_restart_recovery_profiles(
+                _pre_update_plan,
+                skip_profiles=_already_restarted_profiles,
+            )
+            _recovered = _recover_gateway_restart_after_abort(
+                _pre_update_plan,
+                gateway_mode=gateway_mode,
+                skip_profiles=_already_restarted_profiles,
+            )
+            if _recovered:
+                relaunched_profiles.extend(
+                    profile
+                    for profile in _recovery_profiles
+                    if profile not in relaunched_profiles
+                )
+            _planned_gateway_runtimes = [
+                runtime
+                for runtime in getattr(_pre_update_plan, "runtimes", ()) or ()
+                if getattr(runtime, "kind", None) == "gateway"
+                and isinstance(getattr(runtime, "profile", None), str)
+            ]
+            _planned_gateway_profiles = {
+                runtime.profile for runtime in _planned_gateway_runtimes
+            }
+            _covered_gateway_profiles = _already_restarted_profiles | set(
+                _recovery_profiles
+            )
+            _all_gateway_profiles_are_safe_to_recover = all(
+                runtime.profile in _already_restarted_profiles
+                or runtime.supervisor in _FRESH_RESTART_SUPERVISORS
+                for runtime in _planned_gateway_runtimes
+            )
+            _recovery_complete = bool(_planned_gateway_profiles) and (
+                _planned_gateway_profiles <= _covered_gateway_profiles
+                and _all_gateway_profiles_are_safe_to_recover
+                and (not _recovery_profiles or _recovered)
+            )
+            if _recovery_complete:
+                # The fresh child is the recovery terminal result. Leave the
+                # final fleet-version matrix below as the authoritative
+                # read-back before the update is declared successful.
+                gateway_fleet_restart_incomplete = False
+            elif _restart_phase_failure_is_incomplete(
                 _surviving, _pre_restart_gateway_pids
             ):
                 gateway_fleet_restart_incomplete = True
@@ -8628,6 +8811,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                 record_gateway_restart(
                     restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=sorted(killed_pids),
+                    failed_units=failed_or_stale_units,
                     incomplete=gateway_fleet_restart_incomplete,
                     phase_error=str(e),
                 )

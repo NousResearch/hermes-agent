@@ -144,6 +144,44 @@ def test_combined_review_prompt_rejects_unresolved_failures():
     _assert_unresolved_failure_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
+def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
+    """Both review prompts must teach the enforced read-before-write handshake.
+
+    The skill_manage guard refuses patch/edit of an existing SKILL.md (and
+    overwrite/remove of an existing support file) unless the exact target was
+    loaded via skill_view during the review. Without prompt guidance the model
+    walks into the refusal and burns iterations retrying (#62397).
+    """
+    lower = prompt.lower()
+    assert "read-before-write" in lower, f"{label}: must name the read-before-write rule"
+    assert "skill_view(name)" in prompt, (
+        f"{label}: must give the exact SKILL.md pre-read call"
+    )
+    assert "file_path=..." in prompt, (
+        f"{label}: must give the support-file pre-read form"
+    )
+    # Scope: only EXISTING targets need a pre-read; new creations are exempt.
+    assert "new" in lower and "no prior read" in lower, (
+        f"{label}: must exempt new skills / new support files from the pre-read"
+    )
+    # Transcript quotes must not be treated as satisfying the guard.
+    assert "does not count" in lower or "does NOT count" in prompt or "not satisfy" in lower, (
+        f"{label}: must say transcript-quoted content doesn't satisfy the guard"
+    )
+    # Bounded recovery: one view + one retry, never a loop.
+    assert "do not loop" in lower, (
+        f"{label}: must bound refusal recovery to a single retry"
+    )
+
+
+def test_skill_review_prompt_teaches_read_before_write():
+    _assert_read_before_write_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_teaches_read_before_write():
+    _assert_read_before_write_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
 
 
 

@@ -19,6 +19,10 @@ requires_env:
     prompt: "Matrix access token"
     password: true
 optional_env:
+  - name: MATRIX_REFRESH_TOKEN
+    description: "Matrix refresh token for renewing an expiring access token"
+    prompt: "Matrix refresh token"
+    password: true
   - name: MATRIX_PASSWORD
     description: "Matrix account password (alternative to MATRIX_ACCESS_TOKEN)"
     prompt: "Matrix password"

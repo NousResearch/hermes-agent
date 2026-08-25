@@ -422,8 +422,21 @@ class TestBatchedDescribe:
         assert result["not_found"] == ["mcp__linear__does_not_exist_zzz"]
         assert "errors" not in result
 
-    def test_unregistered_core_name_is_not_found(self, issue_defs):
+    def test_unregistered_core_name_is_not_found(self, issue_defs, monkeypatch):
+        from tools import registry as registry_module
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        # The intent: a name that is NOT registered lands in not_found, even
+        # when it looks like a core tool. Whether "terminal" is registered in
+        # this process depends on which test files imported model_tools
+        # earlier, so force the unregistered condition instead of relying on
+        # collection order.
+        real_get_entry = registry_module.registry.get_entry
+        monkeypatch.setattr(
+            registry_module.registry,
+            "get_entry",
+            lambda name: None if name == "terminal" else real_get_entry(name),
+        )
 
         result = json.loads(dispatch_tool_describe(
             {"names": ["terminal", "mq_linear_create_issue"]},

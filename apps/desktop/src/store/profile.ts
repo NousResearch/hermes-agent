@@ -72,17 +72,64 @@ let profileListEpoch = 0
 
 export function invalidateProfileListFetches(): void {
   profileListEpoch += 1
+  // Detach the single-flight slot too: a caller arriving AFTER a backend
+  // switch must start a fresh fetch against the new backend, not ride the
+  // previous backend's in-flight retry chain.
+  refreshInFlight = null
 }
 
-export async function refreshProfiles(): Promise<ProfileInfo[]> {
-  const epoch = profileListEpoch
-  const { profiles } = await getProfiles()
+// Single-flight guard: on gateway open both useBackgroundSync and the
+// activeGatewayProfile-change effect call refreshActiveProfile() at once, and
+// the Manage Profiles panel can join mid-flight. Dedupe so concurrent callers
+// share one retry chain instead of stampeding /api/profiles (#70679).
+let refreshInFlight: Promise<ProfileInfo[]> | null = null
 
-  if (epoch === profileListEpoch) {
-    $profiles.set(profiles)
+export function refreshProfiles(): Promise<ProfileInfo[]> {
+  if (refreshInFlight) {
+    return refreshInFlight
   }
 
-  return profiles
+  const flight = (async () => {
+    const epoch = profileListEpoch
+    const MAX_RETRIES = 2
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const { profiles } = await getProfiles()
+
+        if (epoch === profileListEpoch) {
+          $profiles.set(profiles)
+        }
+
+        return profiles
+      } catch (error) {
+        if (attempt === MAX_RETRIES || epoch !== profileListEpoch) {
+          // Surface the failure so it's visible in the console — the prior
+          // silent catch in refreshActiveProfile() hid global-remote timing
+          // races (#70679). A stranded epoch stops retrying against the past.
+          console.error(`[profiles] refreshProfiles failed after ${attempt + 1} attempt(s):`, error)
+
+          throw error
+        }
+
+        // Back off before retrying: 500ms, then 1000ms. Gives the remote proxy
+        // a window to finish routing after WebSocket-ready but pre-HTTP-proxy
+        // states (global remote mode, #70679).
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+      }
+    }
+
+    // Unreachable — satisfies TypeScript.
+    return []
+  })().finally(() => {
+    if (refreshInFlight === flight) {
+      refreshInFlight = null
+    }
+  })
+
+  refreshInFlight = flight
+
+  return flight
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────

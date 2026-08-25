@@ -312,10 +312,6 @@ import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
-import {
-  registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
   backgroundMaterialFor,
@@ -360,6 +356,10 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
+import {
+  registrySshScopeForWindowRoute,
+  WindowConnectionRouteRegistry
+} from './window-connection-route'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -9542,6 +9542,7 @@ function activeSshTerminalTarget(webContentsId?: number) {
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
   const config = readDesktopConnectionConfig()
+
   const route = resolveDesktopRemoteRoute({
     config,
     env: {
@@ -9559,6 +9560,7 @@ function activeSshTerminalTarget(webContentsId?: number) {
   const scope = route.connectionId
     ? backendScopeKey(route.connectionId, profile)
     : sshScopeKey(route.source === 'profile' ? profile : null)
+
   const state = sshConnections.get(scope)
 
   return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'

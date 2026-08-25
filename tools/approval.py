@@ -3781,6 +3781,8 @@ def _run_approval_gate(
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -3790,9 +3792,11 @@ def _run_approval_gate(
                 if not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
+                    outcome = "timeout"
                 else:
                     reason = "denied by user"
                     timeout_addendum = ""
+                    outcome = "denied"
                 reason_addendum = ""
                 if resolved and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
@@ -3806,7 +3810,9 @@ def _run_approval_gate(
                     ),
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": outcome,
                     "user_consent": False,
+                    "deny_reason": deny_reason,
                 }
 
             if choice == "session":
@@ -3916,18 +3922,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     """
     if env_type == "docker":
         return not has_host_access
-    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
-        return True
-    if env_type in ("local", "ssh"):
-        return False
-    # Plugin-registered backends: honor their declarative flag. Fail-soft
-    # to False — an unknown backend keeps the approval layer ON.
-    try:
-        from agent.terminal_env_registry import provider_flag
-
-        return bool(provider_flag(env_type, "skip_container_guards", False))
-    except Exception:
-        return False
+    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -4516,6 +4511,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             # exact thread AIAgent.interrupt() flags — so is_interrupted() here
             # sees the signal. Resolve as "deny" so the agent loop receives a
             # normal denial and unwinds cleanly (#8697).
+            #
+            # NOTE (#85125 2e): is_interrupted() here deliberately does NOT
+            # distinguish a deliberate /stop from a gateway INACTIVITY
+            # timeout — both intentionally resolve as 'deny' (not
+            # outcome='timeout'). The per-thread interrupt flag carries only
+            # an optional free-text reason (tools/interrupt.py
+            # _interrupt_reasons), and the producers do not set a stable,
+            # machine-checkable category for this distinction: the gateway's
+            # inactivity watchdog (gateway/run.py
+            # _watch_gateway_turn_inactivity → request_hard_interrupt with
+            # _INTERRUPT_REASON_TIMEOUT) and a user /stop both funnel through
+            # AIAgent.interrupt(), whose tool_reason strings ("explicit stop
+            # requested" vs the fallback "user sent a new message") are not a
+            # reliable discriminator and would require new plumbing to make
+            # so. Fail-closed deny preserves #8697 semantics; changing this
+            # needs a dedicated interrupt-cause channel, not string matching.
             if is_interrupted():
                 logger.info(
                     "Approval wait interrupted by user signal — "
@@ -5012,6 +5023,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]

@@ -6557,6 +6557,7 @@ function installPreviewShortcut(window) {
 import {
   applyZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_STEP,
@@ -11202,13 +11203,15 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   if (zoom) {
     installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore/resize/cross-display move
-    // (Chromium can drop webContents zoom after these window transitions) and
-    // on EVERY full load — not once. The crash-recovery path calls
-    // webContents.reload(), which fires did-finish-load again after a `once`
-    // listener is spent, so zoom was silently lost on renderer crash
-    // recovery and any in-place reload/navigation (#46429).
-    installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
-    win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
+    // (Chromium can drop webContents zoom after these window transitions), on
+    // EVERY full load — not once, since crash recovery reloads and would
+    // outlive a spent `once` listener (#46429) — and after in-page navigation,
+    // where Chromium applies the target hash route's own per-URL zoom record
+    // (see installZoomReassertOnNavigation; #48658, #38854, #79863).
+    const reassertZoom = () => restorePersistedZoomLevel(win)
+
+    installZoomReassertOnWindowEvents(win, reassertZoom)
+    installZoomReassertOnNavigation(win.webContents, reassertZoom)
   }
 
   installContextMenuBridge(win)

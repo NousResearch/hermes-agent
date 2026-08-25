@@ -1,11 +1,12 @@
-"""Host-side contract tests for the opt-in pre-compress checkpoint API (v1).
+"""Host-side contract tests for the opt-in pre-compress checkpoint API (v2).
 
 The contract has three parts:
-- providers opt in by advertising ``pre_compress_checkpoint_api_version``;
+- providers opt in by advertising ``pre_compress_checkpoint_api_version = 2``
+  (v1 is the implicit historical best-effort contract with raw messages);
 - ``MemoryManager`` exposes capability probing and a ``require_checkpoint``
   mode whose failure must propagate instead of being swallowed;
 - the compression host normalizes messages to direct user/assistant evidence
-  before handing them to providers.
+  before handing them to v2+ providers.
 """
 
 import pytest
@@ -349,3 +350,89 @@ def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
     _refuse_checkpoint_required_on_codex_app_server(True, "codex_responses")
     _refuse_checkpoint_required_on_codex_app_server(False, "codex_app_server")
     _refuse_checkpoint_required_on_codex_app_server(False, None)
+
+
+def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
+    monkeypatch,
+):
+    """Micro-compaction is a lossy rewrite authority with no checkpoint hook.
+
+    Even if a live agent's compressor has ``_micro_compact_enabled`` flipped
+    on (agent init forces it off under the gate, but it is plain mutable
+    state), the post-turn finalizer must refuse to call ``_micro_compact()``
+    while ``compression_checkpoint_required`` is armed — otherwise assistant
+    evidence is absorbed into a rolling summary that the checkpoint filter
+    later excludes, and the evidence never reaches the durable provider.
+    """
+    from tests.agent.test_turn_finalizer_final_response_persistence import (
+        FakeAgent,
+    )
+    from agent.turn_finalizer import finalize_turn
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+
+    class _RecordingCompressor:
+        _micro_compact_enabled = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def _micro_compact(self, messages):
+            self.calls += 1
+            return list(messages)
+
+    def _run(checkpoint_required: bool):
+        agent = FakeAgent()
+        compressor = _RecordingCompressor()
+        agent.context_compressor = compressor
+        agent.compression_checkpoint_required = checkpoint_required
+        finalize_turn(
+            agent,
+            final_response="Done.",
+            api_call_count=1,
+            interrupted=False,
+            failed=False,
+            messages=[
+                {"role": "user", "content": "do it"},
+                {"role": "assistant", "content": "Done."},
+            ],
+            conversation_history=[],
+            effective_task_id="task",
+            turn_id="turn",
+            user_message="do it",
+            original_user_message="do it",
+            _should_review_memory=False,
+            _turn_exit_reason="completed",
+        )
+        return compressor.calls
+
+    # Gate armed: micro-compaction never runs.
+    assert _run(checkpoint_required=True) == 0
+
+    # Gate off: micro-compaction remains reachable — sabotage control proving
+    # this harness genuinely exercises the call site (the finalizer swallows
+    # compressor exceptions, so a call counter is the observable signal).
+    assert _run(checkpoint_required=False) == 1
+
+
+def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
+    """checkpoint_required forces micro-compaction off at init.
+
+    Both keys can be enabled together in config; the gate must win so every
+    lossy rewrite passes through the checkpoint-aware batch compressor.
+    """
+    import inspect
+
+    from agent import agent_init
+
+    source = inspect.getsource(agent_init)
+    # The suppression must happen before the compressor attribute assignment.
+    suppress_idx = source.find(
+        "if compression_checkpoint_required and compression_micro_compact:"
+    )
+    assign_idx = source.find("_cc._micro_compact_enabled = compression_micro_compact")
+    assert suppress_idx != -1, (
+        "init_agent must suppress micro-compaction when checkpoint_required"
+    )
+    assert assign_idx != -1
+    assert suppress_idx < assign_idx

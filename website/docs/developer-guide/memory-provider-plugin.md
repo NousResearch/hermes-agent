@@ -168,11 +168,13 @@ recovers. With the gate off (default), nothing changes for existing providers.
 
 The gate binds to every compaction authority, not just the Hermes
 summarizer: server-side native compaction (`compression.codex_responses_native`)
-is suppressed while the gate is armed so the checkpoint-aware Hermes
-compressor stays authoritative, and the `codex_app_server` API mode is
-refused at agent init — the codex agent compacts its own thread with no
-truthful pre-compaction boundary, so a required checkpoint cannot be
-guaranteed there.
+is suppressed while the gate is armed, post-turn micro-compaction
+(`compression.micro_compact`) is forced off at agent init (it absorbs old
+exchanges into a rolling summary with no checkpoint hook in its path), and
+the `codex_app_server` API mode is refused at agent init — the codex agent
+compacts its own thread with no truthful pre-compaction boundary, so a
+required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
+compressor stays the only lossy authority.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the

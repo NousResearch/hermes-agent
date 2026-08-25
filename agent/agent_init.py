@@ -2799,6 +2799,19 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     # Apply micro-compaction settings to the compressor (feature is opt-in)
     _cc = getattr(agent, "context_compressor", None)
+    # compression.checkpoint_required: micro-compaction is a lossy rewrite
+    # authority too — it absorbs the oldest uncompacted exchanges into a
+    # rolling summary post-turn, with no pre-compress checkpoint hook in its
+    # path. Suppress it while the gate is armed so the checkpoint-aware
+    # batch compressor stays the only lossy authority (mirrors the
+    # server-side native-compaction suppression in native_compaction.py).
+    if compression_checkpoint_required and compression_micro_compact:
+        logger.warning(
+            "compression.checkpoint_required is enabled: post-turn "
+            "micro-compaction is disabled for this agent so every lossy "
+            "rewrite passes through the checkpoint-gated compressor."
+        )
+        compression_micro_compact = False
     if _cc is not None and hasattr(_cc, "_micro_compact_enabled"):
         _cc._micro_compact_enabled = compression_micro_compact
     if _cc is not None and hasattr(_cc, "_micro_compact_every_n_turns"):

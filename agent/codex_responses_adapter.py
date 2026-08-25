@@ -288,6 +288,43 @@ def _clamp_responses_call_id(call_id: str) -> str:
     return f"call_{digest}"
 
 
+# The Responses API enforces the same 64-char cap on function names as on
+# input item ids (_MAX_RESPONSES_ITEM_ID_LENGTH) — names over the cap are
+# rejected with the same non-retryable 400 as pattern violations.
+_VALID_RESPONSES_FN_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+
+
+def _sanitize_replayed_fn_name(name: str) -> str:
+    """Coerce a *replayed* function_call name to the Responses API contract.
+
+    The Responses API requires ``function_call.name`` to match
+    ``^[a-zA-Z0-9_-]+$`` and rejects the whole request with a non-retryable
+    HTTP 400 otherwise (issue #31666).  A name with invalid characters (dots,
+    spaces, unicode — e.g. from an earlier model degeneration) stored in
+    conversation history therefore bricks every subsequent turn of the
+    session: the 400 replays forever until the user manually starts a new
+    conversation.
+
+    Invalid characters are replaced with ``_`` (runs collapsed) rather than
+    stripped, so an all-invalid name degrades to the ``"fn"`` placeholder
+    instead of an empty string — an empty name would just trade one
+    non-retryable 400 for a preflight ValueError.  Valid names pass through
+    unchanged, preserving prompt-cache prefixes.
+
+    Apply this ONLY to replayed function_call input items, never to live
+    tool definitions: tool schema names must match the dispatch registry
+    exactly.  Pairing with function_call_output is by call_id, so renaming
+    a replayed function_call is safe.
+    """
+    if not isinstance(name, str):
+        return "fn"
+    if _VALID_RESPONSES_FN_NAME_RE.fullmatch(name):
+        return name
+    coerced = re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())
+    coerced = re.sub(r"_+", "_", coerced).strip("_")
+    return coerced[:64] or "fn"
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -688,7 +725,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": _clamp_responses_call_id(call_id),
-                            "name": fn_name,
+                            "name": _sanitize_replayed_fn_name(fn_name),
                             "arguments": arguments,
                         })
                         item_sources.append(msg)
@@ -813,7 +850,7 @@ def _preflight_codex_input_items(
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _sanitize_replayed_fn_name(name),
                     "arguments": arguments,
                 }
             )

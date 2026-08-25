@@ -28,7 +28,8 @@ from tools.delegate_tool_child_run import (  # noqa: F401
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _delegation_reasoning_pin, _get_child_timeout, _get_max_async_children,
+    _get_max_concurrent_children,
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials, _subagent_auto_approve, _subagent_auto_deny,
@@ -195,6 +196,16 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # An explicit delegation.reasoning_effort (including false/none) pins the child's level, and a
+    # parent-session user pick (/reasoning, --reasoning) extends to its children — either marks the
+    # child as user-overridden so its adaptive classifier stays inert. A merely inherited effective
+    # level is not a pin: the child reclassifies its own delegated goal within the propagated policy.
+    try:
+        delegation_reasoning_pinned = _delegation_reasoning_pin(delegation_cfg) is not None
+    except Exception:
+        delegation_reasoning_pinned = False
+    child.reasoning_user_override = bool(
+        delegation_reasoning_pinned or getattr(parent_agent, "reasoning_user_override", False))
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a

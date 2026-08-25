@@ -1106,6 +1106,14 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        # Adaptive reasoning escalation (opt-in) — refreshed per turn so a cached agent tracks config
+        # edits; a session /reasoning override is an explicit user pick and always wins over the
+        # classifier.
+        from agent.adaptive_reasoning import parse_adaptive_reasoning_config
+
+        agent.adaptive_reasoning = parse_adaptive_reasoning_config(
+            (ctx.user_config.get("agent") or {}).get("adaptive_reasoning"))
+        agent.reasoning_user_override = runner._session_reasoning_override_active(ctx.session_key)
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.

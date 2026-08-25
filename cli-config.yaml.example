@@ -1208,6 +1208,29 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
 
+  # Adaptive reasoning (opt-in, off by default)
+  # When enabled, Hermes classifies each message with a deterministic local
+  # heuristic (no extra LLM call) and temporarily raises the effort above
+  # reasoning_effort — up to max_effort — for tasks that warrant it (complex
+  # debugging, architecture/security work, consequential infrastructure
+  # changes, in-depth research). Setting min_effort: "low" additionally lets
+  # clearly simple turns (casual chatter, short fact lookups, single
+  # mechanical steps) drop below the baseline; omit it for escalation-only.
+  # "none" is never selected, so thinking stays on at every adaptive level.
+  # Requires an explicit reasoning_effort baseline above — without one the
+  # feature stays inert (installing thinking for a single turn would toggle
+  # thinking presence mid-conversation and fragment prompt caching).
+  # The baseline is restored after the turn and a one-line notice is shown
+  # whenever the level changes (raised or lowered). An explicit /reasoning
+  # <level> session pick always wins over adaptive adjustment. Delegate
+  # subagents inherit the parent's effective level plus this policy and
+  # reclassify their own goal; an explicit delegation.reasoning_effort pins
+  # them (see delegation section).
+  # adaptive_reasoning:
+  #   enabled: true
+  #   max_effort: "xhigh"   # adjustment ceiling: "high" or "xhigh"
+  #   min_effort: "low"     # optional floor; "low" enables downshift
+
   # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode
   # on Opus 4.8+). Premium pricing; only sent to first-party endpoints.
   #   "" / "normal" - off (default)
@@ -1680,6 +1703,10 @@ delegation:
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while
   #                                           # planning quality stays with the frontier parent.
+  # reasoning_effort: ""                      # Hard pin for subagent thinking level (none/minimal/low/medium/high/xhigh/max/ultra;
+  #                                           # false = disable thinking). Empty = inherit the parent's effective level; with
+  #                                           # agent.adaptive_reasoning enabled, an inheriting child also reclassifies its own
+  #                                           # goal within the same bounds. Setting a pin disables that child adaptation.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

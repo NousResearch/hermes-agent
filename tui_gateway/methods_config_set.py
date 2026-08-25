@@ -312,6 +312,9 @@ def _set_reasoning(rid, params, key, value, session):
         session["create_reasoning_override"] = parsed
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
+        # Session-scoped picks are explicit user overrides and suppress adaptive escalation; a global
+        # write is a new baseline, so escalation (if enabled) stays active.
+        session["agent"].reasoning_user_override = scope != "global"
         _persist_live_session_runtime(session)
         _emit_session_info(params.get("session_id", ""), session)
     return _kv(rid, key, arg)

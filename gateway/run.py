@@ -3299,6 +3299,17 @@ class GatewayRunner(
         sessions = self.__dict__.get("_sessions")
         return sessions.get(session_key) if sessions else None
 
+    def _session_reasoning_override_active(self, session_key: Optional[str]) -> bool:
+        """True when a session-scoped ``/reasoning`` override is set.
+
+        Used to suppress adaptive reasoning escalation: an explicit user pick always wins over the
+        classifier.
+        """
+        if not session_key:
+            return False
+        state = self._peek_session_state(session_key)
+        return state is not None and state.conversation.reasoning_override is not None
+
     def _is_session_running(self, session_key: str) -> bool:
         """True when the session holds a running-turn slot (agent or sentinel)."""
         state = self._peek_session_state(session_key)

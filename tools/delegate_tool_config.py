@@ -408,6 +408,19 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+def _delegation_reasoning_pin(delegation_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Parsed ``delegation.reasoning_effort`` pin, or None when unset/unparseable (inherit the parent).
+
+    Keep the raw value — a YAML ``false`` must disable thinking, not coerce to "" and inherit. Silent
+    on unparseable values; ``_resolve_child_runtime`` owns the warning.
+    """
+    raw = delegation_cfg.get("reasoning_effort")
+    if not (raw or raw is False):
+        return None
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(raw)
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -464,18 +477,19 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning: delegation.reasoning_effort > parent. Delegation happens mid-turn, so the parent's
+    # reasoning_config here is its *effective* level — including an adaptive per-turn adjustment —
+    # and becomes the child's starting baseline. The parent's adaptive policy rides along so the
+    # child reclassifies its own goal; an explicit pin (see _delegation_reasoning_pin) suppresses that.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is None:
+        pinned = _delegation_reasoning_pin(delegation_cfg)
+        if pinned is not None:
+            child_reasoning = pinned
+        else:
+            delegation_effort = delegation_cfg.get("reasoning_effort")
+            if delegation_effort or delegation_effort is False:
                 logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
-            else:
-                child_reasoning = parsed
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
@@ -485,6 +499,7 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
+        "adaptive_reasoning": getattr(parent_agent, "adaptive_reasoning", None),
         # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
         # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
         "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),

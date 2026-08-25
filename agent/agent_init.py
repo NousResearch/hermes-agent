@@ -2192,7 +2192,8 @@ def init_agent(
     notice_callback: callable = None, notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
-    reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+    reasoning_config: Dict[str, Any] = None, adaptive_reasoning: Dict[str, Any] = None,
+    service_tier: str = None,
     request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -2263,6 +2264,19 @@ def init_agent(
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Opt-in per-turn reasoning adjustment (agent.adaptive_reasoning in config.yaml). Interactive
+    # surfaces (CLI, gateway, TUI/Desktop) pass the raw config section; the delegate tool passes the
+    # parent's parsed policy so subagents inherit the parent's effective level and reclassify their
+    # own goal (parse is a fixed point, so re-parsing is safe). Cron and batch runs pass nothing and
+    # stay on their configured effort. reasoning_user_override marks an explicit session-scoped user
+    # pick (/reasoning, Desktop effort menu) or a delegation.reasoning_effort pin, which disables
+    # adaptive adjustment.
+    from agent.adaptive_reasoning import parse_adaptive_reasoning_config
+
+    agent.adaptive_reasoning = parse_adaptive_reasoning_config(adaptive_reasoning)
+    agent.reasoning_user_override = False
+    agent._adaptive_prev_effort = None
+    agent._adaptive_last_notified_effort = None
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

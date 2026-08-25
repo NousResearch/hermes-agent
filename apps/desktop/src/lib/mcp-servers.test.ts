@@ -17,6 +17,15 @@ describe('getServers', () => {
     expect(getServers({ mcp_servers: servers })).toEqual(servers)
   })
 
+  // Field-level junk is the readers' problem, not this filter's — they coerce
+  // and tolerate. Pinned so a later tightening of `isEntry` can't start
+  // dropping entries that merely carry a bad field.
+  it('keeps entries whose fields are junk', () => {
+    const servers = { files: { command: 42, enabled: 'yes' } }
+
+    expect(getServers({ mcp_servers: servers })).toEqual(servers)
+  })
+
   // A key left without a value in config.yaml parses as `null`, and every
   // reader (the `enabled` gate, the transport label, the probe) reaches
   // straight into the entry — so one of these used to take the pane down.

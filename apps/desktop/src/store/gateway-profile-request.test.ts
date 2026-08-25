@@ -42,7 +42,7 @@ vi.mock('@/hermes', () => ({
   },
   setApiRequestConnection: vi.fn()
 }))
-vi.mock('@/store/session', () => ({ setGatewayState: vi.fn() }))
+vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
@@ -212,6 +212,9 @@ describe('requestGatewayForAgent', () => {
       touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
+
+    await openGatewayForAgent('remote-primary', 'default')
+    await ensureGatewayForAgent('remote-primary', 'default')
 
     const result = await requestGatewayForAgent('remote-primary', 'default', 'session.resume', {
       session_id: 'stored-session'

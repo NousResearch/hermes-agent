@@ -9,7 +9,7 @@ import {
   selectConnection,
   setConnectionsRegistry
 } from '@/store/connections'
-import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
+import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
@@ -867,6 +867,17 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(getConfiguredDefaultProjectDir()).toBe('/settings-b')
     expect($currentCwd.get()).toBe('/settings-b')
     expect(configPublications).toEqual(['settings-b'])
+  })
+
+  it('publishes the cold-boot primary registry identity for owned session RPCs', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {

@@ -39,7 +39,7 @@ from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
-from tui_gateway.event_replay import _stamp_event
+from tui_gateway.event_replay import stamp_event as _stamp_event
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -2021,6 +2021,17 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     params: dict = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
+    # Stamp the current turn's trace_id onto every event frame so the client
+    # can correlate the full turn lifecycle from one identifier. Looks up
+    # the inflight turn for this session; events outside a turn (session.info
+    # on idle, skin.changed) have no trace_id.
+    session = _sessions.get(sid)
+    if session is not None:
+        inflight = session.get("inflight_turn")
+        if isinstance(inflight, dict):
+            trace_id = inflight.get("trace_id")
+            if trace_id:
+                params["trace_id"] = trace_id
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -8419,6 +8430,11 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
         "streaming": True,
         "updated_at": now,
         "user": _inflight_text(text),
+        # Per-turn trace ID: stamped on every event frame emitted during this
+        # turn so a client can correlate the full lifecycle (dispatch → first
+        # token → tool calls → complete) from a single identifier. Cleared
+        # when the turn ends.
+        "trace_id": uuid.uuid4().hex[:12],
     }
 
 

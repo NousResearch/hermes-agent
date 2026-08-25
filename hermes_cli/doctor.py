@@ -2253,6 +2253,34 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # Plugin-registered terminal backends (if one is the active backend)
+    if terminal_env not in {
+        "local", "docker", "singularity", "modal", "managed_modal",
+        "daytona", "vercel_sandbox", "ssh",
+    }:
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(terminal_env)
+        except Exception:
+            _provider = None
+        if _provider is None:
+            _fail_and_issue(
+                f"Unknown terminal backend '{terminal_env}'",
+                "(no built-in or plugin backend by that name)",
+                "Fix terminal.backend in config.yaml, or install/enable the plugin that provides it",
+                issues,
+            )
+        else:
+            for _ok, _label, _detail in _provider.doctor_checks():
+                if _ok:
+                    check_ok(_label, _detail)
+                else:
+                    _fail_and_issue(_label, _detail, _detail.strip("()"), issues)
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

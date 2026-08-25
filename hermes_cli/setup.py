@@ -1429,6 +1429,26 @@ def setup_terminal_backend(config: dict):
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
+    # Plugin-registered terminal backends (standalone plugin repos installed
+    # under ~/.hermes/plugins/). Fail-soft: a broken plugin must not take the
+    # setup wizard down.
+    plugin_backend_names = []
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # idempotent — plugin state may not be loaded yet
+        from agent.terminal_env_registry import list_providers
+
+        for _provider in list_providers():
+            _pname = _provider.name.strip().lower()
+            terminal_choices.append(f"{_provider.display_name} - {_provider.description}")
+            idx_to_backend[next_idx] = _pname
+            backend_to_idx[_pname] = next_idx
+            plugin_backend_names.append(_pname)
+            next_idx += 1
+    except Exception:
+        pass
+
     # Add keep current option
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
@@ -1669,6 +1689,18 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend in plugin_backend_names:
+        try:
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(selected_backend)
+            print_success(f"Terminal backend: {_provider.display_name}")
+            for _line in _provider.setup_instructions():
+                print_info(_line)
+            _provider.post_setup()
+        except Exception as exc:
+            print_warning(f"Backend plugin setup hook failed: {exc}")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

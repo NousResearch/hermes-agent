@@ -3916,7 +3916,18 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     """
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    if env_type in ("local", "ssh"):
+        return False
+    # Plugin-registered backends: honor their declarative flag. Fail-soft
+    # to False — an unknown backend keeps the approval layer ON.
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(env_type, "skip_container_guards", False))
+    except Exception:
+        return False
 
 
 def check_dangerous_command(command: str, env_type: str,

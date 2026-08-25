@@ -2596,6 +2596,71 @@ class PluginContext:
         )
         return handle
 
+    # -- terminal environment provider registration ----------------------------
+
+    @_serialized_replacement
+    def register_terminal_environment_provider(self, provider) -> Optional[PluginRegistration]:
+        """Register a pluggable terminal execution backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.terminal_env_provider.TerminalEnvironmentProvider`.
+        The ``provider.name`` attribute is what ``terminal.backend`` in
+        ``config.yaml`` (bridged to ``TERMINAL_ENV``) matches against when
+        the dispatch ladder in :func:`tools.terminal_tool._create_environment`
+        finds no built-in backend of that name.
+
+        Names colliding with built-in backends (local, docker, singularity,
+        modal, daytona, vercel_sandbox, ssh) are rejected by the registry —
+        plugins extend the backend set, they never shadow in-tree backends.
+
+        Mirrors :meth:`register_browser_provider` — same registration shape,
+        same gating, same logging.
+        """
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        from agent.terminal_env_registry import (
+            register_provider as _register_terminal_env_provider,
+            restore_registration,
+            snapshot_registration,
+        )
+
+        if not isinstance(provider, TerminalEnvironmentProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a terminal environment "
+                "provider that does not inherit from "
+                "TerminalEnvironmentProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        registry_name = provider.name.strip().lower()
+        scope = self._manager.scope_key
+        previous = snapshot_registration(registry_name, scope=scope)
+        try:
+            _register_terminal_env_provider(provider, scope=scope)
+        except ValueError as exc:
+            logger.warning(
+                "Plugin '%s' terminal environment provider rejected: %s",
+                self.manifest.name, exc,
+            )
+            return
+        registered = snapshot_registration(registry_name, scope=scope)
+        if registered is not provider:
+            return None
+        handle = self._track_replacement(
+            "terminal_environment_provider",
+            registry_name,
+            slot=("terminal_environment_provider", scope, registry_name),
+            current=provider,
+            previous=previous,
+            restore=lambda replacement: restore_registration(
+                registry_name, provider, replacement, scope=scope
+            ),
+        )
+        logger.info(
+            "Plugin '%s' registered terminal environment provider: %s",
+            self.manifest.name, registry_name,
+        )
+        return handle
+
     # -- secret source registration -------------------------------------------
 
     @_serialized_replacement

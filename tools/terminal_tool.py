@@ -1362,20 +1362,39 @@ def _resolve_container_alias(task_id: str) -> str:
     return key
 
 
-def _docker_session_isolation_enabled() -> bool:
-    """True when docker sessions get their OWN containers (issue: stale
-    workspace mounts leaking between desktop sessions).
+def _session_isolation_enabled() -> bool:
+    """True when non-persistent sandboxes get per-session identities.
 
-    Gated on ``terminal.backend: docker`` + ``container_persistent: false``:
-    a non-persistent sandbox is a statement that state must not survive the
-    session, so sharing one container across sessions contradicts it. With
-    ``container_persistent: true`` the documented ONE-long-lived-container
-    contract is unchanged.
+    ``container_persistent: false`` is a statement that state must not
+    survive or be shared across sessions, so sharing one sandbox across
+    sessions contradicts it (#82731). Backends whose non-persistent mode is
+    session-scoped:
+
+    - ``docker`` — per-session containers (the original fix).
+    - plugin backends that declare ``session_isolated_when_nonpersistent``
+      (e.g. sandboxes resumed *by name*, where a shared deterministic name
+      under non-persistent mode would let two independent ephemeral runs
+      attach one live VM and delete it out from under each other).
     """
     _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    env_type = os.getenv("TERMINAL_ENV", "local")
+    if env_type != "docker" and not _plugin_env_flag(
+        env_type, "session_isolated_when_nonpersistent"
+    ):
         return False
     return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+
+
+def _docker_session_isolation_enabled() -> bool:
+    """Docker-specific view of :func:`_session_isolation_enabled`.
+
+    Kept separate because several docker-only paths (workspace mount
+    selection, session-scoped container teardown) key off it; those must
+    not fire for other backends.
+    """
+    if os.getenv("TERMINAL_ENV", "local") != "docker":
+        return False
+    return _session_isolation_enabled()
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1429,7 +1448,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     if task_id and _has_isolation_overrides(task_id):
         return task_id
-    if task_id and _docker_session_isolation_enabled():
+    if task_id and _session_isolation_enabled():
         return _resolve_container_alias(task_id)
     # Per-session isolation: when a session key is present (the WebUI streaming
     # layer sets it per-session, the gateway per-message via contextvars), scope
@@ -1554,6 +1573,44 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 
 
+def _plugin_env_flag(env_type: str, attr: str, default=False):
+    """Classification attribute for a plugin-registered terminal backend.
+
+    Fail-soft: returns *default* when the registry is unavailable, the
+    backend is unknown, or the provider attribute raises — a misbehaving
+    plugin must degrade, never take the terminal tool down.
+    """
+    if not env_type or env_type in _CONTAINER_BACKENDS or env_type in {"local", "ssh", "managed_modal"}:
+        return default
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return provider_flag(env_type, attr, default)
+    except Exception:
+        return default
+
+
+def _is_container_backend(env_type: str) -> bool:
+    """True when *env_type* behaves like a container/sandbox backend.
+
+    Built-in container backends via ``_CONTAINER_BACKENDS``; plugin-registered
+    backends via their declarative ``is_container`` flag.
+    """
+    return env_type in _CONTAINER_BACKENDS or _plugin_env_flag(env_type, "is_container")
+
+
+def _get_plugin_env_provider(env_type: str):
+    """Return the registered plugin provider for *env_type*, or None."""
+    if not env_type or env_type in _CONTAINER_BACKENDS or env_type in {"local", "ssh", "managed_modal"}:
+        return None
+    try:
+        from agent.terminal_env_registry import get_provider
+
+        return get_provider(env_type)
+    except Exception:
+        return None
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """Return True if *cwd* is a host/relative path that won't work as the
     working directory inside a container sandbox.
@@ -1637,7 +1694,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    container_backend = _is_container_backend(env_type)
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1696,7 +1753,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in _CONTAINER_BACKENDS and cwd:
+    elif _is_container_backend(env_type) and cwd:
         # Host paths and relative paths that won't work inside containers
         if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
@@ -1999,9 +2056,31 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     else:
+        provider = _get_plugin_env_provider(env_type)
+        if provider is not None:
+            env_obj = provider.create_environment(
+                cwd=cwd, timeout=timeout, task_id=task_id,
+                image=image, container_config=cc,
+            )
+            # Stamp the backend name so path-resolution and progress surfaces
+            # can identify plugin backends without class-name sniffing.
+            try:
+                env_obj._hermes_backend_name = provider.name.strip().lower()
+            except AttributeError:
+                pass  # test doubles may reject attributes
+            return env_obj
+        try:
+            from agent.terminal_env_registry import plugin_backend_names
+
+            plugin_names = plugin_backend_names()
+        except Exception:
+            plugin_names = []
+        extra = (
+            ", " + ", ".join(f"'{n}'" for n in plugin_names) if plugin_names else ""
+        )
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'ssh'{extra}"
         )
 
 
@@ -2172,7 +2251,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
                 container_config=(
                     _container_config_from_config(config)
-                    if env_type in _CONTAINER_BACKENDS else None
+                    if _is_container_backend(env_type) else None
                 ),
                 local_config=None,
                 task_id=effective_task_id,
@@ -2649,7 +2728,7 @@ def _resolve_command_cwd(
     recorded = get_session_cwd(session_key)
     if (
         recorded
-        and env_type in _CONTAINER_BACKENDS
+        and _is_container_backend(env_type)
         and _is_unusable_container_cwd(recorded)
     ):
         logger.info(
@@ -2765,7 +2844,7 @@ def terminal_tool(
         # Valid in-container override paths (RL/benchmark sandboxes that set
         # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
         # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
             remapped = "/workspace" if host_cwd else config["cwd"]
             if cwd != remapped:
                 logger.info(
@@ -2860,7 +2939,7 @@ def terminal_tool(
                         ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
                         container_config = (
                             _container_config_from_config(config)
-                            if env_type in _CONTAINER_BACKENDS else None
+                            if _is_container_backend(env_type) else None
                         )
 
                         local_config = None
@@ -3871,9 +3950,12 @@ def check_terminal_requirements() -> bool:
             return get_secret("DAYTONA_API_KEY") is not None
 
         else:
+            provider = _get_plugin_env_provider(env_type)
+            if provider is not None:
+                return bool(provider.check_requirements(config))
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, ssh, or a plugin-registered backend.",
                 env_type,
             )
             return False

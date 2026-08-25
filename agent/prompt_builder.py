@@ -1195,6 +1195,35 @@ _REMOTE_TERMINAL_BACKENDS = frozenset({
 # Only states what we know from the backend choice itself (container type,
 # likely OS family). Does NOT invent cwd, user, or $HOME — the agent is
 # told to probe those directly if it needs them.
+def _plugin_backend_is_remote(backend: str) -> bool:
+    """Whether a plugin-registered terminal backend runs commands remotely.
+
+    Fail-soft: unknown names return False (treated as local, matching the
+    historical behavior for unrecognized TERMINAL_ENV values).
+    """
+    if not backend or backend in _REMOTE_TERMINAL_BACKENDS or backend == "local":
+        return False
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(backend, "is_remote", False))
+    except Exception:
+        return False
+
+
+def _plugin_backend_description(backend: str) -> str | None:
+    """Prompt fallback description declared by a plugin backend, if any."""
+    try:
+        from agent.terminal_env_registry import get_provider
+
+        provider = get_provider(backend)
+        if provider is not None:
+            return provider.env_description
+    except Exception:
+        pass
+    return None
+
+
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "docker": "a Docker container (Linux)",
     "singularity": "a Singularity container (Linux)",
@@ -1309,7 +1338,9 @@ def _probe_remote_backend(env_type: str) -> str | None:
             }
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        from tools.terminal_tool import _is_container_backend as _is_container
+
+        if _is_container(env_type):
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -1413,7 +1444,7 @@ def build_environment_hints() -> str:
     hints: list[str] = []
 
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
+    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
 
     if not is_remote_backend:
         # --- Host info block (local backend: host == where tools run) ---
@@ -1461,7 +1492,9 @@ def build_environment_hints() -> str:
             )
         else:
             description = _BACKEND_FALLBACK_DESCRIPTIONS.get(
-                backend, f"a {backend} environment (likely Linux)"
+                backend,
+            ) or _plugin_backend_description(backend) or (
+                f"a {backend} environment (likely Linux)"
             )
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "

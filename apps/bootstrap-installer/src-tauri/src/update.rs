@@ -158,11 +158,13 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
 
 /// True when the on-disk marker names THIS process as its owner.
 ///
-/// `live_marker_owner` cannot answer this: it deliberately maps
-/// self-ownership to `None` (the #74761 pre-write adoption). The exit-2
-/// self-heal below needs the raw fact, because a `hermes update` child that
-/// refuses over OUR marker is a handoff-recognition failure, not a real
-/// concurrent update.
+/// A raw read is used instead of `live_marker_owner` on purpose: that
+/// helper folds in age and liveness policy (and, since the #74761
+/// adoption work, self-ownership handling has changed shape more than
+/// once). The exit-2 self-heal below needs exactly one raw fact — does
+/// the marker name our PID — because a `hermes update` child that
+/// refuses over OUR marker is a handoff-recognition failure in a stale
+/// checkout, not a real concurrent update.
 fn marker_owned_by_self(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()

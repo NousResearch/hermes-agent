@@ -4130,6 +4130,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     provider_tool_in_flight["yes"] = True
             except Exception:
                 pass
+            # Payload-empty terminal chunk: the provider completed the
+            # stream (`finish_reason` set, no further writable delta). The
+            # attempt/writer fence exists to stop a superseded stream from
+            # writing *more* text. Fending this marker-only chunk discards
+            # the only completion signal, which the drop-guard then
+            # mislabels as a mid-stream drop. A finish chunk that still
+            # carries content/tool_calls remains gated.
+            try:
+                _choices = getattr(_chunk, "choices", None)
+                if _choices:
+                    _choice = _choices[0]
+                    if getattr(_choice, "finish_reason", None):
+                        _delta = getattr(_choice, "delta", None)
+                        _has_write = bool(
+                            getattr(_delta, "content", None)
+                            or getattr(_delta, "tool_calls", None)
+                            or getattr(_delta, "reasoning_content", None)
+                            or getattr(_delta, "reasoning", None)
+                        )
+                        if not _has_write:
+                            return True
+            except Exception:
+                pass
             if not _stream_attempt_is_active(stream_attempt_id):
                 return False
             token = _writer_token["value"]

@@ -1360,3 +1360,22 @@ class TestDockerSessionSandboxMediaTranslation:
         )
 
         assert kept == [(str(produced.resolve()), False)]
+
+    def test_unresolved_docker_media_names_the_cause(self, monkeypatch, caplog):
+        """Approach C: a container path whose sandbox never existed must log
+        WHY it was dropped (sandbox mismatch), not just the generic unsafe-
+        path line — the silent-drop mode reported in #93950."""
+        import logging
+
+        self._enable_docker(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            resolved = BasePlatformAdapter.validate_media_delivery_path(
+                "/workspace/ghost.png", session_key=self.SESSION_KEY
+            )
+
+        assert resolved is None
+        assert any(
+            "did not resolve to a host sandbox file" in r.message
+            and f"session_key={self.SESSION_KEY}" in r.message
+            for r in caplog.records
+        )

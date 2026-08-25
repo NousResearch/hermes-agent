@@ -1641,6 +1641,26 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
         return []
 
 
+def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str) -> None:
+    """Name WHY a container-absolute MEDIA path failed translation (#93950).
+
+    Under Docker these failures used to surface only as the generic
+    "Skipping unsafe MEDIA directive path" line one level up, leaving the
+    file seemingly vanished. Point at the sandbox/session mismatch instead.
+    Gated to Docker mode so host-path rejections stay quiet.
+    """
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return
+    logger.warning(
+        "Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
+        "the producing container's sandbox directory may not exist yet or "
+        "was pruned",
+        _log_safe_path(str(candidate)),
+        reason,
+        f", session_key={session_key}" if session_key else "",
+    )
+
+
 def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
     """Translate a container-absolute path to its host path when possible.
 
@@ -1684,8 +1704,8 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
             mounts.append((default_home, Path("/root")))
 
     if not mounts:
+        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
         return None
-
     # Longest container-prefix match.
     best: Optional[Tuple[Path, Path, int]] = None
     candidate_posix = candidate.as_posix()
@@ -1696,13 +1716,14 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
             if best is None or score > best[2]:
                 best = (host_root, container_root, score)
     if best is None:
+        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
         return None
-
     host_root, container_root, _ = best
     try:
         relative = candidate.relative_to(container_root)
         translated = (host_root / relative).resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
+        _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
         return None
     if translated != host_root and not _path_is_within(translated, host_root):
         return None

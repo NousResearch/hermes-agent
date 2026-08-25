@@ -198,7 +198,14 @@ THREAT_PATTERNS = [
     (r'truncate\s+-s\s*0\s+/', "truncate_system", "critical", "destructive", "truncates system file to zero bytes"),
     # ── Persistence ──
     (r'\bcrontab\b', "persistence_cron", "medium", "persistence", "modifies cron jobs"),
-    (r'\.(bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zlogin)\b',
+    # ``profile`` is split out and anchored: ``.zshrc`` after a dot is always the file, but
+    # ``.profile`` is also how every language spells attribute access (``self.profile``,
+    # ``data?.profile``, ``func().profile``), which flooded scans of ordinary code. Requiring
+    # a non-identifier, non-call/index/optional-chain character before the dot keeps real paths
+    # (``~/.profile``, ``"$HOME/.profile"``, ``./.profile``) and drops attribute reads.
+    (r'\.(bashrc|zshrc|bash_profile|bash_login|zprofile|zlogin)\b',
+     "shell_rc_mod", "medium", "persistence", "references shell startup file"),
+    (r'(?<![\w)\]?])\.profile\b',
      "shell_rc_mod", "medium", "persistence", "references shell startup file"),
     (r'authorized_keys', "ssh_backdoor", "critical", "persistence", "modifies SSH authorized keys"),
     (r'ssh-keygen', "ssh_keygen", "medium", "persistence", "generates SSH keys"),

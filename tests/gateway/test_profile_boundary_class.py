@@ -39,11 +39,6 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="#82936: _make_run_env copies undeclared os.environ vars into "
-    "secondary-profile subprocess env under multiplexing",
-)
 def test_multiplex_terminal_env_excludes_other_profiles_undeclared_secret(
     monkeypatch,
 ):

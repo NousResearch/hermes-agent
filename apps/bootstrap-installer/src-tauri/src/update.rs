@@ -176,6 +176,18 @@ fn marker_owned_by_self(path: &Path) -> bool {
         == Some(std::process::id())
 }
 
+/// The exit-2 heal decision (#75788), extracted so the contract is testable.
+///
+/// True only when BOTH hold: the child exited with the concurrent-update
+/// refusal code, AND the on-disk marker names THIS process. That combination
+/// means the child refused over its own parent's claim — a stale checkout
+/// without handoff recognition — so dropping the claim and retrying once is
+/// safe. Any other owner (live foreign updater, garbage, missing marker) or
+/// any other exit code must leave the refusal untouched.
+fn should_heal_self_marker_refusal(exit_code: Option<i32>, marker_path: &Path) -> bool {
+    exit_code == Some(UPDATE_EXIT_CONCURRENT) && marker_owned_by_self(marker_path)
+}
+
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
@@ -457,9 +469,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // IS the update: drop our claim and retry once with the marker absent.
     // The guard re-removes on Drop (idempotent), and the desktop is already
     // gone at this point, so nothing races the brief marker-free window.
-    if update.exit_code == Some(UPDATE_EXIT_CONCURRENT)
-        && marker_owned_by_self(&crate::paths::update_in_progress_marker())
-    {
+    if should_heal_self_marker_refusal(
+        update.exit_code,
+        &crate::paths::update_in_progress_marker(),
+    ) {
         emit_log(
             &app,
             Some("update"),
@@ -1468,6 +1481,113 @@ mod tests {
             !marker.exists(),
             "Drop must still clear the marker we adopted"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- exit-2 self-marker heal (#75788) --------------------------------
+    // The deadlock: the updater holds the marker with its own PID; a stale
+    // checkout's `hermes update` reads it as a live foreign update and exits
+    // 2; the generic retry deliberately skips exit 2 — so the refusal loops
+    // forever. These tests pin the heal decision's full contract. On
+    // merge-base product code (no heal) the decision function does not exist
+    // and the refusal is terminal — the A/B run proves that.
+
+    #[test]
+    fn self_owned_marker_plus_exit_2_heals() {
+        let dir = unique_tmp_dir("heal-self-owned");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        assert!(
+            should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a child refusing over OUR marker is the #75788 deadlock — must heal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn foreign_owned_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-foreign");
+        let marker = dir.join(".hermes-update-in-progress");
+        // A live sibling process stands in for a genuinely concurrent updater.
+        let mut foreign = spawn_foreign_holder();
+        std::fs::write(&marker, format!("{}\n123\n", foreign.id())).unwrap();
+
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a foreign owner is a REAL concurrent update — the refusal must stand"
+        );
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_or_garbage_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-garbage");
+        let missing = dir.join("never-written");
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &missing),
+            "no marker on disk = the child refused over something else entirely"
+        );
+
+        let garbage = dir.join(".hermes-update-in-progress");
+        std::fs::write(&garbage, "not-a-pid\n123\n").unwrap();
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &garbage),
+            "an unparseable marker must not be treated as ours"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_exit_2_outcomes_never_heal() {
+        let dir = unique_tmp_dir("heal-wrong-exit");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        for code in [Some(0), Some(1), Some(3), None] {
+            assert!(
+                !should_heal_self_marker_refusal(code, &marker),
+                "heal is exit-2-only; exit {code:?} must keep its normal path"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heal_end_to_end_marker_lifecycle() {
+        // The full deadlock-and-heal sequence with a REAL marker guard, as
+        // run_update executes it: acquire (marker written with our pid) →
+        // child exits 2 refusing our own claim → heal decision fires →
+        // complete() drops the claim → the retry's precondition (no marker,
+        // or a marker the child can now claim) holds.
+        let dir = unique_tmp_dir("heal-e2e");
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        assert!(marker.exists(), "updater holds the marker during the child run");
+
+        // Stale child refused over our claim:
+        assert!(should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
+
+        // The heal drops the claim exactly as run_update does:
+        guard.complete();
+        assert!(
+            !marker.exists(),
+            "claim dropped — the one retry now runs with the marker absent"
+        );
+
+        // And with the marker gone the heal can never fire twice (the retry's
+        // own exit 2, e.g. a genuinely still-running Hermes, stays terminal).
+        assert!(!should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

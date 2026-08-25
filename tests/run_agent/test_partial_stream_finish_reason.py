@@ -91,6 +91,95 @@ class TestPartialStreamStubFinishReason:
         assert response.choices[0].message.tool_calls is None
 
 
+class TestTerminalChunkFenceException:
+    """A superseded writer must still accept the provider's terminal
+    finish_reason chunk. Fending that chunk leaves finish_reason None
+    after real text was delivered, which the drop-guard mislabels as a
+    mid-stream drop even though the provider completed the stream.
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_superseded_writer_accepts_finish_reason_chunk(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent_box = {}
+
+        class SupersedeBeforeFinish:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="Long prose that is complete.")
+                agent_box["agent"]._claim_stream_writer()
+                # Marker-only terminal chunk (empty delta), as vLLM emits.
+                yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SupersedeBeforeFinish()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent_box["agent"] = agent
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Long prose that is complete."
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_superseded_writer_still_fences_further_content(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent_box = {}
+
+        class SupersedeBeforeMoreText:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield _make_stream_chunk(content="kept ")
+                agent_box["agent"]._claim_stream_writer()
+                # A False accept_chunk ends consumption; this text must
+                # never reach the accumulator, and the later finish chunk
+                # is never seen (the fence still stops *further* content).
+                yield _make_stream_chunk(content="must-not-append")
+                yield _make_stream_chunk(finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SupersedeBeforeMoreText()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent_box["agent"] = agent
+        response = agent._interruptible_streaming_api_call({})
+
+        content = response.choices[0].message.content or ""
+        assert "must-not-append" not in content
+        assert "kept" in content
+        assert response.id == PARTIAL_STREAM_STUB_ID
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_genuine_truncation_without_finish_still_drops(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        def _truncated():
+            yield _make_stream_chunk(content="cut off with no terminal chunk")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _truncated()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
 

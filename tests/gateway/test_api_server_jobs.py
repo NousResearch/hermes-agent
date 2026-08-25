@@ -438,6 +438,57 @@ class TestListJobExecutions:
                 resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions")
                 assert resp.status == 404
 
+    @pytest.mark.asyncio
+    async def test_list_job_executions_limit_clamped(self, adapter):
+        """?limit=1000000 is clamped server-side instead of streaming the whole ledger."""
+        app = _create_app(adapter)
+        mock_list_executions = MagicMock(return_value=[])
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_list_executions", mock_list_executions
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?limit=1000000")
+                assert resp.status == 200
+                mock_list_executions.assert_called_once_with(
+                    job_id=VALID_JOB_ID, limit=500, before_claimed_at=None,
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_negative_limit_clamped(self, adapter):
+        """A negative limit must not reach list_executions, where SQLite treats it as unbounded."""
+        app = _create_app(adapter)
+        mock_list_executions = MagicMock(return_value=[])
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_list_executions", mock_list_executions
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?limit=-5")
+                assert resp.status == 200
+                mock_list_executions.assert_called_once_with(
+                    job_id=VALID_JOB_ID, limit=1, before_claimed_at=None,
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_malformed_before(self, adapter):
+        """A malformed cursor gets a 400 telling the client, not a generic 500."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?before=not-a-timestamp")
+                assert resp.status == 400
+
 
 class TestGetJobOutput:
     @pytest.mark.asyncio

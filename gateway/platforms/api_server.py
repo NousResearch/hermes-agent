@@ -15,6 +15,7 @@ import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
+from datetime import datetime
 from functools import wraps
 import logging
 import os
@@ -3507,7 +3508,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 limit = int(limit_raw) if limit_raw is not None else 50
             except ValueError:
                 return web.json_response({"error": "limit must be an integer"}, status=400)
+            limit = max(1, min(limit, 500))
             before = request.query.get("before") or None
+            if before is not None:
+                try:
+                    datetime.fromisoformat(before)
+                except ValueError:
+                    return web.json_response({"error": "before must be an ISO-format timestamp"}, status=400)
             executions = _cron_list_executions(
                 job_id=job_id, limit=limit, before_claimed_at=before,
             )

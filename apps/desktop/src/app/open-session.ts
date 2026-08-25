@@ -171,20 +171,13 @@ export function openSession(
   // (artifacts, skills, …) that still has to route back: fronting the tab
   // alone leaves the page showing.
   //
-  // A TILE hit under `in-place` also routes into main (#92926): a sidebar
-  // click means "open this chat", and fronting a tab elsewhere in the tree
-  // reads as a dead click — the main column never changes. Routing binds the
+  // A TILE hit routes into main too (#92926): a sidebar click means "open
+  // this chat in main", and fronting a tab elsewhere in the tree reads as a
+  // dead click — the main column never changes. Routing binds the
   // conversation to main and resumeSession closes the now-redundant tile.
   // (`tab`/`stack` opens keep the front-only jump: those intents asked for a
   // tab beside, not a takeover of main.)
   const focused = focusOpenSession(storedSessionId, workspaceScope)
-
-  // A TILE hit routes too (#92926): a sidebar click means "open this chat in
-  // main", and fronting a tab elsewhere in the tree reads as a dead click —
-  // the main column never changes. Routing binds the conversation to main and
-  // resumeSession closes the now-redundant tile. (`tab`/`stack` opens keep
-  // the front-only jump: those intents asked for a tab beside, not a takeover
-  // of main.)
   if (focused === 'tile' || focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }

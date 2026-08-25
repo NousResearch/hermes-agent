@@ -111,6 +111,16 @@ describe('openSession', () => {
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 
+  it('stack spends a blank main even when the session already sits in a tile', () => {
+    // stack resolves against main occupancy BEFORE the tile check: with a
+    // blank draft on main it becomes in-place, so the #92926 tile-route
+    // applies (fronting the tile would leave the blank main showing).
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'stack')
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
   it('in-place focuses main when already selected and not on a page', () => {
     focusOpenSession.mockReturnValue('main')
     openSession('s1', navigate)

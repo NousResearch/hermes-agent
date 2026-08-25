@@ -129,6 +129,52 @@ def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_h
     assert Path(get_hermes_home()) == root
 
 
+def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_homes):
+    """A rejected explicit route sets the observable drop marker once.
+
+    ``profile_route_rejected`` is not write-only: the primary handler stamps it
+    when routing raises ``ProfileRouteRejected``, dispatches under the default
+    home, and ``_handle_message``'s ingress gate reads the same marker to drop
+    the message fail-closed without re-running routing.
+    """
+    from gateway.profile_routing import ProfileRouteRejected
+    from gateway.run import GatewayRunner
+
+    root, _profile = multiplex_homes
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    route_calls = []
+
+    def rejecting_route(source):
+        route_calls.append(source.chat_id)
+        raise ProfileRouteRejected("unserved profile")
+
+    runner._profile_name_for_source = rejecting_route
+    seen = []
+
+    async def capture_scope(event):
+        seen.append((Path(get_hermes_home()), event.source.profile_route_rejected))
+
+    runner._handle_message = capture_scope
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="unserved-channel",
+        user_id="user-1",
+    )
+    event = MessageEvent(text="hi", source=source)
+
+    handler = runner._primary_message_handler()
+    asyncio.run(handler(event))
+    # A second delivery must not re-run routing: the sentinel says
+    # "already attempted, don't retry".
+    asyncio.run(handler(event))
+
+    assert seen == [(root, True), (root, True)]
+    assert route_calls == ["unserved-channel"]
+    assert source.profile_route_rejected is True
+
+
 def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     """A shared bot authorizes with its own allowlist before using routed state.
 

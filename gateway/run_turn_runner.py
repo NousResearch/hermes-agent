@@ -1230,9 +1230,12 @@ class TurnRunner:
         return response
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
-        """Send the approval request from the agent thread: the adapter's interactive button
-        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
-        from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
+        """Send the approval request from the agent thread as ONE message carrying the full context
+        (system risk + sanitised model-supplied Purpose/Effect/Risk): the adapter's interactive button
+        approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps.
+        Raises ``DeliveryError`` when delivery definitively fails so ``_await_gateway_decision``
+        treats the approval as notify-failed instead of waiting on a reply that can never come."""
+        from gateway.run import _deliver_approval_message
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1240,52 +1243,19 @@ class TurnRunner:
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
-        cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description", "dangerous command")
-        flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
-        # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
-            try:
-                fut = self._schedule(
-                    adapter.send_exec_approval(
-                        chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
-                    ),
-                    "send_exec_approval scheduling error",
-                )
-                if fut is None:
-                    raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
-                if outcome == "sent":
-                    return
-                if outcome == "ambiguous":
-                    # Timeout ≠ failure: the card may have posted with a late ack. The prompt
-                    # registration stays alive so a tap still resolves; re-sending made duplicate
-                    # cards + orphaned "/approve: nothing pending".
-                    logger.warning(
-                        "Button-based approval send timed out — treating "
-                        "as possibly-delivered (no re-send; the prompt "
-                        "stays armed for a late tap)"
-                    )
-                    return
-                logger.warning("Button-based approval failed (send returned error), falling back to text")
-            except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
-        # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
-            )
-            if fut is not None:
-                fut.result(timeout=15)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        _deliver_approval_message(
+            adapter,
+            ctx._status_chat_id,
+            approval_data.get("command", ""),
+            approval_data.get("description", "dangerous command"),
+            ctx.session_key or "",
+            ctx._status_thread_metadata,
+            ctx._loop_for_step,
+            logger,
+            allow_permanent=approval_data.get("allow_permanent", True),
+            allow_session=approval_data.get("allow_session", True),
+            smart_denied=approval_data.get("smart_denied", False),
+        )
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

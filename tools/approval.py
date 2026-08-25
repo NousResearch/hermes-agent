@@ -16,11 +16,15 @@ import hashlib
 import importlib
 import logging
 import os
+import re
 import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
 from tools import approval_context
+# Sibling-standard alias (see approval_gateway_wait / approval_prompt): ``check_all_command_guards``
+# takes a model-supplied ``approval_context`` argument that shadows the module name in its body.
+from tools import approval_context as _ctx
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
@@ -395,7 +399,7 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, explanation: dict | None = None) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
@@ -403,6 +407,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
     pending["description"] = description
+    if explanation is not None:
+        pending["explanation"] = explanation
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
     submit_pending(session_key, pending)
@@ -644,14 +650,17 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], warnings: list[tuple],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False,
-                    permanent_capable: bool = True, pending_body=None) -> dict:
+                    permanent_capable: bool = True, pending_body=None,
+                    explanation: dict | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
     session/always. ``permanent_capable`` hides [a]lways when no key could be permanently
     allowlisted (pure-tirith prompts); a smart-DENY owner override reduces every surface to
     once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
-    actually asked, so a smart APPROVE never pays for redacting a large script.
+    actually asked, so a smart APPROVE never pays for redacting a large script. ``explanation`` is the
+    sanitised model-supplied purpose/effect/risk (command gate), attached to the gateway notify
+    payload and the pending-approval entry so approval surfaces can render it.
     """
     from agent.redact import redact_sensitive_text
 
@@ -717,6 +726,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
+            if explanation is not None:
+                data["explanation"] = explanation
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
@@ -746,6 +757,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                explanation=explanation,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -968,13 +980,125 @@ def _tirith_scan(command: str) -> dict:
         }]}
 
 
+def _clean_approval_context(approval_context: dict | None) -> dict:
+    """Normalize optional model-supplied approval context."""
+    if not isinstance(approval_context, dict):
+        return {}
+    allowed = {
+        "purpose": "purpose",
+        "effect": "effect",
+        "risk": "risk",
+        "approval_purpose": "purpose",
+        "approval_effect": "effect",
+        "approval_risk": "risk",
+    }
+    cleaned = {}
+    for src, dst in allowed.items():
+        value = approval_context.get(src)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                cleaned[dst] = value[:1000]
+    return cleaned
+
+
+def _approval_context_or_fallback(approval_context: dict | None) -> dict:
+    """Return normalized model-supplied approval context, if provided."""
+    return _clean_approval_context(approval_context)
+
+
+_FORGE_RE = re.compile(r'^[/!](approve|deny)|^(⚠|⚠️)', re.IGNORECASE)
+
+
+def _sanitize_explanation(explanation: dict | None) -> dict:
+    """Sanitize model-supplied approval context before it reaches any user surface.
+
+    Applies in order: credential redaction, newline normalisation,
+    control-character stripping (LF preserved for line-based forge
+    detection), forged-command-line removal, per-field and total length
+    caps.  Returns an empty dict when the input is empty or invalid.
+    """
+    if not isinstance(explanation, dict) or not explanation:
+        return {}
+    from agent.redact import redact_sensitive_text
+
+    cleaned: dict[str, str] = {}
+    total = 0
+    for key in ("purpose", "effect", "risk"):
+        value = str(explanation.get(key, "")).strip()
+        if not value:
+            continue
+        value = redact_sensitive_text(value, force=True)
+        # Normalize endings first and keep LF so line-based forge
+        # detection still sees "/approve" on its own line. Stripping CR/LF
+        # before the split would glue "normal text\\n/approve session"
+        # into one non-matching line.
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+        value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", "", value)
+        # Drop lines that try to forge approve/deny commands or approval
+        # headings so a model cannot hijack the approval-instruction surface.
+        safe_lines = [
+            ln for ln in value.split("\n") if not _FORGE_RE.match(ln)
+        ]
+        value = "\n".join(safe_lines)
+        if len(value) > 1000:
+            value = value[:1000]
+        if total + len(value) > 3000:
+            value = value[:max(0, 3000 - total)]
+        if value:
+            cleaned[key] = value
+            total += len(value)
+    return cleaned
+
+
+def _build_enhanced_description_with_context(
+    system_desc: str,
+    explanation: dict | None,
+) -> str:
+    """Combine the system-level risk description with sanitised model-supplied
+    purpose/effect/risk context into a single description string suitable for
+    every approval surface (gateway button, text fallback, CLI prompt).
+
+    Raises ``ValueError`` when the result would be empty — callers MUST
+    refuse to deliver an insufficient approval prompt (fail-closed).
+    """
+    parts = [system_desc.strip()]
+
+    if isinstance(explanation, dict) and explanation:
+        ctx = []
+        for key, label in (
+            ("purpose", "Purpose"),
+            ("effect", "Effect"),
+            ("risk", "Risk"),
+        ):
+            val = str(explanation.get(key, "")).strip()
+            if val:
+                ctx.append(f"{label}: {val}")
+        if ctx:
+            parts.append("")
+            parts.append("—— Model-provided context (unverified) ——")
+            parts.extend(ctx)
+            parts.append("—— End unverified context ——")
+
+    result = "\n".join(parts)
+    if not result or not result.strip():
+        raise ValueError(
+            "Approval description is empty — refusing to deliver "
+            "an insufficient approval prompt."
+        )
+    return result
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             approval_context: dict | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
-    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow.
+    ``approval_context``: optional model-supplied purpose/effect/risk explaining why the command
+    is being run; sanitised and surfaced only when approval is required."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
 
@@ -982,7 +1106,7 @@ def check_all_command_guards(command: str, env_type: str,
     if blocked is not None:
         return blocked
 
-    approval_mode = approval_context._get_approval_mode()
+    approval_mode = _ctx._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
@@ -1016,6 +1140,14 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    approval_explanation = _approval_context_or_fallback(approval_context)
+    # Approval output is a secret-egress boundary: sanitise model-supplied
+    # context and build a single enhanced description that every surface
+    # (gateway button, text fallback, CLI prompt) consumes directly.
+    approval_explanation = _sanitize_explanation(approval_explanation)
+    enhanced_desc = _build_enhanced_description_with_context(
+        combined_desc, approval_explanation,
+    )
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
 
@@ -1023,11 +1155,12 @@ def check_all_command_guards(command: str, env_type: str,
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
     return _human_decision(
-        _COMMAND_GATE, command=command, description=combined_desc,
+        _COMMAND_GATE, command=command, description=enhanced_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
         permanent_capable=any(not is_t for _, _, is_t in warnings),
+        explanation=approval_explanation,
     )
 
 

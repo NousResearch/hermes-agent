@@ -340,7 +340,7 @@ import {
 } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
-import { enumerateWindowsFrontToBack, readWindowBelow } from './window-below'
+import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -11833,8 +11833,29 @@ function startHudGameOverlayFeed(win: BrowserWindow) {
   // did-finish-load also covers HMR full reloads during development.
   win.webContents.on('did-finish-load', () => push(last))
 
+  // The watch gives up after two failed enumerations and never says so, which
+  // is how a HUD that cannot see the screen at all — no game cue, and
+  // read_window_below failing beside it — leaves nothing in the log to explain
+  // itself. Report the reason once; the null keeps the watch's contract.
+  let reported = false
+
+  const enumerate = async () => {
+    const windows = await enumerateWindowsFrontToBack(process.pid, titlesAvailable)
+
+    if (!enumerationFailed(windows)) {
+      return windows
+    }
+
+    if (!reported) {
+      reported = true
+      console.warn(`[hermes] HUD cannot enumerate windows: ${windows.reason}`)
+    }
+
+    return null
+  }
+
   const dispose = startHudGameOverlayWatch({
-    enumerate: () => enumerateWindowsFrontToBack(process.pid, titlesAvailable),
+    enumerate,
     displayBounds: () => screen.getDisplayMatching(win.getBounds()).bounds,
     selfPid: process.pid,
     send: state => {

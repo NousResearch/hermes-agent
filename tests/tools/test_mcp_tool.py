@@ -2394,6 +2394,24 @@ class TestMCPSelectiveToolLoading:
         )
         assert registered == ["mcp__ink__create_service"]
 
+    def test_empty_include_registers_nothing(self):
+        """include: [] is an explicit empty whitelist, not "no filter".
+
+        The install checklist writes include: [] when the user unchecks
+        every tool ("contributes nothing until reconfigured") — the next
+        session must not register the full tool surface.
+        """
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": []},
+        }
+        registered, _ = self._run_discover(
+            "ink",
+            ["create_service", "delete_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == []
 
     def test_enabled_false_skips_connection_attempt(self):
         from tools.mcp_tool import discover_mcp_tools

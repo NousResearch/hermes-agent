@@ -7125,17 +7125,21 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     #   tools.exclude — blacklist: all tools EXCEPT matching ones are registered
     #   entries may be exact names or fnmatch globs (e.g. "*_radar_*")
     #   include takes precedence over exclude
+    #   include: [] → register nothing (an explicit empty whitelist, as
+    #   written by the install checklist's "uncheck everything" path)
     #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
+    include_raw = tools_filter.get("include")
     include_set = _normalize_name_filter(
-        tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
+        include_raw, f"mcp_servers.{name}.tools.include"
     )
+    include_active = isinstance(include_raw, (str, list, tuple, set))
     exclude_set = _normalize_name_filter(
         tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
     )
 
     def _should_register(tool_name: str) -> bool:
-        if include_set:
+        if include_active:
             return matches_name_filter(tool_name, include_set)
         if exclude_set:
             return not matches_name_filter(tool_name, exclude_set)
@@ -7389,15 +7393,19 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     fingerprint = config_fingerprint(config)
     tool_timeout = _resolve_tool_timeout(config)
     tools_filter = config.get("tools") or {}
+    include_raw = tools_filter.get("include")
     include_set = _normalize_name_filter(
-        tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
+        include_raw, f"mcp_servers.{name}.tools.include"
     )
+    # include: [] is an explicit empty whitelist (register nothing) — see the
+    # live discovery path above for the full filter rules.
+    include_active = isinstance(include_raw, (str, list, tuple, set))
     exclude_set = _normalize_name_filter(
         tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
     )
 
     def _should_register(tool_name: str) -> bool:
-        if include_set:
+        if include_active:
             return matches_name_filter(tool_name, include_set)
         if exclude_set:
             return not matches_name_filter(tool_name, exclude_set)

@@ -20,10 +20,17 @@ from hermes_cli import update_cmd
 
 
 class _Completed:
-    def __init__(self, returncode: int):
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
         self.returncode = returncode
-        self.stdout = ""
-        self.stderr = ""
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _successful_recovery_result(profiles: list[str]) -> _Completed:
+    return _Completed(
+        0,
+        stdout=json.dumps({"succeeded": profiles, "failed": []}),
+    )
 
 
 def _runtime(profile: str, supervisor: str, kind: str = "gateway"):
@@ -40,7 +47,7 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return _Completed(0)
+        return _successful_recovery_result(["coder", "default"])
 
     monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
     plan = SimpleNamespace(
@@ -82,7 +89,7 @@ def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatc
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return _Completed(0)
+        return _successful_recovery_result(["coder"])
 
     monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
     plan = SimpleNamespace(
@@ -95,6 +102,33 @@ def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatc
         skip_profiles={"default"},
     )
     assert json.loads(calls[0][1]["input"]) == {"profiles": ["coder"]}
+
+
+def test_abort_recovery_rejects_partial_json_success(monkeypatch):
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: _Completed(
+            0,
+            stdout=json.dumps({"succeeded": ["default"], "failed": ["coder"]}),
+        ),
+    )
+    plan = SimpleNamespace(
+        runtimes=[_runtime("default", "systemd"), _runtime("coder", "systemd")]
+    )
+
+    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
+
+
+def test_abort_recovery_rejects_malformed_json_success(monkeypatch):
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        lambda *args, **kwargs: _Completed(0, stdout="not-json"),
+    )
+    plan = SimpleNamespace(runtimes=[_runtime("default", "systemd")])
+
+    assert update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False) is False
 
 
 def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):

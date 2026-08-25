@@ -5697,15 +5697,33 @@ def _recover_gateway_restart_after_abort(
         logger.warning("Fresh gateway restart recovery failed: %s", exc)
         return False
 
-    if result.returncode == 0:
-        print(
-            "  ✓ Retried supervised gateway restart(s) in a fresh process: "
-            + ", ".join(profiles)
-        )
-        return True
+    if result.returncode != 0:
+        logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
+        return False
 
-    logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
-    return False
+    try:
+        recovery_result = json.loads(result.stdout or "")
+        succeeded = recovery_result.get("succeeded")
+        failed = recovery_result.get("failed")
+    except (AttributeError, TypeError, ValueError):
+        logger.warning("Fresh gateway restart recovery returned invalid JSON")
+        return False
+
+    if (
+        not isinstance(succeeded, list)
+        or not isinstance(failed, list)
+        or any(not isinstance(profile, str) for profile in [*succeeded, *failed])
+        or set(succeeded) != set(profiles)
+        or failed
+    ):
+        logger.warning("Fresh gateway restart recovery returned incomplete profiles")
+        return False
+
+    print(
+        "  ✓ Retried supervised gateway restart(s) in a fresh process: "
+        + ", ".join(profiles)
+    )
+    return True
 
 
 def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:

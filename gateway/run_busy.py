@@ -207,6 +207,18 @@ class GatewayBusySessionMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
             return False
+        current_tool = getattr(running_agent, "_current_tool", None)
+        if not isinstance(current_tool, str):
+            try:
+                summary = running_agent.get_activity_summary()
+            except Exception:
+                summary = None
+            if isinstance(summary, dict):
+                current_tool = summary.get("current_tool")
+        if isinstance(current_tool, str):
+            active_tools = {part.strip() for part in current_tool.split(",")}
+            if "delegate_task" in active_tools:
+                return True
         children = getattr(running_agent, "_active_children", None)
         # Real collections only — a ``MagicMock()._active_children`` auto-attr must not demote.
         if not isinstance(children, (list, tuple, set)) or not children:

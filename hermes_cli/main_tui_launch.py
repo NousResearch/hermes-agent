@@ -302,6 +302,36 @@ def _iter_tui_build_inputs(root: Path):
             if path.is_file() and path.suffix in _TUI_BUILD_INPUT_SUFFIXES:
                 yield path
 
+@contextlib.contextmanager
+def _tui_build_lock(root: Path):
+    """Serialize concurrent npm run build invocations for one TUI bundle."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+
+    lock_fd = None
+    lock_path = root / "dist" / ".build.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w", encoding="utf-8")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                lock_fd.close()
+            lock_fd = None
+
+    try:
+        yield
+    finally:
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                lock_fd.close()
+
 
 def _tui_need_rebuild(root: Path) -> bool:
     """True when ``dist/entry.js`` is missing or older than TUI inputs (Termux cold-start saver);
@@ -574,9 +604,30 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         return [npm, "start"], tui_dir
 
     # Desktop/dev launches always rebuild; Termux cold starts use the freshness
-    # check because esbuild startup is expensive on old mobile CPUs.
+    # check because esbuild startup is expensive on old mobile CPUs. The lock
+    # prevents concurrent panes from rebuilding the same bundle redundantly; a
+    # waiter skips only when it can prove a peer published a fresh bundle while
+    # it was blocked.
     if not termux_startup or did_install or termux_need_rebuild:
-        _run_tui_npm_build(_tui_node_bin("npm"), tui_dir, "TUI build failed.")
+        entry_path = tui_dir / "dist" / "entry.js"
+
+        def _entry_stamp() -> Optional[tuple[float, int]]:
+            try:
+                stat = entry_path.stat()
+            except OSError:
+                return None
+            return stat.st_mtime, stat.st_size
+
+        stamp_before = _entry_stamp()
+        with _tui_build_lock(tui_dir):
+            stamp_after = _entry_stamp()
+            peer_rebuilt = (
+                stamp_before is not None
+                and stamp_after is not None
+                and stamp_after != stamp_before
+            )
+            if not (peer_rebuilt and not _tui_need_rebuild(tui_dir)):
+                _run_tui_npm_build(_tui_node_bin("npm"), tui_dir, "TUI build failed.")
 
     return [_tui_node_bin("node"), "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
 

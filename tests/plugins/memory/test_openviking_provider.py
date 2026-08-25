@@ -1313,6 +1313,60 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     assert provider._memory_write_threads == set()
 
 
+def test_memory_write_uses_one_connection_for_identity_uri_and_post(monkeypatch):
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._agent = "alice-agent"
+    provider._ensure_client = lambda: True
+
+    identity_started = threading.Event()
+    release_identity = threading.Event()
+    write_finished = threading.Event()
+    writes = []
+
+    class StubClient:
+        def __init__(self, user, agent):
+            self._user = user
+            self._agent = agent
+
+        def get(self, path, **kwargs):
+            assert path == "/api/v1/system/status"
+            identity_started.set()
+            assert release_identity.wait(timeout=2.0)
+            return {"status": "ok", "result": {"user": self._user}}
+
+        def post(self, path, payload=None, **kwargs):
+            writes.append((self._user, self._agent, path, payload))
+            write_finished.set()
+            return {"status": "ok"}
+
+    alice = StubClient("alice", "alice-agent")
+    bob = StubClient("bob", "bob-agent")
+    provider._client = alice
+    monkeypatch.setattr(provider, "_new_client", lambda: alice)
+
+    provider.on_memory_write("add", "user", "remember this")
+    assert identity_started.wait(timeout=2.0), "identity probe did not start"
+
+    # Simulate a profile reload while the write worker is resolving identity.
+    provider._client = bob
+    provider._agent = "bob-agent"
+    release_identity.set()
+
+    assert write_finished.wait(timeout=2.0), "memory write did not finish"
+    for worker in list(provider._memory_write_threads):
+        worker.join(timeout=2.0)
+
+    assert len(writes) == 1
+    user, agent, path, payload = writes[0]
+    assert (user, agent, path) == ("alice", "alice-agent", "/api/v1/content/write")
+    assert payload["uri"].startswith(
+        "viking://user/alice/peers/alice-agent/memories/preferences/mem_"
+    )
+    assert provider._memory_write_threads == set()
+
+
 def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -1430,6 +1484,48 @@ def test_prefetch_prepends_session_start_memory_context_once_per_session():
         ),
     ]
     assert provider._search_prefetch_context.call_count == 2
+
+
+def test_session_start_reuses_one_fallback_user_after_status_probe_failure():
+    provider = _make_prefetch_provider()
+    provider._user = "configured-user"
+    provider._client._user = "configured-user"
+    provider._search_prefetch_context = MagicMock(return_value="")
+    status_calls = 0
+    status_timeouts = []
+    read_uris = []
+
+    def fake_get(path, params=None, **kwargs):
+        nonlocal status_calls
+        if path == "/api/v1/system/status":
+            status_calls += 1
+            status_timeouts.append(kwargs.get("timeout"))
+            if status_calls == 1:
+                raise RuntimeError("temporary status failure")
+            return {"status": "ok", "result": {"user": "alice"}}
+
+        uri = (params or {}).get("uri", "")
+        read_uris.append(uri)
+        if path == "/api/v1/content/read":
+            return {"result": "Configured-user profile."}
+        return {"result": []}
+
+    provider._client.get.side_effect = fake_get
+
+    block = provider.prefetch("What should we recall?", session_id="sid-fallback")
+
+    assert status_calls == 1
+    assert len(status_timeouts) == 1
+    assert 0 < status_timeouts[0] <= 3.0
+    assert read_uris == [
+        "viking://user/configured-user/memories/profile.md",
+        "viking://user/configured-user/memories/preferences",
+        "viking://user/configured-user/memories/entities",
+    ]
+    assert (
+        '<user-profile uri="viking://user/configured-user/memories/profile.md">'
+        in block
+    )
 
 
 def test_prefetch_reinjects_after_in_place_compression_same_session():

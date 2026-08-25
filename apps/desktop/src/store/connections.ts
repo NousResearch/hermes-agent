@@ -371,7 +371,7 @@ export async function selectConnection(connectionId: string): Promise<void> {
         // source is still the active one, and nothing reactive re-pulls its
         // lists (no scope moved): repaint it and land on a fresh draft there,
         // matching what a failed Settings apply leaves behind.
-        recoverActiveSourceAfterFailedGatewaySwitch()
+        recoverActiveSourceAfterFailedGatewaySwitch(token)
         requestFreshSession()
       }
 

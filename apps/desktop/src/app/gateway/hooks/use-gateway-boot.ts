@@ -475,18 +475,22 @@ export function useGatewayBoot({
         return
       }
 
-      // Barrier up + machine-context reset + session wipe, in one synchronous
-      // step — the shared commit point of every connection switch.
-      const switchToken = beginGatewaySwitch()
-      clearReconnectTimer()
-      clearBootRetryTimer()
-      bootRetryAttempt = 0
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
-      reauthNotified = false
+      let switchToken: null | ReturnType<typeof beginGatewaySwitch> = null
 
       try {
+        // Barrier up + machine-context reset + session wipe, in one synchronous
+        // step — the shared commit point of every connection switch. Keep this
+        // inside the error boundary: lifecycle/wipe setup can throw before a
+        // token is returned and must follow the normal boot-failure path.
+        switchToken = beginGatewaySwitch()
+        clearReconnectTimer()
+        clearBootRetryTimer()
+        bootRetryAttempt = 0
+        reconnectAttempt = 0
+        reconnectFailingSince = null
+        escalated = false
+        reauthNotified = false
+
         gateway.close()
         closeSecondaryGateways()
 
@@ -535,11 +539,19 @@ export function useGatewayBoot({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+          // Disarm this failed attempt before notifying: recovery UI may
+          // synchronously begin a newer switch and re-arm loading under its own
+          // token, which this older catch must not lower afterwards.
           setSessionsLoading(false)
+          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
         }
       } finally {
-        endGatewaySwitch(switchToken)
+        // beginGatewaySwitch cleans up internally when setup throws before
+        // returning. Never use token-less teardown here: it would force down a
+        // newer switch started synchronously by error recovery/notification UI.
+        if (switchToken !== null) {
+          endGatewaySwitch(switchToken)
+        }
       }
     }
 

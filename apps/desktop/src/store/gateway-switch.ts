@@ -101,7 +101,7 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
     // If a nested switch superseded this one, its owner is responsible instead.
     if (wipeStarted && stillOwnsSwitch) {
       try {
-        recoverActiveSourceAfterFailedGatewaySwitch()
+        recoverActiveSourceAfterFailedGatewaySwitch(token)
       } catch {
         // Recovery must never replace the original commit failure.
       }
@@ -129,23 +129,31 @@ export function endGatewaySwitch(token?: GatewaySwitchToken): void {
  * A commit that fails AFTER beginGatewaySwitch leaves the still-active source
  * with its lists wiped and the sidebar skeleton armed, and nothing reactive
  * re-pulls them (no source/profile scope moved). Repaint it explicitly so the
- * sidebar doesn't sit on the skeleton; the fetch is best-effort, the skeleton
- * always disarms.
+ * sidebar doesn't sit on the skeleton; the fetch is best-effort. Recovery
+ * retains the failed switch's token across the async refresh so it cannot
+ * request through, or disarm loading for, a newer route.
  */
-export function recoverActiveSourceAfterFailedGatewaySwitch(): void {
+export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitchToken): void {
   const lifecycle = switchLifecycle
 
   if (!lifecycle) {
     console.debug('[gateway-switch] cannot repaint the active source because no switch lifecycle is registered')
-    setSessionsLoading(false)
+
+    if (token === latestSwitchToken) {
+      setSessionsLoading(false)
+    }
 
     return
   }
 
   void Promise.resolve()
-    .then(() => lifecycle.refreshSessions())
+    .then(() => (token === latestSwitchToken ? lifecycle.refreshSessions() : undefined))
     .catch(() => undefined)
-    .finally(() => setSessionsLoading(false))
+    .finally(() => {
+      if (token === latestSwitchToken) {
+        setSessionsLoading(false)
+      }
+    })
 }
 
 /**

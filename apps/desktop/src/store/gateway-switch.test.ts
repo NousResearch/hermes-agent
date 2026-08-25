@@ -156,9 +156,20 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     expect($gatewaySwitching.get()).toBe(false)
   })
 
-  it('recovers the active source and tears down its barrier when the wipe throws partway through', async () => {
+  it('does not disarm a newer switch while a partial-wipe recovery refresh is pending', async () => {
     const failure = new Error('profile fetch invalidation failed')
-    const refreshSessions = vi.fn(async () => undefined)
+    let finishRefresh: () => void = () => undefined
+    let refreshCompleted = false
+
+    const refreshPending = new Promise<void>(resolve => {
+      finishRefresh = resolve
+    })
+
+    const refreshSessions = vi.fn(async () => {
+      await refreshPending
+      refreshCompleted = true
+    })
+
     const off = registerGatewaySwitchLifecycle({ beforeConnectionSwitch: () => undefined, refreshSessions })
 
     vi.mocked(invalidateProfileListFetches).mockImplementationOnce(() => {
@@ -168,13 +179,46 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     expect(() => beginGatewaySwitch()).toThrow(failure)
     expect($gatewaySwitching.get()).toBe(false)
     await vi.waitFor(() => expect(refreshSessions).toHaveBeenCalledTimes(1))
-    expect($sessionsLoading.get()).toBe(false)
 
-    // The failed token cannot strand or lower ownership acquired afterwards.
+    // A newer switch takes ownership while the old source repaint is still in
+    // flight. Completing the old repaint must not lower the newer skeleton.
     const next = beginGatewaySwitch()
     expect($gatewaySwitching.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(true)
+
+    finishRefresh()
+    await vi.waitFor(() => expect(refreshCompleted).toBe(true))
+    await Promise.resolve()
+
+    expect($sessionsLoading.get()).toBe(true)
+    expect($gatewaySwitching.get()).toBe(true)
+
     endGatewaySwitch(next)
     expect($gatewaySwitching.get()).toBe(false)
+    off()
+  })
+
+  it('does not refresh through a newer route when recovery is superseded before it starts', async () => {
+    const failure = new Error('profile fetch invalidation failed')
+    const refreshSessions = vi.fn(async () => undefined)
+    const off = registerGatewaySwitchLifecycle({ beforeConnectionSwitch: () => undefined, refreshSessions })
+
+    vi.mocked(invalidateProfileListFetches).mockImplementationOnce(() => {
+      throw failure
+    })
+
+    expect(() => beginGatewaySwitch()).toThrow(failure)
+
+    // Recovery is queued on a microtask. A newer switch that starts first owns
+    // the active route, so the stale recovery must not issue a request through it.
+    const next = beginGatewaySwitch()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+    expect($sessionsLoading.get()).toBe(true)
+
+    endGatewaySwitch(next)
     off()
   })
 
@@ -263,11 +307,11 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     const refreshSessions = vi.fn(async () => undefined)
     const off = registerGatewaySwitchLifecycle({ beforeConnectionSwitch: () => undefined, refreshSessions })
 
-    beginGatewaySwitch()
+    const token = beginGatewaySwitch()
     expect($sessionsLoading.get()).toBe(true)
 
-    recoverActiveSourceAfterFailedGatewaySwitch()
-    endGatewaySwitch()
+    recoverActiveSourceAfterFailedGatewaySwitch(token)
+    endGatewaySwitch(token)
     await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
@@ -283,14 +327,18 @@ describe('beginGatewaySwitch / endGatewaySwitch — the shared switch commit poi
     })
 
     setSessionsLoading(true)
-    recoverActiveSourceAfterFailedGatewaySwitch()
+    const failingToken = beginGatewaySwitch()
+    recoverActiveSourceAfterFailedGatewaySwitch(failingToken)
+    endGatewaySwitch(failingToken)
     await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
     off()
 
     setSessionsLoading(true)
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const missingLifecycleToken = beginGatewaySwitch()
 
-    recoverActiveSourceAfterFailedGatewaySwitch()
+    recoverActiveSourceAfterFailedGatewaySwitch(missingLifecycleToken)
+    endGatewaySwitch(missingLifecycleToken)
     await vi.waitFor(() => expect($sessionsLoading.get()).toBe(false))
 
     expect(debug).toHaveBeenCalledWith(

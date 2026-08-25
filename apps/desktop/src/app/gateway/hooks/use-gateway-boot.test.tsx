@@ -12,6 +12,7 @@ import {
 import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $gatewaySwitching, beginGatewaySwitch, endGatewaySwitch } from '@/store/gateway-switch'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -19,6 +20,7 @@ import {
   $currentCwd,
   $gatewayState,
   $selectedStoredSessionId,
+  $sessionsLoading,
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
@@ -26,6 +28,11 @@ import { $sessionTiles } from '@/store/session-states'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
+
+vi.mock(import('@/store/notifications'), async importOriginal => ({
+  ...(await importOriginal()),
+  notifyError: vi.fn()
+}))
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -258,6 +265,7 @@ beforeEach(() => {
   FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
   powerResume = null
+  vi.mocked(notifyError).mockReset()
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -369,6 +377,39 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('reports a Settings switch setup failure and does not disarm a newer switch started by recovery UI', async () => {
+    const failure = new Error('machine-context reset failed')
+    const beforeConnectionSwitch = vi.fn()
+    let newerToken: null | ReturnType<typeof beginGatewaySwitch> = null
+
+    beforeConnectionSwitch.mockImplementationOnce(() => {
+      throw failure
+    })
+    vi.mocked(notifyError).mockImplementationOnce((_error, fallback) => {
+      // A notification/recovery callback may synchronously start another
+      // switch. The failed Settings attempt never received a token and must
+      // not force this newer owner's barrier down from its finally block.
+      newerToken = beginGatewaySwitch()
+
+      return fallback
+    })
+
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBe(failure.message)
+    expect(notifyError).toHaveBeenCalledWith(failure, expect.any(String))
+    expect(newerToken).not.toBeNull()
+    expect($gatewaySwitching.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(true)
+
+    endGatewaySwitch(newerToken ?? undefined)
   })
 
   it('a store-driven switch (Sessions switcher) runs the same machine-context reset as a Settings apply (#93937)', async () => {

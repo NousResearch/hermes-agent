@@ -540,7 +540,14 @@ export function useGatewayBoot({
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // Bounded for the same reason as attemptReconnect() (#93454): a wedged
+        // main-process round-trip must not latch $gatewaySwitching stuck —
+        // the `finally` below only runs once this promise settles.
+        const conn = await withTimeout(
+          desktop.getConnection(windowProfileOverride() ?? undefined),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out reconnecting to Hermes backend'
+        )
 
         if (!ownsSwitch()) {
           return
@@ -887,7 +894,13 @@ export function useGatewayBoot({
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Everything else keeps dialing the primary.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // Bounded like the reconnect path (#93454): a wedged main-process
+        // round-trip must not hang "Starting Hermes…" forever.
+        const conn = await withTimeout(
+          desktop.getConnection(windowProfileOverride() ?? undefined),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out connecting to Hermes backend'
+        )
 
         if (cancelled) {
           return

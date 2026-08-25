@@ -86,6 +86,8 @@ IMAGE_MAX_BYTES = 8 * 1024 * 1024  # skip absurdly large CQ image downloads
 MEDIA_MAX_BYTES = 20 * 1024 * 1024  # voice/video/file base64 cap (NapCat upload)
 MAX_MESSAGE_LENGTH = 4000  # QQ per-message cap (UTF-16-ish, keep safe)
 
+PLUGIN_VERSION = "1.0.0"
+
 # Max bytes for a downloaded voice clip (silk/amr from QQ).
 AUDIO_MAX_BYTES = 15 * 1024 * 1024
 
@@ -253,6 +255,16 @@ class OneBotAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             self._image_max_size = 1536
         self._require_mention = bool(extra.get("require_mention", True))
+        try:
+            self._max_inbound_file_bytes = int(extra.get("max_inbound_file_bytes", MEDIA_MAX_BYTES))
+        except (TypeError, ValueError):
+            self._max_inbound_file_bytes = MEDIA_MAX_BYTES
+        # 单条 interim 超时自动撤回（#2 回移，dsh 语义）：final 结算前每条
+        # interim 独立计时，到时未结算就单独撤回；0 = 关闭（只靠 final 结算）
+        try:
+            self._interim_recall_seconds = float(extra.get("interim_recall_seconds", 90))
+        except (TypeError, ValueError):
+            self._interim_recall_seconds = 90.0
         self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
         self._allow_from = {str(v) for v in (extra.get("allow_from") or [])}
@@ -287,6 +299,10 @@ class OneBotAdapter(BasePlatformAdapter):
         self._loop_buffer_ts: Dict[str, float] = {}
         # 合并转发已完成、待撤回的原消息 id（撤回在最终内容发送后执行）
         self._pending_recalls: Dict[str, List[str]] = {}
+        # #6 回移：/mode per-chat 出站模式覆盖（False=instant 逐条即时）
+        self._chat_interim_overrides: Dict[str, bool] = {}
+        # #6 回移：/ocr 用的最近入站图片路径（per chat）
+        self._last_image_path: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -299,6 +315,18 @@ class OneBotAdapter(BasePlatformAdapter):
         if not self._acquire_platform_lock("onebot", self._mode, "OneBot mode"):
             return False
         self._stopping = False
+        # #7 回移：t2i 墨水自检（防空豆腐卡；字体缺失仅告警不阻塞）
+        try:
+            if not is_reconnect:
+                _ink = _load_t2i_render().ink_check()
+                if not _ink.get("ok"):
+                    logger.warning(
+                        "[onebot] t2i ink check FAILED: loaded=%s cjk=%s — "
+                        "long replies will render tofu/fall back to text",
+                        _ink.get("loaded"), _ink.get("cjk"),
+                    )
+        except Exception as e:
+            logger.debug("[onebot] t2i ink check skipped: %s", e)
         try:
             if self._mode == "forward":
                 await self._connect_forward_once()
@@ -353,6 +381,8 @@ class OneBotAdapter(BasePlatformAdapter):
         app.router.add_get("/onebot", self._handle_reverse_ws)
         app.router.add_get("/", self._handle_reverse_ws)
         app.router.add_get("/api/group_history", self._handle_group_history)
+        app.router.add_get("/api/napcat", self._handle_napcat_api)
+        app.router.add_post("/api/send_media", self._handle_send_media)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)
@@ -381,6 +411,119 @@ class OneBotAdapter(BasePlatformAdapter):
             data = await self._call_action("get_group_msg_history", params, timeout=15.0)
             return web.json_response({"status": "ok", "data": data})
         except Exception as exc:
+            return web.json_response({"status": "error", "error": str(exc)}, status=500)
+
+    async def _handle_napcat_api(self, request: web.Request) -> web.Response:
+        """Whitelisted NapCat action proxy for the qq_napcat_api tool.
+
+        GET /api/napcat?action=<action>&params=<urlencoded-json>
+        Same loopback/LAN posture as /api/group_history (no auth).
+        """
+        action = request.query.get("action", "")
+        from plugins.platforms.onebot.tools import NAPCAT_API_WHITELIST
+
+        if action not in NAPCAT_API_WHITELIST:
+            return web.json_response(
+                {"status": "error", "error": f"action {action!r} not whitelisted"},
+                status=403,
+            )
+        try:
+            params = json.loads(request.query.get("params") or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        try:
+            data = await self._call_action(action, params, timeout=30.0)
+        except Exception as exc:
+            return web.json_response({"status": "error", "error": str(exc)}, status=500)
+        return web.json_response({"status": "ok", "data": data})
+
+    async def _handle_send_media(self, request: web.Request) -> web.Response:
+        """Media-forwarding endpoint for the qq_send_* tools.
+
+        POST /api/send_media  json: {chat_id, kind, ...}
+          - kind=image:   {sources: [path|url], caption?}
+          - kind=voice:   {path}
+          - kind=video:   {path}
+          - kind=file:    {path, file_name?}
+          - kind=forward: {nodes: [{name, content}]}
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "error": "bad json"}, status=400)
+        chat_id = str(payload.get("chat_id") or "")
+        kind = str(payload.get("kind") or "")
+        if not chat_id or kind not in ("image", "voice", "video", "file", "forward"):
+            return web.json_response(
+                {"status": "error", "error": "chat_id and kind (image/voice/video/file/forward) required"},
+                status=400,
+            )
+        try:
+            message_id = None
+            if kind == "image":
+                sources = [s for s in (payload.get("sources") or []) if isinstance(s, str) and s]
+                if not sources:
+                    return web.json_response({"status": "error", "error": "sources empty"}, status=400)
+                images = [
+                    (s if s.startswith(("http://", "https://")) else f"file://{s}", "")
+                    for s in sources
+                ]
+                await self.send_multiple_images(chat_id=chat_id, images=images)
+            elif kind == "voice":
+                path = str(payload.get("path") or "")
+                if not path:
+                    return web.json_response({"status": "error", "error": "path required"}, status=400)
+                res = await self.send_voice(chat_id, path)
+                message_id = getattr(res, "message_id", None)
+                if not getattr(res, "success", False):
+                    return web.json_response({"status": "error", "error": res.error or "send failed"})
+            elif kind == "video":
+                path = str(payload.get("path") or "")
+                if not path:
+                    return web.json_response({"status": "error", "error": "path required"}, status=400)
+                res = await self.send_video(chat_id, path)
+                message_id = getattr(res, "message_id", None)
+                if not getattr(res, "success", False):
+                    return web.json_response({"status": "error", "error": res.error or "send failed"})
+            elif kind == "file":
+                path = str(payload.get("path") or "")
+                if not path:
+                    return web.json_response({"status": "error", "error": "path required"}, status=400)
+                res = await self.send_document(
+                    chat_id, path, file_name=str(payload.get("file_name") or "") or None
+                )
+                message_id = getattr(res, "message_id", None)
+                if not getattr(res, "success", False):
+                    return web.json_response({"status": "error", "error": res.error or "send failed"})
+            else:  # forward
+                nodes = payload.get("nodes") or []
+                if not isinstance(nodes, list) or not nodes:
+                    return web.json_response({"status": "error", "error": "nodes empty"}, status=400)
+                kind_cid, target = _split_chat_id(chat_id)
+                array_nodes = [
+                    {
+                        "uin": self._self_id or "0",
+                        "name": str(n.get("name") or "Hermes")[:20],
+                        "content": [{"type": "text", "data": {"text": str(n.get("content") or "")[:500]}}],
+                    }
+                    for n in nodes
+                    if isinstance(n, dict)
+                ]
+                if not array_nodes:
+                    return web.json_response({"status": "error", "error": "nodes empty"}, status=400)
+                if kind_cid == "group":
+                    await self._call_action(
+                        "send_forward_msg", {"group_id": int(target), "messages": array_nodes}, timeout=30.0
+                    )
+                else:
+                    await self._call_action(
+                        "send_private_forward_msg",
+                        {"user_id": int(target), "messages": array_nodes},
+                        timeout=30.0,
+                    )
+            return web.json_response({"status": "ok", "message_id": message_id})
+        except Exception as exc:
+            logger.warning("[onebot] /api/send_media failed: %s", exc)
             return web.json_response({"status": "error", "error": str(exc)}, status=500)
 
     async def _handle_reverse_ws(self, request: web.Request) -> web.WebSocketResponse:
@@ -622,6 +765,24 @@ class OneBotAdapter(BasePlatformAdapter):
             if role == "member":
                 self._member_chats.add(chat_id)
 
+            # #6 回移：admin 本地命令（/ocr /mode /id /ver）直接处理回复，
+            # 不构造事件给 agent；其余斜杠交网关原生分发
+            if role == "admin" and text:
+                _probe = re.sub(r"^@\d+\s*", "", text.lstrip())
+                if _probe.startswith("/"):
+                    cmd = _probe.split(maxsplit=1)[0][1:].lower()
+                    if cmd and "/" not in cmd and cmd in ("ocr", "mode", "id", "ver"):
+                        try:
+                            reply = await self._handle_local_command(
+                                chat_id, chat_type, user_id, _probe
+                            )
+                        except Exception as e:
+                            logger.warning("[onebot] local command failed: %s", e)
+                            reply = f"❌ 命令执行失败：{e}"
+                        if reply:
+                            await self.send(chat_id, reply)
+                            return
+
             # 群聊普通用户：注入受限标记（agent 侧软限制依据）
             if role == "member" and chat_type == "group" and text:
                 text = f"[受限用户:仅问答]\n{text}"
@@ -648,6 +809,10 @@ class OneBotAdapter(BasePlatformAdapter):
                     logger.info("[onebot] get_msg failed for reply id=%s: %s", reply_id, e)
 
             has_voice = any(t.startswith("audio/") for t in media_types)
+            # #6 回移：记录最近入站图片路径（/ocr 用，per chat）
+            for i, mt in enumerate(media_types):
+                if mt == "image" and i < len(media_urls) and media_urls[i]:
+                    self._last_image_path[chat_id] = media_urls[i]
             if not text and not media_urls:
                 return
             event = MessageEvent(
@@ -736,6 +901,57 @@ class OneBotAdapter(BasePlatformAdapter):
             return True
         return False
 
+    async def _handle_local_command(self, chat_id: str, chat_type: str, user_id: str, text: str) -> Optional[str]:
+        """#6 回移：admin 本地斜杠命令（/ocr /mode /id /ver）。
+
+        返回要发送的回复文本；不认识的命令返回 None（交给网关斜杠分发）。
+        """
+        m = re.match(r"/(\S+)(?:\s+(.*))?$", text.strip())
+        if not m:
+            return None
+        cmd = m.group(1).lower()
+        arg = (m.group(2) or "").strip()
+        if cmd == "id":
+            return f"chat_id: {chat_id}\nuser_id: {user_id}"
+        if cmd == "ver":
+            return f"onebot-plugin v{PLUGIN_VERSION}"
+        if cmd == "mode":
+            if not arg:
+                cur = self._chat_interim_overrides.get(chat_id)
+                label = "interim（合并卡片）" if cur else "instant（逐条即时）"
+                state = "（/mode 覆盖）" if cur is not None else "（默认 interim）"
+                return f"当前出站模式：{label}{state}\n用法：/mode interim|instant"
+            if arg in ("interim", "on", "merge"):
+                self._chat_interim_overrides[chat_id] = True
+                return "✅ 已切换为 interim（合并卡片）模式。下一条回复生效。"
+            if arg in ("instant", "off", "direct"):
+                self._chat_interim_overrides[chat_id] = False
+                return "✅ 已切换为 instant（逐条即时）模式。下一条回复生效。"
+            return "用法：/mode interim|instant"
+        if cmd == "ocr":
+            path = self._last_image_path.get(chat_id, "")
+            if not path:
+                return "请先在对话里发一张图片，再 /ocr。"
+            try:
+                b64 = await self._file_to_base64(path)
+                if not b64:
+                    return "❌ 读取图片失败（文件缺失或超限）。"
+                data = await self._call_action(
+                    "ocr_image", {"image": f"base64://{b64}"}, timeout=30.0
+                )
+                texts = [
+                    t.get("text", "")
+                    for t in (data.get("texts") or [])
+                    if t.get("text")
+                ]
+                lines = "\n".join(texts).strip()
+                if not lines:
+                    return "OCR 未识别到文本。"
+                return "OCR 结果：\n" + lines[:1500]
+            except Exception as e:
+                return f"❌ OCR 失败：{e}"
+        return None
+
     async def _parse_content(self, raw: str) -> Tuple[str, List[str], List[str]]:
         """Convert a raw CQ-encoded message to (text, media_paths, media_types).
 
@@ -801,6 +1017,21 @@ class OneBotAdapter(BasePlatformAdapter):
         )
         text = u._CQ_REPLY_RE.sub(lambda m: "", text)
         text = u._CQ_FACE_RE.sub(lambda m: u._FACE_EMOJI.get(m.group(1), "[表情]"), text)
+        # 文件：优先下载（CDN 直链 / get_file base64-url 双通道），成功注入
+        # [文件:本地路径]，失败留待 _CQ_FILE_RE.sub 显示 [文件:名]
+        for m in u._CQ_FILE_RE.finditer(raw):
+            attrs = {}
+            for kv in m.group(1).split(","):
+                if "=" in kv:
+                    k, _, v = kv.partition("=")
+                    attrs[k.strip()] = u._cq_unescape(v.strip())
+            try:
+                fpath = await self._resolve_file(attrs)
+            except Exception as e:
+                logger.debug("[onebot] CQ file resolve failed: %s", e)
+                fpath = None
+            if fpath:
+                text = text.replace(m.group(0), f"[文件:{fpath}]")
         text = u._CQ_FILE_RE.sub(u._cq_file_text, text)
         text = u._CQ_VIDEO_RE.sub("[视频]", text)
         text = u._CQ_FORWARD_RE.sub(lambda m: f"[合并转发:{m.group(1)}]", text)
@@ -872,7 +1103,16 @@ class OneBotAdapter(BasePlatformAdapter):
                     logger.debug("[onebot] video download failed: %s", e)
                 text_parts.append("[视频]")
             elif seg_type == "file":
-                text_parts.append(f"[文件:{data.get('name', '')}]")
+                fname = data.get("name") or data.get("file") or "文件"
+                try:
+                    fpath = await self._resolve_file(data)
+                except Exception as e:
+                    logger.debug("[onebot] file resolve failed: %s", e)
+                    fpath = None
+                if fpath:
+                    text_parts.append(f"[文件:{fpath}]")
+                else:
+                    text_parts.append(f"[文件:{fname}]")
             elif seg_type == "face":
                 text_parts.append(_load_onebot_utils()._FACE_EMOJI.get(str(data.get("id", "")), "[表情]"))
             elif seg_type == "at":
@@ -1010,6 +1250,99 @@ class OneBotAdapter(BasePlatformAdapter):
         path = tmp / f"{kind}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{ext}"
         path.write_bytes(data)
         return str(path)
+
+    async def _resolve_file(self, data: dict) -> Optional[str]:
+        """入站文件双通道获取（dsh-onebot 回移，2026-08-25）。
+
+        NapCat 容器内的 get_file 路径对宿主不可达，所以：
+        1. 优先私聊 CDN 直链 get_private_file_url(file_id) → HTTP 下载；
+        2. 回退 get_file 的 base64 / http(s) url 载荷（NapCat 文件服务开启时）。
+        成功返回 /tmp/hermes_onebot/ 下的本地路径，失败返回 None。
+        """
+        fid = data.get("file_id") or data.get("file") or ""
+        if not fid:
+            return None
+        safe_name = (data.get("name") or data.get("file") or "file")[:80] or "file"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", safe_name) or "file"
+        max_bytes = self._max_inbound_file_bytes
+        # 1. 私聊直链（不依赖容器内路径）
+        try:
+            direct = await self._call_action(
+                "get_private_file_url", {"file_id": fid}, timeout=15.0
+            )
+            url = direct.get("url") or ""
+            if url:
+                path = await self._download_file_bytes(url, safe_name, max_bytes)
+                if path:
+                    logger.info("[onebot] file fetched via direct link: %s", path)
+                    return path
+        except Exception as e:
+            logger.debug(
+                "[onebot] get_private_file_url failed (falling back to get_file): %s", e
+            )
+        # 2. get_file：base64 或 http(s) url；容器内路径不可达，忽略
+        try:
+            gdata = await self._call_action("get_file", {"file": fid}, timeout=20.0)
+            try:
+                size = int(gdata.get("file_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if max_bytes > 0 and size > max_bytes:
+                logger.warning("[onebot] inbound file too large (%d B), skipping", size)
+                return None
+            if gdata.get("base64"):
+                path = await self._download_file_bytes(
+                    "base64://" + gdata["base64"], safe_name, max_bytes
+                )
+                if path:
+                    logger.info("[onebot] file fetched via get_file base64: %s", path)
+                    return path
+            url = gdata.get("url") or ""
+            if url.startswith(("http://", "https://")):
+                path = await self._download_file_bytes(url, safe_name, max_bytes)
+                if path:
+                    logger.info("[onebot] file fetched via get_file url: %s", path)
+                    return path
+        except Exception as e:
+            logger.debug("[onebot] get_file base64/url path failed: %s", e)
+        logger.warning("[onebot] inbound file fetch failed for %s", fid)
+        return None
+
+    async def _download_file_bytes(
+        self, url: str, safe_name: str, max_bytes: int
+    ) -> Optional[str]:
+        """下载入站文件到 /tmp/hermes_onebot/<safe_name>，带大小上限。"""
+        try:
+            if url.lower().startswith("base64://"):
+                try:
+                    data = base64.b64decode(url[len("base64://"):])
+                except Exception:
+                    return None
+            else:
+                headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+                timeout = aiohttp.ClientTimeout(total=30.0)
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            return None
+                        data = await resp.read()
+            if not data:
+                return None
+            if max_bytes > 0 and len(data) > max_bytes:
+                logger.warning("[onebot] inbound file too large (%d B), skipping", len(data))
+                return None
+            tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+            tmp.mkdir(exist_ok=True)
+            path = tmp / safe_name
+            if path.exists():
+                stem = Path(safe_name).stem
+                suffix = Path(safe_name).suffix
+                path = tmp / f"{stem}_{int(time.time() * 1000)}{suffix}"
+            path.write_bytes(data)
+            return str(path)
+        except Exception as e:
+            logger.warning("[onebot] inbound file download failed: %s", e)
+            return None
 
     def _shrink_image(self, path: Path) -> Optional[str]:
         """Downscale an image to ≤ `image_max_size` px on its long edge.
@@ -1160,6 +1493,8 @@ class OneBotAdapter(BasePlatformAdapter):
                 or bool(meta.get("expect_edits"))
             )
             is_final = bool(meta.get("notify")) or not is_interim
+            # /mode instant（#6 回移）：per-chat 关闭 loop 合并（interim 逐条即时）
+            _loop_enabled = self._chat_interim_overrides.get(chat_id, True)
             logger.info(
                 "[onebot] send: chat=%s len=%d final=%s interim=%s meta_keys=%s buf=%d",
                 chat_id, len(content or ""), is_final, is_interim,
@@ -1167,11 +1502,15 @@ class OneBotAdapter(BasePlatformAdapter):
             )
             # 最终消息：先合并转发（过程回顾先发出），撤回留到内容发送后
             # 顺序：合并转发 → 最终内容（t2i）→ 撤回原 interim（2026-08-14）
-            if is_final:
+            if is_final and _loop_enabled:
                 await self._merge_loop_buffer(chat_id, params, kind)
             # 消息发送成功后, interim 纯文本进缓冲（图片/语音等中间媒体不进）
             _buf_sent_ids: List[Tuple[str, str]] = []
-            _buf_sent_flag = is_interim and not (metadata or {}).get("media_files")
+            _buf_sent_flag = (
+                _loop_enabled
+                and is_interim
+                and not (metadata or {}).get("media_files")
+            )
 
             # QQ 合并转发指令: [[qq_forward]]名字\n内容\n---\n名字\n内容[[/qq_forward]]
             # 仅群聊支持 send_forward_msg; 私聊忽略该标记走普通文本。
@@ -1275,6 +1614,9 @@ class OneBotAdapter(BasePlatformAdapter):
             if _buf_sent_ids:
                 self._loop_buffer.setdefault(chat_id, []).extend(_buf_sent_ids)
                 self._loop_buffer_ts[chat_id] = time.time()
+                # #2 回移：每条 interim 独立计时，90s 内 final 未结算则单独撤回
+                for mid, text in _buf_sent_ids:
+                    asyncio.create_task(self._auto_recall_interim(chat_id, mid, text))
             else:
                 # 没有新 interim 写入时顺带做超时兜底：interim 后 5 分钟内
                 # final 未到（gateway 中断/异常），清掉残留缓冲防滞留
@@ -1298,19 +1640,44 @@ class OneBotAdapter(BasePlatformAdapter):
     async def _merge_loop_buffer(
         self, chat_id: str, params: Dict[str, Any], kind: str
     ) -> None:
-        """把一次回复周期内缓冲的 interim 消息合并为一条 QQ 转发（先发）。
+        """把一次回复周期内缓冲的 interim 消息结算为一条（先发）。
 
-        顺序（2026-08-14）：合并转发 → 最终内容（t2i）→ 撤回原消息。
-        本方法只做合并转发，撤回由 _recall_loop_buffer 在内容发送后执行。
+        顺序（2026-08-14）：结算卡 → 最终内容 → 撤回原消息。
+        结算形态（#3 回移，2026-08-25）优先回合末 t2i 小结卡（渲染整轮
+        interim 为一张文字图卡片）；渲染/发送失败回退合并转发。
 
-        - 仅当缓冲 ≥2 条时才合并（单条不值得；转发本身也占空间）
-        - 合并成功后待撤回 id 记入 _pending_recalls；失败则保留原消息（不丢内容）
+        - 仅当缓冲 ≥2 条时才结算（单条不值得；转发本身也占空间）
+        - 结算成功后待撤回 id 记入 _pending_recalls；失败则保留原消息（不丢内容）
         - 群聊用 send_forward_msg(group_id)，私聊用 send_private_forward_msg(user_id)
         """
         buf = self._loop_buffer.pop(chat_id, None)
         self._loop_buffer_ts.pop(chat_id, None)
         if not buf or len(buf) < 2:
             return
+        # 1) 回合末小结卡：渲染整轮 interim 为一张 t2i 卡片
+        try:
+            summary_text = "\n\n".join(
+                _load_onebot_utils().strip_markdown(t)[:300] for _, t in buf
+            )
+            if summary_text.strip():
+                png = await asyncio.to_thread(render_text_image, summary_text, "本轮进展")
+                if png:
+                    tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+                    tmp.mkdir(exist_ok=True)
+                    card = tmp / f"loop_summary_{int(time.time() * 1000)}.png"
+                    card.write_bytes(png)
+                    res = await self.send_image_file(chat_id, str(card))
+                    if getattr(res, "success", False):
+                        self._pending_recalls[chat_id] = [mid for mid, _ in buf]
+                        return
+                    logger.info(
+                        "[onebot] loop summary card send failed, falling back to merge-forward"
+                    )
+        except Exception as e:
+            logger.info(
+                "[onebot] loop summary render failed, falling back to merge-forward: %s", e
+            )
+        # 4) 回退：合并转发
         try:
             uin = str(self._self_id or self._bot_qq or "0")
             nodes = []
@@ -1340,8 +1707,40 @@ class OneBotAdapter(BasePlatformAdapter):
             self._pending_recalls.pop(chat_id, None)
             logger.info("[onebot] loop merge failed, keeping original messages: %s", e)
 
+    async def _auto_recall_interim(self, chat_id: str, mid: str, text: str) -> None:
+        """#2 回移：单条 interim 超时自动撤回（dsh 语义）。
+
+        interim 发送后计时 `_interim_recall_seconds`（默认 90s）；到点时若该
+        条仍在缓冲（final 尚未结算），单独撤回并从缓冲移除。final 结算或
+        新用户消息清缓冲后，任务到点发现条目已不在 → 无事（自愈，无需取消）。
+        """
+        delay = self._interim_recall_seconds
+        if delay <= 0:
+            return
+        try:
+            await asyncio.sleep(delay)
+            if self._stopping:
+                return
+            buf = self._loop_buffer.get(chat_id)
+            if not buf or (mid, text) not in buf:
+                return
+            buf.remove((mid, text))
+            logger.info("[onebot] auto-recall interim %s after %ss (no final)", mid, delay)
+            try:
+                await self._call_action("delete_msg", {"message_id": mid}, timeout=10.0)
+            except Exception as e:
+                logger.debug("[onebot] auto-recall delete_msg failed for %s: %s", mid, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[onebot] auto-recall interim failed: %s", e)
+
     async def _recall_loop_buffer(self, chat_id: str) -> None:
-        """撤回已合并转发的原 interim 消息（在最终内容发送完成后调用）。"""
+        """撤回已合并转发的原 interim 消息（在最终内容发送完成后调用）。
+
+        #4 回移：批量 delete_msg 每条间隔 60ms（RECALL_SPACING_MS），突发
+        连续撤回会撞 NapCat 接口超时。
+        """
         mids = self._pending_recalls.pop(chat_id, None)
         if not mids:
             return
@@ -1352,6 +1751,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 )
             except Exception as e:
                 logger.debug("[onebot] delete_msg failed for %s: %s", mid, e)
+            await asyncio.sleep(0.06)  # 60ms 撤回间隔，防 NapCat 限速
 
     async def _file_to_base64(self, path: str, max_bytes: int = IMAGE_MAX_BYTES) -> Optional[str]:
         try:
@@ -1775,3 +2175,12 @@ def register(ctx) -> None:
             "politely refuse and explain no permission."
         ),
     )
+    # 模型工具（qq_send_* / qq_napcat_api / qq_group_history）：gateway 进程
+    # 内也主动注册（CLI/TUI 由 provides_tools 预加载机制负责）。失败不影响
+    # 平台本身启动。
+    try:
+        from .tools import register_tools
+
+        register_tools(ctx)
+    except Exception as e:
+        logger.warning("[onebot] tools registration failed: %s", e)

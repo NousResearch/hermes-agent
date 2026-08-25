@@ -9,6 +9,17 @@ description: >
   downloaded for the vision tool; long replies split at sentence
   boundaries or rendered as a text image.
 author: user
+# Model-facing tools (qq_send_* / qq_napcat_api / qq_group_history),
+# implemented in tools.py. Declared here so CLI/TUI sessions preload the
+# toolset even when the platform adapter stays deferred.
+provides_tools:
+  - qq_send_image
+  - qq_send_voice
+  - qq_send_video
+  - qq_send_file
+  - qq_send_forward
+  - qq_napcat_api
+  - qq_group_history
 optional_env:
   - name: ONEBOT_ALLOWED_USERS
     description: "Comma-separated QQ user ids allowed to talk to the bot"

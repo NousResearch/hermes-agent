@@ -564,7 +564,13 @@ def test_quote_reply_fetches_original_text_and_image(monkeypatch) -> None:
 
 
 def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> None:
-    """interim 消息缓冲，final 到达时合并转发 + 撤回（群聊）。"""
+    """interim 缓冲 + final 结算：小结卡渲染失败 → 回退合并转发 + 撤回（群聊）。"""
+    import plugins.platforms.onebot.adapter as adapter_mod
+
+    def boom(text, title=None):
+        raise RuntimeError("render unavailable (fallback path)")
+
+    monkeypatch.setattr(adapter_mod, "render_text_image", boom)
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
@@ -590,7 +596,13 @@ def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> N
 
 
 def test_loop_merge_private_uses_send_private_forward_msg(monkeypatch) -> None:
-    """私聊场景用 send_private_forward_msg。"""
+    """私聊场景用 send_private_forward_msg（小结卡渲染失败回退时）。"""
+    import plugins.platforms.onebot.adapter as adapter_mod
+
+    def boom(text, title=None):
+        raise RuntimeError("render unavailable (fallback path)")
+
+    monkeypatch.setattr(adapter_mod, "render_text_image", boom)
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
@@ -609,6 +621,42 @@ def test_loop_merge_private_uses_send_private_forward_msg(monkeypatch) -> None:
     assert fwd["params"]["user_id"] == 123456789
 
 
+def test_loop_merge_summary_card_preferred(monkeypatch) -> None:
+    """#3 回移：小结卡渲染成功 → 发图片卡 + 撤回原 interim，不走合并转发。"""
+    import plugins.platforms.onebot.adapter as adapter_mod
+
+    called = {}
+
+    def fake_render(text, title=None):
+        called["text"] = text
+        called["title"] = title
+        return b"\x89PNG\r\n\x1a\nfakepng"
+
+    monkeypatch.setattr(adapter_mod, "render_text_image", fake_render)
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "123456789"
+    chat = "group:123456789"
+
+    async def run():
+        await adapter.send(chat, "第一步", metadata={"interim": True})
+        await adapter.send(chat, "第二步", metadata={"interim": True})
+        await adapter.send(chat, "最终", metadata={"notify": True})
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    assert "send_forward_msg" not in actions
+    # 小结卡以图片形式发送（send_msg 带 image segment）+ 撤回 2 条 interim
+    assert actions.count("delete_msg") == 2
+    img_msgs = [
+        p for p in ws.sent if p["action"] == "send_msg" and "image" in str(p["params"].get("message"))
+    ]
+    assert img_msgs, "expected a summary card image message"
+    assert called.get("title") == "本轮进展"
+    assert "第一步" in called.get("text", "")
+
+
 def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
     """缓冲不足 2 条不合并（单条不值得）。"""
     adapter = _make_adapter()
@@ -625,6 +673,52 @@ def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
     actions = [p["action"] for p in ws.sent]
     assert "send_forward_msg" not in actions
     assert "delete_msg" not in actions
+
+
+def test_auto_recall_interim_after_timeout(monkeypatch) -> None:
+    """#2 回移：interim 超时（90s 语义，测试用 50ms）未结算 → 单独撤回并清缓冲。"""
+    adapter = _make_adapter(interim_recall_seconds=0.05)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    chat = "private:123456789"
+
+    async def run():
+        await adapter.send(chat, "中间评论", metadata={"interim": True})
+        assert len(adapter._loop_buffer.get(chat, [])) == 1
+        # 不触发 final，等超时
+        await asyncio.sleep(0.25)
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    assert actions.count("delete_msg") == 1
+    assert adapter._loop_buffer.get(chat) in (None, [])
+
+
+def test_auto_recall_interim_cancelled_by_final(monkeypatch) -> None:
+    """#2：final 结算后超时任务到点不重复撤回（条目已不在缓冲）。"""
+    import plugins.platforms.onebot.adapter as adapter_mod
+
+    def boom(text, title=None):
+        raise RuntimeError("render unavailable (fallback path)")
+
+    monkeypatch.setattr(adapter_mod, "render_text_image", boom)
+    adapter = _make_adapter(interim_recall_seconds=0.05)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "123456789"
+    chat = "group:123456789"
+
+    async def run():
+        await adapter.send(chat, "中间", metadata={"interim": True})
+        await adapter.send(chat, "最终", metadata={"notify": True})
+        await asyncio.sleep(0.25)
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    # 只有 final 结算那一次的撤回（2 条中的 1 条缓冲不足不合并？——1 条 interim
+    # 不结算，final 后 _pending_recalls 为空 → 不撤回；超时任务因条目已随
+    # _merge_loop_buffer pop 清空而自愈，不应再发 delete_msg）
+    assert actions.count("delete_msg") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -930,3 +1024,524 @@ def test_standalone_send_missing_http_url_returns_error() -> None:
 
     result = asyncio.run(run())
     assert "ONEBOT_HTTP_URL not configured" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Ported #5: inbound file dual-channel receive (CDN direct link / get_file)
+# ---------------------------------------------------------------------------
+
+
+def _file_process(adapter, monkeypatch, call_actions, download_results=None):
+    """跑一条带文件段的消息，返回捕获的 MessageEvent。"""
+
+    async def fake_call(action, params, timeout=30.0):
+        return call_actions.get(action, {})
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call)
+
+    if download_results is not None:
+        async def fake_download(url, safe_name, max_bytes):
+            return download_results.get(url)
+
+        monkeypatch.setattr(adapter, "_download_file_bytes", fake_download)
+
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "message": [
+                    {
+                        "type": "file",
+                        "data": {
+                            "file_id": "fid-abc-123",
+                            "file": "plan.md",
+                            "name": "",
+                        },
+                    }
+                ],
+                "self_id": 123456789,
+            }
+        )
+
+    asyncio.run(run())
+    assert captured
+    return captured[0]
+
+
+def test_inbound_file_direct_link_downloads_and_annotates_path(monkeypatch) -> None:
+    """get_private_file_url 直链 → 下载成功 → [文件:本地路径]。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ev = _file_process(
+        adapter,
+        monkeypatch,
+        call_actions={"get_private_file_url": {"url": "https://cdn.qq.com/plan.md"}},
+        download_results={"https://cdn.qq.com/plan.md": "/tmp/hermes_onebot/plan.md"},
+    )
+    assert "[文件:/tmp/hermes_onebot/plan.md]" in ev.text
+    assert not ev.media_urls, "file 不进入 media_urls（靠文本注解）"
+
+
+def test_inbound_file_falls_back_to_get_file_base64(monkeypatch) -> None:
+    """直链失败（异常）→ get_file base64 载荷 → [文件:本地路径]。"""
+    adapter = _make_adapter(admin_users=[123456789])
+
+    async def fake_call(action, params, timeout=30.0):
+        if action == "get_private_file_url":
+            raise RuntimeError("private file url unsupported (group chat)")
+        if action == "get_file":
+            return {"base64": "aGVsbG8=", "file_size": 5}
+        return {}
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call)
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "message": [
+                    {"type": "file", "data": {"file_id": "fid", "file": "x.bin"}}
+                ],
+                "self_id": 123456789,
+            }
+        )
+
+    asyncio.run(run())
+    assert "[文件:" in captured[0].text
+    assert "/tmp/hermes_onebot/" in captured[0].text
+
+
+def test_inbound_file_download_failure_keeps_name(monkeypatch) -> None:
+    """双通道全失败 → 保留 [文件:名] 注解，消息不阻塞。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ev = _file_process(
+        adapter,
+        monkeypatch,
+        call_actions={"get_private_file_url": {"url": "https://cdn/nope.md"}, "get_file": {}},
+        download_results={},  # 全部失败
+    )
+    assert "[文件:plan.md]" in ev.text
+
+
+def test_inbound_file_size_limit_skips(monkeypatch) -> None:
+    """get_file 声明的 file_size 超限 → 不下载，显示文件名。"""
+    adapter = _make_adapter(admin_users=[123456789], max_inbound_file_bytes=100)
+    ev = _file_process(
+        adapter,
+        monkeypatch,
+        call_actions={
+            # 直链先失败
+            "get_private_file_url": {},
+            "get_file": {"file_size": 999999, "base64": "AA=="},
+        },
+    )
+    assert "[文件:plan.md]" in ev.text
+
+
+def test_cq_string_file_download_annotates_path(monkeypatch) -> None:
+    """CQ 字符串路径：直链成功 → [文件:本地路径]。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    captured: list = []
+
+    async def fake_call(action, params, timeout=30.0):
+        return {"url": "https://cdn.qq.com/a.pdf"} if action == "get_private_file_url" else {}
+
+    async def fake_download(url, safe_name, max_bytes):
+        return "/tmp/hermes_onebot/a.pdf"
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call)
+    monkeypatch.setattr(adapter, "_download_file_bytes", fake_download)
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "raw_message": "[CQ:file,file=a.pdf,file_id=fid-9]",
+                "message": "[CQ:file,file=a.pdf,file_id=fid-9]",
+                "self_id": 123456789,
+            }
+        )
+
+    asyncio.run(run())
+    assert "[文件:/tmp/hermes_onebot/a.pdf]" in captured[0].text
+
+
+# ---------------------------------------------------------------------------
+# Ported #1: model tools (qq_send_* / qq_napcat_api / qq_group_history)
+# ---------------------------------------------------------------------------
+
+
+def test_tools_resolve_chat_explicit_and_session(monkeypatch) -> None:
+    from plugins.platforms.onebot import tools
+
+    assert tools._resolve_chat("group:88888") == "group:88888"
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "onebot")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "private:123456789")
+    assert tools._resolve_chat(None) == "private:123456789"
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    try:
+        tools._resolve_chat(None)
+        assert False, "expected ValueError without chat context"
+    except ValueError:
+        pass
+
+
+def test_tools_send_image_builds_media_request(monkeypatch) -> None:
+    from plugins.platforms.onebot import tools
+
+    calls = []
+
+    def fake_http(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"ok": True, "message_id": "m1"}
+
+    monkeypatch.setattr(tools, "_http", fake_http)
+    out = tools.qq_send_image(
+        {"sources": ["/tmp/a.png", "https://x/y.jpg"], "chat_id": "private:123456789"}
+    )
+    assert "已发送" in out
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "/api/send_media"
+    assert calls[0][2]["kind"] == "image"
+    assert calls[0][2]["sources"] == ["/tmp/a.png", "https://x/y.jpg"]
+    # 超过 9 张拒绝
+    too_many = tools.qq_send_image(
+        {"sources": [f"/tmp/{i}.png" for i in range(10)]}
+    )
+    assert "9" in too_many
+
+
+def test_tools_napcat_api_whitelist_guard(monkeypatch) -> None:
+    from plugins.platforms.onebot import tools
+
+    calls = []
+
+    def fake_http(method, path, payload=None):
+        calls.append(path)
+        return {"ok": True, "data": {"count": 1}}
+
+    monkeypatch.setattr(tools, "_http", fake_http)
+    # 白名单外直接拒绝，不发请求
+    out = tools.qq_napcat_api({"action": "set_group_kick"})
+    assert "不在白名单" in out
+    assert not calls
+    # 白名单内正常代理
+    out = tools.qq_napcat_api({"action": "get_group_member_list", "params": {"group_id": 88888}})
+    assert "api/napcat" in calls[0]
+    assert '"count": 1' in out
+
+
+def test_tools_group_history_url() -> None:
+    from plugins.platforms.onebot import tools
+
+    import urllib.parse
+
+    calls = []
+
+    def fake_http(method, path, payload=None):
+        calls.append(path)
+        return {"ok": True, "data": []}
+
+    import plugins.platforms.onebot.tools as tools_mod
+
+    tools_mod._http = fake_http
+    tools.qq_group_history({"group_id": "88888", "count": 30})
+    qs = urllib.parse.parse_qs(calls[0].split("?", 1)[1])
+    assert qs["group_id"] == ["88888"]
+    assert qs["count"] == ["30"]
+
+
+async def _start_api_server(adapter):
+    """起一个只挂 onebot API 路由的本地服务，返回 (runner, port)。"""
+    from aiohttp import web
+
+    app = web.Application()
+    app.router.add_get("/api/napcat", adapter._handle_napcat_api)
+    app.router.add_post("/api/send_media", adapter._handle_send_media)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    return runner, port
+
+
+def test_api_napcat_whitelist_rejects() -> None:
+    """非白名单 action → 403。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter()
+    adapter._call_action = lambda *a, **kw: {}  # 不应被调用
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(f"http://127.0.0.1:{port}/api/napcat?action=set_group_kick") as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_api_napcat_whitelisted_action() -> None:
+    """白名单 action → 透传 _call_action 结果。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter()
+
+    async def fake_call(action, params, timeout=30.0):
+        assert action == "get_group_member_list"
+        assert params == {"group_id": 88888}
+        return [{"user_id": 123456789, "nickname": "M"}]
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(
+                    f"http://127.0.0.1:{port}/api/napcat?action=get_group_member_list&params=%7B%22group_id%22%3A88888%7D"
+                ) as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert body["status"] == "ok"
+                    assert body["data"][0]["nickname"] == "M"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_api_send_media_forward_group() -> None:
+    """群合并转发 → send_forward_msg。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter()
+    adapter._self_id = "123456789"
+
+    async def fake_call(action, params, timeout=30.0):
+        assert action == "send_forward_msg"
+        assert params["group_id"] == 88888
+        assert params["messages"][0]["name"] == "某人"
+        return {"message_id": 777}
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.post(
+                    f"http://127.0.0.1:{port}/api/send_media",
+                    json={
+                        "chat_id": "group:88888",
+                        "kind": "forward",
+                        "nodes": [{"name": "某人", "content": "第一段"}],
+                    },
+                ) as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert body["status"] == "ok"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_api_send_media_bad_kind() -> None:
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter()
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.post(
+                    f"http://127.0.0.1:{port}/api/send_media",
+                    json={"chat_id": "private:1", "kind": "hack"},
+                ) as resp:
+                    assert resp.status == 400
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Ported #7: t2i ink check (font-family self test)
+# ---------------------------------------------------------------------------
+
+
+def test_ink_check_reports_font_chain() -> None:
+    """墨水自检：返回链状态，CJK 字体存在时 ok=True。"""
+    from plugins.platforms.onebot.t2i_render import ink_check
+
+    result = ink_check()
+    assert "ok" in result
+    assert "loaded" in result
+    # 本机装了 Noto CJK → 应通过
+    assert result["cjk"] is True
+    assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Ported #6: local slash commands (/id /ver /mode /ocr)
+# ---------------------------------------------------------------------------
+
+
+def _command_process(adapter, ws, message_text):
+    """向 _process_message 投递一条 admin 文本命令；返回捕获事件数。"""
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "raw_message": message_text,
+                "message": message_text,
+                "self_id": 123456789,
+            }
+        )
+
+    asyncio.run(run())
+    return captured
+
+
+def test_local_command_id_and_ver(monkeypatch) -> None:
+    """/id /ver 由 adapter 处理回复，事件不构造。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+
+    captured = _command_process(adapter, ws, "/id")
+    assert not captured, "local command must not reach the agent"
+    texts = [
+        "".join(s.get("data", {}).get("text", "") for s in p["params"]["message"])
+        for p in ws.sent
+        if p["action"] == "send_msg"
+    ]
+    assert any("chat_id: private:123456789" in t for t in texts)
+
+    ws.sent.clear()
+    captured = _command_process(adapter, ws, "/ver")
+    assert not captured
+    texts = [
+        "".join(s.get("data", {}).get("text", "") for s in p["params"]["message"])
+        for p in ws.sent
+        if p["action"] == "send_msg"
+    ]
+    assert any("onebot-plugin v1.0.0" in t for t in texts)
+
+
+def test_local_command_mode_instant_disables_loop_merge(monkeypatch) -> None:
+    """/mode instant：per-chat 关闭 loop 合并，interim 逐条即时不缓冲。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "123456789"
+    chat = "private:123456789"
+
+    _command_process(adapter, ws, "/mode instant")
+    assert adapter._chat_interim_overrides.get(chat) is False
+
+    async def run():
+        await adapter.send(chat, "中间一", metadata={"interim": True})
+        await adapter.send(chat, "中间二", metadata={"interim": True})
+        await adapter.send(chat, "最终", metadata={"notify": True})
+
+    asyncio.run(run())
+    assert not adapter._loop_buffer.get(chat), "instant 模式不应缓冲 interim"
+    actions = [p["action"] for p in ws.sent]
+    assert "send_forward_msg" not in actions
+    assert "delete_msg" not in actions
+
+
+def test_local_command_ocr_uses_last_inbound_image(monkeypatch) -> None:
+    """/ocr：用最近入站图片调 ocr_image，文本结果回发。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    sent_calls: list = []
+
+    # 1) 先收一张图片消息（mock 下载），记录 _last_image_path
+    async def fake_resolve_image(url, file):
+        return "/tmp/hermes_onebot/ocr.png"
+
+    async def fake_call(action, params, timeout=30.0):
+        sent_calls.append((action, params))
+        if action == "ocr_image":
+            assert params["image"].startswith("base64://")
+            return {"texts": [{"text": "第一行"}, {"text": "第二行"}]}
+        return {}
+
+    monkeypatch.setattr(adapter, "_resolve_image", fake_resolve_image)
+
+    async def fake_base64(path, max_bytes=None):
+        return "aGVsbG8="
+
+    monkeypatch.setattr(adapter, "_file_to_base64", fake_base64)
+    monkeypatch.setattr(adapter, "_call_action", fake_call)
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "message": [{"type": "image", "data": {"url": "https://cdn/x.png", "file": "x.png"}}],
+                "self_id": 123456789,
+            }
+        )
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 123456789,
+                "raw_message": "/ocr",
+                "message": "/ocr",
+                "self_id": 123456789,
+            }
+        )
+
+    asyncio.run(run())
+    assert adapter._last_image_path.get("private:123456789") == "/tmp/hermes_onebot/ocr.png"
+    texts = [
+        "".join(s.get("data", {}).get("text", "") for s in p[1]["message"])
+        for p in sent_calls
+        if p[0] == "send_msg"
+    ]
+    assert any("OCR 结果" in t and "第一行" in t for t in texts)

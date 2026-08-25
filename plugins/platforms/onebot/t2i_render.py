@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import re
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -30,6 +30,23 @@ _FONT_FALLBACK_PATHS = [
 
 _FONT_CACHE: dict = {}
 _CMAP_CACHE: dict = {}
+
+
+def ink_check(size: int = 26) -> Dict[str, Any]:
+    """#7 回移：t2i 墨水自检（dsh 语义，PIL 版防御性检查）。
+
+    启动时调用一次：确认字体回退链非空、且至少有一个字体覆盖 CJK 基本区，
+    否则渲染必然出豆腐块。build_font_chain 已剔除缺失字体，这里只负责
+    报告诊断结果供 adapter 打警告日志。
+    """
+    chain = build_font_chain(size)
+    cjk_ok = any(0x4E2D in cmap for _, cmap in chain)  # 抽样 '中' U+4E2D
+    return {
+        "ok": bool(chain) and cjk_ok,
+        "fonts": [p for p in _FONT_FALLBACK_PATHS],
+        "loaded": [getattr(pf, "path", "?") for pf, _ in chain],
+        "cjk": cjk_ok,
+    }
 
 # ── 彩色 emoji 渲染（NotoColorEmoji CBDT 位图）─────────────────────────
 # 该字体是 CBDT/CBLC 彩色位图格式，PIL 不支持 embedded_color，所以直接

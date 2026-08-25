@@ -16,7 +16,8 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 | Area | Capability |
 |---|---|
 | Connection | reverse WS (NapCat ws-reverse dials in, default port 8643) or forward WS (dial out, default `ws://127.0.0.1:3001`); auto-reconnect |
-| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), image resolution (url/base64/file/hash via `get_image`), large-image downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`) |
+| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), image resolution (url/base64/file/hash via `get_image`), large-image downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`), inbound files via CDN direct link then `get_file` fallback (container paths bypassed) |
+| Agent tools | model-facing senders (`qq_send_image` / `qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`), `qq_napcat_api` (15-action whitelist), `qq_group_history`; HTTP `/api/napcat` + `/api/send_media` endpoints |
 | Voice | ffmpeg → 16 kHz mono WAV → Hermes STT pipeline; voice without a URL is fetched via `get_record` (base64) first; failure degrades to `[语音]` |
 | Text image | AstrBot-style t2i card renderer (bold/italic/strikethrough/quote/list/code block/table/inline-code pill/emoji/CJK punctuation rules); 800 px wide |
 | Outbound | long replies split at sentence boundaries (default ≤100 chars), **>150 chars rendered as a text-image card**, markdown stripped to plain text, `[[qq_forward]]` merged forwarding, loop interim messages merged + retracted, typing indicator (private chats) |
@@ -76,6 +77,8 @@ gateway:
 | `split_length` | `100` | long-reply split threshold |
 | `text_image_threshold` | `150` | t2i card threshold; `<=0` disables the card path |
 | `image_max_size` | `2048` | inbound image long-edge cap (px); `0` keeps originals |
+| `max_inbound_file_bytes` | `20971520` (20 MB) | inbound file size cap; larger files degrade to a `[文件:name]` marker |
+| `interim_recall_seconds` | `90` | auto-recall timeout for unsettled interim messages (`0` disables) |
 | `hot_reload` | `false` | dev only: reload `onebot_utils.py` / `t2i_render.py` on mtime change (saves a gateway restart while iterating styles; keep off in production — an in-place write during upgrade can reload a half-written module) |
 
 Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEBOT_ALLOW_ALL_USERS=true` (dev only), and the global `GATEWAY_ALLOW_ALL_USERS`.
@@ -152,6 +155,19 @@ Enforcement points:
 - member DMs are rejected
 - outbound replies to member chats are scanned against sensitive-intent keywords and logged with a WARNING (audit, not hard blocking)
 
+### Admin local slash commands
+
+Admins get a few local slash commands handled inside the adapter (anything else keeps flowing to the gateway core):
+
+| Command | Action |
+|---|---|
+| `/ocr` | OCR the most recently received inbound image via NapCat's `ocr_image` |
+| `/mode interim\|instant` | per-chat loop-merge mode override (`interim` = merge commentary into forwards, `instant` = send as-is); in-memory only, resets on restart |
+| `/id` | print the current chat id |
+| `/ver` | print the plugin version |
+
+`/ocr` needs the image to still exist in the temp media dir (6-hour TTL cleanup applies).
+
 ## Group mentions
 
 With `require_mention: true` (default), the bot only responds in groups when it is explicitly @'d or when the message replies to an existing message. Set it to `false` to respond to every group message (noisy; not recommended for large groups). When no `bot_qq` is configured the bot learns its own id from OneBot meta events, so mention detection works out of the box.
@@ -205,6 +221,15 @@ macOS needs nothing (system Hiragino Sans GB / Songti SC, Menlo and Apple Color 
 - Images are downloaded to a temp directory and exposed to the vision tool via `media_urls`; undownloadable images degrade to a `[图片]` placeholder. If the image segment only carries a `file` hash (no URL), the adapter calls the OneBot `get_image` action to resolve the real URL; `base64://` and `file://` forms are handled directly.
 - Images larger than `image_max_size` (default **2048** px on the long edge) are downscaled with Pillow before the LLM sees them. High-resolution QQ photos otherwise make vision calls slow or time out. RGBA stays PNG, everything else becomes JPEG (q85); animated GIFs collapse to their first frame. Set `image_max_size: 0` to keep originals untouched.
 
+## Inbound files
+
+Inbound `file` segments are resolved through **two channels** so container-local paths never leak to the agent:
+
+1. **CDN direct link first**: for private chats the adapter calls `get_private_file_url` and downloads the file straight from the QQ CDN.
+2. **`get_file` fallback**: when no direct link is available (group files, or NapCat without the file-to-URL switch), it falls back to `get_file`, accepting base64 or an http URL.
+
+The downloaded file is stored under the temp media dir, annotated `[文件:本地路径]` in the message text so the agent can read it locally, and capped by `max_inbound_file_bytes` (default 20 MB). Files over the cap degrade to a plain `[文件:name]` marker. The annotation is skipped for user-level plugins that must stay path-neutral.
+
 ## Outbound media
 
 The adapter implements the gateway's native media senders as OneBot segments, so the agent can deliver rich media through the standard `MEDIA:` / markdown-image mechanism:
@@ -253,9 +278,34 @@ During a multi-tool turn the gateway sends interim commentary messages ("Using t
 
 This relies on the gateway marking commentary sends with `interim: True` in the stream-consumer metadata (see `gateway/stream_consumer.py`).
 
+### Per-interim auto-recall
+
+Each buffered interim message gets its own independent timer (`interim_recall_seconds`, default **90**). If the turn never settles (no final message arrives), the interim is recalled on its own instead of piling up forever. Once the buffer is settled by a final message the pending tasks self-cancel, so a settled turn is never double-retracted. Set `interim_recall_seconds: 0` to disable.
+
+### Turn-end summary card
+
+When a turn settles with **≥2** buffered interims, they are rendered into a single **"本轮进展" text-image card** summarizing the partial progress, the originals are retracted, and the final reply continues normally. If rendering or sending the card fails, the adapter falls back to the plain merge-forward path.
+
+### Recall spacing
+
+`delete_msg` calls are spaced **60 ms apart** to stay under NapCat's rate limit when retracting a batch of messages.
+
+## Agent model tools
+
+The plugin registers model-facing tools so the agent can push media and query NapCat directly (available in CLI/TUI sessions too via `provides_tools`):
+
+| Tool | Purpose |
+|---|---|
+| `qq_send_image` / `qq_send_voice` / `qq_send_video` / `qq_send_file` | send media out of band; chat resolves from the argument or `HERMES_SESSION_CHAT_ID` |
+| `qq_send_forward` | merged forward of text nodes |
+| `qq_napcat_api` | whitelisted NapCat actions: `get_group_member_list`, `get_group_member_info`, `get_stranger_info`, `get_forward_msg`, `get_record`, `get_file`, `upload_group_file`, `upload_private_file`, `get_group_root_files`, `get_group_files_by_folder`, `get_group_file_url`, `ocr_image`, `get_ai_characters`, `send_group_ai_record`, `get_group_msg_history`; anything outside the whitelist returns 403 |
+| `qq_group_history` | fetch recent group history, paged via `message_seq` (≤50 per page) |
+
+HTTP equivalents: `GET /api/napcat` (action proxying) and `POST /api/send_media` on the adapter's local API.
+
 ## Hot reload
 
-`onebot_utils.py` (pure helpers: CQ parsing, splitting, markdown stripping, emoji map) and `t2i_render.py` (text-image renderer) are hot-reloaded on every use: the adapter stats the file mtime and calls `importlib.reload` when it changed, so style/rule tweaks apply without a gateway restart. Changes to `adapter.py` itself still require a restart.
+Opt-in via `extra.hot_reload: true` (default **off**, dev only). When enabled, `onebot_utils.py` (pure helpers: CQ parsing, splitting, markdown stripping, emoji map) and `t2i_render.py` (text-image renderer) are reloaded on every use: the adapter stats the file mtime and calls `importlib.reload` when it changed, so style/rule tweaks apply without a gateway restart. Changes to `adapter.py` itself still require a restart.
 
 ## Privacy & data
 

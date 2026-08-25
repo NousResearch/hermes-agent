@@ -24,7 +24,7 @@ from typing import IO, Callable, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, is_thread_interrupted
 from tools.environments.path_utils import (
     _SANDBOX_DIR_HASH_LEN,
     _SANDBOX_DIR_MAX_LEN,
@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 # every is_interrupted() state change from _wait_for_process.  Off by default
 # to avoid flooding production gateway logs.
 _DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+# Extra seconds the ``run_bounded_sync`` backstop waits past the inner
+# ``_wait_for_process`` deadline. The inner poll loop is what returns
+# partial output + returncode 124; this outer bound only exists for when
+# that loop itself never returns (family A of #94285: a blocked wait
+# that silently disables asyncio timers). Keep it small so a healthy
+# timeout still comes from the inner path.
+_EXECUTE_WAIT_BOUND_GRACE_S = 2.0
 
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
@@ -999,7 +1007,12 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(
-        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+        self,
+        proc: ProcessHandle,
+        timeout: int = 120,
+        *,
+        bounded_capture: bool = False,
+        watch_interrupt_tid: int | None = None,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -1016,6 +1029,11 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        ``watch_interrupt_tid`` is the tool-worker thread that submitted this
+        wait. ``execute()`` may move the wait onto a ``run_bounded_sync``
+        worker; ``/stop`` still interrupts the original worker tid, so the
+        poll loop must honor that bit as well as the current thread's.
 
         Also wraps the poll loop in a ``try/finally`` that guarantees we
         call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
@@ -1213,7 +1231,7 @@ class BaseEnvironment(ABC):
             _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
-                if is_interrupted():
+                if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     if _DEBUG_INTERRUPT:
                         logger.info(
                             "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
@@ -1444,6 +1462,10 @@ class BaseEnvironment(ABC):
         full-fidelity consumers — file operations ``cat`` reads that feed
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
+
+        The wait is bounded by ``agent.deadline.run_bounded_sync`` so a
+        wedged poll loop cannot hang past ``timeout`` and silently disable
+        every asyncio timer in the process (#94285).
         """
         self._before_execute()
 
@@ -1476,12 +1498,82 @@ class BaseEnvironment(ABC):
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
-        )
+        parent_tid = threading.current_thread().ident
+        # Activity callback is thread-local (see set_activity_callback). The
+        # wait runs on the deadline worker, so copy it across or long
+        # commands look idle to cron/gateway heartbeats.
+        parent_activity_cb = get_activity_callback()
+        proc_holder: list = []
+
+        def _spawn_and_wait() -> dict:
+            if parent_activity_cb is not None:
+                set_activity_callback(parent_activity_cb)
+            spawned = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            proc_holder.append(spawned)
+            return self._wait_for_process(
+                spawned,
+                timeout=effective_timeout,
+                bounded_capture=bounded_capture,
+                watch_interrupt_tid=parent_tid,
+            )
+
+        def _on_timeout() -> None:
+            if not proc_holder:
+                return
+            spawned = proc_holder[0]
+            try:
+                self._kill_process(spawned)
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process failed", exc_info=True
+                )
+            pid = getattr(spawned, "pid", None)
+            if not pid:
+                return
+            try:
+                from agent.deadline import kill_process_tree
+
+                kill_process_tree(int(pid))
+            except Exception:
+                logger.debug(
+                    "terminal wait-bound kill_process_tree failed", exc_info=True
+                )
+
+        # Hard wall-clock backstop (#94285): ``_wait_for_process`` already
+        # polls to ``effective_timeout``, but that loop runs on the tool
+        # thread. If that thread is the event-loop thread — or the wait
+        # itself never returns (Windows pipe/poll hang) — every asyncio
+        # timer in the process is silently disabled, including the 420s
+        # sequential-tool deadline and the cron inactivity monitor.
+        # ``run_bounded_sync`` drives expiry from a daemon worker +
+        # ``Event.wait`` so a blocked loop cannot disable it. Grace lets
+        # the inner poll return the partial-output 124 path on a healthy
+        # timeout; the outer bound only fires when that loop is wedged.
+        from agent.deadline import run_bounded_sync
+
+        try:
+            bound_s = float(effective_timeout) + _EXECUTE_WAIT_BOUND_GRACE_S
+        except (TypeError, ValueError):
+            bound_s = None
+
+        try:
+            bounded = run_bounded_sync(
+                _spawn_and_wait,
+                bound_s,
+                label=f"terminal.wait:{type(self).__name__}",
+                on_timeout=_on_timeout,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            _on_timeout()
+            raise
+
+        if bounded.timed_out:
+            timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
+            result = {"output": timeout_msg.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
 
         return result

@@ -96,6 +96,45 @@ def test_import_guard_can_report_non_import_errors(monkeypatch, tmp_path):
     assert error == "broken config"
 
 
+def test_import_guard_reports_probe_termination_when_comparing_states(
+    monkeypatch, tmp_path
+):
+    """A terminating import is unsafe when validating a restored stash."""
+    (tmp_path / "consumer.py").write_text("import os\nos._exit(7)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 7)"
+
+
+def test_import_guard_reports_probe_termination_by_default(monkeypatch, tmp_path):
+    """A missing health marker must not classify a terminated probe as healthy."""
+    (tmp_path / "consumer.py").write_text("import os\nos._exit(9)\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "terminated before reporting import health (exit code 9)"
+
+
+def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys):
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", lambda *_a, **_kw: Result())
+
+    assert update_cmd._git_untracked_paths(["git"], tmp_path) == set()
+    assert "Could not enumerate untracked files" in capsys.readouterr().out
+
+
 def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
     """If we can't spawn the probe, don't block the user's update."""
 

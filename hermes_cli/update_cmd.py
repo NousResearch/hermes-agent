@@ -744,7 +744,12 @@ def _critical_module_import_failures(
         return {}
     output = result.stdout or ""
     if marker not in output:
-        return {}
+        return {
+            "critical-module probe": (
+                "terminated before reporting import health "
+                f"(exit code {result.returncode})"
+            )
+        }
     try:
         import json
 
@@ -2470,12 +2475,20 @@ def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str]:
         errors="surrogateescape",
     )
     if result.returncode != 0:
+        print(
+            "  ⚠ Could not enumerate untracked files while validating the "
+            "restored stash."
+        )
         return set()
     return {path for path in result.stdout.split("\0") if path}
 
 
 def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...]:
-    """Return tracked and untracked Python paths changed from ``HEAD``."""
+    """Return restored ``.py`` paths changed from ``HEAD``.
+
+    This deliberately validates Python source only; non-Python entry scripts
+    remain outside the executable import-health check.
+    """
     changed = subprocess.run(
         git_cmd + ["diff", "--name-only", "-z", "HEAD", "--", "*.py"],
         cwd=cwd,

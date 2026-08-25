@@ -657,6 +657,48 @@ def test_restore_rejects_system_exit_masked_by_preexisting_failure(
     assert "gateway was not restarted" in output
 
 
+def test_restore_rejects_probe_termination(monkeypatch, tmp_path, capsys):
+    """A stash cannot bypass import validation by terminating the probe."""
+    import subprocess
+    from hermes_cli import update_cmd
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "consumer.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    source.write_text("import os\nos._exit(7)\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
+
+    assert exc_info.value.code == 1
+    assert source.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert git("status", "--porcelain").stdout == ""
+    assert git("stash", "list").stdout.strip()
+    output = capsys.readouterr().out
+    assert "critical-module probe" in output
+    assert "exit code 7" in output
+    assert "gateway was not restarted" in output
+
+
 def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     prompts = []
 

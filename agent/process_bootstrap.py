@@ -257,7 +257,13 @@ def _uses_codex_cloud_transport(base_url: str) -> bool:
 
 
 def _enable_happy_eyeballs(transport) -> None:
-    """Install the sync racing backend on one httpx transport, if compatible."""
+    """Install the sync racing backend on one httpx transport, if compatible.
+
+    Reaches into httpx/httpcore private attributes (``transport._pool`` /
+    ``pool._network_backend``); safe because httpcore is pinned (1.0.x) and
+    both lookups are hasattr-guarded — on an incompatible httpcore this
+    degrades to the default serial backend instead of crashing.
+    """
     pool = getattr(transport, "_pool", None)
     if pool is not None and hasattr(pool, "_network_backend"):
         pool._network_backend = _HappyEyeballsSyncBackend()

@@ -397,8 +397,15 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
         _fail_and_issue(f"{hit.advisory.title}", f"({hit.package}=={hit.installed_version})",
                         f"Resolve security advisory {hit.advisory.id}: uninstall {hit.package}=={hit.installed_version} "
                         f"and rotate credentials, then run `hermes doctor --ack {hit.advisory.id}`.", f.manual_issues)
-        for line in full_remediation_text(hit):
-            print(f"    {color(line, Colors.YELLOW)}" if line else "")
+        remediation_lines = full_remediation_text(hit)
+        from hermes_cli.doctor_report import _json_mode, _json_results
+        if _json_mode:
+            remediation = "\n".join(line for line in remediation_lines if line)
+            if remediation and _json_results:
+                _json_results[-1]["remediation"] = remediation
+        else:
+            for line in remediation_lines:
+                print(f"    {color(line, Colors.YELLOW)}" if line else "")
     acked_ids = get_acked_ids()  # acked-but-still-installed stays visible
     for h in all_hits:
         if h.advisory.id in acked_ids:

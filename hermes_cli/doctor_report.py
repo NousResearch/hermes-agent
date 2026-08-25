@@ -9,15 +9,50 @@ from dataclasses import dataclass, field
 from hermes_cli.colors import Colors, color
 
 
-def _mark(glyph: str, col: str):
-    return lambda text, detail="": print(f"  {color(glyph, col)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+_json_mode: bool = False
+_json_results: list[dict[str, str]] = []
+_json_current_section: str = ""
 
 
-check_ok, check_warn, check_fail = _mark("✓", Colors.GREEN), _mark("⚠", Colors.YELLOW), _mark("✗", Colors.RED)
+def _record_check(status: str, text: str, detail: str = "") -> None:
+    """Record one check for JSON output; do nothing in human mode."""
+    if not _json_mode:
+        return
+    cleaned_detail = detail or ""
+    if cleaned_detail.startswith("(") and cleaned_detail.endswith(")"):
+        cleaned_detail = cleaned_detail[1:-1]
+    _json_results.append(
+        {
+            "section": _json_current_section,
+            "status": status,
+            "message": text,
+            "detail": cleaned_detail,
+        }
+    )
+
+
+def check_ok(text: str, detail: str = ""):
+    if not _json_mode:
+        print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    _record_check("ok", text, detail)
+
+
+def check_warn(text: str, detail: str = ""):
+    if not _json_mode:
+        print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    _record_check("warn", text, detail)
+
+
+def check_fail(text: str, detail: str = ""):
+    if not _json_mode:
+        print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+    _record_check("fail", text, detail)
 
 
 def check_info(text: str):
-    print(f"    {color('→', Colors.CYAN)} {text}")
+    if not _json_mode:
+        print(f"    {color('→', Colors.CYAN)} {text}")
+    _record_check("info", text)
 
 
 def check_bool(cond, ok, bad, *, fail: bool = False):
@@ -30,14 +65,19 @@ def check_bool(cond, ok, bad, *, fail: bool = False):
 
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
-    print()
-    print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+    global _json_current_section
+    _json_current_section = title
+    if not _json_mode:
+        print()
+        print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+    if _json_mode and _json_results:
+        _json_results[-1]["fix"] = fix
 
 
 @contextmanager

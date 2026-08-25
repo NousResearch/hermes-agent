@@ -176,6 +176,33 @@ def test_nonterminal_model_driver_env_uses_target_profile_boundary(
     assert "CUSTOM_CAP" not in result
 
 
+def test_nonterminal_model_driver_receives_target_only_provider_not_other_secrets(
+    tmp_path, monkeypatch, multiplex_mode
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_profile(source, {})
+    _write_profile(
+        target,
+        {
+            "OPENAI_API_KEY": "target-only-provider",
+            "TELEGRAM_BOT_TOKEN": "target-messaging-token",
+        },
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    token = set_hermes_home_override(target)
+    try:
+        result = hermes_subprocess_env(inherit_credentials=True)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert result["OPENAI_API_KEY"] == "target-only-provider"
+    assert "TELEGRAM_BOT_TOKEN" not in result
+
+
 def test_build_subprocess_env_supports_standalone_explicit_boundary(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "target"

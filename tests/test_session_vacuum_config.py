@@ -79,6 +79,33 @@ def test_shipped_template_does_not_pin_sessions_keys():
     assert "sessions" not in data
 
 
+def test_shipped_template_keeps_pre_update_backup_quick(tmp_path, monkeypatch):
+    """A fresh install seeded from cli-config.yaml.example must keep the
+    pre-update safety net on.
+
+    Same seeding rule as ``test_shipped_template_does_not_pin_sessions_keys``:
+    installers (scripts/install.sh, docker/stage2-hook.sh, hermes doctor
+    --fix) copy the template verbatim, so its ``updates.pre_update_backup``
+    value becomes an EXPLICIT setting that overrides the code default.
+    After #65754 made "quick" the default, the template still shipped
+    the legacy boolean ``false``, which resolves to "off" — every new
+    install silently lost the #48200 pre-update safety net (#94944).
+    """
+    from types import SimpleNamespace
+
+    from hermes_cli.update_cmd_maint import _resolve_pre_update_backup_mode
+
+    template = Path(__file__).resolve().parents[1] / "cli-config.yaml.example"
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        template.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert _resolve_pre_update_backup_mode(SimpleNamespace()) == "quick"
+
+
 def test_loader_yields_new_defaults_for_fresh_home(monkeypatch, tmp_path: Path):
     """Real load_config() against an empty HERMES_HOME → auto_prune on, 90 days."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

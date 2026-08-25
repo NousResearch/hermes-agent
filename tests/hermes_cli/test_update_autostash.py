@@ -699,6 +699,24 @@ def test_restore_rejects_probe_termination(monkeypatch, tmp_path, capsys):
     assert "gateway was not restarted" in output
 
 
+def test_restore_stays_parked_when_untracked_baseline_is_unknown(
+    monkeypatch, tmp_path, capsys
+):
+    """Unknown cleanup scope must not turn into a destructive empty baseline."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
+
+    restored = hermes_main._restore_stashed_changes(
+        ["git"], tmp_path, "stash@{0}", prompt_user=False
+    )
+
+    assert restored is False
+    output = capsys.readouterr().out
+    assert "cleanup baseline is unknown" in output
+    assert "git stash apply stash@{0}" in output
+
+
 def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     prompts = []
 

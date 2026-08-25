@@ -160,6 +160,21 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
     assert error == "reported malformed import health data"
 
 
+def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
+    import subprocess
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["python", "-c", "probe"], 120)
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", timeout)
+
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "critical-module probe"
+    assert error == "timed out before reporting import health"
+
+
 def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys):
     class Result:
         returncode = 1
@@ -167,7 +182,7 @@ def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys)
 
     monkeypatch.setattr(update_cmd.subprocess, "run", lambda *_a, **_kw: Result())
 
-    assert update_cmd._git_untracked_paths(["git"], tmp_path) == set()
+    assert update_cmd._git_untracked_paths(["git"], tmp_path) is None
     assert "Could not enumerate untracked files" in capsys.readouterr().out
 
 

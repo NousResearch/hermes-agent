@@ -307,9 +307,29 @@ def from_agent_visible_cache_path(container_path: str, container_base: str = "/r
     return mapped if mapped is not None else container_path
 
 
-# Backends whose file-sync lands under the remote home: ``~/.hermes`` is
-# expanded by the remote shell, so it resolves regardless of the actual home.
-_HOME_RELATIVE_BACKENDS = frozenset({"ssh", "daytona", "vercel_sandbox"})
+def get_agent_visible_cache_base(
+    container_base: str = "/root/.hermes",
+) -> str | None:
+    """Return the exact agent-visible Hermes cache root for the active backend.
+
+    ``None`` means cache paths remain host-native and must not be classified by
+    a remote-path suffix alone.
+    """
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("docker", "modal"):
+        return container_base
+    if backend in ("ssh", "daytona", "vercel_sandbox"):
+        return "~/.hermes"
+
+    # Plugin-registered backends declare where synced cache files land via
+    # ``cache_path_base``; None means host paths remain correct.
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        plugin_base = provider_flag(backend, "cache_path_base", None)
+    except Exception:
+        plugin_base = None
+    return str(plugin_base) if plugin_base else None
 
 
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
@@ -326,20 +346,11 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     actual remote home. Previously these backends synced the bytes but still rendered the dangling host path
     (#76577 gap).
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
-    if backend in _HOME_RELATIVE_BACKENDS:
-        container_base = "~/.hermes"
-    elif backend not in ("docker", "modal"):
-        try:
-            from agent.terminal_env_registry import provider_flag
-            plugin_base = provider_flag(backend, "cache_path_base", None)
-        except Exception:
-            plugin_base = None
-        if not plugin_base:
-            return host_path
-        container_base = str(plugin_base)
+    visible_base = get_agent_visible_cache_base(container_base)
+    if visible_base is None:
+        return host_path  # local, singularity, unknown: host path is correct
 
-    mapped = map_cache_path_to_container(host_path, container_base=container_base)
+    mapped = map_cache_path_to_container(host_path, container_base=visible_base)
     return mapped if mapped is not None else host_path
 
 

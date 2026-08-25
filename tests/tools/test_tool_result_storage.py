@@ -6,7 +6,7 @@ import stat
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -22,10 +22,13 @@ from tools.tool_result_storage import (
     RESULT_TTL_DAYS,
     STORAGE_DIR,
     _build_persisted_message,
+    _expire_host_spillover_on_access,
     _expire_persisted_result_on_access,
+    _expire_remote_spillover_on_access,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
+    _write_to_spillover,
     cleanup_spillover_cache,
     enforce_turn_budget,
     generate_preview,
@@ -348,6 +351,93 @@ class TestWriteToSandbox:
         assert not artifact.is_symlink()
         assert outside.read_text(encoding="utf-8") == "must remain"
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="requires POSIX lstat semantics"
+    )
+    def test_read_interface_enforces_canonical_spillover_expiry(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        file_ops = ShellFileOperations(env, cwd=str(tmp_path))
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True)
+        artifact = spill_dir / "expired.txt"
+        artifact.write_text("old", encoding="utf-8")
+        stale = time.time() - (25 * 3600)
+        os.utime(artifact, (stale, stale))
+
+        with patch("tools.file_tools._get_file_ops", return_value=file_ops):
+            result = read_file_tool(str(artifact))
+
+        assert "expired after 24 hours" in result
+        assert not artifact.exists()
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_read_interface_refuses_symlinked_spillover_directory(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        file_ops = ShellFileOperations(env, cwd=str(tmp_path))
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (25 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.symlink_to(outside, target_is_directory=True)
+
+        with patch("tools.file_tools._get_file_ops", return_value=file_ops):
+            result = read_file_tool(str(spill_dir / "victim.txt"))
+
+        assert "could not be verified" in result
+        assert victim.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_read_interface_refuses_symlinked_shared_root(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        file_ops = ShellFileOperations(env, cwd=str(tmp_path))
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.parent.mkdir(parents=True)
+        outside = tmp_path / "outside-root"
+        private_outside = outside / "tool-results"
+        private_outside.mkdir(parents=True)
+        victim = private_outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (25 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.parent.symlink_to(outside, target_is_directory=True)
+
+        with patch("tools.file_tools._get_file_ops", return_value=file_ops):
+            result = read_file_tool(str(spill_dir / "victim.txt"))
+
+        assert "could not be verified" in result
+        assert victim.read_text(encoding="utf-8") == "keep"
+
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX find semantics")
     def test_access_retains_recent_result(self, tmp_path):
         from tools.environments.local import LocalEnvironment
@@ -359,6 +449,32 @@ class TestWriteToSandbox:
         assert _expire_persisted_result_on_access(str(target), env) is False
         assert target.read_text(encoding="utf-8") == "sensitive"
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    @pytest.mark.parametrize(
+        "expiry_helper",
+        [_expire_persisted_result_on_access, _expire_remote_spillover_on_access],
+    )
+    def test_remote_expiry_refuses_symlinked_parent(
+        self, tmp_path, expiry_helper
+    ):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (8 * 24 * 3600)
+        os.utime(victim, (stale, stale))
+        alias = tmp_path / "hermes-results"
+        alias.symlink_to(outside, target_is_directory=True)
+
+        assert expiry_helper(str(alias / "victim.txt"), env) is None
+        assert victim.read_text(encoding="utf-8") == "keep"
+
     def test_access_expiry_probe_failure_is_indeterminate(self):
         env = MagicMock()
         env.execute.return_value = {"returncode": 1, "output": ""}
@@ -366,6 +482,118 @@ class TestWriteToSandbox:
         assert _expire_persisted_result_on_access(
             "/tmp/hermes-results/result.txt", env
         ) is None
+
+    def test_remote_spillover_expiry_uses_24_hour_boundary(self):
+        env = MagicMock()
+        env.execute.return_value = {"returncode": 0, "output": "expired"}
+
+        assert _expire_remote_spillover_on_access(
+            "/root/.hermes/cache/spillover/tool-results/result.txt", env
+        ) is True
+        command = env.execute.call_args.args[0]
+        assert "-mmin +1439" in command
+
+    def test_read_interface_enforces_remote_canonical_expiry(self):
+        from tools.file_tools import read_file_tool
+
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        visible_path = "/root/.hermes/cache/spillover/tool-results/expired.txt"
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=False),
+            patch(
+                "tools.file_tools.os.lstat",
+                return_value=MagicMock(st_mode=stat.S_IFDIR),
+            ),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=PurePosixPath(visible_path),
+            ),
+            patch(
+                "tools.credential_files.to_agent_visible_cache_path",
+                return_value="/root/.hermes/cache/spillover/tool-results",
+            ),
+            patch(
+                "tools.tool_result_storage._expire_remote_spillover_on_access",
+                return_value=True,
+            ) as expire,
+        ):
+            result = read_file_tool(visible_path)
+
+        assert "expired after 24 hours" in result
+        expire.assert_called_once_with(visible_path, env)
+        file_ops.read_file.assert_not_called()
+
+    def test_read_interface_remote_canonical_fails_closed_for_invalid_host_root(
+        self, monkeypatch
+    ):
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        visible_path = "/root/.hermes/cache/spillover/tool-results/result.txt"
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=False),
+            patch("tools.file_tools.os.lstat", side_effect=FileNotFoundError),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=PurePosixPath(visible_path),
+            ),
+            patch(
+                "tools.credential_files.to_agent_visible_cache_path",
+                return_value=os.fspath(get_spillover_dir()),
+            ),
+            patch(
+                "tools.tool_result_storage._expire_remote_spillover_on_access"
+            ) as expire,
+        ):
+            result = read_file_tool(visible_path)
+
+        assert "could not be verified" in result
+        expire.assert_not_called()
+        file_ops.read_file.assert_not_called()
+
+    def test_read_interface_does_not_classify_matching_suffix_as_canonical(
+        self, monkeypatch
+    ):
+        from tools.file_tools import read_file_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        read_result = MagicMock()
+        read_result.content = "ordinary file"
+        read_result.error = None
+        read_result.to_dict.return_value = {
+            "content": "ordinary file",
+            "total_lines": 1,
+            "file_size": 13,
+        }
+        file_ops.read_file.return_value = read_result
+        unrelated_path = "/workspace/project/cache/spillover/tool-results/notes.txt"
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=False),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=PurePosixPath(unrelated_path),
+            ),
+            patch(
+                "tools.credential_files.to_agent_visible_cache_path",
+                return_value="/root/.hermes/cache/spillover/tool-results",
+            ),
+            patch(
+                "tools.tool_result_storage._expire_remote_spillover_on_access"
+            ) as expire,
+        ):
+            result = read_file_tool(unrelated_path)
+
+        assert "ordinary file" in result
+        expire.assert_not_called()
+        file_ops.read_file.assert_called_once()
 
     def test_read_interface_enforces_expiry_only_in_active_result_dir(self):
         from tools.file_tools import read_file_tool
@@ -730,6 +958,103 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows"
+    )
+    def test_spillover_write_is_private_and_symlink_safe(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.mkdir(parents=True)
+        os.chmod(spill_dir.parent, 0o755)
+        spill_dir.mkdir()
+        if sys.platform == "darwin":
+            subprocess.run(
+                [
+                    "chmod",
+                    "+a",
+                    "everyone allow read,write,execute,file_inherit,directory_inherit",
+                    str(spill_dir),
+                ],
+                check=True,
+            )
+
+        assert _write_to_spillover("secret", "result.txt") == str(
+            spill_dir / "result.txt"
+        )
+
+        target = spill_dir / "result.txt"
+        assert stat.S_IMODE(spill_dir.parent.stat().st_mode) == 0o755
+        assert stat.S_IMODE(spill_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        if sys.platform == "darwin":
+            acl = subprocess.run(
+                ["ls", "-lde", str(spill_dir), str(target)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            assert "group:everyone" not in acl
+
+        outside = spill_dir.parent / "outside.txt"
+        outside.write_text("unchanged", encoding="utf-8")
+        target.unlink()
+        target.symlink_to(outside)
+
+        assert _write_to_spillover("replacement", "result.txt") == str(target)
+        assert target.read_text(encoding="utf-8") == "replacement"
+        assert not target.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "unchanged"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win"), reason="requires POSIX lstat semantics"
+    )
+    def test_spillover_access_expiry_fails_closed(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True)
+
+        expired = spill_dir / "expired.txt"
+        expired.write_text("old", encoding="utf-8")
+        stale = time.time() - (25 * 3600)
+        os.utime(expired, (stale, stale))
+        assert _expire_host_spillover_on_access(expired) is True
+        assert not expired.exists()
+
+        fresh = spill_dir / "fresh.txt"
+        fresh.write_text("new", encoding="utf-8")
+        assert _expire_host_spillover_on_access(fresh) is False
+
+        outside = spill_dir.parent / "outside.txt"
+        outside.write_text("must remain", encoding="utf-8")
+        alias = spill_dir / "alias.txt"
+        alias.symlink_to(outside)
+        assert _expire_host_spillover_on_access(alias) is None
+        assert alias.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "must remain"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_spillover_write_refuses_symlinked_shared_root(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside-root"
+        outside.mkdir()
+        spill_dir.parent.symlink_to(outside, target_is_directory=True)
+
+        assert _write_to_spillover("secret", "result.txt") is None
+        assert not (outside / "tool-results" / "result.txt").exists()
+
+    def test_spillover_security_setup_failure_falls_back(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.spill_safety.ensure_spill_dir",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, ["chmod", "-N"])
+            ),
+        )
+
+        assert _write_to_spillover("secret", "result.txt") is None
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment
@@ -813,16 +1138,57 @@ class TestSpillover:
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "old.txt"
         new = spill_dir / "new.txt"
+        legacy = spill_dir.parent / "legacy.txt"
         old.write_text("old")
         new.write_text("new")
+        legacy.write_text("legacy")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
+        os.utime(legacy, (stale, stale))
 
         removed = cleanup_spillover_cache(max_age_hours=24)
 
-        assert removed == 1
+        assert removed == 2
         assert not old.exists()
+        assert not legacy.exists()
         assert new.exists()
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_cleanup_refuses_symlinked_private_directory(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (48 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.symlink_to(outside, target_is_directory=True)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0
+        assert victim.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX directory symlinks",
+    )
+    def test_cleanup_refuses_symlinked_shared_root(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.parent.parent.mkdir(parents=True)
+        outside = spill_dir.parent.parent / "outside-root"
+        private_outside = outside / "tool-results"
+        private_outside.mkdir(parents=True)
+        victim = private_outside / "victim.txt"
+        victim.write_text("keep", encoding="utf-8")
+        stale = time.time() - (48 * 3600)
+        os.utime(victim, (stale, stale))
+        spill_dir.parent.symlink_to(outside, target_is_directory=True)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0
+        assert victim.read_text(encoding="utf-8") == "keep"
 
     def test_cleanup_missing_dir_returns_zero(self):
         assert cleanup_spillover_cache() == 0

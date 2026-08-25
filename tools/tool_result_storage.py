@@ -1,15 +1,54 @@
-"""Tool result persistence -- preserves large outputs instead of truncating. Layers against
-context overflow: (1) per-tool caps inside each tool; (2) ``maybe_persist_tool_result`` —
-output over the tool's threshold is persisted and replaced by a preview + path; canonical home
-is ALWAYS host-side ``$HERMES_HOME/cache/spillover/{id}.txt`` (works for sessions that never
-ran a terminal), remote backends get the translated in-sandbox path (probed for readability)
-else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
+"""Tool result persistence -- preserves large outputs instead of truncating.
+
+Defense against context-window overflow operates at three levels:
+
+1. **Per-tool output cap** (inside each tool): Tools like search_files
+   pre-truncate their own output before returning. This is the first line
+   of defense and the only one the tool author controls.
+
+2. **Per-result persistence** (maybe_persist_tool_result): After a tool
+   returns, if its output exceeds the tool's registered threshold
+   (registry.get_max_result_size), the full output is persisted and the
+   in-context content is replaced with a preview + file path reference.
+
+   The canonical home is ALWAYS host-side:
+   ``$HERMES_HOME/cache/spillover/tool-results/{tool_use_id}.txt`` — alongside
+   the other Hermes-owned caches (images, audio, documents, ...) instead of
+   the OS temp dir. This needs no sandbox environment, so it also works for
+   sessions that never ran a terminal command (MCP-only, cron, gateway) —
+   previously those hit the inline-truncate fallback because
+   ``get_active_env()`` returned None until the first terminal call created
+   an environment.
+
+   What the model sees depends on the backend:
+
+   - **Local backend (or no active env):** the host path itself.
+   - **Remote backends (docker/ssh/modal/daytona):** ``cache/spillover`` is
+     in the auto-mounted/synced cache-dir list (tools/credential_files.py),
+     so the reference is the translated in-sandbox path (probed for
+     readability first). When the sandbox can't see it (e.g. a persistent
+     container created before spillover joined the mount list), fall back
+     to writing a copy into the sandbox temp dir via env.execute().
+
+   The spillover dir is pruned two ways: the gateway housekeeping loop
+   sweeps it hourly with the other media caches, and a once-per-process
+   best-effort prune runs on the first spill so CLI-only installs (which
+   never run gateway housekeeping) self-clean too.
+
+3. **Per-turn aggregate budget** (enforce_turn_budget): After all tool
+   results in a single assistant turn are collected, if the total exceeds
+   MAX_TURN_BUDGET_CHARS (200K), the largest non-persisted results are
+   spilled to disk until the aggregate is under budget. This catches cases
+   where many medium-sized results combine to overflow context.
+"""
 
 import hashlib
 import logging
 import os
+import posixpath
 import re
 import shlex
+import stat
 import threading
 import time
 
@@ -20,6 +59,7 @@ PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 SPILLOVER_SUBDIR = "cache/spillover"
+PERSISTED_SPILLOVER_SUBDIR = "tool-results"
 SPILLOVER_MAX_AGE_HOURS = 24
 RESULT_TTL_DAYS = 7
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -30,10 +70,15 @@ _spillover_prune_lock = threading.Lock()
 _spillover_pruned_once = False
 
 
-def get_spillover_dir():
-    """Return $HERMES_HOME/cache/spillover as a Path (not created)."""
+def get_spillover_root():
+    """Return the shared ``$HERMES_HOME/cache/spillover`` root."""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / SPILLOVER_SUBDIR
+
+
+def get_spillover_dir():
+    """Return the private tool-result spill directory (not created)."""
+    return get_spillover_root() / PERSISTED_SPILLOVER_SUBDIR
 
 
 def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
@@ -41,10 +86,22 @@ def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int
     contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
+    entries = []
+    spillover_root = get_spillover_root()
     try:
-        entries = list(get_spillover_dir().iterdir())
+        root_stat = os.lstat(spillover_root)
     except OSError:
         return 0
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return 0
+    for directory in (spillover_root, get_spillover_dir()):
+        try:
+            directory_stat = os.lstat(directory)
+            if not stat.S_ISDIR(directory_stat.st_mode):
+                continue
+            entries.extend(directory.iterdir())
+        except OSError:
+            continue
     for f in entries:
         try:
             if f.is_file() and f.stat().st_mtime < cutoff:
@@ -69,6 +126,33 @@ def _prune_spillover_once() -> None:
         logger.debug("Spillover prune failed: %s", exc)
 
 
+def _expire_host_spillover_on_access(path) -> bool | None:
+    """Delete an expired canonical host spill before it is served.
+
+    Returns ``True`` when an expired file was removed, ``False`` when a regular
+    file is still current (or already absent), and ``None`` when the path cannot
+    be verified safely. Symlinks and other non-regular files fail closed.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    if st.st_mtime >= time.time() - (SPILLOVER_MAX_AGE_HOURS * 3600):
+        return False
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
 def _is_host_side_env(env) -> bool:
     """True when this process should write the spill file directly: ``env=None`` (no sandbox
     yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox."""
@@ -82,13 +166,31 @@ def _is_host_side_env(env) -> bool:
 
 
 def _write_to_spillover(content: str, filename: str):
-    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None."""
+    """Write content privately to ``$HERMES_HOME/cache/spillover``.
+
+    Returns the absolute path string on success, None on failure. Existing
+    targets are replaced via a symlink-refusing exclusive create.
+    """
+    if os.path.basename(filename) != filename:
+        logger.warning("Spillover write refused unsafe filename: %s", filename)
+        return None
     try:
-        spill_dir = get_spillover_dir()
-        spill_dir.mkdir(parents=True, exist_ok=True)
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
+
+        spill_root = ensure_spill_dir(get_spillover_root(), private=False)
+        spill_dir = ensure_spill_dir(
+            spill_root / PERSISTED_SPILLOVER_SUBDIR,
+            private=True,
+        )
         path = spill_dir / filename
-        path.write_text(content, encoding="utf-8", errors="replace")
-    except OSError as exc:
+        write_text_exclusive(
+            path,
+            content,
+            private=True,
+            overwrite=True,
+            errors="replace",
+        )
+    except Exception as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
         return None
     _prune_spillover_once()
@@ -207,9 +309,31 @@ def _expire_persisted_result_on_access(remote_path: str, env) -> bool | None:
     directory and must fail closed on ``None``.
     """
     quoted_path = shlex.quote(remote_path)
+    quoted_dir = shlex.quote(posixpath.dirname(remote_path))
     cmd = (
+        f"[ ! -L {quoted_dir} ] && [ -d {quoted_dir} ] && "
         f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
         f"-mtime +{RESULT_TTL_DAYS - 1} -print -quit 2>/dev/null) && "
+        "if [ -n \\\"$expired\\\" ]; then "
+        f"rm -f {quoted_path} && printf '%s' expired; "
+        "fi"
+    )
+    result = env.execute(cmd, timeout=30)
+    if result.get("returncode", 1) != 0:
+        return None
+    output = result.get("output", result.get("stdout", ""))
+    return output.strip() == "expired"
+
+
+def _expire_remote_spillover_on_access(remote_path: str, env) -> bool | None:
+    """Delete an expired sandbox-visible canonical spill before serving it."""
+    quoted_path = shlex.quote(remote_path)
+    quoted_dir = shlex.quote(posixpath.dirname(remote_path))
+    max_age_minutes = SPILLOVER_MAX_AGE_HOURS * 60
+    cmd = (
+        f"[ ! -L {quoted_dir} ] && [ -d {quoted_dir} ] && "
+        f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
+        f"-mmin +{max_age_minutes - 1} -print -quit 2>/dev/null) && "
         "if [ -n \\\"$expired\\\" ]; then "
         f"rm -f {quoted_path} && printf '%s' expired; "
         "fi"

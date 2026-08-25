@@ -368,7 +368,7 @@ export function HudShell() {
     }
   }, [])
 
-  useHudGlass(rootRef, recent || held, filled)
+  useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
 

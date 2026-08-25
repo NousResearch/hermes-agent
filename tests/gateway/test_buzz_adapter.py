@@ -2416,6 +2416,22 @@ class TestBuzzAdapterSend:
         assert str(missing) not in stdin_text
 
     @pytest.mark.asyncio
+    async def test_send_document_uses_native_file_flag(self, tmp_path):
+        document = tmp_path / "package.zip"
+        document.write_bytes(b"PK fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt128", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document), caption="files")
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--file") + 1] == str(document)
+        assert stdin_text == "files"
+
+    @pytest.mark.asyncio
     async def test_send_multiple_images_file_url_uses_native_file_send(self, tmp_path):
         img = tmp_path / "shot with spaces.png"
         img.write_bytes(b"\x89PNG fake")
@@ -2916,6 +2932,7 @@ class TestInboundMediaAuthorizationGate:
         assert len(cli_calls) == 1
         assert captured[0].message_type == MessageType.PHOTO
         assert len(captured[0].media_urls) == 1
+
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

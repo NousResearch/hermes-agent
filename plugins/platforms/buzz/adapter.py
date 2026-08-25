@@ -1458,41 +1458,60 @@ class BuzzAdapter(BasePlatformAdapter):
         """Send an image: local files upload via --file, URLs go as a link."""
         local = Path(image_url).expanduser() if not image_url.startswith(("http://", "https://")) else None
         if local is not None and local.is_file():
-            args = [
-                "messages", "send",
-                "--channel", str(chat_id),
-                "--file", str(local),
-                "--content", "-",
-            ]
-            reply_target = self._resolve_reply_anchor(
-                (metadata or {}).get("thread_id") or reply_to
-            )
-            if reply_target and self._reply_to_mode != "off":
-                args += ["--reply-to", str(reply_target)]
-            code, out, err = await self._run_message_send(args, caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-                self._remember_event_meta(
-                    str(chat_id),
-                    str(event_id),
-                    self._self_pubkey,
-                    caption or "",
-                )
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_file_attachment(
+                chat_id,
+                local,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def _send_file_attachment(
+        self,
+        chat_id: str,
+        file_path: Path,
+        *,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload a local file and publish it as a native Buzz attachment."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error=f"File not found: {local}")
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(local),
+            "--content", "-",
+        ]
+        reply_target = self._resolve_reply_anchor(
+            (metadata or {}).get("thread_id") or reply_to
+        )
+        if reply_target and self._reply_to_mode != "off":
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            return SendResult(
+                success=False,
+                error=_cli_error_message(err, code),
+                retryable=code == 2,
+            )
+        try:
+            data = json.loads(out or "{}")
+        except ValueError:
+            data = {}
+        event_id = data.get("event_id")
+        if event_id:
+            self._mark_seen(str(chat_id), str(event_id))
+        return SendResult(
+            success=bool(data.get("accepted", True)),
+            message_id=str(event_id) if event_id else None,
+            raw_response=data,
+        )
 
     async def send_image_file(
         self,
@@ -1503,31 +1522,19 @@ class BuzzAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
+        """Upload a local image through Buzz's native ``--file`` path.
+
+        Missing or non-file paths retain the Base fallback so host
+        filesystem paths are never echoed into chat (#74999).
+        """
         local = Path(image_path).expanduser()
         if local.is_file():
-            args = [
-                "messages", "send",
-                "--channel", str(chat_id),
-                "--file", str(local),
-                "--content", "-",
-            ]
-            reply_target = reply_to or (metadata or {}).get("thread_id")
-            if reply_target:
-                args += ["--reply-to", str(reply_target)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_file_attachment(
+                chat_id,
+                local,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
             )
         return await super().send_image_file(
             chat_id=chat_id,
@@ -1536,6 +1543,61 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to=reply_to,
             metadata=metadata,
             **kwargs,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local document through Buzz's native ``--file`` path."""
+        return await self._send_file_attachment(
+            chat_id,
+            Path(file_path),
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local video through Buzz's native ``--file`` path."""
+        return await self._send_file_attachment(
+            chat_id,
+            Path(video_path),
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local audio file through Buzz's native ``--file`` path."""
+        return await self._send_file_attachment(
+            chat_id,
+            Path(audio_path),
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

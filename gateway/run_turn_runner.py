@@ -1035,7 +1035,7 @@ class TurnRunner:
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
         adapter's post-delivery hook releases them after the main response lands."""
-        from gateway.run import _interim_metadata, _non_conversational_metadata
+        from gateway.run import _internal_notice_metadata
         ctx = self._ctx
         release_evt = threading.Event()
         pending: list[str] = []
@@ -1045,7 +1045,7 @@ class TurnRunner:
             if self._status_live():
                 self._send_status_text(
                     message,
-                    _interim_metadata(_non_conversational_metadata(ctx._status_thread_metadata, platform=ctx.source.platform)),
+                    _internal_notice_metadata(ctx._status_thread_metadata, platform=ctx.source.platform),
                     "background_review_callback scheduling error",
                 )
 

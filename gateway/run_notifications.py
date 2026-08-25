@@ -72,8 +72,8 @@ class GatewayNotificationsMixin:
         platform: Any
 
         def send_metadata(self):
-            from gateway.run import _non_conversational_metadata
-            return _non_conversational_metadata(self.metadata, platform=self.platform)
+            from gateway.run import _internal_notice_metadata
+            return _internal_notice_metadata(self.metadata, platform=self.platform)
 
         async def send(self, text: str):
             return await self.adapter.send(self.chat_id, text, metadata=self.send_metadata())
@@ -535,7 +535,6 @@ class GatewayNotificationsMixin:
 
         False while the update is still running (caller may retry); True after a definitive send/skip.
         """
-        from gateway.run import _non_conversational_metadata
         paths = self._update_paths()
         if not paths.any_pending():
             return False
@@ -586,7 +585,8 @@ class GatewayNotificationsMixin:
                         "✅ Hermes update finished successfully." if exit_code == 0 else
                         "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
                     )
-                await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
+                from gateway.run import _internal_notice_metadata
+                await adapter.send(chat_id, msg, metadata=_internal_notice_metadata(metadata, platform=platform))
                 logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
@@ -599,7 +599,7 @@ class GatewayNotificationsMixin:
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
-        from gateway.run import _hermes_home, _non_conversational_metadata
+        from gateway.run import _hermes_home, _internal_notice_metadata
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -629,7 +629,7 @@ class GatewayNotificationsMixin:
                         metadata[field] = str(data[field])
             result = await transport.send(
                 platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
+                metadata=_internal_notice_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
             # SendResult(success=False) rather than raising, so inspect the result before claiming success.
@@ -660,7 +660,7 @@ class GatewayNotificationsMixin:
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        from gateway.run import _non_conversational_metadata
+        from gateway.run import _internal_notice_metadata
         try:
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
@@ -669,7 +669,7 @@ class GatewayNotificationsMixin:
                     metadata["user_id"] = home.user_id
                 if home.scope_id:
                     metadata["scope_id"] = home.scope_id
-            send_metadata = _non_conversational_metadata(metadata, platform=platform)
+            send_metadata = _internal_notice_metadata(metadata, platform=platform)
             if send_metadata is not None or transport.is_relay:
                 result = await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
             else:
@@ -1391,13 +1391,13 @@ class GatewayNotificationsMixin:
         return new_output
 
     async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str) -> None:
-        from gateway.run import _non_conversational_metadata
+        from gateway.run import _internal_notice_metadata
         adapter = self._adapter_by_platform_value(platform_name)
         if adapter and chat_id:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
                 await adapter.send(
-                    chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                    chat_id, message_text, metadata=_internal_notice_metadata(send_meta, platform=platform_name),
                 )
 
     @staticmethod

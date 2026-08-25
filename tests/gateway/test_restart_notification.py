@@ -198,11 +198,13 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     adapter.send.assert_called_once_with(
         "parent-42",
         "♻️ Gateway online — Hermes is back and ready.",
-        metadata={
-            "thread_id": "777",
-            "telegram_dm_topic_reply_fallback": True,
-            "direct_messages_topic_id": "777",
-        },
+            metadata={
+                "thread_id": "777",
+                "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": "777",
+                "_interim_send": True,
+                "internal_notice": True,
+            },
     )
 
 
@@ -410,5 +412,4 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     await runner._notify_active_sessions_of_shutdown()
 
     adapter.send.assert_not_awaited()
-
 

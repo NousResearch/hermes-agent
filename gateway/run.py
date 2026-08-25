@@ -471,6 +471,15 @@ def _interim_metadata(metadata: Optional[Dict[str, Any]] = None) -> Dict[str, An
     return merged
 
 
+def _internal_notice_metadata(
+    metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None
+) -> Dict[str, Any]:
+    """Mark suppressible operational notices without hiding user prompts."""
+    merged = _interim_metadata(_non_conversational_metadata(metadata, platform=platform))
+    merged["internal_notice"] = True
+    return merged
+
+
 def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]]) -> bool:
     """Keep gateway hygiene from rebuilding a live session's system prompt.
 
@@ -706,6 +715,8 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
 
     See #30045.
     """
+    metadata = dict(metadata or {})
+    metadata["internal_notice"] = True
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)

@@ -2768,7 +2768,7 @@ class GatewayTurnMixin:
         for status / approval / stream sends (Feishu topics need the triggering message id via the
         reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
         opt-out: never synthesise a thread for progress, or every later reply inherits it."""
-        from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
+        from gateway.run import _internal_notice_metadata, _resolve_progress_thread_id
         is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
         _progress_reply_in_thread = True
         _adapter = self._adapter_for_source(source) if source.platform == Platform.SLACK or is_buzz else None
@@ -2796,7 +2796,7 @@ class GatewayTurnMixin:
             and not source.thread_id
             else None
         )
-        _progress_metadata = _non_conversational_metadata(
+        _progress_metadata = _internal_notice_metadata(
             self._thread_metadata_for_progress(
                 source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
             ),
@@ -3711,7 +3711,7 @@ class GatewayTurnMixin:
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        from gateway.run import _float_env, _internal_notice_metadata
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -3762,7 +3762,7 @@ class GatewayTurnMixin:
                 if not (_notify_res and getattr(_notify_res, "success", False)):
                     _notify_res = await _notify_adapter.send(
                         source.chat_id, _heartbeat_text,
-                        metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
+                        metadata=_internal_notice_metadata(_status_thread_metadata, platform=source.platform),
                     )
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
                         _heartbeat_msg_id = str(_notify_res.message_id)

@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: semgrep
+description: Scan code for security vulnerabilities with Semgrep.
+source: https://semgrep.dev/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.semgrep.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - semgrep
+    - static analysis
+  hosts:
+    - semgrep.dev
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Semgrep (or run `hermes mcp login semgrep`). Approve access,
+  then restart the session so tools load.

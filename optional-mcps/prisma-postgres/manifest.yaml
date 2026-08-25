@@ -1,0 +1,32 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: prisma-postgres
+description: Create and manage Prisma Postgres databases.
+source: https://www.prisma.io/docs/postgres/integrations/mcp-server
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.prisma.io/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - prisma
+  hosts:
+    - prisma.io
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Prisma Postgres (or run `hermes mcp login prisma-postgres`). Approve access,
+  then restart the session so tools load.

@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: perplexity
+description: Real-time web search and research via Perplexity's Sonar API.
+source: https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server
+
+# Official vendor-hosted remote MCP (URL-only). Authenticates with an API
+# key/token sent as a Bearer Authorization header.
+
+transport:
+  type: http
+  url: https://api.perplexity.ai/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_PERPLEXITY_API_KEY
+      prompt: "Perplexity API key (perplexity.ai/settings/api)"
+      required: true
+      secret: true
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - perplexity
+    - sonar
+  hosts:
+    - perplexity.ai
+
+post_install: |
+  Hermes prompts for the API key at install time and stores it in
+  ~/.hermes/.env. Restart the session so tools load.
+
+  Requires a Perplexity API key (paid usage) from
+  perplexity.ai/settings/api.

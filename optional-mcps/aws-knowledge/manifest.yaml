@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aws-knowledge
+description: Authoritative AWS docs, API references, and best practices.
+source: https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://knowledge-mcp.global.api.aws
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - aws docs
+    - aws knowledge
+  hosts:
+    - aws.amazon.com
+    - docs.aws.amazon.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.

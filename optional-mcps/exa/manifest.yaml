@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: exa
+description: AI web search, code search, and page reading powered by Exa.
+source: https://docs.exa.ai/reference/exa-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://mcp.exa.ai/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - exa
+    - web search
+  hosts:
+    - exa.ai
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Works anonymously with rate limits; an Exa API key lifts them (see
+  docs.exa.ai).

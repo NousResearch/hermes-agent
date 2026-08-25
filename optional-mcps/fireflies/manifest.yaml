@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fireflies
+description: Meeting transcripts, summaries, and action items.
+source: https://docs.fireflies.ai/getting-started/mcp-configuration
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api.fireflies.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - fireflies
+    - meeting notes
+    - transcript
+  hosts:
+    - fireflies.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Fireflies (or run `hermes mcp login fireflies`). Approve access,
+  then restart the session so tools load.

@@ -10542,7 +10542,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0', '--ws-only']
+  // `--ws-only` is OPT-IN (HERMES_DESKTOP_WS_ONLY=1): the slim server has no
+  // HTTP routes, and the desktop's `hermes:api` REST plane still requires
+  // http — enabling it by default breaks every REST consumer (review F1 on
+  // PR #94245). Flips to default once the REST plane migrates (#94484 ph.3).
+  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  if (process.env.HERMES_DESKTOP_WS_ONLY === '1') {
+    backendArgs.push('--ws-only')
+  }
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
@@ -10688,7 +10695,11 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     )
   }
 
-  const baseUrl = announcedToken ? `ws://127.0.0.1:${port}` : `http://127.0.0.1:${port}`
+  // baseUrl feeds the `hermes:api` REST plane (fetchJson rejects non-http).
+  // A WS-only backend has no HTTP routes; expose the WS transport via wsUrl
+  // and mark it on the descriptor instead of overloading baseUrl (F1).
+  const baseUrl = `http://127.0.0.1:${port}`
+  const wsOnlyTransport = Boolean(announcedToken)
 
   return {
     baseUrl,
@@ -10698,6 +10709,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     token: authToken,
     profile,
     wsUrl,
+    wsOnlyTransport,
     logs: hermesLog.slice(-80),
     ...getWindowState()
   }
@@ -10909,7 +10921,11 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0', '--ws-only']
+    // `--ws-only` opt-in — same gate as the pool spawn site above (F1).
+    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+    if (process.env.HERMES_DESKTOP_WS_ONLY === '1') {
+      backendArgs.push('--ws-only')
+    }
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -11157,7 +11173,10 @@ async function startHermes() {
     // accumulated count of the resolved episode.
     bootstrapRepairAttempt = 0
 
-    const baseUrl = announcedToken ? `ws://127.0.0.1:${port}` : `http://127.0.0.1:${port}`
+    // Same descriptor rule as spawnPoolBackend: baseUrl stays http for the
+    // REST plane; WS-only mode is flagged separately (F1).
+    const baseUrl = `http://127.0.0.1:${port}`
+    const wsOnlyTransport = Boolean(announcedToken)
 
     return {
       baseUrl,
@@ -11166,6 +11185,7 @@ async function startHermes() {
       authMode: 'token',
       token: authToken,
       wsUrl,
+      wsOnlyTransport,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }

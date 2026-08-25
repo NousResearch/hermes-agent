@@ -22,12 +22,15 @@
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
  * @param {object} [opts] runtime capability flags.
- * @param {boolean} [opts.wsOnly=true] emit `--ws-only` (the slim WS server)
- *   when true. Set to false for a runtime that doesn't understand the flag.
+ * @param {boolean} [opts.wsOnly=false] emit `--ws-only` (the slim WS server).
+ *   OPT-IN: the WS-only server has no HTTP routes, and the desktop's
+ *   `hermes:api` REST plane still speaks http — flipping this on by default
+ *   would break every REST consumer (see PR #94245 review F1). Stays off
+ *   until the REST consumers migrate to JSON-RPC (#94484 phase 3).
  */
 export function serveBackendArgs(profile?: string, opts?: { wsOnly?: boolean }) {
   const head = profile ? ['--profile', profile] : []
-  const wsOnly = opts?.wsOnly !== false // default true
+  const wsOnly = opts?.wsOnly === true // default false — see docstring
 
   const tail = wsOnly ? ['--ws-only'] : []
   return [...head, 'serve', '--host', '127.0.0.1', '--port', '0', ...tail]

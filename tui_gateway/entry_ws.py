@@ -179,8 +179,30 @@ def run(host: str = "127.0.0.1", port: int = 0) -> None:
     the desktop's Electron main process can discover the port (when
     ``--port 0``) and the token (when auto-generated), identical to how it
     parses the dashboard's ready sentinel.
+
+    Loopback-only: this server authenticates with a static per-process
+    session token — the loopback shortcut the desktop uses. It deliberately
+    does NOT implement the dashboard's gated one-time-ticket auth
+    (``should_require_dashboard_auth``), so binding it to a non-loopback
+    interface would expose a weaker auth posture than every other Hermes
+    surface. Fail closed instead of serving.
     """
+    import ipaddress
     import signal
+
+    try:
+        addr = ipaddress.ip_address(host)
+        is_loopback = addr.is_loopback
+    except ValueError:
+        # Hostnames: allow the conventional loopback name only.
+        is_loopback = host == "localhost"
+    if not is_loopback:
+        raise SystemExit(
+            f"--ws-only only binds loopback interfaces (got {host!r}). "
+            "It uses the desktop's static session-token auth, which is not "
+            "hardened for network exposure. Use `hermes serve` (the full "
+            "dashboard server with gated auth) for non-loopback hosts."
+        )
 
     # Capture the real stdout BEFORE importing tui_gateway.server —
     # server.py redirects sys.stdout → sys.stderr at module level

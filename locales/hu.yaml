@@ -42,6 +42,16 @@ approval:
     second_one: "{count} másodperc"
     second_other: "{count} másodperc"
 gateway:
+  workspace:
+    source_session: "session override"
+    source_global: "global default"
+    status: "📁 **Workspace:** `{cwd}` ({source})\nGlobal default: `{global_cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to the global default."
+    set: "✅ Workspace set for this chat: `{cwd}`\nFuture turns in this chat will use this directory for project context, file tools, terminal commands, @ references, and rollback."
+    cleared: "Workspace override cleared. Future turns will use the global default: `{cwd}`"
+    relative_rejected: "Use an absolute path, e.g. `/workspace /home/me/project`."
+    invalid: "Invalid workspace path `{path}`: {error}"
+    not_dir: "Workspace path is not an existing directory: `{path}`"
+    save_failed: "Failed to save workspace: {error}"
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining: "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
   goal_cleared: "✓ A cél törölve."

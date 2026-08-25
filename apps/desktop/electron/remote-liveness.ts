@@ -1,4 +1,9 @@
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+// Dispatch is synchronous user intent: a cached descriptor must prove its
+// forwarded endpoint is alive before it can be returned. Keep this probe much
+// shorter than the background liveness budget so a dead tunnel reconnects
+// promptly instead of making the click feel hung.
+export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 2_500
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -61,6 +66,60 @@ export class RemoteRevalidationCoordinator {
 
     return pending
   }
+}
+
+interface EnsureHealthyPooledRemoteBackendForDispatchOptions<
+  TConnection extends RemoteConnectionDescriptor
+> {
+  connectionPromise: Promise<TConnection>
+  currentConnectionPromise: () => null | Promise<TConnection>
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  reconnect: () => Promise<TConnection>
+  retire: (error: unknown) => Promise<void> | void
+}
+
+/**
+ * Gate dispatch through a cheap health probe of the exact cached descriptor.
+ *
+ * A failed descriptor is retired before reconnecting, while identity checks
+ * prevent a late probe from tearing down a replacement installed by another
+ * caller. The caller should single-flight this function per cached promise so
+ * concurrent dispatches share one retire/reconnect sequence.
+ */
+export async function ensureHealthyPooledRemoteBackendForDispatch<
+  TConnection extends RemoteConnectionDescriptor
+>({
+  connectionPromise,
+  currentConnectionPromise,
+  probe,
+  reconnect,
+  retire
+}: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
+  let connection: TConnection
+
+  try {
+    connection = await connectionPromise
+
+    if (currentConnectionPromise() !== connectionPromise) {
+      return reconnect()
+    }
+
+    await probe(connection, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+  } catch (error) {
+    if (currentConnectionPromise() === connectionPromise) {
+      await retire(error)
+    }
+
+    return reconnect()
+  }
+
+  if (currentConnectionPromise() !== connectionPromise) {
+    return reconnect()
+  }
+
+  return connection
 }
 
 /**

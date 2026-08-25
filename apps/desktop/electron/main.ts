@@ -284,6 +284,7 @@ import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySet
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
+  ensureHealthyPooledRemoteBackendForDispatch,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
@@ -1331,6 +1332,7 @@ let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
+const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -10581,8 +10583,37 @@ async function ensureRegistryBackend(connectionId, profile) {
 
   if (existing) {
     existing.lastActiveAt = Date.now()
+    const connectionPromise = existing.connectionPromise
 
-    return existing.connectionPromise
+    // A remote process can die while its local SSH forward stays LISTENing.
+    // Validate the exact cached descriptor at dispatch time; background
+    // revalidation is renderer-driven and may never run while the Bots pane is
+    // closed. Concurrent clicks share one retire/reconnect sequence.
+    return registryDispatchRevalidation.run(connectionPromise, () =>
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
+        probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
+        reconnect: () => ensureRegistryBackend(id, profile),
+        retire: async (error: any) => {
+          // A late failure from an old descriptor must never tear down a newer
+          // entry that another caller has already installed.
+          if (backendPool.get(key) !== existing) {
+            return
+          }
+
+          rememberLog(
+            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+          )
+          await stopPoolBackend(key)
+
+          if (source.kind === 'ssh') {
+            await sshBootstrapCoordinator.cancelAndWait(key)
+            await teardownSshConnection(key)
+          }
+        }
+      })
+    )
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)

@@ -107,7 +107,9 @@ class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
 
     def test_repairs_explicit_computer_use_media_path_from_json_result(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_0123456789abcdef0123456789abcdef.png"
         canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
@@ -134,7 +136,9 @@ class TestMediaExtraction:
         assert repaired == f"Here is the screenshot.\nMEDIA:{canonical}"
 
     def test_repairs_explicit_path_from_multimodal_text_summary(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_fedcba9876543210fedcba9876543210.jpg"
         canonical = rf"D:\Hermes Data\cache\images\{capture_name}"
@@ -165,7 +169,9 @@ class TestMediaExtraction:
         assert repaired == f'MEDIA:"{canonical}"'
 
     def test_does_not_auto_attach_computer_use_capture(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         capture_name = "computer_use_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
         canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
@@ -183,7 +189,9 @@ class TestMediaExtraction:
         )
 
     def test_does_not_rewrite_unmatched_or_previous_turn_capture(self):
-        from gateway.run import _repair_explicit_computer_use_media_paths
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
 
         old_name = "computer_use_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
         current_name = "computer_use_cccccccccccccccccccccccccccccccc.png"
@@ -213,6 +221,77 @@ class TestMediaExtraction:
         )
 
         assert repaired == response
+
+    def test_malformed_json_result_fails_closed(self):
+        """Truncated JSON must not repair to a doubled-backslash artifact.
+
+        JSON escaping doubles backslashes; regex-scanning the raw string
+        would yield ``C:\\\\Users\\\\...`` — a path that exists nowhere. When
+        json.loads fails, the helper must yield nothing rather than rewrite
+        the response to a corrupted path.
+        """
+        import json as _json
+
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
+
+        capture_name = "computer_use_dddddddddddddddddddddddddddddddd.png"
+        canonical = rf"C:\Users\Alice\AppData\Local\hermes\cache\images\{capture_name}"
+        payload = _json.dumps(
+            {
+                "summary": f"capture\n  (shareable screenshot saved to {canonical})",
+                "screenshot_path": canonical,
+            }
+        )
+        truncated = payload[:-5]  # starts with '{' but no longer parses
+        response = f"MEDIA:/Users/Alice/AppData/Local/hermes/cache/images/{capture_name}"
+        messages = [
+            {"role": "tool", "name": "computer_use", "content": truncated},
+        ]
+
+        assert (
+            _repair_explicit_computer_use_media_paths(response, messages)
+            == response
+        )
+
+    def test_compression_fallback_slices_from_last_user_message(self):
+        """When compression shrinks messages below history_offset, the repair
+        recovers the current turn from the last user message — and fails
+        closed (no rewrite) when no user message remains."""
+        import json as _json
+
+        from gateway.media_repair import (
+            repair_explicit_computer_use_media_paths as _repair_explicit_computer_use_media_paths,
+        )
+
+        capture_name = "computer_use_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.png"
+        canonical = rf"C:\cache\images\{capture_name}"
+        response = f"MEDIA:/cache/images/{capture_name}"
+        current_turn = [
+            {"role": "user", "content": "Send the screenshot."},
+            {
+                "role": "tool",
+                "name": "computer_use",
+                "content": _json.dumps({"screenshot_path": canonical}),
+            },
+        ]
+
+        # history_offset larger than the (compressed) message list forces the
+        # fallback branch; the last-user slice still finds this turn's result.
+        repaired = _repair_explicit_computer_use_media_paths(
+            response, current_turn, history_offset=10
+        )
+        assert repaired == f"MEDIA:{canonical}"
+
+        # No user message at all -> fail closed, nothing rewritten.
+        no_user = [current_turn[1]]
+        assert (
+            _repair_explicit_computer_use_media_paths(
+                response, no_user, history_offset=10
+            )
+            == response
+        )
 
     def test_gateway_auto_append_ignores_media_examples_in_skill_docs(self):
         """Skill/documentation examples must not be appended as real attachments."""

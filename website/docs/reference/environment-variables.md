@@ -658,7 +658,7 @@ Connect Hermes to an IRC server. No external dependencies. See [the IRC messagin
 
 ### QQ (OneBot)
 
-Connect Hermes to QQ through a local OneBot 11 bridge (NapCat / Lagrange / LLOneBot / go-cqhttp). See [the QQ (OneBot) messaging guide](/user-guide/messaging/qq-onebot).
+Connect Hermes to QQ through a local OneBot 11 bridge (NapCat / Lagrange / LLOneBot / go-cqhttp). See [the QQ (OneBot) plugin README](../../../plugins/platforms/onebot/README.md) (中文版见 `README.zh-CN.md`).
 
 | Variable | Description |
 |----------|-------------|

@@ -1,5 +1,7 @@
 # QQ (OneBot)
 
+> 中文版见 [`README.zh-CN.md`](README.zh-CN.md) · Chinese readme: [`README.zh-CN.md`](README.zh-CN.md)
+
 The OneBot adapter connects Hermes to QQ through the **OneBot 11 protocol**, compatible with [NapCat](https://napneko.github.io/), [Lagrange](https://github.com/LagrangeDev/Lagrange.Core), LLOneBot, and go-cqhttp. Instead of the official QQ Bot platform (which requires a Tencent-approved app), OneBot drives a regular QQ account via a local bridge, useful for personal bots and groups the official platform can't reach.
 
 ```

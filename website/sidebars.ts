@@ -687,7 +687,6 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/simplex',
             'user-guide/messaging/ntfy',
             'user-guide/messaging/irc',
-            'user-guide/messaging/qq-onebot',
             'user-guide/messaging/open-webui',
             'user-guide/messaging/relay',
             'user-guide/messaging/webhooks',

@@ -66,6 +66,25 @@ class TestReceiptLifecycle:
         assert gr["incomplete"] is False
         assert payload["fleet"][0]["profile"] == "default"
 
+    def test_fresh_recovery_result_reaches_persisted_receipt(self, receipt_home):
+        recovery = {
+            "requested": ["coder", "default"],
+            "succeeded": ["default"],
+            "failed": ["coder"],
+        }
+
+        ur.begin_update_receipt()
+        ur.record_gateway_restart(
+            restarted_services=[],
+            incomplete=True,
+            phase_error="boom: module vanished mid-pull",
+            fresh_recovery=recovery,
+        )
+        path = _finalize("partial")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["gateway_restart"]["fresh_recovery"] == recovery
+
     def test_latest_pointer_written_and_readable(self, receipt_home):
         ur.begin_update_receipt()
         ur.record_step("git_pull", True)

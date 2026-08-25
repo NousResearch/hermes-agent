@@ -99,8 +99,9 @@ class UpdateReceipt:
         failed_units: list | None = None,
         incomplete: bool = False,
         phase_error: str = "",
+        fresh_recovery: dict[str, Any] | None = None,
     ) -> None:
-        self.data["gateway_restart"] = {
+        result: dict[str, Any] = {
             "restarted_services": list(restarted_services or []),
             "relaunched_profiles": list(relaunched_profiles or []),
             "externally_supervised_profiles": list(
@@ -111,6 +112,19 @@ class UpdateReceipt:
             "incomplete": bool(incomplete),
             "phase_error": phase_error,
         }
+        if fresh_recovery is not None:
+            result["fresh_recovery"] = {
+                "requested": [
+                    str(profile) for profile in fresh_recovery.get("requested", [])
+                ],
+                "succeeded": [
+                    str(profile) for profile in fresh_recovery.get("succeeded", [])
+                ],
+                "failed": [
+                    str(profile) for profile in fresh_recovery.get("failed", [])
+                ],
+            }
+        self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
         self.data["outcome"] = outcome

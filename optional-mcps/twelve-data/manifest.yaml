@@ -19,6 +19,15 @@ transport:
 auth:
   type: oauth
 
+# Excluded: OAuth plumbing exposed as tools on the cloud server, plus the
+# account-quota probe. All remaining tools are read-only market data.
+tools:
+  default_excluded:
+    - oauth_login
+    - auth_status
+    - oauth_configure
+    - get_api_usage
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

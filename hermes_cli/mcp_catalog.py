@@ -623,6 +623,25 @@ def _read_prior_tool_selection(name: str) -> Optional[List[str]]:
     return None
 
 
+def _read_prior_tool_exclude(name: str) -> Optional[List[str]]:
+    """Return the user's prior `tools.exclude` for *name*, if any.
+
+    The exclude-mode counterpart of :func:`_read_prior_tool_selection`.
+    Read BEFORE a reinstall overwrites the server entry, so a user-edited
+    exclude list survives reinstalling an exclude-mode catalog entry instead
+    of being clobbered by the manifest's ``default_excluded``.
+    """
+    servers = installed_servers()
+    cfg = servers.get(name) or {}
+    tools_cfg = cfg.get("tools") or {}
+    if not isinstance(tools_cfg, dict):
+        return None
+    exclude = tools_cfg.get("exclude")
+    if isinstance(exclude, list) and all(isinstance(t, str) for t in exclude):
+        return list(exclude)
+    return None
+
+
 def _probe_tools(name: str) -> Optional[List[tuple]]:
     """Connect to a freshly-configured MCP and list its tools.
 
@@ -684,7 +703,10 @@ def _write_tools_exclude(name: str, exclude: List[str]) -> None:
 
 
 def _apply_tool_selection(
-    entry: CatalogEntry, *, prior_selection: Optional[List[str]]
+    entry: CatalogEntry,
+    *,
+    prior_selection: Optional[List[str]],
+    prior_exclude: Optional[List[str]] = None,
 ) -> None:
     """Probe the server and let the user pick which tools to enable.
 
@@ -707,9 +729,22 @@ def _apply_tool_selection(
 
     # Exclude-mode manifests short-circuit the checklist entirely: the curated
     # exclude list (names or glob patterns) is written as-is, everything else
-    # stays enabled — including tools the server adds later. A reinstall with
-    # a prior include selection still honours the user's own choice below.
+    # stays enabled — including tools the server adds later. Reinstalls
+    # preserve the user's own prior filter in EITHER mode: a prior include
+    # selection falls through to the checklist below, and a prior user-edited
+    # exclude list is re-written verbatim instead of being clobbered by the
+    # manifest defaults.
     if entry.tools.default_excluded and prior_selection is None:
+        if prior_exclude is not None:
+            _write_tools_exclude(entry.name, prior_exclude)
+            print(color(
+                f"  Kept your existing exclude list ({len(prior_exclude)} "
+                f"entries). Edit mcp_servers.{entry.name}.tools.exclude in "
+                "config.yaml or run "
+                f"`hermes mcp configure {entry.name}` to change.",
+                Colors.GREEN,
+            ))
+            return
         _write_tools_exclude(entry.name, entry.tools.default_excluded)
         print(color(
             f"  Applied manifest exclude list "
@@ -885,8 +920,10 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     # ── Preserve any prior user tool selection across reinstalls ────────
     # Reading BEFORE we overwrite the entry below so a reinstall pre-checks
-    # whatever the user picked last time.
+    # whatever the user picked last time (include mode) or keeps the user's
+    # edited exclude list (exclude mode).
     prior_selection = _read_prior_tool_selection(entry.name)
+    prior_exclude = _read_prior_tool_exclude(entry.name)
 
     # Build and write the mcp_servers entry (without tools filter yet;
     # _apply_tool_selection() finalizes it below).
@@ -901,7 +938,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
         )
 
     # ── Probe + tool selection ──────────────────────────────────────────
-    _apply_tool_selection(entry, prior_selection=prior_selection)
+    _apply_tool_selection(
+        entry, prior_selection=prior_selection, prior_exclude=prior_exclude
+    )
 
     print()
     print(color(

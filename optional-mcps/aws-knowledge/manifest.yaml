@@ -17,6 +17,13 @@ transport:
 auth:
   type: none
 
+# aws___retrieve_skill fetches vendor-authored SKILL.md workflow files — a
+# vendor skill/discovery layer. Hermes's own skills and tool_search are the
+# only instruction/deferral layers we ship (verified live via tools/list).
+tools:
+  default_excluded:
+    - aws___retrieve_skill
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

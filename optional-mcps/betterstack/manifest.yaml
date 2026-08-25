@@ -18,28 +18,28 @@ transport:
 auth:
   type: oauth
 
-# Curated exclude list (106-tool surface). Excluded: vendor-docs search;
-# eight instruction-fetcher pseudo-tools (static how-to text as tools);
+# Curated exclude list (~106-tool surface). Excluded: vendor-docs search;
+# the instruction-fetcher pseudo-tools (static how-to text as tools);
 # Execute query / Create cloud connection (raw ClickHouse-SQL escape hatch +
 # direct-DB credential minting); team-membership management (account access
-# changes). ~85 product tools stay enabled; re-enable any with
-# `hermes mcp configure betterstack`.
+# changes). NOTE: Better Stack's docs list display labels while the wire
+# uses snake_case (their own header examples show `remove_dashboard`); the
+# server is OAuth-gated so names could not be enumerated pre-auth. Entries
+# below cover BOTH shapes — glob patterns for the snake_case wire names plus
+# the display-label literals; unmatched entries no-op harmlessly.
+# ~85+ product tools stay enabled; re-check with
+# `hermes mcp configure betterstack` after first login.
 tools:
   default_excluded:
+    - search_documentation
     - Search documentation
-    - Get query instructions
-    - Get metric query instructions
-    - Get errors query instructions
-    - Get replays query instructions
-    - Get explore logs query instructions
-    - Get chart building instructions
-    - Get chart alert instructions
-    - Get dashboard query instructions
+    - "*instructions*"
+    - execute_query
     - Execute query
+    - create_cloud_connection
     - Create cloud connection
-    - Invite team member
-    - Remove team member
-    - Change team member role
+    - "*team_member*"
+    - "*team member*"
 
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
@@ -55,8 +55,9 @@ post_install: |
   Better Stack (or run `hermes mcp login betterstack`). Approve access,
   then restart the session so tools load.
 
-  Heads-up: this server exposes a LARGE tool surface (~111 tools as of
-  Aug 2026 — roughly 40-60K tokens of schema if all stay enabled). The
-  install-time checklist starts fully checked; prune to the product areas
-  you actually use (logs, monitors, incidents...), or re-run later with:
+  Heads-up: this server exposes a LARGE tool surface (~106 tools as of
+  Aug 2026). Hermes applies a curated exclude list automatically at install
+  (docs search, instruction pseudo-tools, the raw-SQL query hatch, cloud
+  credential minting, and team-membership tools); everything else stays
+  enabled. Review or change the selection any time with:
     hermes mcp configure betterstack

@@ -18,6 +18,14 @@ transport:
 auth:
   type: oauth
 
+# Excluded: railway-agent hands the request to Railway's server-side AI
+# agent for multi-step infra operations — an opaque delegation meta-layer
+# that acts outside Hermes's per-tool approval loop. The remaining tools
+# are direct (and destructive ones carry vendor destructive-hints).
+tools:
+  default_excluded:
+    - railway-agent
+
 # Composer-suggestion triggers (desktop brand pills).
 suggest:
   keywords:

@@ -12,6 +12,7 @@ import {
   buildSpawnCommand,
   cleanupStale,
   connect,
+  disconnect,
   expandRemotePath,
   fingerprintToken,
   isForwardBindCollision,
@@ -469,6 +470,29 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+test('disconnect reaps the backend recorded for this desktop ownership', async () => {
+  const lock = ownedLock()
+
+  const ssh = fakeSsh([
+    [/cat .*backend\.lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE\n'],
+    [/print\("OWNED"/, 'OWNED\n']
+  ])
+
+  await disconnect(ssh, OWNERSHIP_ID)
+
+  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+})
+
+test('disconnect is a no-op when this desktop has no lockfile', async () => {
+  const ssh = fakeSsh([[/cat .*backend\.lock\.json/, '']])
+
+  await disconnect(ssh, OWNERSHIP_ID)
+
+  assert.ok(!ssh.calls.some(command => /\bkill\b/.test(command)))
+})
 
 test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])

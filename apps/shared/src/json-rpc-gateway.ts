@@ -485,6 +485,7 @@ export class JsonRpcGatewayClient {
         // Replay in flight for this session: park the frame; flushReplayHold
         // dispatches it after the replayed gap, gated on seq.
         this.replayHold.get(sid)?.push(frame.params)
+
         return
       }
 
@@ -567,6 +568,7 @@ export class JsonRpcGatewayClient {
           // and this replay window — are meaningless. Drop them and start
           // fresh under the new epoch.
           this.adoptReplayEpoch(epoch)
+
           continue
         }
 

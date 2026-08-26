@@ -28,6 +28,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -869,7 +870,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   className={cn('min-w-60 flex-1', CONTROL_TEXT)}
                   onChange={event => setApiKeyDraft(event.target.value)}
                   onKeyDown={event => {
-                    if (event.key === 'Enter') {
+                    if (isSubmitEnter(event)) {
                       void activateApiKeyProvider()
                     }
                   }}

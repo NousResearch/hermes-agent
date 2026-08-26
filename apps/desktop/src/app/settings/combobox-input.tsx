@@ -5,6 +5,7 @@ import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
 /**
@@ -59,7 +60,7 @@ export function ComboboxInput({
             }}
             onFocus={() => setOpen(true)}
             onKeyDown={e => {
-              if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Tab') {
+              if (e.key === 'Escape' || e.key === 'Tab' || isSubmitEnter(e)) {
                 setOpen(false)
               }
             }}

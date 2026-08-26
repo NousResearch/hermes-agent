@@ -226,10 +226,11 @@ def resolve_hermes_vlm_config() -> dict[str, Any]:
             "Hermes' LLM provider did not resolve reusable static credentials."
         )
 
+    vlm: dict[str, Any]
     if api_mode == "anthropic_messages":
         if not runtime_model.startswith("anthropic/"):
             runtime_model = f"anthropic/{runtime_model}"
-        vlm: dict[str, Any] = {
+        vlm = {
             "provider": "litellm",
             "model": runtime_model,
             "api_key": api_key,
@@ -609,7 +610,7 @@ def _start_validation_server(
     child_env.pop("PYTHONPATH", None)
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-    popen_kwargs = windows_detach_popen_kwargs()
+    popen_kwargs: dict[str, Any] = windows_detach_popen_kwargs()
     command_args = [
         command,
         "--config",
@@ -621,7 +622,7 @@ def _start_validation_server(
     ]
     try:
         with log_path.open("ab") as log_file:
-            common_kwargs = {
+            common_kwargs: dict[str, Any] = {
                 "stdout": log_file,
                 "stderr": log_file,
                 "env": child_env,
@@ -800,7 +801,7 @@ def _start_ollama(paths: QuickLocalPaths) -> tuple[bool, str]:
 
     try:
         with log_path.open("ab") as log_file:
-            common_kwargs = {
+            common_kwargs: dict[str, Any] = {
                 "stdout": log_file,
                 "stderr": log_file,
             }

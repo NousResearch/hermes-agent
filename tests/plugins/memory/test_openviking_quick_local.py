@@ -748,6 +748,36 @@ def test_quick_local_profile_is_not_overridden_by_process_environment(
     assert settings["agent"] == "hermes"
 
 
+def test_quick_local_status_hides_only_ignored_environment_overrides(
+    tmp_path, monkeypatch
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    quick_local.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1938", "actor_peer_id": "hermes"},
+        mode=0o600,
+    )
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1998")
+
+    status = OpenVikingMemoryProvider().get_status_config({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(paths.ovcli_config),
+        "deployment": quick_local.DEPLOYMENT,
+    })
+
+    assert status["endpoint"] == "http://127.0.0.1:1938"
+    assert "env_overrides" not in status
+
+    self_managed_status = OpenVikingMemoryProvider().get_status_config({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(paths.ovcli_config),
+    })
+
+    assert self_managed_status["endpoint"] == "http://127.0.0.1:1998"
+    assert self_managed_status["env_overrides"] == "OPENVIKING_ENDPOINT"
+
+
 def test_incomplete_quick_local_profile_does_not_fall_back_to_environment(
     tmp_path, monkeypatch
 ):

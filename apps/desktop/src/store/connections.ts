@@ -32,6 +32,10 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 const SWITCH_DIAL_TIMEOUT_MS = 20_000
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
+// Matches the primary spawn budget: a healthy cold boot publishes well within
+// this; anything longer means the primary is not coming and the registry
+// restore should stop waiting for it.
+const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = 45_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -141,21 +145,40 @@ async function rememberConnection(connectionId: string): Promise<void> {
  * source needs a secondary dial. Otherwise a remote primary can be opened a
  * second time through the registry while the identical primary SSH backend is
  * still publishing its connection identity.
+ *
+ * Bounded: a primary that never publishes (spawn failure, dead SSH target)
+ * must not strand the registry restore forever — after the deadline the
+ * restore proceeds exactly as it did before this wait existed. The listener
+ * is always torn down so a late descriptor can't leak a dangling resolver.
  */
 function waitForInitialConnection(): Promise<void> {
   if ($connection.get()) {
     return Promise.resolve()
   }
 
-  return new Promise(resolve => {
-    const unlisten = $connection.listen(connection => {
+  let unlisten: (() => void) | undefined
+
+  const published = new Promise<void>(resolve => {
+    unlisten = $connection.listen(connection => {
       if (!connection) {
         return
       }
 
-      unlisten()
+      unlisten?.()
       resolve()
     })
+  })
+
+  return withTimeout(
+    published,
+    BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS,
+    'Timed out waiting for the primary connection descriptor'
+  ).catch(error => {
+    unlisten?.()
+
+    if (!isTimeoutError(error)) {
+      throw error
+    }
   })
 }
 

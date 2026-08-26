@@ -745,6 +745,30 @@ describe('selectConnection', () => {
     expect($showAllProfiles.get()).toBe(true)
   })
 
+  it('boot restore proceeds after the descriptor wait deadline (bounded wait)', async () => {
+    // A primary that never publishes (spawn failure, dead SSH target) must
+    // not strand the registry restore forever: after the deadline the restore
+    // runs exactly as it did before the wait existed.
+    vi.useFakeTimers()
+
+    try {
+      list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+
+      const restoring = initializeConnectionsRegistry()
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+
+      // Descriptor never arrives; deadline elapses.
+      await vi.advanceTimersByTimeAsync(60_000)
+      await restoring
+
+      expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a user-initiated source switch still collapses "All profiles"', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import ntpath
 import os
 import platform
 import posixpath
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
@@ -74,6 +76,219 @@ _LINUX_BROWSER_GROUPS = (
 
 _LINUX_BIN_NAMES = tuple(name for names, _ in _LINUX_BROWSER_GROUPS for name in names)
 _LINUX_INSTALL_PATHS = tuple(path for _, paths in _LINUX_BROWSER_GROUPS for path in paths)
+
+
+# ---------------------------------------------------------------------------
+# Real-profile (default Chromium) resolution
+#
+# Used by the browser tool's ``browser.use_real_profile`` consent path: when a
+# local Chromium is launched, point agent-browser at the user's REAL default
+# browser profile (``--profile <user-data-dir>`` + ``--executable-path``) so
+# their live logins/cookies are available. Only Chromium-family browsers are
+# supported; a non-Chromium default (Firefox, Safari) resolves to None and the
+# caller fails closed with a clear message.
+# ---------------------------------------------------------------------------
+
+# Canonical Chromium browser keys we support for real-profile driving.
+_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
+
+# Windows UserChoice ProgId prefixes → canonical browser key. Matched
+# case-insensitively by prefix so channel/version suffixes (e.g.
+# ``ChromeHTML.X``, ``MSEdgeHTM``) still resolve.
+_WINDOWS_PROGID_MAP = (
+    ("chromehtml", "chrome"),
+    ("msedgehtm", "edge"),
+    ("bravehtml", "brave"),
+    ("chromiumhtm", "chromium"),
+)
+
+# Linux xdg default-web-browser .desktop name fragments → canonical key.
+_LINUX_DESKTOP_MAP = (
+    ("google-chrome", "chrome"),
+    ("chromium", "chromium"),
+    ("brave", "brave"),
+    ("microsoft-edge", "edge"),
+    ("msedge", "edge"),
+)
+
+# macOS LaunchServices bundle-id fragments → canonical key.
+_DARWIN_BUNDLE_MAP = (
+    ("com.google.chrome", "chrome"),
+    ("com.microsoft.edgemac", "edge"),
+    ("com.brave.browser", "brave"),
+    ("org.chromium.chromium", "chromium"),
+)
+
+
+def _real_profile_relparts(browser: str) -> tuple:
+    """(mac_support_subdir, windows_localappdata_parts, linux_config_name)."""
+    return {
+        "chrome": (
+            ("Google", "Chrome"),
+            ("Google", "Chrome", "User Data"),
+            "google-chrome",
+        ),
+        "edge": (
+            ("Microsoft Edge",),
+            ("Microsoft", "Edge", "User Data"),
+            "microsoft-edge",
+        ),
+        "brave": (
+            ("BraveSoftware", "Brave-Browser"),
+            ("BraveSoftware", "Brave-Browser", "User Data"),
+            "BraveSoftware/Brave-Browser",
+        ),
+        "chromium": (
+            ("Chromium",),
+            ("Chromium", "User Data"),
+            "chromium",
+        ),
+    }[browser]
+
+
+def real_profile_data_dir(browser: str, system: str | None = None) -> str | None:
+    """Return the default user-data-dir for a Chromium ``browser`` on ``system``.
+
+    Returns None for unknown browsers. Does not check existence — callers that
+    need that should stat the result. Paths are built with the TARGET system's
+    separator (posix for Darwin/Linux, backslash for Windows) so an explicit
+    ``system`` argument resolves correctly regardless of the host OS.
+    """
+    if browser not in _CHROMIUM_BROWSERS:
+        return None
+    system = system or platform.system()
+    mac_parts, win_parts, linux_name = _real_profile_relparts(browser)
+    home = os.path.expanduser("~")
+    if system == "Darwin":
+        return posixpath.join(home, "Library", "Application Support", *mac_parts)
+    if system == "Windows":
+        local = os.environ.get("LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")
+        return ntpath.join(local, *win_parts)
+    # Linux / other POSIX
+    config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
+    return posixpath.join(config, *linux_name.split("/"))
+
+
+def chromium_executable(browser: str, system: str | None = None) -> str | None:
+    """Return the first present executable for a Chromium ``browser``."""
+    if browser not in _CHROMIUM_BROWSERS:
+        return None
+    system = system or platform.system()
+
+    def first_present(paths: tuple) -> str | None:
+        for p in paths:
+            if p and os.path.isfile(p):
+                return p
+        return None
+
+    if system == "Darwin":
+        app = {
+            "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "chromium": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "brave": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "edge": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        }[browser]
+        return app if os.path.isfile(app) else None
+    if system == "Windows":
+        groups = {
+            "chrome": (("Google", "Chrome", "Application", "chrome.exe"),),
+            "chromium": (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
+            "brave": (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),),
+            "edge": (("Microsoft", "Edge", "Application", "msedge.exe"),),
+        }[browser]
+        bases = [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")),
+        ]
+        cands = tuple(os.path.join(base, *parts) for base in bases for parts in groups)
+        return first_present(cands)
+    # Linux
+    linux = {
+        "chrome": ("google-chrome", "google-chrome-stable"),
+        "chromium": ("chromium-browser", "chromium"),
+        "brave": ("brave-browser", "brave-browser-stable", "brave"),
+        "edge": ("microsoft-edge", "microsoft-edge-stable"),
+    }[browser]
+    for name in linux:
+        found = shutil.which(name)
+        if found:
+            return found
+    # fall back to the known absolute paths from the launch tables
+    for names, paths in _LINUX_BROWSER_GROUPS:
+        if any(n in linux for n in names):
+            hit = first_present(tuple(paths))
+            if hit:
+                return hit
+    return None
+
+
+def _detect_default_windows() -> str | None:
+    try:
+        import winreg  # type: ignore
+    except Exception:
+        return None
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+        )
+        prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+        winreg.CloseKey(key)
+    except Exception:
+        return None
+    low = str(prog_id or "").lower()
+    for prefix, browser in _WINDOWS_PROGID_MAP:
+        if low.startswith(prefix):
+            return browser
+    return None
+
+
+def _detect_default_darwin() -> str | None:
+    # LaunchServices handler for the https scheme.
+    for reader in (
+        ["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"],
+    ):
+        try:
+            out = subprocess.run(reader, capture_output=True, text=True, timeout=5).stdout.lower()
+        except Exception:
+            out = ""
+        for frag, browser in _DARWIN_BUNDLE_MAP:
+            if frag in out and "https" in out:
+                return browser
+    # Fallback: first installed Chromium app wins.
+    for browser in _CHROMIUM_BROWSERS:
+        if chromium_executable(browser, "Darwin"):
+            return browser
+    return None
+
+
+def _detect_default_linux() -> str | None:
+    try:
+        out = subprocess.run(
+            ["xdg-settings", "get", "default-web-browser"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip().lower()
+    except Exception:
+        out = ""
+    for frag, browser in _LINUX_DESKTOP_MAP:
+        if frag in out:
+            return browser
+    return None
+
+
+def detect_default_chromium(system: str | None = None) -> str | None:
+    """Return the canonical key of the default Chromium browser, or None.
+
+    None means the default browser is non-Chromium (Firefox, Safari) or could
+    not be determined — the caller fails closed rather than guessing.
+    """
+    system = system or platform.system()
+    if system == "Windows":
+        return _detect_default_windows()
+    if system == "Darwin":
+        return _detect_default_darwin()
+    return _detect_default_linux()
 
 
 def get_chrome_debug_candidates(system: str) -> list[str]:

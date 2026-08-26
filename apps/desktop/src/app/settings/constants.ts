@@ -1,6 +1,7 @@
 import {
   Box,
   Brain,
+  Globe,
   type IconComponent,
   Lock,
   MessageCircle,
@@ -426,7 +427,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   browser: {
     allowPrivateUrls: 'Browser Private URLs',
-    autoLocalForPrivateUrls: 'Local Browser For Private URLs'
+    autoLocalForPrivateUrls: 'Local Browser For Private URLs',
+    useRealProfile: 'Use My Real Browser Profile'
   },
   checkpoints: {
     enabled: 'File Checkpoints',
@@ -554,6 +556,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
+  browser: {
+    useRealProfile:
+      "Local browser use drives your real default browser profile — its logins, cookies, and history. Backend-independent: applies whenever a local Chromium is used, and lets the agent choose a local real-profile session even under a cloud backend. Only Chromium browsers (Chrome, Edge, Brave, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+  },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
@@ -667,9 +673,17 @@ export const SECTIONS: DesktopConfigSection[] = [
       'command_allowlist',
       'security.redact_secrets',
       'security.allow_private_urls',
-      'browser.allow_private_urls',
-      'browser.auto_local_for_private_urls',
       'checkpoints.enabled'
+    ]
+  },
+  {
+    id: 'browser',
+    label: 'Browser',
+    icon: Globe,
+    keys: [
+      'browser.use_real_profile',
+      'browser.allow_private_urls',
+      'browser.auto_local_for_private_urls'
     ]
   },
   {

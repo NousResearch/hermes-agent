@@ -575,6 +575,17 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # Consent to drive the user's REAL default-Chromium profile in local
+        # mode. When true, any local Chromium launch (built-in tools, or a
+        # local sidecar spawned under a cloud backend) uses the default
+        # browser's real user-data-dir — exposing that profile's live logins,
+        # cookies, and history to automation. Backend-independent. Only
+        # Chromium-family default browsers are supported (Chrome, Edge, Brave,
+        # Chromium); a non-Chromium default (e.g. Firefox) fails closed with a
+        # clear message. Default false. Also gates the browser tools'
+        # ``local_browser`` argument. Toggle in the desktop Settings → Browser
+        # section.
+        "use_real_profile": False,
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.

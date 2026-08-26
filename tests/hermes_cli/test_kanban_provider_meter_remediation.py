@@ -68,3 +68,19 @@ def test_candidate_order_is_not_allowed_to_override_claude_priority():
         minimum_remaining_percent=10,
     )
     assert result == candidates[1]
+
+
+def test_codex_requires_headroom_in_every_hard_quota_window():
+    candidate = ProviderMeterCandidate("openai-codex", "gpt-5.6-luna")
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="test",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=100),
+            AccountUsageWindow(label="Weekly", used_percent=20),
+        ),
+    )
+    assert choose_available_candidate(
+        [candidate], {"openai-codex": snapshot}, minimum_remaining_percent=10
+    ) is None

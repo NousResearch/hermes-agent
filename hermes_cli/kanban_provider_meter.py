@@ -37,6 +37,15 @@ def _has_headroom(snapshot: AccountUsageSnapshot | None, minimum_remaining_perce
     return any(100.0 - float(value) >= minimum_remaining_percent for value in numeric)
 
 
+def _has_headroom_all(snapshot: AccountUsageSnapshot | None, minimum_remaining_percent: int) -> bool:
+    if snapshot is None or not snapshot.available or not snapshot.windows:
+        return False
+    numeric = [window.used_percent for window in snapshot.windows]
+    if any(value is None for value in numeric):
+        return False
+    return all(100.0 - float(value) >= minimum_remaining_percent for value in numeric)
+
+
 def choose_available_candidate(
     candidates: tuple[ProviderMeterCandidate, ...] | list[ProviderMeterCandidate],
     readings: Mapping[str, AccountUsageSnapshot | None],
@@ -54,6 +63,10 @@ def choose_available_candidate(
         if candidate.provider.strip().lower() != "nous"
         and candidate.model.strip()
         and _has_headroom(readings.get(candidate.provider.strip().lower()), threshold)
+        and (
+            candidate.provider.strip().lower() != "openai-codex"
+            or _has_headroom_all(readings.get(candidate.provider.strip().lower()), threshold)
+        )
     ]
     if not eligible:
         return None

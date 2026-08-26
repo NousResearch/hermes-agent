@@ -14815,10 +14815,13 @@ def _(rid, params: dict) -> dict:
                 or not math.isfinite(float(used))
             ):
                 continue
+            reset_at = getattr(window, "reset_at", None)
             windows.append(
                 {
                     "label": label,
                     "used_percent": round(max(0.0, min(100.0, float(used)))),
+                    "remaining_percent": round(max(0.0, min(100.0, 100.0 - float(used)))),
+                    "reset_at": reset_at.isoformat() if reset_at is not None else None,
                 }
             )
         return {"available": bool(windows), "windows": windows}

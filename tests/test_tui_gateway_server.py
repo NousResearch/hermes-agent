@@ -1144,8 +1144,8 @@ def test_system_usage_meter_returns_both_providers_when_one_is_unavailable(monke
         "claude": {
             "available": True,
             "windows": [
-                {"label": "Current session", "used_percent": 23},
-                {"label": "Current week", "used_percent": 61},
+                {"label": "Current session", "used_percent": 23, "remaining_percent": 77, "reset_at": None},
+                {"label": "Current week", "used_percent": 61, "remaining_percent": 39, "reset_at": None},
             ],
         },
         "codex": {"available": False, "windows": []},
@@ -1201,7 +1201,7 @@ def test_system_usage_meter_observes_only_a_fresh_successful_reading(monkeypatch
     server._methods["system.usage_meter"]("u-notify-2", {})
 
     assert len(observed) == 1
-    assert observed[0][0]["claude"]["windows"] == [{"label": "Session", "used_percent": 10}]
+    assert observed[0][0]["claude"]["windows"] == [{"label": "Session", "used_percent": 10, "remaining_percent": 90, "reset_at": None}]
 
 
 def test_system_usage_meter_discards_malformed_windows(monkeypatch):
@@ -1221,8 +1221,8 @@ def test_system_usage_meter_discards_malformed_windows(monkeypatch):
     resp = server._methods["system.usage_meter"]("u4", {})
 
     assert resp["result"] == {
-        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
-        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
     }
 
 
@@ -1242,8 +1242,8 @@ def test_system_usage_meter_keeps_valid_windows_after_malformed_entry(monkeypatc
     resp = server._methods["system.usage_meter"]("u5", {})
 
     assert resp["result"] == {
-        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
-        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
+        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12, "remaining_percent": 88, "reset_at": None}]},
     }
 
 
@@ -14283,3 +14283,28 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_system_usage_meter_exposes_remaining_and_reset_for_codex_windows(monkeypatch):
+    from datetime import timezone
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    reset_at = datetime(2030, 1, 2, 3, 4, tzinfo=timezone.utc)
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="test",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow("Session", used_percent=25, reset_at=reset_at),
+            AccountUsageWindow("Weekly", used_percent=60, reset_at=reset_at),
+        ),
+    )
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda provider: snapshot)
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+
+    result = server._methods["system.usage_meter"]("codex-quota", {})["result"]["codex"]
+
+    assert result["windows"] == [
+        {"label": "Session", "used_percent": 25, "remaining_percent": 75, "reset_at": reset_at.isoformat()},
+        {"label": "Weekly", "used_percent": 60, "remaining_percent": 40, "reset_at": reset_at.isoformat()},
+    ]

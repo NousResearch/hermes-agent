@@ -14,6 +14,9 @@ from pathlib import Path
 
 _PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
 _PRIVATE_KEY_END_RE = re.compile(r"-----END[A-Z ]*PRIVATE KEY-----")
+_UNFINISHED_AUTH_HEADER_RE = re.compile(
+    r"(?im)(?<!\S)(?:proxy-)?authorization:[ \t]+(?:bearer|basic|token)[ \t]+\S*$"
+)
 
 # Bounded pipe read + text buffer safety margin. 128 chars comfortably
 # covers the longest PEM ``BEGIN``/``END`` marker and typical token-shaped
@@ -56,15 +59,33 @@ def copy_redacted_worker_log_stream(src, dst) -> None:
     from agent.redact import redact_terminal_output
 
     sample_key = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
-    redact_private_blocks = redact_terminal_output(sample_key) != sample_key
+    redact_private_blocks = redact_terminal_output(sample_key, force=True) != sample_key
     inside_private_key = False
     buffer = ""
 
     def _emit(text: str) -> None:
         if not text:
             return
-        redacted = redact_terminal_output(text) if redact_private_blocks else text
+        redacted = redact_terminal_output(text, force=True) if redact_private_blocks else text
         dst.write(redacted.encode("utf-8", errors="replace"))
+
+    def _unfinished_secret_start(text: str) -> int | None:
+        """Return the start of a secret whose delimiter is in a later read."""
+        # Prefix patterns are intentionally unbounded. If a match reaches the
+        # current end, retaining only a fixed tail would emit its body raw on
+        # the next iteration. The auth-header case has the same failure mode
+        # but does not require a vendor prefix.
+        from agent.redact import _PREFIX_RE
+
+        starts = [
+            match.start(1)
+            for match in _PREFIX_RE.finditer(text)
+            if match.end(1) == len(text)
+        ]
+        starts.extend(
+            match.start() for match in _UNFINISHED_AUTH_HEADER_RE.finditer(text)
+        )
+        return min(starts) if starts else None
 
     while True:
         raw = _read_chunk(src)
@@ -105,9 +126,15 @@ def copy_redacted_worker_log_stream(src, dst) -> None:
             # secret or ``BEGIN`` marker straddling the next chunk still
             # gets redacted intact.
             if len(buffer) > _SAFETY_MARGIN:
-                emittable = buffer[:-_SAFETY_MARGIN]
+                safe_end = len(buffer) - _SAFETY_MARGIN
+                unfinished_start = _unfinished_secret_start(buffer)
+                if unfinished_start is not None:
+                    safe_end = min(safe_end, unfinished_start)
+                emittable = buffer[:safe_end]
+                if not emittable:
+                    break
                 _emit(emittable)
-                buffer = buffer[-_SAFETY_MARGIN:]
+                buffer = buffer[safe_end:]
             break
 
     if inside_private_key:

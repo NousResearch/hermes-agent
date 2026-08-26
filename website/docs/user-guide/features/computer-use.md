@@ -149,6 +149,19 @@ the manifest fails closed inside cua-driver. A missing or unreadable manifest
 fails loudly at session start rather than silently downgrading. Session YOLO
 still overrides bounded for that one session.
 
+On macOS, private-session daemons launch through the installed
+`CuaDriver.app` bundle (so permission grants attribute to the driver's own
+identity instead of resetting with every Hermes build), and Hermes verifies
+the bundle's code signature — exact `com.trycua.driver` identifier and the
+official signing team — before launching it. If you build cua-driver from
+source (unsigned), opt in explicitly:
+
+```yaml
+# config.yaml
+computer_use:
+  allow_unsigned_driver: true   # local driver development only
+```
+
 Each MCP transport owns a private lifecycle session inside its runtime. A
 public session name is only a label for cursor identity and session-scoped
 state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,

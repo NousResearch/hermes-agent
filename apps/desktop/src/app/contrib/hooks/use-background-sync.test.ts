@@ -698,8 +698,7 @@ describe('typing-aware sessions.changed deferral', () => {
 
     // A ~6s continuous burst: keys every 200ms, broadcasts every ~1s. The
     // first broadcast finds the throttle gap already elapsed (primed), so the
-    // deferral engages immediately and must hold for the whole burst — well
-    // short of the one-gap starvation cap.
+    // deferral engages immediately and must hold for the whole burst.
     for (let index = 0; index < 30; index += 1) {
       typeKey()
 
@@ -735,7 +734,7 @@ describe('typing-aware sessions.changed deferral', () => {
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
 
-  it('caps the typing deferral at one throttle gap so continuous typing cannot starve list freshness', async () => {
+  it('holds through a burst longer than the throttle gap and lands once after the keyboard quiets', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)
     const refreshSessions = vi.fn(async () => undefined)
@@ -743,8 +742,8 @@ describe('typing-aware sessions.changed deferral', () => {
     renderTypingSync(refreshSessions)
     await primeThrottle(refreshSessions)
 
-    // Keys every 200ms for ~22s straight — a burst that outlives one full
-    // SESSIONS_LIST_TICK_GAP_MS of deferral. Broadcasts keep flowing.
+    // Keys every 200ms for ~22s — longer than SESSIONS_LIST_TICK_GAP_MS.
+    // Broadcasts keep flowing; the heavy pass must not land under them.
     for (let index = 0; index < 110; index += 1) {
       typeKey()
 
@@ -758,24 +757,21 @@ describe('typing-aware sessions.changed deferral', () => {
       })
     }
 
-    // The starvation cap forces exactly ONE mid-burst pass (~one gap after
-    // the deferral began) — worst-case freshness equals the plain cadence.
-    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).not.toHaveBeenCalled()
 
-    // Burst ends → the still-held pass lands once more, then silence.
     await act(async () => {
       vi.advanceTimersByTime(2_000)
       await Promise.resolve()
     })
 
-    expect(refreshSessions).toHaveBeenCalledTimes(2)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       vi.advanceTimersByTime(10_000)
       await Promise.resolve()
     })
 
-    expect(refreshSessions).toHaveBeenCalledTimes(2)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
 
   it('does not defer anything when the keyboard has been idle', async () => {

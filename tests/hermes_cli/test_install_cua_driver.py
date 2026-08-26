@@ -1079,7 +1079,7 @@ class TestInstallerTimeoutKillsProcessGroup:
         assert fake_proc.communicate.call_count == 2
         assert (
             fake_proc.communicate.call_args_list[1].kwargs["timeout"]
-            == tools_config._CUA_INSTALLER_REAP_TIMEOUT
+            == tools_config._CUA_INSTALLER_DRAIN_GRACE
         )
 
     @pytest.mark.windows_only

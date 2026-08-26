@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
@@ -28,9 +28,30 @@ export function rankSearchOption(option: string, search: string): number {
   return 0
 }
 
+/**
+ * cmdk filter for one item: the best score across the value and each keyword,
+ * scored independently.
+ *
+ * Joining them into one haystack — `${item} ${keywords.join(' ')}` — was wrong
+ * twice over. A search containing a space could match across the seam that the
+ * join itself introduced, so "4 open" hit the pair ("gpt-4", "openai") that
+ * neither member matches. And `rankSearchOption` locates the final path segment
+ * with `lastIndexOf('/')`, which on a joined string can land inside a *keyword*:
+ * ("anthropic/claude-opus-4", ["openai/gpt-4"]) measured "gpt-4" as the segment,
+ * so "opus" silently dropped from rank 2 to rank 1 and lost its ordering.
+ *
+ * Scoring each candidate on its own also stops a keyword that repeats the value
+ * from counting twice when cmdk breaks ties.
+ *
+ * Exported for tests.
+ */
+export function rankSearchCandidates(item: string, search: string, keywords?: string[]): number {
+  return Math.max(rankSearchOption(item, search), ...(keywords ?? []).map(k => rankSearchOption(k, search)))
+}
+
 /** A single selectable entry. `label` overrides the raw `value` for display;
- *  `keywords` are extra search haystack beyond the value (e.g. a model id's
- *  aliases), folded into the same rankSearchOption scorer. */
+ *  `keywords` are extra search haystacks beyond the value (e.g. a model id's
+ *  aliases), each scored separately by rankSearchOption. */
 export interface SearchableSelectOption {
   value: string
   label?: string
@@ -89,8 +110,11 @@ export function SearchableSelect({
   // Plain strings normalize to {value, label: value}. A selected value missing
   // from the list (e.g. a saved model the provider no longer reports) falls
   // back to the raw value so the trigger never renders as a blank box.
-  const normalizedOptions: SearchableSelectOption[] = options.map(option =>
-    typeof option === 'string' ? { value: option, label: option } : option
+  // Memoized: harmless to rebuild at ~600 options, but the model pickers feed
+  // this whole catalogs and every keystroke in the palette re-renders.
+  const normalizedOptions: SearchableSelectOption[] = useMemo(
+    () => options.map(option => (typeof option === 'string' ? { value: option, label: option } : option)),
+    [options]
   )
   const selectedOption = normalizedOptions.find(option => option.value === value)
   const displayValue = !value ? placeholder : (selectedOption?.label ?? value)
@@ -122,11 +146,7 @@ export function SearchableSelect({
           "Africa/A…". The popover keeps its own width and only grows to cover a
           trigger wider than that. */}
       <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
-        <Command
-          filter={(item, search, keywords) =>
-            rankSearchOption(keywords?.length ? `${item} ${keywords.join(' ')}` : item, search)
-          }
-        >
+        <Command filter={rankSearchCandidates}>
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>

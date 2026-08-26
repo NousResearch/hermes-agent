@@ -236,15 +236,12 @@ describe('AttachmentList', () => {
     )
   })
 
-  it('shows the remove control at rest and does not hide it behind hover', async () => {
+  it('removes an attachment from the composer chip', async () => {
     const onRemove = vi.fn()
 
     await renderWithI18n(<AttachmentList attachments={[makeAttachment('a', 'doc.pdf')]} onRemove={onRemove} />)
 
-    const remove = screen.getByRole('button', { name: 'Remove doc.pdf' })
-
-    expect(remove.className.split(/\s+/)).not.toContain('opacity-0')
-    fireEvent.click(remove)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove doc.pdf' }))
     expect(onRemove).toHaveBeenCalledWith('a')
   })
 

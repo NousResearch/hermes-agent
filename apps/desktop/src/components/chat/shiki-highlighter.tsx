@@ -15,8 +15,7 @@ import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
  * own the wrapping `<CodeCard>` here and neutralize the upstream
  * `data-streamdown="code-block"` chrome from styles.css. The card is
  * background-only — no header row, no language label — so a fence reads as a
- * tinted slab of the reply. Copy stays visible in the corner (not hover-only)
- * so Windows / touch / no-hover surfaces can still find it.
+ * tinted slab of the reply; copy is a hover-reveal control in the corner.
  *
  * `react-shiki` full bundle so all `bundledLanguages` work; theme switches
  * follow the document `color-scheme` via `defaultColor="light-dark()"`.
@@ -149,7 +148,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
     <CodeCard data-streaming={defer ? 'true' : undefined}>
       <CopyButton
         appearance="inline"
-        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md bg-(--ui-bg-editor)/90 px-1"
+        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
         iconClassName="size-2.5"
         label={t.assistant.tool.copyCode}
         showLabel={false}

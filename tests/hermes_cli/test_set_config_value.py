@@ -128,6 +128,20 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_terminal_docker_shared_key_preserves_string_values(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("terminal.docker_shared_container_key", "off")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["docker_shared_container_key"] == "off"
+        assert "TERMINAL_DOCKER_SHARED_CONTAINER_KEY=off" in _read_env(
+            _isolated_hermes_home
+        )
+        assert "not a recognized config key" not in capsys.readouterr().out
+
     def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.vercel_runtime", "python3.13")
         config = _read_config(_isolated_hermes_home)

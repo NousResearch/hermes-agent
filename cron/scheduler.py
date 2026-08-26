@@ -191,6 +191,21 @@ def _failure_streak_nudge(job: dict) -> str:
     )
 
 
+def _detect_gateway_code_skew() -> tuple[str, str] | None:
+    """Boot-vs-disk revision skew for THIS process, or None.
+
+    Thin wrapper over ``gateway.code_skew.detect_code_skew`` so the failure
+    summarizer stays a pure function under test (monkeypatch this seam) and
+    a broken import can never take the delivery path down with it.
+    """
+    try:
+        from gateway.code_skew import detect_code_skew
+
+        return detect_code_skew()
+    except Exception:
+        return None
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -339,7 +354,98 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) > 180:
         cleaned = cleaned[:177].rstrip() + "..."
-    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
+    message = f"⚠️ Cron '{job_name}' failed: {cleaned}"
+
+    # Import-class failures (#95294 part 3): a long-lived gateway whose
+    # checkout was updated underneath it (interrupted `hermes update`, manual
+    # git pull) serves MIXED modules — old entries frozen in sys.modules,
+    # new files loaded by lazy imports — and every agent cron job then dies
+    # with `cannot import name X` / ModuleNotFoundError. The error itself
+    # reads like a code bug, so operators debug the wrong thing (2 days on
+    # the reporting incident, 15 missed jobs). This process knows its own
+    # boot fingerprint: when boot SHA differs from disk HEAD, APPEND the
+    # cause and the one-command fix — never replacing the raw error text,
+    # which carries the failing symbol name.
+    #
+    # Fail-safe by construction: skew detection returns None on non-git
+    # installs and in processes without a boot fingerprint (no false
+    # accusations — message delivered unchanged), the probe seam swallows
+    # every exception, and no_agent script jobs are excluded via the same
+    # mode-gate as the provider branches (a fresh subprocess resolves
+    # imports consistently against disk; its ImportError is the script's
+    # own problem, and blaming gateway skew would send the reader to the
+    # wrong place).
+    if provider_reachable and re.search(
+        r"cannot import name|modulenotfounderror|importerror", lower
+    ):
+        try:
+            skew = _detect_gateway_code_skew()
+        except Exception:
+            skew = None  # delivery must never die on a diagnostics probe
+        if skew is not None:
+            boot_rev, disk_rev = skew
+            message += (
+                f" Likely cause: the gateway is running stale code (booted "
+                f"on {boot_rev}, disk is at {disk_rev}) — run "
+                "`hermes gateway restart` to fix it."
+            )
+
+    return message
+
+
+def _upsert_incident_for_failure(
+    job: dict, error: str, *, output_file: Optional[Any] = None
+) -> tuple[bool, Optional[str]]:
+    """Record a durable failure incident for this run.
+
+    The incident store groups "same job + same error signature" across runs so
+    an operator-acked failure stops re-pinging every run. Returns
+    ``(acked, incident_id)``: ``acked`` is True when the incident for this
+    exact signature is already ``closed`` (acked) — the per-run failure ping
+    should be suppressed. ``incident_id`` lets the caller mark the incident
+    ``alerted`` after the ping actually goes out. The streak nudge and
+    ``_summarize_cron_failure_for_delivery`` text stay intact for un-acked
+    failures.
+
+    Best-effort: an incident-store error must never break the cron run or the
+    delivery path — failures are logged at debug and the caller delivers as if
+    no incident existed.
+    """
+    try:
+        from cron.incidents import get_incident, upsert_incident
+
+        incident_id, _is_new = upsert_incident(
+            job["id"],
+            str(error or ""),
+            job_name=job.get("name"),
+            output_file=output_file,
+        )
+        incident = get_incident(incident_id)
+        acked = bool(incident and incident.get("state") == "closed")
+        return acked, incident_id
+    except Exception as exc:
+        logger.debug(
+            "Incident store unavailable for job %s (delivery unaffected): %s",
+            job["id"], exc,
+        )
+        return False, None
+
+
+def _mark_incident_alerted(incident_id: Optional[str]) -> None:
+    """Record that a failure ping for this incident reached delivery.
+
+    Best-effort like the upsert: bookkeeping never breaks the cron run.
+    ``set_incident_state`` is a no-op for closed incidents, so this can
+    never resurrect an acked signature.
+    """
+    if not incident_id:
+        return
+    try:
+        from cron.incidents import set_incident_state
+
+        set_incident_state(incident_id, "alerted")
+    except Exception as exc:
+        logger.debug("Failed marking incident %s alerted: %s", incident_id, exc)
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -358,11 +464,9 @@ class CronPromptInjectionBlocked(Exception):
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three toolsets are always disabled in cron context regardless of config:
+    Two toolsets are always disabled in cron context regardless of config:
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
-      - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
-        exposing this tool only gives the model an unbacked tool that fails
 
     ``cronjob`` is policy-denied by default (loop prevention, not a security
     boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
@@ -377,9 +481,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify", "memory"]
+        disabled = ["messaging", "clarify"]
     else:
-        disabled = ["cronjob", "messaging", "clarify", "memory"]
+        disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
     from agent.skill_utils import parse_config_string_list
 
@@ -453,6 +557,49 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
             exc,
         )
         return None
+
+
+def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
+    """Resolve the effective reasoning config for a cron run.
+
+    Precedence: per-job ``reasoning_effort`` pin (validated at the store
+    choke point, ``cron/jobs.py::_normalize_reasoning_effort``) wins outright
+    over config resolution — both the global ``agent.reasoning_effort`` and
+    per-model ``agent.reasoning_overrides``. The pin is model-independent by
+    design: it also governs an auth-fallback model swap, and capability
+    clamping for the model that actually runs stays owned by the provider
+    transports at send time (exactly like config-set effort).
+
+    A value that no longer parses (hand-edited jobs.json) logs a warning and
+    falls back to config resolution — a bad pin must degrade the run's
+    thinking level, never kill the tick.
+
+    Absent/None pin returns ``resolve_reasoning_config(cfg, model)``
+    byte-identical, preserving pre-feature behavior.
+    """
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    pinned = job.get("reasoning_effort")
+    if pinned is not None:
+        parsed = parse_reasoning_effort(pinned)
+        if parsed is not None:
+            logger.info(
+                "Job '%s': using per-job reasoning_effort '%s'",
+                job.get("id", "?"),
+                pinned,
+            )
+            return parsed
+        logger.warning(
+            "Job '%s': invalid stored reasoning_effort %r — ignoring the pin "
+            "and falling back to config resolution. Fix with `cronjob "
+            "action=update job_id=%s reasoning_effort=<level>` (valid: none, "
+            "minimal, low, medium, high, xhigh, max, ultra).",
+            job.get("id", "?"),
+            pinned,
+            job.get("id", "?"),
+        )
+    return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
+
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -1390,19 +1537,16 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     shutdown signal: the ``concurrent.futures`` module-global flag can be set
     a hair before ``sys.is_finalizing()`` flips, so matching the error text is
     a safe fallback for that race.
+
+    Thin wrapper — the predicate itself lives in
+    ``tools.interpreter_shutdown.interpreter_shutting_down`` (shared with the
+    conversation loop and the concurrent tool executor) so the shutdown-race
+    bug class is fixed in one place. Kept as a module symbol because tests
+    and callers throughout this file reference it by this name.
     """
-    if sys.is_finalizing():
-        return True
-    if exc is not None:
-        # Match the SHORT prefix deliberately: CPython emits two shutdown
-        # variants — "cannot schedule new futures after interpreter shutdown"
-        # (asyncio.run_coroutine_threadsafe / a torn-down default executor) and
-        # "cannot schedule new futures after shutdown" (a plain
-        # ThreadPoolExecutor). Both are documented in #58720. The common prefix
-        # catches both; the sibling agent/tool_executor._is_interpreter_shutdown_submit_error
-        # matches only the fuller "...after interpreter shutdown" form.
-        return "cannot schedule new futures" in str(exc).lower()
-    return False
+    from tools.interpreter_shutdown import interpreter_shutting_down
+
+    return interpreter_shutting_down(exc)
 
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
@@ -1630,6 +1774,92 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
     if origin_thread is not None and str(origin_thread) != str(thread_id or ""):
         return False
     return True
+
+
+# Resolution-provenance ranking for the dedup OR-merge in
+# _resolve_delivery_targets: higher rank = stronger mirror claim. Broadcast
+# expansions rank 0 so "origin,all"/"all,origin" hitting the same chat keeps
+# the origin(-fallback) tag regardless of token order.
+_MIRROR_PROVENANCE_RANK = {
+    "origin": 3,
+    "origin_fallback": 2,
+    "explicit": 1,
+}
+
+
+def _target_mirror_eligible(
+    job: dict,
+    target: dict,
+    *,
+    global_mirror: bool,
+    origin_match: Optional[bool] = None,
+) -> bool:
+    """Whether a resolved delivery target may receive the transcript mirror.
+
+    The June origin-scoping refactor gated mirroring on target == origin,
+    which correctly excluded broadcasts but also silenced two legitimate
+    conversation shapes — both hit by script-provisioned ("managed") crons,
+    which never capture an origin (``_origin_from_env`` only fires for jobs
+    created from a live gateway chat):
+
+    - ``origin_fallback``: ``deliver=origin`` with no captured origin resolves
+      to the home channel — the user's primary conversation standing in for
+      the origin, not a broadcast. Eligible under the same flags as a true
+      origin target. (Field report 2026-08-17: brief delivered to the Slack
+      DM, mirror silently skipped, reply hit a context-less session.)
+    - ``explicit``: a ``platform:chat_id`` target is eligible ONLY when the
+      job itself opts in via ``attach_to_session: true`` — the job author
+      declaring this target a conversation (managed per-user DM briefings).
+      The global ``cron.mirror_delivery`` flag never activates explicit
+      targets: it must not start writing transcript entries into arbitrary
+      explicitly-addressed chats (shared channels, other users' DMs).
+
+    Broadcast expansions (``all``, bare-platform home targets) carry no
+    provenance tag and are never eligible — unchanged invariant.
+
+    ``origin_match`` lets the caller pass a precomputed
+    ``_target_matches_origin`` result (``_deliver_result`` already computes it
+    for the same target); when ``None`` it is computed here so tests and
+    future callers stay self-contained.
+    """
+    if origin_match is None:
+        origin = _resolve_origin(job) or {}
+        origin_match = _target_matches_origin(
+            origin, target.get("platform", ""), target.get("chat_id", ""),
+            target.get("thread_id"),
+        )
+    if origin_match:
+        return True
+    resolved_from = target.get("_resolved_from")
+    if resolved_from == "origin_fallback":
+        # Same activation rules as an origin target: per-job attach wins,
+        # else the global flag. This deliberately restates the precedence
+        # _cron_mirror_delivery_enabled encodes (keep the two in sync): the
+        # sole production caller pre-merges it into `global_mirror`, but the
+        # helper must stay correct standalone — a per-job False must beat a
+        # raw global True for any caller that does not pre-merge.
+        per_job = job.get("attach_to_session")
+        if isinstance(per_job, bool):
+            return per_job
+        return bool(global_mirror)
+    if resolved_from == "explicit":
+        return job.get("attach_to_session") is True
+    return False
+
+
+def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
+    """Whether the flat in_channel session seed may run for a target.
+
+    Group-channel session keys are user-isolated
+    (``…:group:<chat_id>:<user_id>`` — see _seed_cron_channel_session); a
+    seed without a real user_id would create an orphan session that no
+    inbound reply ever resolves to, which is worse than no seed (the plain
+    mirror can still land if a session exists). DM keys don't embed
+    user_id, so DM targets are always seedable. Origin-captured jobs carry
+    the scheduler's user_id; origin-less managed jobs typically don't, and
+    their group-channel targets must fall back to the plain mirror.
+    """
+    return bool(is_dm or user_id)
 
 
 def _maybe_mirror_cron_delivery(
@@ -2213,6 +2443,25 @@ def cron_delivery_targets() -> list[dict]:
                 "home_env_var": env_var or None,
             }
         )
+
+    # Bot Chat targets: one per local profile. Machine-local by design (the
+    # scheduler delivers via a local chat subprocess), so the names listed
+    # here are exactly the names that resolve at fire time — no gateway
+    # config, no home channel needed.
+    try:
+        from hermes_cli.profiles import list_profile_names
+
+        for profile_name in list_profile_names():
+            targets.append(
+                {
+                    "id": f"{BOT_CHAT_PLATFORM}:{profile_name}",
+                    "name": f"Bot Chat ({profile_name})",
+                    "home_target_set": True,
+                    "home_env_var": None,
+                }
+            )
+    except Exception:
+        logger.debug("cron_delivery_targets: profile listing unavailable", exc_info=True)
     return targets
 
 
@@ -2254,12 +2503,22 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
+    # bot-chat[:<profile>] — checked before the generic platform:chat_id
+    # split below so the profile-name argument is never misparsed as a
+    # chat_id on an unknown platform.
+    bot_chat_profile = parse_bot_chat_deliver_token(deliver_value)
+    if bot_chat_profile is not None:
+        return _resolve_bot_chat_target(job, bot_chat_profile)
+
     if deliver_value == "origin":
         if origin:
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": _origin_delivery_thread(origin),
+                # Resolution provenance for mirror eligibility (see
+                # _target_mirror_eligible): this IS the origin conversation.
+                "_resolved_from": "origin",
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -2275,6 +2534,11 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                     "platform": platform_name,
                     "chat_id": chat_id,
                     "thread_id": _get_home_target_thread_id(platform_name),
+                    # The fallback stands in for the user's primary
+                    # conversation (NOT a broadcast) — mirror-eligible so
+                    # continuable crons work for script-provisioned jobs
+                    # that never captured an origin.
+                    "_resolved_from": "origin_fallback",
                 }
         return None
 
@@ -2319,6 +2583,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            # Explicit platform:chat target — mirror-eligible only under the
+            # job's own attach_to_session opt-in (see _target_mirror_eligible).
+            "_resolved_from": "explicit",
         }
 
     platform_name = deliver_value
@@ -2349,6 +2616,126 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
+def _get_bot_chat_delivery_timeout() -> int:
+    """Timeout for one bot-chat delivery turn (the target bot runs a full
+    agent turn on the injected output, so this is minutes, not seconds).
+
+    ``cron.bot_chat_delivery_timeout_seconds`` in config.yaml; default 600.
+    """
+    try:
+        cfg = load_config()
+        value = int(cfg.get("cron", {}).get("bot_chat_delivery_timeout_seconds", 600))
+        return value if value > 0 else 600
+    except Exception:
+        return 600
+
+
+def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
+    """Deliver job output into a profile's canonical Bot Chat as an inbound turn.
+
+    Runs ``hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing
+    -Q --query-file <tmp>`` — the exact lane Bot Mode agent-to-agent messages
+    use, so the adopt-before-mint canonical-session rules apply and the target
+    bot receives the output as a real user-role message it can act on.
+    Alternation-safe by construction: this is an inbound turn on the chat
+    command lane, not a transcript splice.
+
+    ``profile`` is ``""`` for the job's own profile (subprocess inherits this
+    scheduler's HERMES_HOME) or a validated local profile name.  Returns None
+    on success or an error string for ``last_delivery_error``.
+    """
+    import shutil as _shutil
+    import tempfile
+
+    job_id = job.get("id", "?")
+    job_name = job.get("name", job_id)
+
+    hermes_bin = _shutil.which("hermes")
+    if hermes_bin:
+        argv = [hermes_bin]
+    else:
+        try:
+            import importlib.util as _ilu
+
+            if _ilu.find_spec("hermes_cli") is not None:
+                argv = [sys.executable, "-m", "hermes_cli.main"]
+            else:
+                return "bot-chat delivery failed: hermes CLI not resolvable"
+        except Exception:
+            return "bot-chat delivery failed: hermes CLI not resolvable"
+
+    env = os.environ.copy()
+    if profile:
+        argv += ["-p", profile]
+        # -p owns profile resolution in the child; a leftover HERMES_HOME
+        # from THIS scheduler's profile must not shadow it.
+        env.pop("HERMES_HOME", None)
+
+    # The prefix tells the receiving bot this is scheduled output, not the
+    # human typing — mirrors the Bot Mode sender-attribution convention.
+    message = (
+        f'[Cronjob "{job_name}" output — scheduled job, not the user. '
+        f"Review it, act on anything that needs action, and summarize "
+        f"for the chat.]\n\n{content}"
+    )
+
+    query_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".txt", prefix="hermes-cron-botchat-",
+            delete=False,
+        ) as fh:
+            fh.write(message)
+            query_file = fh.name
+
+        argv += [
+            "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
+            "-Q", "--query-file", query_file,
+        ]
+
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=_get_bot_chat_delivery_timeout(),
+            env=env,
+            creationflags=windows_hide_flags(),
+        )
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout or "").strip()[-500:]
+            msg = (
+                f"bot-chat delivery to profile "
+                f"'{profile or '(own)'}' failed (exit {result.returncode})"
+                + (f": {tail}" if tail else "")
+            )
+            logger.warning("Job '%s': %s", job_id, msg)
+            return msg
+        logger.info(
+            "Job '%s': delivered to Bot Chat of profile '%s'",
+            job_id, profile or "(own)",
+        )
+        return None
+    except subprocess.TimeoutExpired:
+        msg = (
+            f"bot-chat delivery to profile '{profile or '(own)'}' timed out "
+            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
+            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
+            "this recurs)"
+        )
+        logger.warning("Job '%s': %s", job_id, msg)
+        return msg
+    except Exception as e:
+        msg = f"bot-chat delivery failed: {str(e) or type(e).__name__}"
+        logger.warning("Job '%s': %s", job_id, msg, exc_info=True)
+        return msg
+    finally:
+        if query_file:
+            try:
+                os.unlink(query_file)
+            except OSError:
+                pass
+
+
 def _normalize_deliver_value(deliver) -> str:
     """Normalize a stored/submitted ``deliver`` value to its canonical string form.
 
@@ -2374,6 +2761,67 @@ def _normalize_deliver_value(deliver) -> str:
 # comes online.  ``all`` expands into the set of connected platforms
 # (those with a configured home chat_id) in _expand_routing_tokens.
 _ROUTING_TOKENS = frozenset({"all"})
+
+# Pseudo-platform for delivering job output INTO a profile's canonical
+# "Bot Chat" session as a real inbound turn (the bot sees it, runs a turn,
+# and can respond — Bot Mode's agent-to-agent lane, not a transcript
+# mirror).  ``bot-chat`` targets the job's own profile; ``bot-chat:<name>``
+# targets a named profile on THIS machine.  Deliberately excluded from the
+# ``all`` routing token: ``all`` fans out to messaging home channels, and a
+# bot-chat delivery costs a full agent turn.
+BOT_CHAT_PLATFORM = "bot-chat"
+
+
+def parse_bot_chat_deliver_token(part: str) -> Optional[str]:
+    """Return the target profile for a ``bot-chat[:<name>]`` deliver token.
+
+    Returns ``""`` for the bare token (the job's own profile), the profile
+    name for the explicit form, or ``None`` when ``part`` is not a bot-chat
+    token at all.  Case-insensitive on the token; the profile name is
+    normalized by the profile layer at resolve time.
+    """
+    raw = (part or "").strip()
+    lowered = raw.lower()
+    if lowered == BOT_CHAT_PLATFORM:
+        return ""
+    prefix = BOT_CHAT_PLATFORM + ":"
+    if lowered.startswith(prefix):
+        return raw[len(prefix):].strip()
+    return None
+
+
+def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
+    """Resolve a bot-chat deliver token to a concrete delivery target.
+
+    ``profile_arg`` is ``""`` for the job's own profile (the HERMES_HOME
+    this scheduler runs under — machine-local and self-referential, so no
+    ``-p`` flag is needed at send time) or an explicit profile name that
+    must exist in THIS machine's profile root.  Cross-machine delivery is
+    intentionally unsupported: names resolve only against the local
+    ``~/.hermes/profiles/`` tree, so same-named profiles on other gateways
+    can never be targeted by accident.
+    """
+    if not profile_arg:
+        # Own profile: chat subprocess inherits HERMES_HOME, no name needed.
+        return {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+
+        canon = normalize_profile_name(profile_arg)
+        if not profile_exists(canon):
+            logger.warning(
+                "Job '%s': bot-chat delivery profile '%s' not found on this "
+                "machine — skipping target",
+                job.get("id", "?"), profile_arg,
+            )
+            return None
+        return {"platform": BOT_CHAT_PLATFORM, "chat_id": canon, "thread_id": None}
+    except Exception:
+        logger.warning(
+            "Job '%s': failed to resolve bot-chat profile '%s'",
+            job.get("id", "?"), profile_arg, exc_info=True,
+        )
+        return None
 
 
 def _expand_routing_tokens(part: str) -> List[str]:
@@ -2415,15 +2863,24 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     for raw in raw_parts:
         parts.extend(_expand_routing_tokens(raw))
 
-    seen = set()
+    seen = {}
     targets = []
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:
-                seen.add(key)
+                seen[key] = target
                 targets.append(target)
+            else:
+                # OR-merge resolution provenance on dedup: "origin,all" (either
+                # order) resolving to the same chat must keep the
+                # origin/origin_fallback tag — a mirror-eligible token must not
+                # lose eligibility to token order (see _target_mirror_eligible).
+                kept = seen[key]
+                if _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0) > \
+                        _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0):
+                    kept["_resolved_from"] = target.get("_resolved_from")
     return targets
 
 
@@ -2730,6 +3187,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
+        # bot-chat targets don't ride a gateway adapter: the output becomes a
+        # real inbound turn in the target profile's canonical Bot Chat via the
+        # chat CLI lane (the same one Bot Mode agent-to-agent sends use). The
+        # bot runs a turn and can respond — handled before the Platform enum
+        # below, which knows nothing about this pseudo-platform.
+        if platform_name == BOT_CHAT_PLATFORM:
+            bot_chat_error = _deliver_to_bot_chat(job, content, chat_id)
+            if bot_chat_error:
+                delivery_errors.append(bot_chat_error)
+            continue
+
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
@@ -2745,17 +3213,45 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job["id"], platform_name, chat_id, thread_id,
             )
 
-        # Mirror is scoped to the ORIGIN conversation only. A fan-out / broadcast
-        # / home-channel-fallback target is never mirrored (it is not the
-        # conversation the job was created in, and may have no session at all).
+        # Mirror scope: the origin conversation, the home-channel FALLBACK for
+        # an origin-less deliver=origin job (a script-provisioned managed cron
+        # standing in for the user's primary conversation — not a broadcast),
+        # or an explicit target the job opted into via attach_to_session.
+        # Broadcast/fan-out targets are never mirrored (_target_mirror_eligible).
         origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
-        mirror_this_target = mirror_enabled and origin_target
+        mirror_this_target = mirror_enabled and _target_mirror_eligible(
+            job, target, global_mirror=mirror_enabled, origin_match=origin_target,
+        )
         # Pass the origin's user_id so a per-user-isolated group chat resolves to
         # the exact member who scheduled the job — parity with send_message.
         # Resolved for ANY origin-matching target (not just mirror-enabled):
         # the in_channel seed below needs it too, and it must not depend on
         # the attach_to_session/mirror opt-in.
         origin_user_id = origin.get("user_id") if origin_target else None
+
+        # DM shape of this target, needed by BOTH the in_channel flatten gate
+        # below and the seed/_seed_cron_channel_session chat_type further down:
+        # a 1:1 DM keys as ``dm`` (Slack DM channel ids start with "D"; or the
+        # origin says so), everything else as ``group``.
+        origin_chat_type = str(origin.get("chat_type") or "").lower()
+        is_dm_target = origin_chat_type == "dm" or (
+            not origin_chat_type and str(chat_id).startswith("D")
+        )
+
+        # Shared continuable-target gate for the in_channel surface. The
+        # thread-flatten and the flat-session seed MUST use the SAME gate —
+        # if they drift, the brief and its continuation session land in
+        # different places (the split-surface bug the flatten exists to
+        # prevent). Origin targets qualify unconditionally (independent of the
+        # attach_to_session / mirror opt-in — see 3c52d3589f); non-origin
+        # mirror-eligible targets (origin_fallback / opted-in explicit)
+        # qualify only when the seed can actually create a resolvable session
+        # (_inchannel_seed_allowed: DM-shaped, or a known user_id for
+        # user-isolated group keys).
+        inchannel_continuable = origin_target or (
+            mirror_this_target
+            and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id)
+        )
 
         # Built-in names resolve to their enum member; plugin platform names
         # create dynamic members via Platform._missing_().
@@ -2856,7 +3352,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
                 in_channel_surface = False
 
-        if in_channel_surface and origin_target and live_adapter_ready:
+        if in_channel_surface and inchannel_continuable and live_adapter_ready:
             # Force flat delivery (D2): the continuable-channel target must
             # ignore any inherited origin/target thread_id, or the flat
             # continuable session seeded below (thread_id=None, via
@@ -2865,8 +3361,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # reads `thread_id` and would otherwise route into the origin
             # thread instead of flat into the channel.
             #
-            # Gated on `origin_target`, NOT `mirror_this_target`: the seed
-            # below fires on origin-match alone (in_channel is the
+            # Gated on `inchannel_continuable` (the SAME gate as the seed
+            # below), NOT `mirror_this_target` alone: for origin targets the
+            # seed fires on origin-match alone (in_channel is the
             # continuation surface, independent of the attach_to_session /
             # mirror opt-in), so the flatten must use the SAME gate — with
             # the default knobs off, a mirror-gated flatten kept delivering
@@ -2894,15 +3391,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
         # session, and the flat channel row is otherwise absent for a
-        # chat_postMessage delivery). ``is_dm`` selects the session chat_type so
-        # the seeded key matches the inbound reply's key: a 1:1 DM keys as
-        # ``dm`` (Slack DM channel ids start with "D"; or the origin says so),
-        # everything else as ``group`` (shared channel). ``inchannel_seeded``
-        # suppresses the generic mirror below so the brief is not double-written.
-        origin_chat_type = str(origin.get("chat_type") or "").lower()
-        is_dm_target = origin_chat_type == "dm" or (
-            not origin_chat_type and str(chat_id).startswith("D")
-        )
+        # chat_postMessage delivery). ``is_dm_target`` (computed above with
+        # origin_user_id) selects the session chat_type so the seeded key
+        # matches the inbound reply's key. ``inchannel_seeded`` suppresses the
+        # generic mirror below so the brief is not double-written.
         inchannel_seeded = False
 
         # Continuable cron (thread-preferred): when mirroring is enabled for the
@@ -3223,14 +3715,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
                     # chat_postMessage delivery, so the brief would be lost).
-                    # Gated on ORIGIN-match only, NOT on the mirror opt-in:
-                    # in_channel IS the continuation surface — a continuable
-                    # flat cron without its seed is a brief the next reply
-                    # can't see (the bug Victor hit live 2026-08-19: agent had
-                    # "no idea about the delivery message"). attach_to_session
-                    # remains the knob for the SEPARATE thread/default-surface
-                    # mirror behavior; it must not be required here.
-                    if in_channel_surface and origin_target and not thread_seeded:
+                    # Gated on `inchannel_continuable` — the SHARED gate with
+                    # the thread-flatten above (they must not drift, or the
+                    # brief and its continuation session land in different
+                    # places). Origin targets seed without requiring the
+                    # mirror opt-in: in_channel IS the continuation surface —
+                    # a continuable flat cron without its seed is a brief the
+                    # next reply can't see (the bug Victor hit live
+                    # 2026-08-19: agent had "no idea about the delivery
+                    # message"). Mirror-eligible NON-origin targets
+                    # (origin_fallback / opted-in explicit — see
+                    # _target_mirror_eligible) also seed, guarded by
+                    # _inchannel_seed_allowed inside the gate: group-channel
+                    # keys are user-isolated, so a seed without a user_id
+                    # (origin-less managed cron into a shared channel) would
+                    # create an orphan session no reply resolves to — those
+                    # fall back to the plain mirror instead.
+                    if in_channel_surface and inchannel_continuable and not thread_seeded:
                         inchannel_seeded = _seed_cron_channel_session(
                             job, runtime_adapter, platform_name, chat_id,
                             mirror_text, is_dm=is_dm_target,
@@ -3260,11 +3761,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 is_dm=is_dm_target,
                                 scope_id=origin.get("scope_id"),
                             )
-                    elif in_channel_surface and not origin_target:
+                    elif in_channel_surface and not inchannel_continuable:
                         logger.warning(
-                            "Job '%s': in_channel delivery to %s:%s is not the "
-                            "origin conversation (origin=%s:%s thread=%s) — seed "
-                            "skipped, brief not continuable here",
+                            "Job '%s': in_channel delivery to %s:%s is not a "
+                            "continuable target (origin=%s:%s thread=%s; not the "
+                            "origin conversation, and not a mirror-eligible "
+                            "fallback/opted-in target the seed can key) — seed "
+                            "skipped; the plain mirror below may still apply",
                             job["id"], platform_name, chat_id,
                             origin.get("platform"), origin.get("chat_id"),
                             origin.get("thread_id"),
@@ -4330,6 +4833,36 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _block_and_pause_job(
+    job_id: str, job_name: str, reason: str
+) -> tuple[bool, str, str, Optional[str]]:
+    """Fail a run closed and pause the job so it stops being scheduled.
+
+    Used for job shapes that can never run (a5e29e688dc0). Returning an error
+    alone is not enough — an unrunnable job that stays enabled re-fires on
+    every tick forever. Pausing writes ``paused_at``/``paused_reason``, giving
+    an auditable record of why the scheduler stopped it.
+    """
+    from cron.jobs import pause_job
+
+    logger.error("Job '%s': %s", job_id, reason)
+    try:
+        pause_job(job_id, f"Auto-paused by scheduler: {reason}")
+    except Exception:
+        logger.exception("Job '%s': failed to auto-pause unrunnable job", job_id)
+
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {now_iso}\n"
+        f"**Status:** blocked (unrunnable job) — auto-paused\n\n"
+        f"{reason}\n"
+    )
+    alert = f"⚠ Cron job '{job_name}' was auto-paused\n\n{reason}"
+    return False, doc, alert, reason
+
+
 # Marker prefix stamped into the error string returned by ``run_job`` when the
 # pre-dispatch configuration validation (T1-26) refuses to run the agent.
 # ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
@@ -4519,6 +5052,11 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     for part in deliver_value.split(","):
         part = part.strip()
         if not part or part.lower() in {"local", "origin", "all"}:
+            continue
+        # bot-chat targets need no gateway credentials — they deliver via a
+        # local chat subprocess. Unknown-profile failures surface per run in
+        # last_delivery_error (and are validated at create time).
+        if parse_bot_chat_deliver_token(part) is not None:
             continue
         platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
@@ -4835,10 +5373,17 @@ def run_job(
             )
 
         script_path = job.get("script")
-        if not script_path:
-            err = "no_agent=True but no script is set for this job"
-            logger.error("Job '%s': %s", job_id, err)
-            return False, "", "", err
+        # Legacy/hand-edited records can still carry no_agent with a missing or
+        # whitespace-only script. Erroring alone left the job enabled, so it
+        # re-fired every tick — pause it instead (a5e29e688dc0).
+        if not str(script_path or "").strip():
+            from cron.jobs import NO_AGENT_WITHOUT_SCRIPT_ERROR
+
+            return _block_and_pause_job(
+                job_id,
+                job_name,
+                NO_AGENT_WITHOUT_SCRIPT_ERROR,
+            )
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is passed as the subprocess cwd so the
@@ -4918,6 +5463,23 @@ def run_job(
             f"{output}\n"
         )
         return True, doc, output, None
+
+    # ---------------------------------------------------------------
+    # Fail-closed guard for legacy / hand-edited agent jobs that have nothing
+    # to run: blank prompt, no script, no skills (a5e29e688dc0). create_job /
+    # update_job now reject this shape, but jobs.json records written before
+    # that guard — or edited by hand since — can still reach here and would
+    # otherwise wake the LLM with an empty instruction on every fire. Pause
+    # the job so it stops being scheduled, and never construct the agent.
+    # ---------------------------------------------------------------
+    from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
+
+    if job_payload_is_empty(job):
+        return _block_and_pause_job(
+            job_id,
+            job_name,
+            EMPTY_PAYLOAD_ERROR,
+        )
 
     # ---------------------------------------------------------------
     # Monitor gate — hash-suppressed change detection (see cron/monitor.py).
@@ -5385,7 +5947,8 @@ def run_job(
 
         # Reasoning config is resolved after provider authentication so an auth
         # fallback can first replace the primary model with its configured model.
-        from hermes_constants import resolve_reasoning_config
+        # Resolution itself happens via _resolve_job_reasoning_config below
+        # (per-job pin > agent.reasoning_overrides > agent.reasoning_effort).
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -5603,8 +6166,8 @@ def run_job(
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        reasoning_config = _resolve_job_reasoning_config(
+            job, _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
 
         # Provider/model-drift fail-closed guard (#44585).
@@ -5770,7 +6333,11 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Memory is enabled for cron agents like any other agent run:
+            # MEMORY.md / USER.md load into the system prompt and the memory
+            # tool follows normal toolset resolution, so jobs benefit from
+            # (and can update) the user's persistent memory.
+            skip_memory=False,
             skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,
@@ -5950,6 +6517,19 @@ def run_job(
             )
 
         final_response = result.get("final_response", "") or ""
+        # Recover model-mangled computer_use screenshot paths before delivery
+        # media extraction (same repair as the gateway turn/background paths).
+        # Cron runs start a fresh conversation, so history_offset=0. The
+        # helper is fail-open and no-ops without a MEDIA: directive.
+        if final_response:
+            from gateway.media_repair import (
+                repair_explicit_computer_use_media_paths,
+            )
+
+            final_response = repair_explicit_computer_use_media_paths(
+                final_response,
+                result.get("messages", []),
+            )
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
@@ -6435,6 +7015,11 @@ def _run_one_job_body(
         execution_id = create_execution(job["id"], source="direct")["id"]
     delivery_attempted = False
     delivery_error = None
+    # Durable failure-incident bookkeeping for this run (see cron.incidents):
+    # set on the failure paths below; consumed by the delivery_outcome
+    # computation and the post-delivery "alerted" transition.
+    incident_acked = False
+    failure_incident_id = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -6610,15 +7195,35 @@ def _run_one_job_body(
                     "the configuration is fixed."
                 )
             else:
-                deliver_content = final_response if success else (
-                    _summarize_cron_failure_for_delivery(job, error)
-                    + _failure_streak_nudge(job)
-                )
+                if success:
+                    deliver_content = final_response
+                else:
+                    # Durable failure incident: record this job+error
+                    # signature once and, when the operator already acked it,
+                    # suppress the per-run failure ping (the streak nudge and
+                    # the failure summarizer stay intact for un-acked
+                    # failures). Best-effort — an incident-store error never
+                    # breaks the delivery path (see _upsert_incident_for_failure).
+                    incident_acked, failure_incident_id = _upsert_incident_for_failure(
+                        job, error or "", output_file=output_file
+                    )
+                    if incident_acked and not drift_skip:
+                        deliver_content = ""
+                    else:
+                        deliver_content = (
+                            _summarize_cron_failure_for_delivery(job, error)
+                            + _failure_streak_nudge(job)
+                        )
                 if drift_skip and not success:
                     # Drift-skip alert: bypass the generic summarizer's
                     # 180-char truncation (it would eat the remediation
                     # command) and strip the internal marker — deliver the
                     # guard's own actionable message intact.
+                    # Deliberately NOT gated on incident ack: a drift skip
+                    # means the run was never attempted and the message
+                    # carries the remediation command — acking the failure
+                    # signature silences failure pings, not drift alerts
+                    # (which already alert once via the drift_alerted marker).
                     _drift_text = re.sub(
                         r"\[drift_skip[^\]]*\]\s*", "", str(error)
                     ).strip()
@@ -6759,8 +7364,18 @@ def _run_one_job_body(
             delivery_outcome = "not_configured"
         elif should_deliver and normalized_deliver != "local":
             delivery_outcome = "delivered"
+        elif incident_acked and not success:
+            # Distinct from plain "suppressed" (silence marker / local jobs):
+            # the failure ping was withheld because the operator acked this
+            # exact signature via `hermes cron incidents ack`.
+            delivery_outcome = "suppressed_acked"
         else:
             delivery_outcome = "suppressed"
+        if delivery_outcome in ("delivered", "not_configured") and not success:
+            # The failure ping left the process (or was composed for a
+            # configured target) — record it on the incident so the CLI
+            # distinguishes "failure seen" from "operator was pinged".
+            _mark_incident_alerted(failure_incident_id)
         finish_execution(
             execution_id,
             success=success,
@@ -6797,27 +7412,45 @@ def _run_one_job_body(
                 job.get("deliver", "local")
             )
             unresolved_origin = False
-            try:
-                delivery_attempted = True
-                delivery_error = _deliver_result(
-                    job,
-                    _summarize_cron_failure_for_delivery(job, _err_text),
-                    adapters=adapters,
-                    loop=loop,
-                )
-            except Exception as delivery_exc:
-                delivery_error = str(delivery_exc)
-                logger.error(
-                    "Delivery failed for job %s: %s", job["id"], delivery_exc
-                )
-            if not delivery_error and normalized_deliver == "origin":
-                unresolved_origin = not _resolve_delivery_targets(job)
-            if delivery_error:
-                delivery_outcome = "failed"
-            elif unresolved_origin:
-                delivery_outcome = "not_configured"
-            elif normalized_deliver != "local":
-                delivery_outcome = "delivered"
+            # Durable failure incident: same ack gate as the normal failure
+            # delivery above — an acked signature stays silent on this path
+            # too, so the retry-path alert cannot re-ping after acknowledgment.
+            incident_acked, failure_incident_id = _upsert_incident_for_failure(
+                job, _err_text
+            )
+            if incident_acked:
+                delivery_outcome = "suppressed_acked"
+            else:
+                try:
+                    delivery_attempted = True
+                    delivery_error = _deliver_result(
+                        job,
+                        # Composed exactly like the normal failure delivery above.
+                        # mark_job_run below records THIS run in failure_streak
+                        # whichever layer failed, so a job that fails before the
+                        # run body every tick builds a streak nobody is ever told
+                        # about: its alerts only ever leave through here, and the
+                        # nudge only ever left through there (#88655).
+                        _summarize_cron_failure_for_delivery(job, _err_text)
+                        + _failure_streak_nudge(job),
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                except Exception as delivery_exc:
+                    delivery_error = str(delivery_exc)
+                    logger.error(
+                        "Delivery failed for job %s: %s", job["id"], delivery_exc
+                    )
+                if not delivery_error and normalized_deliver == "origin":
+                    unresolved_origin = not _resolve_delivery_targets(job)
+                if delivery_error:
+                    delivery_outcome = "failed"
+                elif unresolved_origin:
+                    delivery_outcome = "not_configured"
+                elif normalized_deliver != "local":
+                    delivery_outcome = "delivered"
+                if delivery_outcome in ("delivered", "not_configured"):
+                    _mark_incident_alerted(failure_incident_id)
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}

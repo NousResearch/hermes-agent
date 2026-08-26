@@ -38,7 +38,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 1
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
@@ -61,6 +61,8 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
+          sparse-checkout: scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
@@ -72,8 +74,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
-    with:
-      slice_count: 12
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the

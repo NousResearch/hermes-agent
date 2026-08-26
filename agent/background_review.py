@@ -23,11 +23,168 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
+
+
+_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
+
+
+class _BackgroundReviewRun:
+    """Per-review cancellation and request-completion handshake."""
+
+    def __init__(self) -> None:
+        self.cancel_requested = threading.Event()
+        self.request_done = threading.Event()
+        self._lock = threading.Lock()
+        self._review_agent = None
+        self._request_finished = False
+        self._cancel_dispatched = False
+
+    def begin_request(self, review_agent: Any) -> bool:
+        """Atomically admit the first provider-capable review phase."""
+        with self._lock:
+            if self.cancel_requested.is_set() or self._request_finished:
+                return False
+            self._review_agent = review_agent
+            return True
+
+    def cancel(self) -> Any:
+        """Fence startup and return the running fork, if one was admitted."""
+        with self._lock:
+            self.cancel_requested.set()
+            if self._review_agent is not None and not self._cancel_dispatched:
+                self._cancel_dispatched = True
+                return self._review_agent
+            return None
+
+    def mark_request_finished(self) -> bool:
+        """Latch request completion once; the caller publishes the event."""
+        with self._lock:
+            if self._request_finished:
+                return False
+            self._request_finished = True
+            self._review_agent = None
+            return True
+
+
+def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
+    """Install a unique run token on the parent before ``Thread.start()``."""
+    lock = getattr(agent, "_background_review_lock", None)
+    if lock is None:
+        try:
+            lock = threading.Lock()
+            agent._background_review_lock = lock
+        except (AttributeError, TypeError):
+            return None
+
+    run = _BackgroundReviewRun()
+    try:
+        with lock:
+            current = getattr(agent, "_background_review_run", None)
+            if current is not None and not current.request_done.is_set():
+                return None
+            agent._background_review_run = run
+    except (AttributeError, TypeError):
+        return None
+    return run
+
+
+def finish_background_review_run(
+    agent: Any,
+    run: Optional[_BackgroundReviewRun],
+) -> None:
+    """Publish one run's request exit without clearing a successor (ABA-safe)."""
+    if run is None or not run.mark_request_finished():
+        return
+
+    lock = getattr(agent, "_background_review_lock", None)
+    if lock is not None:
+        with lock:
+            if getattr(agent, "_background_review_run", None) is run:
+                agent._background_review_run = None
+    elif getattr(agent, "_background_review_run", None) is run:
+        agent._background_review_run = None
+    run.request_done.set()
+
+
+def _interrupt_background_review(review_agent: Any) -> None:
+    """Request abort off-thread so a broken abort hook cannot stall foreground.
+
+    The bounded wait on ``request_done`` in
+    :func:`cancel_background_review_for_live_turn` is only effective if
+    ``interrupt()`` returns quickly.  Off-loading to a daemon thread ensures
+    a slow or wedged abort path cannot block the foreground turn (#84423).
+    """
+
+    def _interrupt() -> None:
+        try:
+            from agent.interrupt_compat import request_hard_interrupt
+
+            request_hard_interrupt(
+                review_agent,
+                "superseded by a new live turn",
+                tool_reason="background review superseded",
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel in-flight background review for a new turn",
+                exc_info=True,
+            )
+
+    try:
+        threading.Thread(
+            target=_interrupt,
+            daemon=True,
+            name="bg-review-cancel",
+        ).start()
+    except Exception:
+        logger.debug(
+            "Failed to start background-review cancellation thread",
+            exc_info=True,
+        )
+
+
+def cancel_background_review_for_live_turn(agent: Any) -> None:
+    """Cancel the current review and await its request-phase acknowledgement.
+
+    Foreground priority is preserved: if the review does not acknowledge within
+    the bounded deadline, a warning is logged and the live turn proceeds
+    anyway. The review is non-critical self-improvement work and must never
+    block a user-facing turn (#84423).
+    """
+    lock = getattr(agent, "_background_review_lock", None)
+    if lock is not None:
+        with lock:
+            run = getattr(agent, "_background_review_run", None)
+            legacy_agent = getattr(agent, "_background_review_agent", None)
+    else:
+        run = getattr(agent, "_background_review_run", None)
+        legacy_agent = getattr(agent, "_background_review_agent", None)
+
+    if run is None:
+        if legacy_agent is None:
+            return
+        _interrupt_background_review(legacy_agent)
+        return
+
+    review_agent = run.cancel()
+    if review_agent is not None:
+        _interrupt_background_review(review_agent)
+
+    acknowledged = run.request_done.wait(
+        timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
+    )
+    if not acknowledged:
+        logger.warning(
+            "Background review did not acknowledge cancellation within %.1fs; "
+            "proceeding with foreground live turn",
+            _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +203,23 @@ logger = logging.getLogger(__name__)
 
 # Historical hardcoded iteration budget for the review fork.
 _REVIEW_MAX_ITERATIONS = 16
+
+# Default aggregate INPUT-token budget for one review fork (#93057). The
+# fork's first request replays the full snapshot — a warm prompt-cache read
+# that is cheap and intended (cache parity), which is why both compression
+# gates are deferred until the first provider response arrives
+# (_review_fork_first_request_pending in agent/turn_context.py). After that,
+# detached in-memory compaction bounds each request to roughly the
+# compression threshold, but nothing capped the SUM across the review's tool
+# loop: one production review made 8 requests replaying 1,487,951 input
+# tokens total (four of them at 350k-384k). This budget caps the aggregate;
+# the review tool loop stops before the provider call that would cross it
+# (see ``_review_input_budget_exhausted`` in agent/conversation_loop.py).
+# 2x the historical 300k foreground trigger keeps legitimate reviews
+# comfortable while capping the pathological case. Override with
+# ``auxiliary.background_review.max_input_tokens``; 0 or a negative value
+# disables the cap (unbounded = pre-fix behavior).
+_REVIEW_MAX_INPUT_TOKENS_DEFAULT = 600_000
 
 
 def _background_review_task_config(
@@ -67,6 +241,26 @@ def _background_review_task_config(
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     task = aux.get("background_review", {})
     return task if isinstance(task, dict) else {}
+
+
+def _review_input_token_budget(
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Aggregate input-token budget for one review fork (None = unlimited).
+
+    Reads ``auxiliary.background_review.max_input_tokens``; falls back to
+    :data:`_REVIEW_MAX_INPUT_TOKENS_DEFAULT`. ``0`` or a negative value
+    disables the cap explicitly.
+    """
+    task = _background_review_task_config(task_cfg)
+    raw = task.get("max_input_tokens", _REVIEW_MAX_INPUT_TOKENS_DEFAULT)
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        budget = _REVIEW_MAX_INPUT_TOKENS_DEFAULT
+    if budget <= 0:
+        return None
+    return budget
 
 
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
@@ -286,8 +480,10 @@ _SKILL_REVIEW_PROMPT = (
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the "
     "conversation for skills the user loaded via /skill-name or you "
     "read via skill_view. If any of them covers the territory of the "
-    "new learning, PATCH that one first. It is the skill that was in "
-    "play, so it's the right one to extend — but only if it is "
+    "new learning, PATCH that one first (re-load it with skill_view "
+    "during this review — see Read-before-write below). It is the "
+    "skill that was in play, so it's the right one to extend — but "
+    "only if it is "
     "curator-managed. Bundled, hub, pinned, and user-owned skills are "
     "off-limits to you no matter how relevant (see Protected skills "
     "below); for those, fall through to the next option.\n"
@@ -320,6 +516,18 @@ _SKILL_REVIEW_PROMPT = (
     "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
     "session artifact. If the proposed name only makes sense for "
     "today's task, it's wrong — fall back to (1), (2), or (3).\n\n"
+    "Read-before-write (ENFORCED — skill_manage refuses otherwise): "
+    "before you patch or edit an existing skill's SKILL.md, call "
+    "skill_view(name) for that skill during this review. Before you "
+    "overwrite or remove an EXISTING supporting file, call "
+    "skill_view(name, file_path=...) for that exact file. Content "
+    "quoted earlier in the conversation transcript does NOT count — "
+    "the guard requires a fresh load within this review, and your "
+    "write must be based on what skill_view just returned. Creating "
+    "a brand-new skill or adding a NEW supporting file needs no "
+    "prior read. If a write is refused with a read-before-write "
+    "error, call skill_view for the named target once and retry the "
+    "write once; do not loop.\n\n"
     "User-preference embedding (important): when the user expressed a "
     "style/format/workflow preference, the update belongs in the "
     "SKILL.md body, not just in memory. Memory captures 'who the user "
@@ -406,7 +614,9 @@ _COMBINED_REVIEW_PROMPT = (
     "Preference order for skills — pick the earliest that fits:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
     "loaded via /skill-name or skill_view in the conversation. If one "
-    "of them covers the learning, PATCH it first. It was in play; "
+    "of them covers the learning, PATCH it first (re-load it with "
+    "skill_view during this review — see Read-before-write below). "
+    "It was in play; "
     "it's the right place — provided it is curator-managed. Protected "
     "and user-owned skills are off-limits however relevant; fall "
     "through when one of those is the best fit.\n"
@@ -426,6 +636,15 @@ _COMBINED_REVIEW_PROMPT = (
     "codename, library-alone name, or 'fix-X / debug-Y' session "
     "artifact. If the name only fits today's task, fall back to (1), "
     "(2), or (3).\n\n"
+    "Read-before-write (ENFORCED — skill_manage refuses otherwise): "
+    "before patching or editing an existing skill's SKILL.md, call "
+    "skill_view(name) during this review; before overwriting or "
+    "removing an EXISTING supporting file, call skill_view(name, "
+    "file_path=...) for that exact file. Content quoted earlier in "
+    "the transcript does NOT count — base the write on what "
+    "skill_view just returned. New skills and NEW supporting files "
+    "need no prior read. On a read-before-write refusal: view the "
+    "named target once, retry the write once, do not loop.\n\n"
     "User-preference embedding: when the user complains about how "
     "you handled a task, update the skill that governs that task — "
     "memory alone isn't enough. Memory says 'who the user is and "
@@ -862,13 +1081,23 @@ def _run_review_in_thread(
     messages_snapshot: List[Dict],
     prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None,
+    review_run: Optional[_BackgroundReviewRun] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
     Spawns a forked ``AIAgent`` inheriting the parent's runtime, runs the
     review prompt, and surfaces a compact action summary back to the user
     via ``agent._safe_print`` and ``agent.background_review_callback``.
+
+    ``review_run`` is the per-review cancellation token from
+    :func:`prepare_background_review_run`.  If a live turn bumps the
+    cancel generation before this review reaches its first provider call,
+    the review aborts without entering ``run_conversation()`` (#84423).
     """
+    if review_run is not None and review_run.cancel_requested.is_set():
+        finish_background_review_run(agent, review_run)
+        return
+
     # Local import to avoid a hard circular dep at module load.
     from run_agent import AIAgent
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
@@ -917,6 +1146,10 @@ def _run_review_in_thread(
                     agent._active_children.remove(agent_ref)
             except (ValueError, AttributeError):
                 pass
+
+    def _finish_request_phase(agent_ref) -> None:
+        _unregister_review_agent(agent_ref)
+        finish_background_review_run(agent, review_run)
 
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
@@ -1102,27 +1335,101 @@ def _run_review_in_thread(
             # conversation (the review fires every ~10 turns). Leave session
             # finalization to the real owner (CLI close / gateway reset / cron).
             review_agent._end_session_on_close = False
-            # Never let the review fork compress. It shares the parent's
-            # session_id, so if it won a compression race it would rotate the
-            # parent into a NEW child that the gateway never adopts (the fork
-            # is single-lifecycle and dies right after this run_conversation).
-            # The foreground turn would then start from the stale parent and
-            # compress it again, leaving the same parent with two sibling
-            # children (issue #38727). Review also needs full context to
-            # produce a good memory/skill summary — compressing would strip
-            # detail. Both compression triggers in conversation_loop.py gate on
-            # agent.compression_enabled, so this short-circuits both paths.
-            review_agent.compression_enabled = False
+            # DETACHED IN-MEMORY COMPACTION (issue #93057). The fork shares
+            # the parent's session_id (pinned above for prefix-cache parity),
+            # so the historical guard here was ``compression_enabled = False``:
+            # if the fork ran the ordinary compression path it could rotate /
+            # archive the parent's live session — the sibling-session race
+            # behind #38727. But disabling compaction was a proxy for
+            # detachment, and it removed the ONLY bound on the review's
+            # private snapshot: as the review performs tool calls, every
+            # follow-up provider request replayed the snapshot plus the
+            # growing review tool loop (350k-384k input tokens per request in
+            # production, 1.49M total across one 8-request review).
+            #
+            # The fix is detachment, not disablement:
+            #   • Persistence is already off above (_persist_disabled /
+            #     _session_db=None), so the commit site in compress_context
+            #     (``if agent._session_db:``) skips every durable write and
+            #     compaction can only ever rewrite the fork's private
+            #     in-memory transcript.
+            #   • The compressor's OWN session binding still needs severing:
+            #     AIAgent.__init__ bound it to the parent's SessionDB and
+            #     session_id before this function nulled the agent-level
+            #     binding, so durable cooldown/streak/ineffective-count
+            #     writes would otherwise land on the parent's row. Rebinding
+            #     with session_db=None / session_id="" makes every
+            #     compressor persist guard a no-op.
+            #   • Force in-place mode (never rotation) even if the parent's
+            #     config selected rotation, and re-enable compression ONLY
+            #     after the rebind succeeds (fail-closed — see below). While
+            #     enabled, both compression gates stay deferred until the
+            #     fork's first provider response so request #1 replays the
+            #     full snapshot as a warm cache read.
+            _review_compressor = getattr(review_agent, "context_compressor", None)
+            _bind_review_compressor = getattr(
+                _review_compressor, "bind_session_state", None
+            )
+            _review_compression_detached = False
+            if callable(_bind_review_compressor):
+                try:
+                    # Plugin/third-party context engines may not accept these
+                    # kwargs; they own their own persistence policy, so a
+                    # failed rebind leaves the pre-existing flags in place
+                    # and must never abort the review (same tolerance as the
+                    # init-time binding in agent_init.py).
+                    _bind_review_compressor(session_db=None, session_id="")
+                    _review_compression_detached = True
+                except Exception:
+                    # FAIL-CLOSED (adversarial review, #93057): if the rebind
+                    # could not sever the engine's session binding, the
+                    # compressor may still point at the parent's
+                    # SessionDB/session_id. Enabling compression in that
+                    # state would let durable cooldown/streak/ineffective-
+                    # count writes land on the parent's row and re-open the
+                    # #38727 sibling race. Keep the historical
+                    # compression_enabled=False behavior instead and warn;
+                    # the review still runs, bounded by the iteration cap
+                    # and the aggregate input budget below.
+                    logger.warning(
+                        "background-review compressor detachment failed; "
+                        "keeping compression DISABLED on this review fork "
+                        "(fail-closed, issue #93057 / #38727)",
+                        exc_info=True,
+                    )
+            # Force in-place mode (never rotation) even if the parent's
+            # config selected rotation. Re-enable compression ONLY after the
+            # compressor's session binding was successfully severed; an
+            # engine without a bind hook keeps the historical disabled
+            # behavior as well.
+            review_agent.compression_in_place = True
+            review_agent.compression_enabled = _review_compression_detached
+            if _review_compression_detached:
+                # Warm-cache parity: the fork's FIRST provider request
+                # replays the parent's full snapshot as a warm prompt-cache
+                # read, so compaction must not rewrite the snapshot before
+                # that first request goes out. Defer both compression gates
+                # until the first provider response arrives (see
+                # _review_fork_first_request_pending in agent/turn_context.py
+                # and the pre-API gate in agent/conversation_loop.py); from
+                # the second request on, the fork's transcript is its own and
+                # compaction bounds it.
+                review_agent._review_defer_compaction_before_first_response = True
+            # Aggregate input budget: compaction bounds any single request;
+            # this bounds the WHOLE review. Iterations are already capped by
+            # _REVIEW_MAX_ITERATIONS. Checked in agent/conversation_loop.py
+            # via _review_input_budget_exhausted (issue #93057).
+            review_agent._review_input_token_budget = _review_input_token_budget(
+                task_cfg
+            )
 
             # Register this fork on the PARENT's _active_children (the same
             # list interrupt() fans out to for subagent delegation) and
             # _background_review_agent (a direct pointer the next live turn
-            # uses to proactively cancel a still-running review). Without
-            # this, a review still streaming when the next turn starts races
-            # the live turn against the same session_id/credentials — producing
-            # doubled prompt-token accounting and a Ctrl+C-proof lockup.
-            # Best-effort: agents built without agent_init.py (test stubs)
-            # degrade to "no cross-cancellation" rather than aborting the review.
+            # uses to interrupt an admitted request). The per-review run token
+            # separately fences startup and acknowledges request-phase exit.
+            # The legacy pointer/list remain best-effort for direct test stubs;
+            # a prepared run token is the live-turn cancellation authority.
             if hasattr(agent, "_background_review_agent"):
                 _br_lock = getattr(agent, "_background_review_lock", None)
                 if _br_lock is not None:
@@ -1173,22 +1480,26 @@ def _run_review_in_thread(
                 pass
 
             try:
-                # Routed to a different model -> replay a digest (cache is cold
-                # on that model anyway, so minimise cold-written tokens). Same
-                # model -> replay the full snapshot (warm cache reads).
-                _review_history = (
-                    _digest_history(messages_snapshot) if _routed
-                    else messages_snapshot
+                request_admitted = (
+                    review_run is None or review_run.begin_request(review_agent)
                 )
-                review_agent.run_conversation(
-                    user_message=(
-                        prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
-                    ),
-                    conversation_history=_review_history,
-                )
+                if request_admitted:
+                    # Routed to a different model -> replay a digest (cache is cold
+                    # on that model anyway, so minimise cold-written tokens). Same
+                    # model -> replay the full snapshot (warm cache reads).
+                    _review_history = (
+                        _digest_history(messages_snapshot) if _routed
+                        else messages_snapshot
+                    )
+                    review_agent.run_conversation(
+                        user_message=(
+                            prompt
+                            + "\n\nYou can only call memory and skill "
+                            "management tools. Other tools will be denied "
+                            "at runtime — do not attempt them."
+                        ),
+                        conversation_history=_review_history,
+                    )
             finally:
                 clear_thread_tool_whitelist()
                 # Attribute the review fork's usage to the PARENT session.
@@ -1199,12 +1510,9 @@ def _run_review_in_thread(
                 if review_agent is not None:
                     review_usage.update(_snapshot_review_usage(review_agent))
                     _record_review_usage_to_parent(agent, review_usage)
-                # Unregister as soon as run_conversation() itself has
-                # returned — that's the only phase making outbound API
-                # calls, i.e. the only phase that can race the parent's
-                # next live turn. Runs on both the success and exception
-                # path (this whole block is inside the try/finally above).
-                _unregister_review_agent(review_agent)
+                # Publish completion as soon as the provider-capable phase has
+                # returned or startup cancellation has fenced it out.
+                _finish_request_phase(review_agent)
 
             # Snapshot review actions before teardown. close() is allowed to
             # clean per-session state, but the user-visible self-improvement
@@ -1284,13 +1592,10 @@ def _run_review_in_thread(
         # thread-scoped silence here so teardown output (Honcho flush, Hindsight
         # sync, background thread joins) stays quiet even on the exception path,
         # without blanking other threads' streams.
-        # Also a safety-net unregister: covers exceptions raised during setup
-        # (between registration and the run_conversation try/finally above)
-        # that the primary _unregister_review_agent call site never reaches.
-        # _unregister_review_agent is idempotent (checks `is`/`in` membership),
-        # so calling it again here after the primary call site already ran is
-        # a harmless no-op.
-        _unregister_review_agent(review_agent)
+        # Also a safety-net completion: covers exceptions raised during setup
+        # before the request-phase finally. Both tracking cleanup and the
+        # per-run completion publication are identity-scoped and idempotent.
+        _finish_request_phase(review_agent)
         if review_agent is not None:
             try:
                 with thread_scoped_silence():
@@ -1319,6 +1624,7 @@ def spawn_background_review_thread(
     review_skills: bool = False,
     focus: Optional[str] = None,
     task_cfg: Optional[Dict[str, Any]] = None,
+    review_run: Optional[_BackgroundReviewRun] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -1359,7 +1665,13 @@ def spawn_background_review_thread(
         )
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg)
+        _run_review_in_thread(
+            agent,
+            messages_snapshot,
+            prompt,
+            task_cfg=task_cfg,
+            review_run=review_run,
+        )
 
     return _target, prompt
 

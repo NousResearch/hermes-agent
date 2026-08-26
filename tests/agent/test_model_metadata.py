@@ -518,13 +518,14 @@ class TestCodexOAuthContextLength:
             "gpt-5.6-luna",
             "gpt-5.6-sol-2026-07-09",  # dated snapshot via gpt-5.6 family prefix
             "gpt-5.4",
+            "gpt-daybreak-blue-latest",  # Sol alias; exact verified slug
         ],
     )
-    def test_stale_272k_advertisement_bumped_to_live_verified_900k(self, slug):
-        """Codex advertises 272K for these slugs but the backend accepts ~911K
-        (verified live Aug 2026, after OpenAI enabled the large-context window
-        for ChatGPT-subscription accounts); the resolver lifts exactly-272K
-        to 900K."""
+    def test_900k_variant_slug_bumped_to_live_verified_900k(self, slug):
+        """The backend accepts ~911K for these slugs (verified live Aug 2026),
+        but the large window is OPT-IN: only the explicit ``-900k`` picker
+        variant resolves to 900K. The catalog only knows the base slug, so
+        the resolver strips the suffix for the lookup, then applies the bump."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -536,16 +537,50 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model=slug,
+                model=slug + "-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="fake-token",
                 provider="openai-codex",
             )
         assert ctx == 900_000
 
+    @pytest.mark.parametrize(
+        "slug",
+        [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.4",
+            "gpt-daybreak-blue-latest",
+        ],
+    )
+    def test_base_slug_keeps_advertised_272k(self, slug):
+        """Base slugs (no ``-900k`` suffix) keep the advertised 272K — the
+        cheaper default limit. The verified-above bump is opt-in only."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": slug, "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=slug,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
     def test_non_272k_advertisement_is_trusted_verbatim(self):
         """Any advertised value other than the known-stale 272,000 — higher or
-        lower — is a real server-side change and must NOT be overridden."""
+        lower — is a real server-side change and must NOT be overridden, even
+        for an explicit ``-900k`` opt-in variant."""
         from agent.model_metadata import get_model_context_length
 
         for advertised in (372_000, 200_000, 1_050_000):
@@ -560,7 +595,7 @@ class TestCodexOAuthContextLength:
                  patch("agent.model_metadata.get_cached_context_length", return_value=None), \
                  patch("agent.model_metadata.save_context_length"):
                 ctx = get_model_context_length(
-                    model="gpt-5.6-sol",
+                    model="gpt-5.6-sol-900k",
                     base_url="https://chatgpt.com/backend-api/codex",
                     api_key="fake-token",
                     provider="openai-codex",
@@ -590,9 +625,11 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    def test_fallback_table_resolution_also_bumped(self):
-        """When the live probe fails, the 272K fallback-table value for a
-        verified slug is bumped the same way (same enforcement applies)."""
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k", "gpt-daybreak-blue-latest-900k"])
+    def test_fallback_table_resolution_also_bumped(self, slug):
+        """When the live probe fails, the 272K fallback-table value for an
+        opted-in ``-900k`` variant is bumped the same way (same enforcement
+        applies — the fallback lookup strips the suffix first)."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
@@ -602,12 +639,90 @@ class TestCodexOAuthContextLength:
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-sol",
+                model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="expired-token",
                 provider="openai-codex",
             )
         assert ctx == 900_000
+
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    def test_fallback_table_base_slug_stays_272k(self, slug):
+        """Fallback-table resolution for BASE slugs stays at the advertised
+        272K — the opt-in rule applies on the offline path too."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 401
+        fake_response.json.return_value = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=slug,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="expired-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
+    # Table-driven eligibility contract (#92797 review): one predicate
+    # (is_codex_900k_base) drives picker synthesis, context resolution,
+    # validation, and wire stripping — this table pins all of them.
+    # (model_id, is_valid_variant, expected_ctx, expected_wire_model)
+    _900K_TABLE = [
+        ("gpt-5.6-sol-900k",              True,  900_000, "gpt-5.6-sol"),
+        ("gpt-5.6-terra-900k",            True,  900_000, "gpt-5.6-terra"),
+        ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
+        ("gpt-5.4-900k",                  True,  900_000, "gpt-5.4"),
+        ("gpt-daybreak-blue-latest-900k", True,  900_000, "gpt-daybreak-blue-latest"),
+        # dated snapshot of a routable 5.6 base
+        ("gpt-5.6-sol-2026-07-09-900k",   True,  900_000, "gpt-5.6-sol-2026-07-09"),
+        # vendor-namespaced variant (display/aux callers) resolves too
+        ("openai/gpt-5.6-sol-900k",       True,  900_000, "openai/gpt-5.6-sol"),
+        # -pro slugs are not routable on Codex OAuth: never a valid variant,
+        # never stripped (fails honestly at the API instead)
+        ("gpt-5.6-sol-pro-900k",          False, 272_000, "gpt-5.6-sol-pro-900k"),
+        # genuine 272K enforcers get no variant
+        ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),
+        ("gpt-5.4-mini-900k",             False, 272_000, "gpt-5.4-mini-900k"),
+        # arbitrary future family descendants are not auto-eligible
+        ("gpt-5.6-nova-900k",             False, 272_000, "gpt-5.6-nova-900k"),
+    ]
+
+    @pytest.mark.parametrize("model_id,valid,expected_ctx,wire", _900K_TABLE)
+    def test_900k_eligibility_table(self, model_id, valid, expected_ctx, wire):
+        from agent.model_metadata import (
+            get_model_context_length,
+            is_codex_context_variant,
+            strip_codex_context_variant_suffix,
+        )
+
+        assert is_codex_context_variant(model_id) is valid
+        assert strip_codex_context_variant_suffix(model_id) == wire
+
+        bare = model_id.rsplit("/", 1)[-1]
+        catalog_slug = strip_codex_context_variant_suffix(bare)
+        if catalog_slug.endswith("-900k"):
+            # invalid alias — catalog advertises the underlying family slug
+            catalog_slug = catalog_slug[: -len("-900k")]
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": catalog_slug, "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=model_id,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == expected_ctx
 
 
 

@@ -81,6 +81,8 @@ export const en: Translations = {
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewayConnectionLost: 'Lost connection to the gateway',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
@@ -102,6 +104,13 @@ export const en: Translations = {
         `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',
       remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
+      cloudDownTitle: 'Nous Cloud agent is down',
+      cloudDownDescription:
+        'The Nous-managed cloud agent this gateway connects to is returning a server error. It cannot be restarted from here — check its status, switch to the local gateway, or get support.',
+      cloudDownHint:
+        'The buttons below open the Nous Portal (instance status and controls) and our Discord for support.',
+      cloudDownCheckPortal: 'Check Portal status',
+      cloudDownDiscord: 'Get help on Discord',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',
@@ -203,6 +212,30 @@ export const en: Translations = {
     dismiss: 'Dismiss'
   },
 
+  sendDiagnostics: {
+    title: 'Send diagnostics to Nous',
+    privacyNotice:
+      'This uploads a debug bundle to Nous-internal storage (not a public paste). It includes system info (OS, versions, provider, which API keys are configured — never the keys themselves) and full agent, gateway, and desktop logs (up to 512 KB each), which likely contain conversation content, tool outputs, and file paths. Secrets are redacted before upload. The bundle is viewable only by Nous staff and allowlisted Discord moderators, and auto-deletes after 14 days.',
+    upload: 'Upload',
+    uploading: 'Uploading…',
+    cancel: 'Cancel',
+    close: 'Close',
+    copyLink: 'Copy link',
+    uploadIdFallback: id => `No view link returned — quote upload ID ${id} to support`,
+    doneTitle: 'Diagnostics sent',
+    doneDescription:
+      'Your bundle was uploaded privately. Share the link below in your support thread so the team can see your logs.',
+    failedTitle: 'Upload failed',
+    failedHint:
+      'You can also run `hermes debug share --nous` from a terminal, or `hermes debug share --local` to print the report without uploading.',
+    handoffLead: 'Pick up the discussion in:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal Support',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -218,6 +251,7 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     enterHud: 'HUD mode',
     exitHud: 'Exit HUD mode',
+    resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },
@@ -276,6 +310,7 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
+      'view.toggleTabStrip': 'Toggle tabs',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -285,7 +320,7 @@ export const en: Translations = {
       'view.nextTerminal': 'Next terminal',
       'view.prevTerminal': 'Previous terminal',
       'view.closeTerminal': 'Close terminal',
-      'view.terminalSelection': 'Send terminal selection to composer',
+      'view.selectionToComposer': 'Send selection to composer',
       'view.terminalCopy': 'Copy terminal selection',
       'view.terminalPaste': 'Paste into terminal',
       'view.closeTab': 'Close tab',
@@ -516,6 +551,11 @@ export const en: Translations = {
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
+      tabStripTitle: 'Tab Strip',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripAuto: 'Auto',
+      tabStripAlways: 'Always',
+      tabStripNever: 'Never',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -550,6 +590,9 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
+      vibeHeartsTitle: 'Vibe Hearts',
+      vibeHeartsDesc:
+        'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -844,6 +887,10 @@ export const en: Translations = {
       plainTextStoredTitle: 'Token stored in plain text',
       plainTextStoredDesc:
         'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable GNOME Keyring or KWallet to encrypt it.',
+      keychainEncryptionTitle: 'Encrypt saved secrets with the OS keychain',
+      keychainEncryptionDesc:
+        'Off by default. When on, gateway tokens and sign-in credentials are encrypted with your system keychain (Keychain Access, GNOME Keyring, or Windows DPAPI) — your system may ask for permission or a password. When off, they are stored as plain files readable only by your user account.',
+      keychainEncryptionFailed: 'Could not change secret encryption',
       testRemote: 'Test remote',
       saveForRestart: 'Save for next restart',
       saveAndReconnect: 'Save and reconnect',
@@ -1031,12 +1078,12 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
-        web_extract: { label: 'Web extract', hint: 'Page summarization' },
         compression: { label: 'Compression', hint: 'Context compaction' },
         skills_hub: { label: 'Skills hub', hint: 'Skill search' },
         approval: { label: 'Approval', hint: 'Smart auto-approve' },
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
+        review: { label: 'Review', hint: '/review reviewer subagent' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
     },
@@ -1778,6 +1825,46 @@ export const en: Translations = {
     switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Manage gateways…',
+    fleet: {
+      allOnGateway: 'All profiles on this gateway',
+      gateway: gateway => `Profiles on ${gateway}`,
+      gatewayUnreachable: gateway => `${gateway} · unreachable`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      deleteOn: gateway => ` on ${gateway}`
+    },
+    remoteOverride: {
+      menuItem: 'Connect to a remote host…',
+      badge: (host: string) => `Runs on ${host}`,
+      title: (profile: string) => `Connect ${profile} to a remote host`,
+      description: 'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',
+      urlLabel: 'Remote address',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'Enter a full address starting with http:// or https://',
+      tokenLabel: 'Access token',
+      tokenPlaceholder: 'Paste the remote session token',
+      tokenSavedHint: 'A token is already saved. Leave blank to keep it.',
+      plainTextOptIn:
+        'This computer has no secure key storage, so the token would be saved unencrypted on disk. Save it anyway.',
+      collisionWarning: (label: string) =>
+        `A gateway named “${label}” already exists in Settings. This profile connection is separate and will not change it.`,
+      confirmTitle: 'Connect this profile to a remote host?',
+      confirmNote: (profile: string, host: string) =>
+        `New chats in ${profile} will run on ${host}. That computer will run commands and read files there, not on this one. Only connect to a host you trust.`,
+      confirmBack: 'Back',
+      connect: 'Connect',
+      connecting: 'Connecting…',
+      disconnect: 'Remove remote connection',
+      savedTitle: 'Profile connected',
+      savedMessage: (profile: string, host: string) => `${profile} now runs on ${host}`,
+      removedTitle: 'Remote connection removed',
+      removedMessage: (profile: string) => `${profile} now runs on this computer`,
+      removeFailed: 'Could not remove the remote connection',
+      authFailedTitle: 'Remote host rejected the saved token',
+      authFailedMessage: (profile: string, host: string) =>
+        `${host} refused the token saved for ${profile}. It may have been changed on the remote side.`,
+      updateToken: 'Enter new token…'
+    },
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',
@@ -2783,6 +2870,7 @@ export const en: Translations = {
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
+      gatewayUnavailable: 'inference unavailable',
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
@@ -2890,6 +2978,9 @@ export const en: Translations = {
     hide: 'Hide',
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
+    openInExternal: 'Open in external',
+    popIn: 'Pop in',
+    popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',
@@ -2980,8 +3071,8 @@ export const en: Translations = {
   },
 
   zones: {
-    showHeader: 'Show header',
-    hideHeader: 'Hide header',
+    showTabStrip: 'Show tabs',
+    hideTabStrip: 'Hide tabs',
     showStripTab: title => `Show ${title}`,
     hideStripTab: title => `Hide ${title}`,
     lastTabKeptTitle: 'Last tab stays',
@@ -2998,6 +3089,7 @@ export const en: Translations = {
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
     newSessionTab: 'New session tab',
+    newTab: 'New tab',
     pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
     pluginDisabledBody: 'Re-enable it in Settings → Plugins to bring the pane back.',
     missingPane: paneId => `missing pane: ${paneId}`,
@@ -3073,6 +3165,24 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      errorLayers: {
+        auth: 'Authentication error',
+        billing: 'Out of credits',
+        disk: 'Disk full',
+        endpoint: 'Custom endpoint error',
+        gateway: 'Gateway error',
+        generic: 'Turn failed',
+        provider: 'Provider error',
+        runtime: 'Local runtime error',
+        streaming: 'Streaming connection error'
+      },
+      errorRetry: 'Retry',
+      errorSwitchProvider: 'Switch provider',
+      errorOpenLogs: 'Open logs',
+      errorOpenLogsFailed: 'Could not open the logs folder',
+      errorOpenDesktopLogs: 'Open Desktop logs',
+      errorCopyDiagnostics: 'Copy error details',
+      errorSendDiagnostics: 'Send diagnostics',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',
       readAloudFailed: 'Read aloud failed',
@@ -3294,6 +3404,7 @@ export const en: Translations = {
     cwdStagedTitle: 'Working directory staged',
     cwdStagedMessage: 'Restart the desktop backend to apply cwd changes to this active session.',
     modelSwitchFailed: 'Model switch failed',
+    hydrationSyncing: (profile: string) => `Syncing ${profile}\u2026`,
     sessionExported: 'Session exported',
     sessionExportFailed: 'Could not export session',
     imageSaved: 'Image saved',

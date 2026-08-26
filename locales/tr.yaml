@@ -280,6 +280,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Geçersiz kontrol noktası numarası. 1-{max} aralığını kullanın."
     restored:              "✅ {hash} kontrol noktasına geri yüklendi: {reason}\nGeri alma öncesi anlık görüntü otomatik olarak kaydedildi."
     kept_user_edits:       "↷ Elle yaptığınız düzenlemeler korundu: {files}\nOnları da geri yüklemek için /rollback <N> --all kullanın."
+    kept_oversize:         "↷ Korundu (denetim noktaları için çok büyük, geri dönülecek kayıtlı kopya yok): {files}"
+    failed_deletes:        "⚠️ Kaldırılamadı (yerinde bırakıldı): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

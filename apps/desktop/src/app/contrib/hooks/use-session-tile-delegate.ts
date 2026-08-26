@@ -2,12 +2,15 @@ import { useEffect } from 'react'
 
 import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
-import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
+import { $sessions, knownSessionOwner } from '@/store/session'
+import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
+import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
-import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
+import { resolveSessionOwner } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
 
@@ -71,6 +74,29 @@ export function useSessionTileDelegate({
       }
     }
 
+    // Same ladder as the window's session-RPC dispatcher: tile route → the
+    // row's owner (exact when connection-tagged, else the hint / profile) →
+    // the async cross-profile probe (exact when the resolved row is tagged).
+    const ownerForStoredSession = async (storedSessionId: string): Promise<SessionOwnerScope> => {
+      const owner =
+        sessionTileOwnerRoute(storedSessionId) ??
+        knownSessionOwner($sessions.get(), storedSessionId) ??
+        (await resolveSessionOwner(storedSessionId))
+
+      return owner
+    }
+
+    const requestForStoredSession = async <T>(
+      storedSessionId: string,
+      method: string,
+      params: Record<string, unknown>,
+      timeoutMs?: number
+    ): Promise<T> => {
+      const owner = await ownerForStoredSession(storedSessionId)
+
+      return requestForSessionProfile<T>(owner, requestGateway, method, params, timeoutMs)
+    }
+
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
         await archiveSession(storedSessionId)
@@ -89,8 +115,27 @@ export function useSessionTileDelegate({
       // backend no longer knows. Drop the map so resumeTile's warm path can't
       // re-bind a tile to a dead runtime; live bindings re-record from
       // post-reconnect events and fresh resumes.
-      invalidateRuntimeBindings: () => {
-        runtimeIdByStoredSessionIdRef.current.clear()
+      invalidateRuntimeBindings: preserveStoredSessionIds => {
+        for (const storedSessionId of runtimeIdByStoredSessionIdRef.current.keys()) {
+          if (!preserveStoredSessionIds?.has(storedSessionId)) {
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          }
+        }
+      },
+      // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
+      // through updateSessionState so the cache, focused view, busyRef and
+      // tile mirrors settle together. A runtime this cache never held reports
+      // false instead of minting an entry; the store downgrades its mirror.
+      retireBusyClaim: runtimeId => {
+        const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+        if (!cached || (!cached.busy && !cached.awaitingResponse)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+
+        return true
       },
       interruptSession: async runtimeId => {
         // Same cooldown as the primary chat's Stop (#83855): the gateway may
@@ -99,12 +144,20 @@ export function useSessionTileDelegate({
         // false. Mark the runtime id (and any recovered id) before the RPC so
         // the window covers the whole wind-down.
         markSessionRecentlyInterrupted(runtimeId)
+
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        const routedRequest = storedSessionId
+          ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
+              requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
+          : requestGateway
+
         await withSessionNotFoundResume(
           runtimeId,
-          storedSessionIdForRuntime(runtimeId),
-          liveId => requestGateway('session.interrupt', { session_id: liveId }),
+          storedSessionId,
+          liveId => routedRequest('session.interrupt', { session_id: liveId }),
           {
-            requestGateway,
+            requestGateway: routedRequest,
             onRecovered: recoveredId => {
               markSessionRecentlyInterrupted(recoveredId)
               rebindTileRuntime(runtimeId)(recoveredId)
@@ -133,16 +186,23 @@ export function useSessionTileDelegate({
         // reading messages) without a profile lets the gateway fall back to the
         // launch-profile DB and fork the conversation into the wrong profile —
         // the same cross-profile bleed the recovery resumes had (#67603).
-        const profile = await resolveSessionProfile(storedSessionId)
+        const owner = await ownerForStoredSession(storedSessionId)
+
+        const restScope =
+          owner && typeof owner === 'object'
+            ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
+            : owner
 
         const [prefetch, resumed] = await Promise.all([
-          getLatestSessionMessages(storedSessionId, profile).catch(() => null),
-          requestGateway<SessionResumeResponse>('session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            omit_messages: true,
-            ...(profile ? { profile } : {})
-          })
+          getLatestSessionMessages(storedSessionId, restScope).catch(() => null),
+          singleFlightSessionResume(storedSessionId, () =>
+            requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              omit_messages: true,
+              ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+            })
+          )
         ])
 
         const runtimeId = resumed?.session_id
@@ -151,11 +211,19 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const info = resumed?.info
+
         updateSessionState(
           runtimeId,
           state => ({
             ...state,
-            busy: Boolean(resumed?.info?.running),
+            busy: Boolean(info?.running),
+            // Persist the session's own model/provider from resume so the tile
+            // pill does not wait on a chrome-scoped catalog read (#93892).
+            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
           }),
@@ -165,11 +233,18 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        const routedRequest = storedSessionId
+          ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
+              requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
+          : requestGateway
+
         await withSessionNotFoundResume(
           runtimeId,
-          storedSessionIdForRuntime(runtimeId),
-          liveId => requestGateway('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
+          storedSessionId,
+          liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
+          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
         )
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)

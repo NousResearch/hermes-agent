@@ -200,7 +200,7 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
     # Bypass the local-path safety filter so the test pins ONLY the history
     # dedup behavior, not the safe-root policy.
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     async def handler(_event):
@@ -283,7 +283,7 @@ async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monk
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     class _GatedStore:
@@ -332,7 +332,7 @@ async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch
     adapter = _DummyAdapter()
     adapter._keep_typing = _hold_typing
     monkeypatch.setattr(
-        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths, session_key="": list(paths))
     )
 
     class _WedgedStore:

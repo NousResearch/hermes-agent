@@ -95,9 +95,9 @@ function Write-HandoffLog([string]$Message) {
     Write-Host $line
 }
 
-# ── The shim: repo-owned HTML in a chromeless Edge app window ──────────────
+# ── The shim: repo-owned HTML in a chromeless default-browser app window ───
 # The window is a veneer, not a participant: the update runs identically with
-# or without it (Edge missing/failed degrades to the WinForms card below,
+# or without it (default browser missing/failed degrades to the WinForms card below,
 # then log-only). It never consumes child output; it polls /progress for the
 # current hand-off stage or a terminal event and reacts. The loopback listener
 # is not a web server in any meaningful sense; it exists because file:// pages
@@ -109,7 +109,7 @@ $script:UiState = [hashtable]::Synchronized(@{
     message    = $script:UiStage
     clock      = $script:UiStopwatch
 })
-$script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; EdgeProc }
+$script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
 
 function Get-UiHtmlPath {
     # Lives next to this script in the checkout. Missing file = fall back to
@@ -119,10 +119,37 @@ function Get-UiHtmlPath {
     return $null
 }
 
-function Find-EdgeExe {
+function Get-DefaultBrowserExe {
+    # The OS default browser, read from the UserChoice ProgId that the
+    # Windows Settings app writes (https first, http as fallback). Only
+    # Chromium-family browsers (ChromeHTML / MSEdgeHTM) support the
+    # --app + --user-data-dir combo the shim relies on; any other
+    # default browser returns $null and degrades to the WinForms card.
+    $progId = $null
+    foreach ($proto in @("https", "http")) {
+        try {
+            $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
+        } catch { continue }
+        if ($progId) { break }
+    }
+    if (-not $progId) { return $null }
+    $family = switch ($progId) {
+        "ChromeHTML" { "Google\Chrome\Application\chrome.exe" }
+        "MSEdgeHTM"  { "Microsoft\Edge\Application\msedge.exe" }
+        default      { $null }
+    }
+    if (-not $family) { return $null }
+    # Exact path from the ProgId's open command first, then standard roots.
+    try {
+        $cmd = (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
+        if ($cmd -and $cmd -match '"([^"]+\.exe)"') {
+            $exe = $Matches[1]
+            if (Test-Path -LiteralPath $exe) { return $exe }
+        }
+    } catch {}
     foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
         if (-not $root) { continue }
-        $p = Join-Path $root "Microsoft\Edge\Application\msedge.exe"
+        $p = Join-Path $root $family
         if (Test-Path -LiteralPath $p) { return $p }
     }
     return $null
@@ -185,7 +212,7 @@ function Start-UiServer([string]$HtmlPath) {
         })
         [void]$ps.BeginInvoke()
 
-        return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; EdgeProc = $null }
+        return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
         try { if ($listener) { $listener.Stop() } } catch {}
         return $null
@@ -202,11 +229,26 @@ function Stop-UiServer([switch]$LeaveWindow) {
     # user closes it when they've read it.
     if (-not $LeaveWindow) {
         try {
-            if ($script:UiServer.EdgeProc -and -not $script:UiServer.EdgeProc.HasExited) {
-                $script:UiServer.EdgeProc.CloseMainWindow() | Out-Null
+            if ($script:UiServer.BrowserProc -and -not $script:UiServer.BrowserProc.HasExited) {
+                $script:UiServer.BrowserProc.CloseMainWindow() | Out-Null
             }
         } catch {}
     }
+    # Best-effort removal of the dedicated browser profile dirs: this run's
+    # profile plus any stale hermes-update-ui-* leftovers from interrupted
+    # past runs. A browser that is still shutting down may hold the lock, in
+    # which case the delete silently no-ops. Safe to sweep by prefix: the
+    # update marker (.hermes-update-in-progress) serialises hand-offs, so no
+    # other run's profile can be in active use here.
+    try {
+        $profileDirs = @()
+        if ($script:UiServer.Profile) { $profileDirs += $script:UiServer.Profile }
+        Get-ChildItem -LiteralPath $TempDir -Directory -Filter "hermes-update-ui-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { $profileDirs += $_.FullName }
+        foreach ($dir in ($profileDirs | Select-Object -Unique)) {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
     $script:UiServer = $null
 }
 
@@ -258,30 +300,31 @@ function Get-AppsUseLightTheme {
 function Show-ProgressWindow {
     if ($NoUi) { return }
 
-    # ── Primary: the HTML shim in a chromeless Edge app window ─────────────
+    # ── Primary: the HTML shim in a chromeless default-browser app window ──
     # Same footprint as the card (280x320), spawned as a normal window: it
     # claims attention once by appearing, then competes with nothing.
     $htmlPath = Get-UiHtmlPath
-    $edge = Find-EdgeExe
-    if ($htmlPath -and $edge) {
+    $browser = Get-DefaultBrowserExe
+    if ($htmlPath -and $browser) {
         $server = Start-UiServer $htmlPath
         if ($server) {
             try {
                 # Dedicated tiny profile dir: guarantees a NEW WINDOW + process
                 # we own (a default-profile launch delegates to an existing
-                # Edge and returns instantly, leaving nothing to close), and
+                # browser and returns instantly, leaving nothing to close), and
                 # avoids touching the user's real browser profile.
-                $edgeProfile = Join-Path $TempDir ("hermes-update-ui-{0}" -f $PID)
-                $edgeArgs = @(
+                $browserProfile = Join-Path $TempDir ("hermes-update-ui-{0}" -f $PID)
+                $browserArgs = @(
                     "--app=http://127.0.0.1:$($server.Port)/",
-                    "--user-data-dir=$edgeProfile",
+                    "--user-data-dir=$browserProfile",
                     "--no-first-run", "--no-default-browser-check",
                     "--disable-features=msImplicitSignin",
                     "--window-size=280,320"
                 )
-                $server.EdgeProc = Start-Process -FilePath $edge -ArgumentList $edgeArgs -PassThru
+                $server.BrowserProc = Start-Process -FilePath $browser -ArgumentList $browserArgs -PassThru
+                $server.Profile = $browserProfile
                 $script:UiServer = $server
-                Write-HandoffLog "shim: Edge app window on 127.0.0.1:$($server.Port)"
+                Write-HandoffLog "shim: default-browser app window on 127.0.0.1:$($server.Port)"
                 return
             } catch {
                 try { $server.Listener.Stop() } catch {}
@@ -570,6 +613,59 @@ function Start-DesktopRelaunch {
         }
     } catch {
         Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
+    }
+    if (-not $spawned) {
+        # Middle rung: explorer.exe-mediated launch. On some machines
+        # Win32_Process.Create fails outright (observed ReturnValue 8,
+        # "unknown failure"), and the tethered fallback below re-attaches the
+        # Desktop to this console — its stdout then floods the console and the
+        # window can't close while the app lives. Explorer re-parents the
+        # target exactly like a normal shell launch, giving the same
+        # no-console detachment WMI would have. Explorer returns no pid, so
+        # verify by watching for a fresh Hermes process.
+        try {
+            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
+            $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $RelaunchExe) | Out-Null
+            $explorerDeadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $explorerDeadline) {
+                $fresh = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+                if ($fresh.Count -gt 0) {
+                    Write-HandoffLog "desktop relaunched detached via explorer (pid $($fresh[0].Id))"
+                    $spawned = $true
+                    # Same foreground hand-off as the WMI rung: the new process
+                    # starts unfocused and only the current foreground owner
+                    # (us) can delegate that right.
+                    try {
+                        if ($script:Win32) {
+                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
+                            $focusDeadline = (Get-Date).AddSeconds(20)
+                            while ((Get-Date) -lt $focusDeadline) {
+                                $hwnd = [System.IntPtr]::Zero
+                                try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
+                                if ($hwnd -ne [System.IntPtr]::Zero) {
+                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                                    Write-HandoffLog "focused relaunched desktop window"
+                                    break
+                                }
+                                Start-Sleep -Milliseconds 400
+                            }
+                        }
+                    } catch {
+                        Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
+                    }
+                    break
+                }
+                Start-Sleep -Milliseconds 400
+                if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+            }
+            if (-not $spawned) {
+                Write-HandoffLog "WARNING: explorer relaunch did not produce a $exeName process; falling back"
+            }
+        } catch {
+            Write-HandoffLog "WARNING: explorer relaunch failed: $($_.Exception.Message); falling back"
+        }
     }
     if (-not $spawned) {
         try {

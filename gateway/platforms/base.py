@@ -1531,17 +1531,63 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     return mounts
 
 
-def _default_docker_workspace_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/workspace`` mount."""
+def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
+    """Candidate host sandbox dir names for the delivering session, best first.
+
+    Mirrors ``_resolve_container_task_id`` (tools/terminal_tool.py). Persistent
+    Docker containers are PROFILE-scoped: the default profile uses the literal
+    ``default`` sandbox (shared with CLI), other profiles use
+    ``sanitize_task_id_for_path("profile:<name>")``. Legacy per-session
+    sandboxes created while commit a270c4ade's ungated session fallback was
+    live (``session:<session_key>``) are kept as a fallback candidate so
+    files produced in that window still deliver (self-heal, no migration).
+
+    Takes the key explicitly because the delivery pipeline runs after
+    ``_handle_message_with_agent`` cleared the turn's session contextvars
+    (#93950) — an ambient lookup here would silently collapse onto
+    ``default`` and miss the session's real sandbox.
+    """
+    candidates: List[str] = []
+    try:
+        from tools.environments.base import sanitize_task_id_for_path
+    except Exception:
+        return ["default"]
+    # Explicit trusted-profiles opt-in: one shared container identity.
+    shared = os.getenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip()
+    if shared:
+        candidates.append(sanitize_task_id_for_path(f"shared:{shared}"))
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = get_active_profile_name() or "default"
+    except Exception:
+        profile = "default"
+    if profile != "default":
+        candidates.append(sanitize_task_id_for_path(f"profile:{profile}"))
+    candidates.append("default")
+    if session_key:
+        # Bug-window legacy layout: per-session sandboxes.
+        candidates.append(sanitize_task_id_for_path(f"session:{session_key}"))
+    return candidates
+
+
+def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
+    """Existing host-path candidates for the persistent ``/workspace`` mount.
+
+    Ordered best-first (active profile layout, then the legacy bug-window
+    per-session layout). The translator tries each until the requested file
+    actually resolves — the profile sandbox dir existing does not mean the
+    file lives there when it was produced in a legacy per-session container.
+    """
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-        return None
+        return []
     if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        return None
+        return []
     # Explicit cwd mount takes over /workspace when enabled.
     if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
         "1",
@@ -1553,42 +1599,51 @@ def _default_docker_workspace_host_root() -> Optional[Path]:
         try:
             host = Path(os.path.expanduser(cwd)).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
-            return None
-        return host if host.is_dir() else None
+            return []
+        return [host] if host.is_dir() else []
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=False)
+        base = get_sandbox_dir() / "docker"
+        roots = []
+        for name in _docker_sandbox_dir_candidates(session_key):
+            cand = (base / name / "workspace").resolve(strict=False)
+            if cand.is_dir():
+                roots.append(cand)
     except Exception:
-        return None
-    return root if root.is_dir() else None
+        return []
+    return roots
 
 
-def _docker_persistent_home_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/root`` home mount.
+def _docker_persistent_home_host_roots(session_key: str = "") -> List[Path]:
+    """Existing host-path candidates for the persistent ``/root`` home mount.
 
     Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
     (tools/environments/docker.py), so an agent that writes ``/root/out.png``
-    produced a real host file the gateway couldn't find. Same collapse rule as
-    the workspace mount: the gateway's container sharing resolves to the
-    ``default`` task sandbox.
+    produced a real host file the gateway couldn't find. Ordered best-first:
+    the profile-scoped layout, then the legacy bug-window per-session layout.
     """
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-        return None
+        return []
     if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        return None
+        return []
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "home").resolve(strict=False)
+        base = get_sandbox_dir() / "docker"
+        roots = []
+        for name in _docker_sandbox_dir_candidates(session_key):
+            cand = (base / name / "home").resolve(strict=False)
+            if cand.is_dir():
+                roots.append(cand)
     except Exception:
-        return None
-    return root if root.is_dir() else None
+        return []
+    return roots
 
 
 def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
@@ -1613,11 +1668,31 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
         return []
 
 
-def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
+def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str) -> None:
+    """Name WHY a container-absolute MEDIA path failed translation (#93950).
+
+    Under Docker these failures used to surface only as the generic
+    "Skipping unsafe MEDIA directive path" line one level up, leaving the
+    file seemingly vanished. Point at the sandbox/session mismatch instead.
+    Gated to Docker mode so host-path rejections stay quiet.
+    """
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return
+    logger.warning(
+        "Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
+        "the producing container's sandbox directory may not exist yet or "
+        "was pruned",
+        _log_safe_path(str(candidate)),
+        reason,
+        f", session_key={session_key}" if session_key else "",
+    )
+
+
+def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
     """Translate a container-absolute path to its host path when possible.
 
     Uses longest-prefix match across configured ``docker_volumes``, the
-    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the default
+    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the session's
     persistent Docker ``/workspace`` host root, and the persistent ``/root``
     home mount.
     """
@@ -1637,15 +1712,16 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
 
     mounts = list(_parse_docker_volume_mounts())
     mounts.extend(_cache_dir_container_mounts())
-    # Synthetic /workspace mount for default persistent sandbox / cwd bind.
-    default_ws = _default_docker_workspace_host_root()
-    if default_ws is not None and not any(c.as_posix() == "/workspace" for _, c in mounts):
-        mounts.append((default_ws, Path("/workspace")))
-    # Synthetic /root mount for the persistent home bind. Cache mounts above
+    # Synthetic /workspace mounts for the persistent sandbox / cwd bind.
+    # Multiple candidates: profile-scoped layout first, then the legacy
+    # bug-window per-session layout — the file is tried against each.
+    if not any(c.as_posix() == "/workspace" for _, c in mounts):
+        for ws_root in _default_docker_workspace_host_roots(session_key):
+            mounts.append((ws_root, Path("/workspace")))
+    # Synthetic /root mounts for the persistent home bind. Cache mounts above
     # are longer prefixes, so /root/.hermes/... still translates to the host
     # cache — this only catches stray home writes like /root/out.png.
-    default_home = _docker_persistent_home_host_root()
-    if default_home is not None and not any(c.as_posix() == "/root" for _, c in mounts):
+    if not any(c.as_posix() == "/root" for _, c in mounts):
         # /root/.hermes/* that did NOT match a cache mount is the container's
         # credential/secret surface (.env, auth.json, ... are individually
         # bind-mounted from the real host stores). Translating those through
@@ -1653,35 +1729,39 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
         # host-side credential denylist prefixes — refuse instead so the
         # normal "container path doesn't exist on host" rejection applies.
         if not candidate.as_posix().startswith("/root/.hermes"):
-            mounts.append((default_home, Path("/root")))
+            for home_root in _docker_persistent_home_host_roots(session_key):
+                mounts.append((home_root, Path("/root")))
 
     if not mounts:
+        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
         return None
-
-    # Longest container-prefix match.
-    best: Optional[Tuple[Path, Path, int]] = None
+    # Longest container-prefix match; equal-length prefixes (the candidate
+    # sandbox layouts above) are tried in insertion order until one actually
+    # holds the file.
+    matched: List[Tuple[Path, Path, int]] = []
     candidate_posix = candidate.as_posix()
     for host_root, container_root in mounts:
         container_posix = container_root.as_posix().rstrip("/") or "/"
         if candidate_posix == container_posix or candidate_posix.startswith(container_posix + "/"):
-            score = len(container_posix)
-            if best is None or score > best[2]:
-                best = (host_root, container_root, score)
-    if best is None:
+            matched.append((host_root, container_root, len(container_posix)))
+    if not matched:
+        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
         return None
+    matched.sort(key=lambda m: -m[2])
+    for host_root, container_root, _score in matched:
+        try:
+            relative = candidate.relative_to(container_root)
+            translated = (host_root / relative).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if translated != host_root and not _path_is_within(translated, host_root):
+            continue
+        return translated
+    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
+    return None
 
-    host_root, container_root, _ = best
-    try:
-        relative = candidate.relative_to(container_root)
-        translated = (host_root / relative).resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return None
-    if translated != host_root and not _path_is_within(translated, host_root):
-        return None
-    return translated
 
-
-def validate_media_delivery_path(path: str) -> Optional[str]:
+def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
     Default mode (single-user / private gateway): accept any existing regular
@@ -1722,7 +1802,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
     # existence / denylist checks.
-    translated = _translate_docker_container_media_path(expanded)
+    translated = _translate_docker_container_media_path(expanded, session_key=session_key)
     if translated is not None:
         resolved = translated
     else:
@@ -4822,17 +4902,17 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str) -> Optional[str]:
+    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path)
+        return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
@@ -4840,12 +4920,12 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
+    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            safe_path = validate_media_delivery_path(raw)
+            safe_path = validate_media_delivery_path(raw, session_key=session_key)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
@@ -6384,7 +6464,7 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -6403,7 +6483,7 @@ class BasePlatformAdapter(ABC):
                     # system/command notices so config paths stay visible text
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
-                    local_files = self.filter_local_delivery_paths(local_files)
+                    local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
                     # Do NOT load the full SQLite transcript for ordinary text or
                     # explicit MEDIA tags.  History is needed only for bare local
                     # paths auto-detected above.  Run that synchronous DB/decode
@@ -6604,6 +6684,9 @@ class BasePlatformAdapter(ABC):
                                     chat_id=event.source.chat_id,
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
+                                    adapter_profile=getattr(
+                                        delivery_adapter, "_owner_profile", None
+                                    ),
                                 )
                                 await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
@@ -6626,11 +6709,41 @@ class BasePlatformAdapter(ABC):
                             if getattr(result, "success", False):
                                 await asyncio.to_thread(mark_delivered, _obligation_id)
                             else:
+                                _delivery_error = str(
+                                    getattr(result, "error", "") or ""
+                                )
                                 await asyncio.to_thread(
                                     mark_failed,
                                     _obligation_id,
-                                    str(getattr(result, "error", "") or ""),
+                                    _delivery_error,
                                 )
+                                # A replacement can finish reconnecting before
+                                # this in-flight failure reaches mark_failed. In
+                                # that ordering the watcher's sweep found no row.
+                                # Signal a second transactional sweep only when a
+                                # new live adapter is already installed; atomic
+                                # claiming makes concurrent signals idempotent.
+                                if _delivery_error == "send_path_degraded":
+                                    _live_adapter = self._final_delivery_adapter(
+                                        event.source
+                                    )
+                                    _runtime_redeliver = getattr(
+                                        getattr(self, "gateway_runner", None),
+                                        "_redeliver_failed_obligations_for_platform",
+                                        None,
+                                    )
+                                    if (
+                                        _live_adapter is not delivery_adapter
+                                        and callable(_runtime_redeliver)
+                                    ):
+                                        await _runtime_redeliver(
+                                            event.source.platform,
+                                            profile=getattr(
+                                                delivery_adapter,
+                                                "_owner_profile",
+                                                None,
+                                            ),
+                                        )
                         except Exception:
                             logger.debug(
                                 "delivery ledger update failed", exc_info=True

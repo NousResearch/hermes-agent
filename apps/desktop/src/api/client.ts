@@ -117,7 +117,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     ids mean the local pool and deliberately DROP the ambient connection
 //     tag, so a local-profile pick made while a remote gateway is active still
 //     routes to the local machine.
-export type ProfileScope = null | string | { connectionId?: null | string; profile?: null | string }
+export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
 
 export function capabilityScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
   if (scope && typeof scope === 'object') {

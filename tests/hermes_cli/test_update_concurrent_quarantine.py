@@ -516,5 +516,209 @@ def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _classify_concurrent_instance / _filter_non_gateway_concurrent_instances
+#
+# #37039: the pre-update concurrent-instance gate lets the update proceed
+# when every concurrent hermes.exe is a gateway runtime — the pause
+# machinery (_pause_windows_gateways_for_update) stops those before any
+# file mutation and the post-update restart phase brings them back.
+# Classification delegates to _is_pausable_gateway → the canonical
+# gateway.status.looks_like_gateway_command_line matcher, so the gate's
+# exemption and the pause discovery cannot drift apart.
+# ---------------------------------------------------------------------------
+
+
+def _fake_psutil_classify(argv_by_pid):
+    """psutil stand-in serving .cmdline() per pid; unknown pids raise."""
+
+    class FakeProc:
+        def __init__(self, pid):
+            if pid not in argv_by_pid:
+                raise ValueError(f"no such pid {pid}")
+            self._argv = argv_by_pid[pid]
+
+        def cmdline(self):
+            return self._argv
+
+    return types.SimpleNamespace(Process=FakeProc)
+
+
+def test_classify_concurrent_instance_recognises_gateway_runtimes(monkeypatch):
+    """Gateway runtime command lines classify as ``gateway`` regardless of
+    launcher shape (python -m, hermes.exe shim, hermes-gateway.exe,
+    gateway/run.py, bare `hermes gateway` which defaults to run)."""
+    cases = [
+        [r"C:\venv\Scripts\python.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        [r"C:\venv\Scripts\hermes.exe", "gateway", "run"],
+        [r"C:\venv\Scripts\hermes-gateway.exe"],
+        [r"C:\venv\Scripts\python.exe", "gateway/run.py"],
+        ["hermes.exe", "GATEWAY", "RUN"],  # matcher is case-insensitive
+        ["hermes.exe", "gateway"],  # bare `hermes gateway` defaults to run
+        # profile selector before the subcommand — canonical matcher strips it
+        ["hermes.exe", "--profile", "work", "gateway", "run"],
+    ]
+    for argv in cases:
+        monkeypatch.setitem(sys.modules, "psutil", _fake_psutil_classify({77: argv}))
+        result = cli_main._classify_concurrent_instance(77)
+        assert result == "gateway", f"expected gateway for {argv!r}, got {result!r}"
+
+
+def test_classify_concurrent_instance_recognises_non_gateways(monkeypatch):
+    """Non-runtime command lines classify as ``non-gateway`` — including
+    gateway MANAGEMENT subcommands (`gateway status`), which the canonical
+    matcher rejects but a substring matcher would misclassify. These keep
+    the pre-update abort."""
+    cases = [
+        [r"C:\venv\Scripts\hermes.exe"],  # interactive REPL
+        [r"C:\venv\Scripts\hermes.exe", "dashboard"],
+        ["hermes.exe", "gateway", "status"],  # management, not runtime
+        ["hermes.exe", "gateway", "stop"],
+        ["python", "-m", "hermes_cli.main"],
+        [],
+    ]
+    for argv in cases:
+        monkeypatch.setitem(sys.modules, "psutil", _fake_psutil_classify({77: argv}))
+        result = cli_main._classify_concurrent_instance(77)
+        assert result == "non-gateway", (
+            f"expected non-gateway for {argv!r}, got {result!r}"
+        )
+
+
+def test_classify_concurrent_instance_unknown_on_psutil_error(monkeypatch):
+    """Unreadable cmdline (process gone / AccessDenied) → ``unknown`` —
+    treated as non-gateway by the filter, so the gate still aborts."""
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil_classify({}))
+    assert cli_main._classify_concurrent_instance(4242) == "unknown"
+
+
+def test_classify_concurrent_instance_unknown_without_psutil(monkeypatch):
+    """Missing psutil entirely → ``unknown``, never a crash."""
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert cli_main._classify_concurrent_instance(4242) == "unknown"
+
+
+def test_filter_non_gateway_concurrent_instances_splits(monkeypatch):
+    """Gateway PIDs drop out of the abort list; REPL/dashboard/unknown stay."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        _fake_psutil_classify(
+            {
+                100: ["hermes.exe", "gateway", "run"],
+                200: ["hermes.exe"],  # REPL — keep
+                300: ["hermes.exe", "dashboard"],  # keep
+                # 400 missing → unknown → keep
+            }
+        ),
+    )
+    matches = [
+        (100, "hermes.exe"),
+        (200, "hermes.exe"),
+        (300, "hermes.exe"),
+        (400, "hermes.exe"),
+    ]
+    kept = cli_main._filter_non_gateway_concurrent_instances(matches)
+    assert kept == [(200, "hermes.exe"), (300, "hermes.exe"), (400, "hermes.exe")]
+
+
+def test_filter_non_gateway_concurrent_instances_gateway_only(monkeypatch):
+    """All-gateway match list filters to empty — the gate lets the update
+    proceed and the pause machinery handles the gateways."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        _fake_psutil_classify(
+            {
+                111: ["hermes.exe", "gateway", "run"],
+                222: [r"C:\venv\Scripts\hermes-gateway.exe"],
+            }
+        ),
+    )
+    matches = [(111, "hermes.exe"), (222, "hermes-gateway.exe")]
+    assert cli_main._filter_non_gateway_concurrent_instances(matches) == []
+
+
+# ---------------------------------------------------------------------------
+# _cmd_update_impl integration with the relaxed pre-update gate (#37039)
+# ---------------------------------------------------------------------------
+
+
+def _update_args():
+    return SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        backup=False,
+        no_backup=True,
+    )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_gate_skips_abort_when_only_concurrent_is_gateway(
+    _winp, tmp_path, capsys
+):
+    """Regression test for #37039: with only gateway processes concurrent,
+    the gate must NOT sys.exit(2) — the update proceeds to the pre-update
+    backup step (sentinel), and the pause machinery owns the gateways."""
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main,
+        "_detect_concurrent_hermes_instances",
+        return_value=[(1000, "hermes.exe"), (2000, "hermes-gateway.exe")],
+    ), patch.object(
+        cli_main, "_filter_non_gateway_concurrent_instances", return_value=[]
+    ) as mock_filter, patch.object(
+        cli_main, "_run_pre_update_backup"
+    ) as mock_backup:
+        mock_backup.side_effect = RuntimeError("reached post-gate body")
+        with pytest.raises(RuntimeError, match="reached post-gate body"):
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    mock_filter.assert_called_once()
+    mock_backup.assert_called_once()
+    captured = capsys.readouterr().out
+    assert "Another hermes.exe is running" not in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_gate_still_aborts_on_non_gateway_concurrent(
+    _winp, tmp_path, capsys
+):
+    """A non-gateway concurrent instance must still abort with exit 2, and
+    the message must list only the non-gateway PIDs (the gateway is not the
+    user's problem to kill)."""
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=scripts_dir
+    ), patch.object(
+        cli_main,
+        "_detect_concurrent_hermes_instances",
+        return_value=[(1000, "hermes.exe"), (3000, "hermes.exe")],
+    ), patch.object(
+        cli_main,
+        "_filter_non_gateway_concurrent_instances",
+        return_value=[(3000, "hermes.exe")],
+    ), patch.object(
+        cli_main, "_run_pre_update_backup"
+    ) as mock_backup:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    mock_backup.assert_not_called()
+    captured = capsys.readouterr().out
+    assert "3000" in captured
+    assert "1000" not in captured  # gateway PID no longer blamed
+    assert "--force" in captured
+
+
 
 

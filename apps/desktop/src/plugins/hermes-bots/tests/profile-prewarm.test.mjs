@@ -24,10 +24,13 @@ function activitySessionSource() {
 function renderBotRow(input = 'alpha') {
   const bot = typeof input === 'string' ? { name: input } : input
   const name = bot.name
-  const prepareSource = sourceBetween('async function prepareBotSource(', 'function displayName(')
   const botRowSource = sourceBetween('function BotRow(', '// ── model picker')
+  // REAL owner-route resolver — the derivation from bare connectionId rows is
+  // exactly what these tests exercise, so a hand stub would drift.
+  const routeSource = sourceBetween('function botConnectionRoute(', 'function rewriteCliProfileOperands(')
   const ensured = []
   const opened = []
+  const saved = []
   const warmed = []
   let liveConnectionId = 'local'
   const atom = value => ({
@@ -44,30 +47,63 @@ function renderBotRow(input = 'alpha') {
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Codicon: 'Codicon',
+    Tip: 'Tip',
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({}),
     $botUnread: atom({}),
+    $botAttention: atom({}),
+    BOT_ATTENTION_HINTS: {},
+    $botChatFocused: atom(false),
+    $botsHomeFronted: atom(false),
+    $focusedBotOwner: atom({ connectionId: 'local', profile: 'default' }),
     $focusedBotProfile: atom('default'),
     $groupChatWorkspace: atom(null),
     $lastRoster: atom([]),
     $selectedBot: atom('default'),
+    $selectedRosterKey: atom(''),
     botAppearance: () => ({ shape: 'round', color: '#000', image: null }),
+    botMetaKey: value => value.sourceScoped
+      ? `${value.route?.connectionId || value.connectionId}::${value.name}`
+      : value.name,
     botGroups: () => [],
     botHandle: value => value,
+    botRosterKey: value => `${value.connectionId || 'legacy'}::${value.name}`,
+    botRowOwnsWorkspace: () => false,
+    botSourceStatus: () => ({ available: true, label: 'Ready' }),
     botOpenGeneration: 0,
-    botRosterMeta: (_bot, metaByName) => metaByName?.[_bot.name] ?? null,
+    botRosterMeta: (_bot, metaByName) => {
+      const key = _bot.sourceScoped
+        ? `${_bot.route?.connectionId || _bot.connectionId}::${_bot.name}`
+        : _bot.name
+      return metaByName?.[key] ?? null
+    },
     cn: (...values) => values.filter(Boolean).join(' '),
     createCanonicalChat: async () => null,
     displayName: bot => bot.name,
     duplicateBot: async () => `${name}-copy`,
+    ensureBotMetadata: async () => ({ pinned: true }),
     haptic: () => undefined,
     // #49 session-aware-row helpers referenced inside BotRow.
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    focusedRosterOwner: owner => ({ connectionId: owner.connectionId, name: owner.profile }),
+    isActiveRosterBot: () => false,
+    isBackfilledFacePng: () => false,
+    isBotHidden: () => false,
+    isBotPinned: () => false,
+    botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,
+    isDefaultBot: value => value.name === 'default',
+    newBotChat: () => undefined,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'stored-chat'
     },
+    openRosterBot: async value => {
+      opened.push([value])
+      return true
+    },
+    workerActiveAt: () => false,
     ACTIVE_WINDOW_S: 90,
     A2A_PREFIX_RE: /^$/,
     useEffect: () => undefined,
@@ -79,6 +115,10 @@ function renderBotRow(input = 'alpha') {
         liveConnectionId = connectionId
       },
       activeConnectionId: () => liveConnectionId,
+      requestProfile: async (_route, method) =>
+        method === 'profiles.list'
+          ? { profiles: [{ name, ui_meta: { 'hermes-bots': { chat: 'owner-chat' } } }] }
+          : { sessions: [] },
       warmAgent: (connectionId, profile) => warmed.push([connectionId, profile]),
       warmProfile: profile => warmed.push(profile),
       request: async method =>
@@ -91,20 +131,29 @@ function renderBotRow(input = 'alpha') {
     jsx: node,
     jsxs: node,
     onEdit: () => undefined,
+    persistBotMetaSnapshot: () => Promise.resolve(),
     queryClient: { invalidateQueries: () => undefined },
     relativeTime: () => 'now',
-    saveBotMeta: () => undefined,
+    requestForBot: async (_bot, method) => method === 'profiles.list'
+      ? {
+          profiles: [{
+            name: _bot.route?.targetProfile || _bot.name,
+            ui_meta: { 'hermes-bots': { pinned: true } }
+          }]
+        }
+      : {},
+    saveBotMeta: (_bot, patch) => saved.push([_bot, patch]),
     showsHandle: () => false,
     stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  vm.runInNewContext(`${activitySessionSource()}\n${routeSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
 
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 
-  return { ensured, opened, row, warmed }
+  return { ensured, opened, row, saved, tree, warmed }
 }
 
 test('regression: rendering BotsPane does not prewarm the entire roster', () => {
@@ -129,7 +178,31 @@ test('behavior: pointer entry prewarms only the hovered bot', () => {
   assert.deepEqual(warmed, ['alpha'])
 })
 
-test('behavior: a remote Connections row stays in this chat instead of hopping SSH', async () => {
+test('behavior: context-menu pin mutation hydrates a non-identity alias before toggling', async () => {
+  const bot = {
+    connectionId: 'remote-a',
+    name: 'worker',
+    remoteSource: true,
+    sourceScoped: true,
+    route: {
+      connectionId: 'remote-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+  }
+  const { saved, tree } = renderBotRow(bot)
+  const menuItems = tree.props.children[1].props.children
+
+  menuItems[0].props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0][0], bot)
+  assert.deepEqual(JSON.parse(JSON.stringify(saved[0][1])), { pinned: false })
+})
+
+test('behavior: a remote Connections row opens through its captured route without activation authority', async () => {
   const { ensured, opened, row, warmed } = renderBotRow({
     connectionId: 'work',
     connectionLabel: 'Work',
@@ -143,10 +216,11 @@ test('behavior: a remote Connections row stays in this chat instead of hopping S
 
   await row.props.onClick()
   assert.deepEqual(ensured, [])
-  assert.deepEqual(opened, [])
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0][0].connectionId, 'work')
 })
 
-test('behavior: remote default does not open this-device chat when the source did not activate', async () => {
+test('behavior: remote default never opens the same-name local chat', async () => {
   const bot = {
     connectionId: 'mac-mini',
     connectionLabel: 'Mac Mini',
@@ -154,7 +228,6 @@ test('behavior: remote default does not open this-device chat when the source di
     remoteSource: true,
     sourceScoped: true
   }
-  const prepareSource = sourceBetween('async function prepareBotSource(', 'function displayName(')
   const botRowSource = sourceBetween('function BotRow(', '// ── model picker')
   const ensured = []
   const opened = []
@@ -173,29 +246,54 @@ test('behavior: remote default does not open this-device chat when the source di
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Codicon: 'Codicon',
+    Tip: 'Tip',
     ROSTER_KEY: ['hermes-bots', 'roster'],
     $botMeta: atom({ default: { chat: 'this-device-chat' } }),
     $botUnread: atom({}),
+    $botAttention: atom({}),
+    BOT_ATTENTION_HINTS: {},
+    $botChatFocused: atom(false),
+    $botsHomeFronted: atom(false),
+    $focusedBotOwner: atom({ connectionId: 'mac-mini', profile: 'default' }),
     $focusedBotProfile: atom('default'),
     $groupChatWorkspace: atom(null),
     $lastRoster: atom([]),
     $selectedBot: atom('default'),
+    $selectedRosterKey: atom(''),
     botAppearance: () => ({ shape: 'round', color: '#000', image: null }),
     botGroups: () => [],
     botHandle: value => value,
+    botRosterKey: value => `${value.connectionId || 'legacy'}::${value.name}`,
+    botRowOwnsWorkspace: () => false,
+    botSourceStatus: () => ({ available: true, label: 'Ready' }),
     botOpenGeneration: 0,
     botRosterMeta: () => null,
     cn: (...values) => values.filter(Boolean).join(' '),
     createCanonicalChat: async () => null,
     displayName: bot => bot.connectionLabel || bot.name,
     duplicateBot: async () => 'copy',
+    ensureBotMetadata: async () => ({ pinned: true }),
     haptic: () => undefined,
     previewKind: () => ({ fromBot: false, sender: null }),
     generatedSessionTitle: () => null,
+    focusedRosterOwner: owner => ({ connectionId: owner.connectionId, name: owner.profile }),
+    isActiveRosterBot: () => false,
+    isBackfilledFacePng: () => false,
+    isBotHidden: () => false,
+    isBotPinned: () => false,
+    botSelectionKey: value => value.sourceScoped ? `${value.connectionId}::${value.name}` : value.name,
+    isDefaultBot: value => value.name === 'default',
+    newBotChat: () => undefined,
     openBotCanonicalChat: async (...args) => {
       opened.push(args)
       return 'this-device-chat'
     },
+    openRosterBot: async value => {
+      opened.push([value])
+      return true
+    },
+    workerActiveAt: () => false,
     ACTIVE_WINDOW_S: 90,
     A2A_PREFIX_RE: /^$/,
     useEffect: () => undefined,
@@ -203,6 +301,7 @@ test('behavior: remote default does not open this-device chat when the source di
     host: {
       state: { gateway: atom('open'), profile: atom('default') },
       ensureAgent: async (connectionId, profile) => ensured.push([connectionId, profile]),
+      requestProfile: async () => ({}),
       activeConnectionId: () => 'local',
       warmAgent: () => undefined,
       warmProfile: () => undefined,
@@ -221,12 +320,14 @@ test('behavior: remote default does not open this-device chat when the source di
     useValue: store => store.get()
   }
 
-  vm.runInNewContext(`${activitySessionSource()}\n${prepareSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
+  const routeSource = sourceBetween('function botConnectionRoute(', 'function rewriteCliProfileOperands(')
+  vm.runInNewContext(`${activitySessionSource()}\n${routeSource}\n${botRowSource}\nglobalThis.BotRow = BotRow`, context)
   const tree = context.BotRow({ bot, onEdit: context.onEdit })
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 
   await row.props.onClick()
   assert.deepEqual(ensured, [])
-  assert.deepEqual(opened, [])
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0][0].connectionId, 'mac-mini')
   assert.equal(errors.length, 0)
 })

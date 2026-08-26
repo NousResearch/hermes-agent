@@ -9,6 +9,7 @@ Handles loading and validating configuration for:
 """
 
 import logging
+import math
 import os
 import json
 from pathlib import Path
@@ -18,6 +19,11 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.shutdown_watchdog import (
+    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -152,7 +158,9 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("inf")) — a non-finite YAML value must
+        # degrade to the default, not abort gateway config loading.
         return default
 
 
@@ -983,7 +991,25 @@ class GatewayConfig:
     # missed probes it dumps all-thread stacks and hard-exits with the
     # service-restart code so the supervisor can revive the process. On by
     # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    #
+    # Tuning knobs (all seconds unless noted) make the watchdog tolerate
+    # *transient, self-recovering* event-loop stalls — e.g. Telegram/Discord
+    # reconnect doing synchronous socket I/O during a network blip — so a
+    # short block does not force exit code 75 and trigger a restart churn
+    # that stalls cron dispatch (recurring fleet incidents on 2026-08-17,
+    # kanban t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for
+    # the full tolerance window) still escalates to a supervised restart.
     loop_watchdog: bool = True
+    # Seconds the watchdog waits between liveness probes.
+    loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
+    # Seconds a single probe may go unprocessed before it counts as a miss.
+    loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+    # Consecutive missed probes allowed before the watchdog hard-exits.
+    # Default stays at 3 (~90-120s of sustained loop block): the transient
+    # false-positive class (the watchdog's own on-loop heartbeat fsync)
+    # is fixed at the root by the off-loop write + two-witness probe, so
+    # raising this fleet-wide would only delay genuine-wedge recovery.
+    loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -1124,6 +1150,9 @@ class GatewayConfig:
             "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
+            "loop_watchdog_probe_interval_s": self.loop_watchdog_probe_interval_s,
+            "loop_watchdog_probe_timeout_s": self.loop_watchdog_probe_timeout_s,
+            "loop_watchdog_max_strikes": self.loop_watchdog_max_strikes,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1207,6 +1236,38 @@ class GatewayConfig:
         else:
             loop_watchdog_raw = nested_gateway.get("loop_watchdog")
         loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
+        loop_watchdog_probe_interval_s = _coerce_float(
+            data.get("loop_watchdog_probe_interval_s")
+            if "loop_watchdog_probe_interval_s" in data
+            else nested_gateway.get("loop_watchdog_probe_interval_s"),
+            DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+        )
+        loop_watchdog_probe_timeout_s = _coerce_float(
+            data.get("loop_watchdog_probe_timeout_s")
+            if "loop_watchdog_probe_timeout_s" in data
+            else nested_gateway.get("loop_watchdog_probe_timeout_s"),
+            DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+        )
+        loop_watchdog_max_strikes = _coerce_int(
+            data.get("loop_watchdog_max_strikes")
+            if "loop_watchdog_max_strikes" in data
+            else nested_gateway.get("loop_watchdog_max_strikes"),
+            DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+        )
+        if (
+            not math.isfinite(loop_watchdog_probe_interval_s)
+            or loop_watchdog_probe_interval_s < 1.0
+            or loop_watchdog_probe_interval_s > 3600.0
+        ):
+            loop_watchdog_probe_interval_s = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
+        if (
+            not math.isfinite(loop_watchdog_probe_timeout_s)
+            or loop_watchdog_probe_timeout_s < 1.0
+            or loop_watchdog_probe_timeout_s > 600.0
+        ):
+            loop_watchdog_probe_timeout_s = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+        if loop_watchdog_max_strikes < 1 or loop_watchdog_max_strikes > 1000:
+            loop_watchdog_max_strikes = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1269,6 +1330,9 @@ class GatewayConfig:
             multiplex_profile_allowlist=multiplex_profile_allowlist,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
+            loop_watchdog_probe_interval_s=loop_watchdog_probe_interval_s,
+            loop_watchdog_probe_timeout_s=loop_watchdog_probe_timeout_s,
+            loop_watchdog_max_strikes=loop_watchdog_max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1469,6 +1533,23 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
                 gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
+
+            # Loop-liveness watchdog toggle + tuning knobs: top-level wins;
+            # nested gateway.* fallback. GatewayConfig.from_dict has its own
+            # nested fallback, but this loader builds gw_data FLAT and never
+            # forwards the yaml `gateway:` section — without this bridge the
+            # documented keys (including the pre-existing loop_watchdog bool)
+            # were silently ignored on the real gateway startup path.
+            for _wd_key in (
+                "loop_watchdog",
+                "loop_watchdog_probe_interval_s",
+                "loop_watchdog_probe_timeout_s",
+                "loop_watchdog_max_strikes",
+            ):
+                if _wd_key in yaml_cfg:
+                    gw_data[_wd_key] = yaml_cfg[_wd_key]
+                elif isinstance(gateway_section, dict) and _wd_key in gateway_section:
+                    gw_data[_wd_key] = gateway_section[_wd_key]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
@@ -2751,7 +2832,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # config.platforms for start_gateway()'s connect loop to bring it up. The
     # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
     # extra["relay_url"], so mirror the URL into extra here.
-    relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
+    relay_url_env = getenv("GATEWAY_RELAY_URL", "").strip()
     relay_url_yaml = ""
     existing_relay = config.platforms.get(Platform.RELAY)
     if existing_relay is not None:
@@ -2760,6 +2841,52 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if relay_url_val:
         relay_config = _enable_from_env(Platform.RELAY)
         relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+
+    # Relay-exclusive: a GATEWAY_RELAY_URL env stamp marks a connector-fronted
+    # deployment where the connector owns every platform connection. Any
+    # directly-connected messaging adapter in the same process would be a
+    # second, unmanaged ingress path (duplicate deliveries, split sessions,
+    # and a live socket that disarms scale-to-zero), so the env stamp disables
+    # all other messaging platforms — including ones explicitly enabled in
+    # config.yaml. Non-messaging surfaces (local, api_server, webhook — the
+    # same exclusion set as the scale-to-zero arm gate) are untouched.
+    # Deployments that configure relay only via gateway.relay_url in
+    # config.yaml keep the old additive behavior (relay beside direct
+    # adapters).
+    #
+    # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
+    # adapters running beside the relay for deployments that intentionally
+    # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
+    # not a config.yaml setting. Both reads go through the profile-scope-aware
+    # getenv so multiplexed profiles see their own values, not the process
+    # globals.
+    allow_direct = is_truthy_value(
+        getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "")
+    )
+    if relay_url_env and not allow_direct:
+        non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        for platform, platform_config in config.platforms.items():
+            if platform is Platform.RELAY or platform in non_messaging:
+                continue
+            if not platform_config.enabled:
+                continue
+            if platform_config.extra.get("_enabled_explicit"):
+                logger.warning(
+                    "Relay connector is configured via GATEWAY_RELAY_URL; "
+                    "disabling directly-connected platform '%s' even though "
+                    "it is explicitly enabled in this profile's configuration. "
+                    "All messaging goes through the connector on this "
+                    "deployment. Set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true "
+                    "to keep direct platforms alongside the relay.",
+                    platform.value,
+                )
+            else:
+                logger.info(
+                    "Relay connector is configured via GATEWAY_RELAY_URL; "
+                    "disabling directly-connected platform '%s'.",
+                    platform.value,
+                )
+            platform_config.enabled = False
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

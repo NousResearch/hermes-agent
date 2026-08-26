@@ -208,6 +208,120 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ]
 
 
+def test_explicit_only_keeps_anthropic_row_with_oauth_credentials():
+    """Anthropic OAuth logins are deliberate sign-ins, not ambient credentials.
+
+    Claude Code (~/.claude/.credentials.json) and Hermes' own device flow
+    leave no trace in active_provider / model.provider / API-key env vars,
+    so is_provider_explicitly_configured() returns False even though
+    list_authenticated_providers just accepted those same credentials when
+    building the row. The desktop explicit-only filter must keep it.
+    """
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+        patch(
+            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=True,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "anthropic" in slugs, (
+        "Anthropic OAuth login must survive the explicit-only filter"
+    )
+    assert "copilot" not in slugs, (
+        "ambient credential discovery must stay filtered"
+    )
+
+
+def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
+    """No OAuth token and no explicit config -> Anthropic stays hidden."""
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+        patch(
+            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=False,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert "anthropic" not in [row["slug"] for row in payload["providers"]]
+
+
+def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
+    """A pool-only OAuth entry (auth.json credential_pool.anthropic) counts.
+
+    Wired/device-flow tokens land in the credential pool, not in
+    .anthropic_oauth.json or ~/.claude/.credentials.json. The presence
+    check must accept them or the row is built and then silently dropped.
+    """
+    from hermes_cli.inventory import _anthropic_oauth_credentials_present
+
+    with (
+        patch(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            return_value=None,
+        ),
+        patch(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            return_value=None,
+        ),
+        patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"auth_type": "oauth", "access_token": "sk-ant-oat01-pool"}
+            ],
+        ),
+    ):
+        assert _anthropic_oauth_credentials_present() is True
+
+    # api_key pool entries are NOT OAuth logins — presence must stay False
+    # (they are handled by the explicit-config gate / env var paths).
+    with (
+        patch(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            return_value=None,
+        ),
+        patch(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            return_value=None,
+        ),
+        patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"auth_type": "api_key", "access_token": "sk-ant-api03-key"}
+            ],
+        ),
+    ):
+        assert _anthropic_oauth_credentials_present() is False
+
+
 
 # ─── picker_hints ──────────────────────────────────────────────────────
 

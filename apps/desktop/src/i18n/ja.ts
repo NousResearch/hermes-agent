@@ -81,6 +81,8 @@ export const ja = defineLocale({
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewayConnectionLost: 'ゲートウェイへの接続が切断されました',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
@@ -103,6 +105,13 @@ export const ja = defineLocale({
       signOutAndSignIn: 'サインアウトして再サインイン',
       remoteFailureHint:
         '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
+      cloudDownTitle: 'Nous Cloud エージェントが停止しています',
+      cloudDownDescription:
+        'このゲートウェイが接続している Nous 管理のクラウドエージェントがサーバーエラーを返しています。ここから再起動することはできません。ステータスを確認するか、ローカルゲートウェイに切り替えるか、サポートに連絡してください。',
+      cloudDownHint:
+        '下のボタンから Nous Portal（インスタンスの状態と操作）を開くか、Discord でサポートを受けられます。',
+      cloudDownCheckPortal: 'Portal のステータスを確認',
+      cloudDownDiscord: 'Discord でサポートを受ける',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',
@@ -204,6 +213,30 @@ export const ja = defineLocale({
     dismiss: '閉じる'
   },
 
+  sendDiagnostics: {
+    title: 'Nous に診断情報を送信',
+    privacyNotice:
+      'デバッグバンドルを Nous 内部ストレージにアップロードします（公開ペーストではありません）。システム情報（OS、バージョン、プロバイダー、設定済み API キーの種類 — キー自体は含まれません）と、エージェント/ゲートウェイ/デスクトップの完全なログ（各最大 512 KB。会話内容、ツール出力、ファイルパスを含む可能性が高い）が含まれます。シークレットはアップロード前にマスクされます。閲覧できるのは Nous スタッフと許可された Discord モデレーターのみで、14 日後に自動削除されます。',
+    upload: 'アップロード',
+    uploading: 'アップロード中…',
+    cancel: 'キャンセル',
+    close: '閉じる',
+    copyLink: 'リンクをコピー',
+    uploadIdFallback: id => `表示リンクが返されませんでした — サポートにアップロード ID ${id} をお伝えください`,
+    doneTitle: '診断情報を送信しました',
+    doneDescription:
+      'バンドルは非公開でアップロードされました。サポートスレッドで以下のリンクを共有すると、チームがログを確認できます。',
+    failedTitle: 'アップロードに失敗しました',
+    failedHint:
+      'ターミナルから `hermes debug share --nous` を実行するか、`hermes debug share --local` でアップロードせずにレポートを表示することもできます。',
+    handoffLead: '続きは次の場所で:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal サポート',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -216,7 +249,8 @@ export const ja = defineLocale({
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
     openSettings: '設定を開く',
-    openStarmap: 'メモリグラフを開く'
+    openStarmap: 'メモリグラフを開く',
+    resetHudLayout: 'HUD のサイズと位置をリセット'
   },
 
   language: {
@@ -340,6 +374,11 @@ export const ja = defineLocale({
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
+      tabStripTitle: 'タブバー',
+      tabStripDesc: 'ゾーンの上にタブを表示します。自動ではペインが1つのときに隠します。',
+      tabStripAuto: '自動',
+      tabStripAlways: '常に表示',
+      tabStripNever: '表示しない',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -374,6 +413,9 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      vibeHeartsTitle: 'バイブハート',
+      vibeHeartsDesc:
+        'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -793,6 +835,10 @@ export const ja = defineLocale({
       plainTextStoredTitle: 'トークンは平文で保存されています',
       plainTextStoredDesc:
         'セキュアストレージが利用できないため、保存済みのトークンはこのマシンのアプリの接続設定ファイルに暗号化されずに保存されています。暗号化するには GNOME Keyring または KWallet をインストールまたは有効化してください。',
+      keychainEncryptionTitle: 'OS キーチェーンで保存済みのシークレットを暗号化',
+      keychainEncryptionDesc:
+        'デフォルトはオフです。オンにすると、ゲートウェイのトークンとサインイン資格情報がシステムのキーチェーン（Keychain Access、GNOME Keyring、Windows DPAPI）で暗号化されます。システムから許可やパスワードを求められる場合があります。オフの場合は、現在のユーザーのみが読める通常ファイルとして保存されます。',
+      keychainEncryptionFailed: 'シークレット暗号化の設定を変更できませんでした',
       testRemote: 'リモートをテスト',
       saveForRestart: '次回起動時のために保存',
       saveAndReconnect: '保存して再接続',
@@ -954,12 +1000,12 @@ export const ja = defineLocale({
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
-        web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },
         compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
         skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
         approval: { label: '承認', hint: 'スマート自動承認' },
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
+        review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -1491,6 +1537,38 @@ export const ja = defineLocale({
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
     manageProfiles: 'プロファイルを管理…',
+    remoteOverride: {
+      menuItem: 'リモートホストに接続…',
+      badge: (host: string) => `${host} で実行中`,
+      title: (profile: string) => `${profile} をリモートホストに接続`,
+      description: 'このプロファイルのセッションは、このパソコンではなく指定したリモートの Hermes で実行されます。',
+      urlLabel: 'リモートアドレス',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'http:// または https:// で始まる完全なアドレスを入力してください',
+      tokenLabel: 'アクセストークン',
+      tokenPlaceholder: 'リモートのセッショントークンを貼り付け',
+      tokenSavedHint: 'トークンは保存済みです。空欄のままにすると保持されます。',
+      plainTextOptIn:
+        'このパソコンには安全な鍵ストレージがないため、トークンは暗号化されずにディスクへ保存されます。それでも保存する。',
+      collisionWarning: (label: string) =>
+        `「${label}」という名前のゲートウェイが設定に既に存在します。このプロファイル接続は別物であり、それを変更しません。`,
+      confirmTitle: 'このプロファイルをリモートホストに接続しますか？',
+      confirmNote: (profile: string, host: string) =>
+        `${profile} の新しいチャットは ${host} で実行されます。コマンドの実行やファイルの読み取りはこのパソコンではなくそのコンピュータで行われます。信頼できるホストにのみ接続してください。`,
+      confirmBack: '戻る',
+      connect: '接続',
+      connecting: '接続中…',
+      disconnect: 'リモート接続を解除',
+      savedTitle: 'プロファイルを接続しました',
+      savedMessage: (profile: string, host: string) => `${profile} は ${host} で実行されます`,
+      removedTitle: 'リモート接続を解除しました',
+      removedMessage: (profile: string) => `${profile} はこのパソコンで実行されます`,
+      removeFailed: 'リモート接続を解除できませんでした',
+      authFailedTitle: 'リモートホストが保存済みトークンを拒否しました',
+      authFailedMessage: (profile: string, host: string) =>
+        `${host} が ${profile} 用に保存されたトークンを拒否しました。リモート側で変更された可能性があります。`,
+      updateToken: '新しいトークンを入力…'
+    },
     actions: 'アクション',
 
     color: 'カラー…',
@@ -2452,6 +2530,7 @@ export const ja = defineLocale({
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
+      gatewayUnavailable: '推論を利用できません',
       gatewayChecking: '確認中',
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',
@@ -2545,6 +2624,9 @@ export const ja = defineLocale({
     hide: '非表示',
     openPreview: 'プレビューを開く',
     openInBrowser: 'ブラウザで開く',
+    openInExternal: '外部で開く',
+    popIn: 'ポップイン',
+    popOut: 'ポップアウト',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
@@ -2636,8 +2718,8 @@ export const ja = defineLocale({
   },
 
   zones: {
-    showHeader: 'ヘッダーを表示',
-    hideHeader: 'ヘッダーを隠す',
+    showTabStrip: 'タブを表示',
+    hideTabStrip: 'タブを隠す',
     showStripTab: title => `${title} を表示`,
     hideStripTab: title => `${title} を隠す`,
     lastTabKeptTitle: '最後のタブは残ります',
@@ -2651,6 +2733,7 @@ export const ja = defineLocale({
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
     newSessionTab: '新しいセッションタブ',
+    newTab: '新しいタブ',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
     pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,
@@ -2726,6 +2809,24 @@ export const ja = defineLocale({
       branchNewChat: '新しいチャットでブランチ',
       react: 'リアクション',
       dismissError: 'エラーを閉じる',
+      errorLayers: {
+        auth: '認証エラー',
+        billing: 'クレジット不足',
+        disk: 'ディスク容量不足',
+        endpoint: 'カスタムエンドポイントのエラー',
+        gateway: 'ゲートウェイのエラー',
+        generic: 'ターンが失敗しました',
+        provider: 'プロバイダーのエラー',
+        runtime: 'ローカルランタイムのエラー',
+        streaming: 'ストリーミング接続のエラー'
+      },
+      errorRetry: '再試行',
+      errorSwitchProvider: 'プロバイダーを切り替え',
+      errorOpenLogs: 'ログを開く',
+      errorOpenLogsFailed: 'ログフォルダを開けませんでした',
+      errorOpenDesktopLogs: 'デスクトップのログを開く',
+      errorCopyDiagnostics: 'エラー詳細をコピー',
+      errorSendDiagnostics: '診断情報を送信',
       filesChanged: count => `${count} 件のファイルを変更`,
       reviewChanges: 'レビュー',
       readAloudFailed: '読み上げに失敗しました',
@@ -2944,6 +3045,7 @@ export const ja = defineLocale({
     cwdStagedMessage:
       'このアクティブなセッションへの cwd の変更を適用するにはデスクトップバックエンドを再起動してください。',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
+    hydrationSyncing: (profile: string) => `${profile} を同期中\u2026`,
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
     imageSaved: '画像を保存しました',

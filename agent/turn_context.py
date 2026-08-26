@@ -274,18 +274,26 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     scaffolding, not the active ask. Returns -1 when the list has no
     user-originated message at all.
     """
-    from agent.context_compressor import is_user_originated_turn
+    from agent.context_compressor import user_originated_turn_view
 
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             continue
+        # Typed synthetic current events still need their physical persistence
+        # anchor when their raw content is unchanged.  They are not eligible
+        # for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        live_view = user_originated_turn_view(msg)
+        if live_view is None:
+            continue
+        if live_view.get("content") == user_message:
             return i
         # Prefer a real human turn over a synthetic handoff / continuation
         # marker when the exact content was rewritten by merge-into-tail.
-        if fallback < 0 and is_user_originated_turn(msg):
+        if fallback < 0:
             fallback = i
     return fallback
 
@@ -318,6 +326,24 @@ def compression_made_progress(
 # old name bound means existing callers and any test that patches
 # ``_compression_made_progress`` continue to work unchanged.
 _compression_made_progress = compression_made_progress
+
+
+def _review_fork_first_request_pending(agent: Any) -> bool:
+    """Whether a detached review fork has yet to send its first provider request.
+
+    The background-review fork (issue #93057) replays the parent's FULL
+    snapshot on its first provider request as a warm prompt-cache read
+    (same-model cache parity). Compaction must not rewrite the snapshot
+    before that first request goes out — a compacted transcript would miss
+    the parent's cached prefix and turn a cheap cached replay into a cold
+    over-threshold write. Once the first provider response has arrived the
+    fork's tool loop is its own context, and both compression gates resume.
+    Dormant for every agent without the attribute.
+    """
+    return bool(
+        getattr(agent, "_review_defer_compaction_before_first_response", False)
+        and not getattr(agent, "_turn_received_provider_response", False)
+    )
 
 
 def _compression_warrants_another_preflight_pass(
@@ -746,6 +772,19 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat"
+    # session on Bot-Mode-managed installs (same gate as the protocol
+    # section above). The gate is stable for a session's lifetime, so the
+    # tool list is byte-identical every turn: prompt-cache safe. Every
+    # other session (CLI, gateway chats, group-room member sessions, cron,
+    # subagents) fails the gate and never sees the schema.
+    try:
+        from tools.bot_mode_dm import ensure_message_agent_tool
+
+        ensure_message_agent_tool(agent)
+    except Exception:
+        logger.debug("message_agent injection skipped", exc_info=True)
+
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
     # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
@@ -866,11 +905,15 @@ def build_turn_context(
     _preflight_compression_blocked = False
     agent._turn_received_provider_response = False
     agent._turn_preflight_display_snapshot = None
-    if agent.compression_enabled and _should_run_preflight_estimate(
-        messages,
-        agent.context_compressor.protect_first_n,
-        agent.context_compressor.protect_last_n,
-        agent.context_compressor.threshold_tokens,
+    if (
+        agent.compression_enabled
+        and not _review_fork_first_request_pending(agent)
+        and _should_run_preflight_estimate(
+            messages,
+            agent.context_compressor.protect_first_n,
+            agent.context_compressor.protect_last_n,
+            agent.context_compressor.threshold_tokens,
+        )
     ):
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
@@ -1318,10 +1361,15 @@ def build_turn_context(
     # Clear stale per-thread interrupt state, preserving a pending interrupt.
     ra()._set_interrupt(False, agent._execution_thread_id)
     if agent._interrupt_requested:
-        ra()._set_interrupt(True, agent._execution_thread_id)
+        ra()._set_interrupt(
+            True,
+            agent._execution_thread_id,
+            reason=getattr(agent, "_tool_interrupt_reason", None),
+        )
         agent._interrupt_thread_signal_pending = False
     else:
         agent._interrupt_message = None
+        agent._tool_interrupt_reason = None
         agent._interrupt_thread_signal_pending = False
 
     # Notify memory providers of the new turn (BEFORE prefetch_all).

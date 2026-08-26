@@ -284,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
     kept_user_edits:       "↷ Coinníodh do chuid athruithe láimhe: {files}\nÚsáid /rollback <N> --all chun iad sin a aischur freisin."
+    kept_oversize:         "↷ Coinnithe (ró-mhór do sheicphointí, níl aon chóip stóráilte le filleadh uirthi): {files}"
+    failed_deletes:        "⚠️ Níorbh fhéidir a bhaint (fágtha ina áit): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

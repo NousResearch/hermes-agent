@@ -31,6 +31,7 @@ import {
   normalizeMode,
   normalizeScope,
   normalizeState,
+  opacityNeedsSetting,
   resolveTranslucency,
   setTranslucencyValues,
   TRANSLUCENCY_CURVE,
@@ -42,6 +43,7 @@ import {
   vibrancyFor,
   windowBackingOptions,
   windowOpacityFor,
+  windowOpacityOptions,
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD
 } from './translucency'
@@ -496,6 +498,53 @@ describe('windowBackingOptions', () => {
     expect(windowBackingOptions(glass(0), '#111111')).toEqual({ backgroundColor: '#111111' })
     expect(windowBackingOptions(clear(60), '#111111')).toEqual({ backgroundColor: '#111111' })
     expect(windowBackingOptions(clear(0), '#f7f7f7')).toEqual({ backgroundColor: '#f7f7f7' })
+  })
+})
+
+// A glass window on Windows is fully opaque natively — the tint is the
+// renderer's and fade defaults to zero — so it used to be handed `opacity: 1`
+// on every launch. Electron's Windows setOpacity layers the window before it
+// reads the value and never unlayers it, and a layered window is one DWM will
+// not draw acrylic behind: the window rendered while focused and went dead the
+// moment it lost focus. The no-op ask has to not be made.
+describe('windowOpacityOptions', () => {
+  it('omits opacity entirely when the window is fully opaque', () => {
+    expect(windowOpacityOptions(glass(60))).toStrictEqual({})
+    expect(windowOpacityOptions(clear(0))).toStrictEqual({})
+  })
+
+  it('passes it the moment the state actually fades', () => {
+    for (const state of [clear(1), clear(100), glass(60, DEFAULT_GLASS_MATERIAL, 1)]) {
+      expect(windowOpacityOptions(state)).toStrictEqual({ opacity: windowOpacityFor(state) })
+    }
+  })
+
+  // Windows sits at fade 0 in both appearances, so no Windows chat window is
+  // born asking to fade — the whole platform stays off the layered path until
+  // someone opts in.
+  it('leaves every untouched Windows window unlayered', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      const state = { ...defaultTranslucencyValues(appearance, true), mode: 'glass' as const }
+
+      expect(windowOpacityOptions(state), appearance).toStrictEqual({})
+    }
+  })
+})
+
+describe('opacityNeedsSetting', () => {
+  it('skips the call for an opaque window that has never been faded', () => {
+    expect(opacityNeedsSetting(1, 1)).toBe(false)
+  })
+
+  it('makes the call whenever the target fades', () => {
+    expect(opacityNeedsSetting(0.5, 1)).toBe(true)
+    expect(opacityNeedsSetting(0.9999, 1)).toBe(true)
+  })
+
+  // The way back. A window already at 0.5 has paid for the layering, so
+  // returning it to opaque is free — and skipping it would strand the fade.
+  it('makes the call to return an already-faded window to opaque', () => {
+    expect(opacityNeedsSetting(1, 0.5)).toBe(true)
   })
 })
 

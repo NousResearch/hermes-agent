@@ -12,6 +12,20 @@ from hermes_cli.models import (
 )
 
 
+def test_free_model_gets_flat_100_percent_discount():
+    """$0/$0 models always show -100%; was_* pass through when present."""
+    assert compute_sale_discount("0", "0", None) == (100, "", "")
+    assert compute_sale_discount(
+        "0", "0", {"prompt": "0.000002", "completion": "0.00001"}
+    ) == (100, "0.000002", "0.00001")
+    # "0.0000000000" strings (Nous portal shape) count as free too.
+    assert compute_sale_discount("0.0000000000", "0.0000000000", None) == (100, "", "")
+
+
+def test_paid_model_without_original_shows_no_sale():
+    assert compute_sale_discount("0.000002", "0.00001", None) is None
+
+
 
 
 

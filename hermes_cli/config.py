@@ -1999,6 +1999,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
     "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
+    "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines (hermes_cli/nous_subscription.py, #92647)
     "session_reset",         # top-level form read by gateway/config.py + setup
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py
     "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
@@ -3516,6 +3517,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+    "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
@@ -3526,6 +3528,25 @@ def _terminal_env_value(value: Any) -> str:
     if isinstance(value, (list, dict)):
         return json.dumps(value)
     return str(value)
+
+
+def _terminal_config_value_is_bridgeable(key: str, value: Any) -> bool:
+    """Return whether a terminal config value owns its mirrored env var."""
+    if key == "cwd" and str(value or "").strip() in {".", "auto", "cwd"}:
+        return False
+    return True
+
+
+def terminal_config_owned_env_vars(terminal_config: Any) -> Set[str]:
+    """Return env vars explicitly owned by a raw ``terminal`` config section."""
+    if not isinstance(terminal_config, dict):
+        return set()
+    return {
+        env_var
+        for key, env_var in TERMINAL_CONFIG_ENV_MAP.items()
+        if key in terminal_config
+        and _terminal_config_value_is_bridgeable(key, terminal_config[key])
+    }
 
 
 def terminal_config_env_var_for_key(key: str) -> Optional[str]:
@@ -3598,10 +3619,10 @@ def apply_terminal_config_to_env(
         if cfg_key not in terminal_cfg:
             continue
         value = terminal_cfg[cfg_key]
+        if not _terminal_config_value_is_bridgeable(cfg_key, value):
+            continue
         if cfg_key == "cwd":
             raw_cwd = str(value or "").strip()
-            if raw_cwd in {".", "auto", "cwd"}:
-                continue
             if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(
                 terminal_backend, raw_cwd
             ):
@@ -4758,7 +4779,6 @@ def show_config():
     auxiliary = config.get('auxiliary', {})
     aux_tasks = {
         "Vision":      auxiliary.get('vision', {}),
-        "Web extract": auxiliary.get('web_extract', {}),
     }
     has_overrides = any(
         t.get('provider', 'auto') != 'auto' or t.get('model', '')

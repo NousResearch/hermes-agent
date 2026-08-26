@@ -173,3 +173,65 @@ describe('host.connections', () => {
     await expect(host.connections()).rejects.toThrow('This Desktop build has no connection registry')
   })
 })
+
+describe('host workspace scope', () => {
+  afterEach(async () => {
+    host.setWorkspaceScope('sessions')
+    const tree = await import('@/components/pane-shell/tree/store')
+    tree.$newSessionTabAction.set(null)
+    tree.removeTreePane('plugin-workspace:scope-test')
+  })
+
+  it('registers plugin workspace ownership and chrome options', async () => {
+    const { registry } = await import('@/contrib/registry')
+
+    const close = host.openWorkspace('scope-test', {
+      dock: { pane: 'workspace', pos: 'right' },
+      headerVeto: true,
+      render: () => null,
+      title: 'Scoped',
+      uncloseable: true,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'connection-a::default'
+    })
+
+    expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
+      data: {
+        dock: { pane: 'workspace', pos: 'right' },
+        headerVeto: true,
+        uncloseable: true
+      },
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'connection-a::default'
+    })
+
+    close()
+  })
+
+  it('publishes the active workspace scope through one host seam', async () => {
+    const { $workspaceMode, $workspaceOwnerKey } = await import('@/components/pane-shell/workspace-scope')
+
+    expect(host.setWorkspaceScope('bots', 'connection-b::default')).toBe(true)
+    expect($workspaceMode.get()).toBe('bots')
+    expect($workspaceOwnerKey.get()).toBe('connection-b::default')
+  })
+
+  it('uses the shared tab action for an exact Bot owner without moving Sessions', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const { $workspaceNewSessionTarget } = await import('@/components/pane-shell/workspace-scope')
+    const opened: string[] = []
+
+    const route = {
+      connectionId: 'connection-b',
+      mode: 'remote' as const,
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+
+    tree.$newSessionTabAction.set(() => opened.push('tab'))
+    host.newChat(route, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:connection-b::writer' })
+
+    expect(opened).toEqual(['tab'])
+    expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
+  })
+})

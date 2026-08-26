@@ -25,11 +25,15 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  reconcileAppliedGlobalConnection,
+  reconcileRegistryDrift,
   REGISTRY_VERSION,
+  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -57,6 +61,207 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('!!!'), 'connection')
 })
 
+test('registry SSH fingerprint failures name the connection and ssh -G step', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  const cause = new Error('spawn ssh ENOENT')
+
+  source.label = 'Build box'
+
+  await assert.rejects(
+    reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        throw cause
+      },
+      ensurePrimary: async () => ({ mode: 'remote', remoteKind: 'ssh' }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    error => {
+      assert.equal(
+        (error as Error).message,
+        `Could not resolve effective SSH config for connection "Build box" (${source.id}) via ssh -G: spawn ssh ENOENT`
+      )
+      assert.equal((error as Error).cause, cause)
+
+      return true
+    }
+  )
+})
+
+test('matching primary/default SSH route reuses the existing descriptor once', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)
+
+  const descriptor = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: {
+      effectiveConfigFingerprint: 'same-effective-config',
+      host: 'build-host',
+      keyPath: '~/.ssh/id_ed25519',
+      remoteProfile: 'default',
+      user: 'alice'
+    }
+  }
+
+  let ensureCalls = 0
+  let fingerprintCalls = 0
+
+  assert.equal(source?.kind, 'ssh')
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        fingerprintCalls += 1
+
+        return 'same-effective-config'
+      },
+      ensurePrimary: async () => {
+        ensureCalls += 1
+
+        return descriptor
+      },
+      profile: 'default',
+      registry,
+      source: source!
+    }),
+    descriptor
+  )
+  assert.equal(ensureCalls, 1)
+  assert.equal(fingerprintCalls, 1)
+})
+
+test('non-default or non-primary SSH routes do not resolve the primary backend', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+  let ensureCalls = 0
+
+  const opts = {
+    effectiveFingerprint: async () => 'same',
+    ensurePrimary: async () => {
+      ensureCalls += 1
+
+      return { mode: 'remote' as const, remoteKind: 'ssh' as const }
+    },
+    registry,
+    source
+  }
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({ ...opts, connectionId: registry.primary, profile: 'researcher' }),
+    null
+  )
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({ ...opts, connectionId: LOCAL_CONNECTION_ID, profile: 'default' }),
+    null
+  )
+  assert.equal(ensureCalls, 0)
+})
+
+test('primary SSH reuse rejects a descriptor with different effective dialing config', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => 'registry-config',
+      ensurePrimary: async () => ({
+        mode: 'remote',
+        remoteKind: 'ssh',
+        ssh: {
+          effectiveConfigFingerprint: 'active-config',
+          host: 'other-host',
+          remoteProfile: ''
+        }
+      }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    null
+  )
+})
+
+test('primary SSH reuse rejects a descriptor with a different remote Hermes path', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', remoteHermesPath: '/srv/hermes', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => 'same-effective-config',
+      ensurePrimary: async () => ({
+        mode: 'remote',
+        remoteKind: 'ssh',
+        ssh: {
+          effectiveConfigFingerprint: 'same-effective-config',
+          host: 'build-host',
+          remoteHermesPath: '/opt/hermes',
+          remoteProfile: '',
+          user: 'alice'
+        }
+      }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    null
+  )
+})
+
+test('registry primary reuses a matching primary backend descriptor', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'hermes-vps',
+    launchMode: 'primary',
+    lastUsed: 'hermes-vps',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      { id: 'hermes-vps', kind: 'ssh', label: 'Hermes VPS', host: 'hermes-vps' }
+    ]
+  })
+
+  const descriptor = {
+    connectionId: 'hermes-vps',
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: { host: 'hermes-vps' }
+  }
+
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, 'hermes-vps', descriptor), true)
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, LOCAL_CONNECTION_ID, descriptor), false)
+})
+
 test('resolvedConnectionId identifies local and migrated remote descriptors', () => {
   const registry = migrateV1ToRegistry({
     mode: 'local',
@@ -82,11 +287,18 @@ test('resolvedConnectionId identifies local and migrated remote descriptors', ()
     resolvedConnectionId(registry, {
       baseUrl: 'http://127.0.0.1:49152',
       mode: 'remote',
-      remoteHost: 'root@work-host',
+      remoteHost: 'ROOT@WORK-HOST',
       remoteKind: 'ssh'
     }),
     work?.id
   )
+
+  const ambiguousLocal: ConnectionRegistry = {
+    ...registry,
+    connections: [...registry.connections, { id: 'local-copy', kind: 'local', label: 'Local copy' }]
+  }
+
+  assert.equal(resolvedConnectionId(ambiguousLocal, { mode: 'local' }), null)
 })
 
 test('resolvedConnectionId does not guess an unregistered remote', () => {
@@ -105,6 +317,288 @@ test('agentHandle bare when unique, @name-device shape when duplicated', () => {
   assert.equal(agentHandle('research', 'Homelab', true), 'research-homelab')
   assert.equal(agentHandle('research', 'Work Laptop', true), 'research-work-laptop')
   assert.equal(agentHandle('', 'Homelab', false), 'default')
+})
+
+test('resolvedConnectionId accepts only a current exact descriptor id and never falls back', () => {
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'remote-a',
+    launchMode: 'primary',
+    lastUsed: 'remote-a',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'remote-a',
+        kind: 'remote',
+        label: 'Remote A',
+        url: 'https://shared.example',
+        authMode: 'token',
+        token: { encoding: 'safeStorage', value: 'token-a' },
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } }
+      },
+      {
+        id: 'remote-b',
+        kind: 'remote',
+        label: 'Remote B',
+        url: 'https://shared.example',
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-b' } }
+      }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'token',
+      baseUrl: 'https://shared.example',
+      connectionId: 'remote-b',
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    'remote-b'
+  )
+
+  const inferableRemoteA = {
+    authMode: 'token',
+    baseUrl: 'https://shared.example',
+    headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+    mode: 'remote' as const,
+    remoteKind: 'url' as const,
+    token: { encoding: 'safeStorage', value: 'token-a' }
+  }
+
+  // Only true absence enters compatibility inference. Every explicitly
+  // present invalid value remains unresolved even though the remaining
+  // envelope uniquely identifies remote-a.
+  assert.equal(resolvedConnectionId(registry, inferableRemoteA), 'remote-a')
+
+  for (const connectionId of ['', '   ', null, undefined, 42, {}, 'unknown-source', 'retired-source']) {
+    assert.equal(resolvedConnectionId(registry, { ...inferableRemoteA, connectionId }), null)
+  }
+
+  // Registry order is never authority for either an exact current id or a
+  // rejected explicit claim.
+  const reordered = { ...registry, connections: [...registry.connections].reverse() }
+
+  assert.equal(
+    resolvedConnectionId(reordered, {
+      ...inferableRemoteA,
+      connectionId: 'remote-b'
+    }),
+    'remote-b'
+  )
+  assert.equal(resolvedConnectionId(reordered, { ...inferableRemoteA, connectionId: 'retired-source' }), null)
+})
+
+test('resolvedConnectionId reuses the exact URL envelope and rejects weak or duplicate matches', () => {
+  const sharedUrl = 'https://shared.example/gateway'
+
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'remote-token',
+    launchMode: 'primary',
+    lastUsed: 'remote-token',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'remote-token',
+        kind: 'remote',
+        label: 'Token remote',
+        url: sharedUrl,
+        authMode: 'token',
+        token: { encoding: 'safeStorage', value: 'token-a' },
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } }
+      },
+      {
+        id: 'remote-oauth',
+        kind: 'remote',
+        label: 'OAuth remote',
+        url: `${sharedUrl}/`,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-b' } }
+      },
+      {
+        id: 'cloud-nous',
+        kind: 'cloud',
+        label: 'Nous cloud',
+        url: sharedUrl,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+        org: 'nous'
+      },
+      {
+        id: 'cloud-labs',
+        kind: 'cloud',
+        label: 'Labs cloud',
+        url: sharedUrl,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+        org: 'labs'
+      }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'token',
+      baseUrl: sharedUrl,
+      headers: { 'cf-access-client-id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    'remote-token'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-ACCESS-CLIENT-ID': { encoding: 'safeStorage', value: 'header-b' } },
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    'remote-oauth'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+      mode: 'remote',
+      org: 'nous',
+      remoteKind: 'cloud'
+    }),
+    'cloud-nous'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+      mode: 'remote',
+      org: 'labs',
+      remoteKind: 'cloud'
+    }),
+    'cloud-labs'
+  )
+
+  // Post-dial URL-only shapes do not contain enough proof to choose a source.
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'url' }), null)
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'cloud' }), null)
+
+  // Even a complete envelope fails closed when two registrations are exact twins.
+  const duplicate: ConnectionRegistry = {
+    ...registry,
+    connections: [
+      ...registry.connections,
+      { ...registry.connections.find(connection => connection.id === 'remote-token')!, id: 'remote-token-copy' }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(duplicate, {
+      authMode: 'token',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    null
+  )
+  assert.equal(
+    resolvedConnectionId(
+      { ...duplicate, connections: [...duplicate.connections].reverse() },
+      {
+        authMode: 'token',
+        baseUrl: sharedUrl,
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+        mode: 'remote',
+        remoteKind: 'url',
+        token: { encoding: 'safeStorage', value: 'token-a' }
+      }
+    ),
+    null
+  )
+})
+
+test('resolvedConnectionId keeps same-host SSH routes distinct by port, key, path, and profile', () => {
+  const base = {
+    host: 'work-host',
+    keyPath: '/keys/a',
+    kind: 'ssh' as const,
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'alpha',
+    user: 'root'
+  }
+
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'ssh-base',
+    launchMode: 'primary',
+    lastUsed: 'ssh-base',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      { ...base, id: 'ssh-base', label: 'SSH base' },
+      { ...base, id: 'ssh-port', label: 'SSH port', port: 2222 },
+      { ...base, id: 'ssh-key', keyPath: '/keys/b', label: 'SSH key' },
+      { ...base, id: 'ssh-path', label: 'SSH path', remoteHermesPath: '/opt/hermes' },
+      { ...base, id: 'ssh-profile', label: 'SSH profile', remoteProfile: 'beta' }
+    ]
+  }
+
+  const resolve = (ssh: NonNullable<Parameters<typeof resolvedConnectionId>[1]['ssh']>) =>
+    resolvedConnectionId(registry, { mode: 'remote', remoteKind: 'ssh', ssh })
+
+  assert.equal(resolve(base), 'ssh-base')
+  assert.equal(resolve({ ...base, port: 2222 }), 'ssh-port')
+  assert.equal(resolve({ ...base, keyPath: '/keys/b' }), 'ssh-key')
+  assert.equal(resolve({ ...base, remoteHermesPath: '/opt/hermes' }), 'ssh-path')
+  assert.equal(resolve({ ...base, remoteProfile: 'beta' }), 'ssh-profile')
+  assert.equal(
+    resolvedConnectionId(registry, {
+      connectionId: 'ssh-port',
+      mode: 'remote',
+      remoteKind: 'ssh',
+      ssh: { ...base, port: 9999 }
+    }),
+    'ssh-port'
+  )
+
+  // user@host is a transport hint, not a registry identity, when variants coexist.
+  assert.equal(
+    resolvedConnectionId(registry, {
+      mode: 'remote',
+      remoteHost: 'ROOT@WORK-HOST',
+      remoteKind: 'ssh'
+    }),
+    null
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      mode: 'remote',
+      remoteHost: 'ROOT@WORK-HOST',
+      remoteKind: 'ssh',
+      ssh: undefined
+    }),
+    null
+  )
+
+  const duplicate: ConnectionRegistry = {
+    ...registry,
+    connections: [...registry.connections, { ...base, id: 'ssh-base-copy', label: 'SSH base copy' }]
+  }
+
+  assert.equal(resolvedConnectionId(duplicate, { mode: 'remote', remoteKind: 'ssh', ssh: base }), null)
+  assert.equal(
+    resolvedConnectionId(
+      { ...duplicate, connections: [...duplicate.connections].reverse() },
+      { mode: 'remote', remoteKind: 'ssh', ssh: base }
+    ),
+    null
+  )
 })
 
 test('connectionIdForLabel suffixes on collision and never mints "local"', () => {
@@ -251,6 +745,25 @@ test('roster: unique profiles keep bare handles; duplicates get @name-device', (
   assert.equal(byKey.get('local/default'), 'default')
   assert.equal(byKey.get('homelab/coder'), 'coder')
   assert.equal(roster.length, 4)
+})
+
+test('roster: source profile metadata follows the connection-qualified row', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const vps = { id: 'vps', kind: 'remote' as const, label: 'VPS', url: 'http://vps:8642' }
+
+  const vpsMeta = {
+    display_name: 'Emma',
+    ui_meta: { 'hermes-bots': { title: 'Emma', shape: 'blobatar::sun', color: '#8b5cf6' } },
+    has_avatar: true
+  }
+
+  const roster = buildAgentRoster([
+    { connection: local, profiles: ['default'] },
+    { connection: vps, profiles: ['default'], profileMetadata: { default: vpsMeta } }
+  ])
+
+  assert.deepEqual(roster.find(agent => agent.connectionId === 'vps')?.profileMetadata, vpsMeta)
+  assert.equal(roster.find(agent => agent.connectionId === 'local')?.profileMetadata, undefined)
 })
 
 test('rememberSshEnumeration: live list wins, cache then seed default', () => {
@@ -929,6 +1442,198 @@ test('upsertConnection replaces by id and appends new ids', () => {
   assert.equal(registry.connections.find(c => c.id === a.id)?.url, 'http://a:2')
 })
 
+test('Apply remote inserts into an existing local-only registry and becomes primary/current', () => {
+  const registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://gateway.example.com/', authMode: 'oauth' }
+  })
+
+  const remote = registry.connections.find(connection => connection.kind === 'remote')
+
+  assert.ok(remote)
+  assert.equal(registry.primary, remote.id)
+  assert.equal(registry.lastUsed, remote.id)
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: 'https://gateway.example.com',
+      headers: {},
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    remote.id
+  )
+})
+
+test('Apply remote preserves an existing URL identity and label without duplicates', () => {
+  let registry = emptyRegistry()
+
+  registry = upsertConnection(registry, {
+    id: 'hermes-alex',
+    kind: 'remote',
+    label: 'Existing gateway',
+    url: 'https://gateway.example.com',
+    authMode: 'token',
+    token: { old: true }
+  })
+
+  const applied = reconcileAppliedGlobalConnection(registry, {
+    mode: 'remote',
+    remote: { url: 'https://GATEWAY.example.com/', authMode: 'oauth' }
+  })
+
+  const matches = applied.connections.filter(connection => connection.url === 'https://gateway.example.com')
+
+  assert.equal(matches.length, 1)
+  assert.equal(matches[0].id, 'hermes-alex')
+  assert.equal(matches[0].label, 'Existing gateway')
+  assert.equal(matches[0].authMode, 'oauth')
+  assert.equal(applied.primary, 'hermes-alex')
+  assert.equal(applied.lastUsed, 'hermes-alex')
+})
+
+test('Apply local moves primary/current to This device without deleting registered remotes', () => {
+  const remoteRegistry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://one.example.com', authMode: 'oauth' }
+  })
+
+  const localRegistry = reconcileAppliedGlobalConnection(remoteRegistry, { mode: 'local', remote: {} })
+
+  assert.equal(localRegistry.primary, LOCAL_CONNECTION_ID)
+  assert.equal(localRegistry.lastUsed, LOCAL_CONNECTION_ID)
+  assert.equal(localRegistry.connections.filter(connection => connection.kind === 'remote').length, 1)
+  assert.equal(resolvedConnectionId(localRegistry, { mode: 'local' }), LOCAL_CONNECTION_ID)
+})
+
+test('Apply between two remotes keeps each real registration once and activates the latest', () => {
+  const first = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://one.example.com', authMode: 'oauth' }
+  })
+
+  const second = reconcileAppliedGlobalConnection(first, {
+    mode: 'remote',
+    remote: { url: 'https://two.example.com/', authMode: 'oauth' }
+  })
+
+  const remotes = second.connections.filter(connection => connection.kind === 'remote')
+
+  assert.deepEqual(remotes.map(connection => connection.url).sort(), [
+    'https://one.example.com',
+    'https://two.example.com'
+  ])
+  assert.equal(new Set(remotes.map(connection => connection.id)).size, 2)
+  assert.equal(second.primary, remotes.find(connection => connection.url === 'https://two.example.com')?.id)
+  assert.equal(second.lastUsed, second.primary)
+})
+
+// --- reconcileRegistryDrift (v1 ↔ v2 healing) ---
+
+test('drift heal registers a v1 remote the registry never learned about and makes it primary', () => {
+  // The exact shape users keep reporting: registry migrated while local-only,
+  // then Settings → Gateway pointed v1 at a remote. connections.json still
+  // says primary 'local', so every launch force-switches off the live remote.
+  const drifted = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com:4443', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, true)
+
+  const remote = drifted.registry.connections.find(connection => connection.kind === 'remote')
+
+  assert.ok(remote)
+  assert.equal(drifted.registry.primary, remote.id)
+  assert.equal(drifted.registry.lastUsed, remote.id)
+  // The whole point: the live v1 descriptor can now be named, so the boot pick
+  // resolves to the remote instead of re-homing to 'local'. Descriptor shape
+  // matches what buildRemoteConnection emits for an oauth remote.
+  assert.equal(
+    resolvedConnectionId(drifted.registry, {
+      authMode: 'oauth',
+      baseUrl: 'https://agent.example.com:4443',
+      headers: {},
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    remote.id
+  )
+})
+
+test('drift heal leaves a registry that already knows the v1 route untouched', () => {
+  const registered = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  const drifted = reconcileRegistryDrift(registered, {
+    mode: 'remote',
+    remote: { url: 'https://AGENT.example.com/', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry, registered)
+})
+
+test('drift heal respects a deliberate primary pick on a registered route', () => {
+  // Route IS registered, but the user chose This device in the Connections
+  // panel. That is a choice, not drift — never override it.
+  let registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  registry = setPrimaryConnection(registry, LOCAL_CONNECTION_ID)
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry.primary, LOCAL_CONNECTION_ID)
+})
+
+test('drift heal ignores local, ssh, and unparseable v1 routes', () => {
+  const registry = emptyRegistry()
+
+  for (const v1 of [
+    { mode: 'local', remote: {} },
+    { mode: 'ssh', remote: { host: 'box' } },
+    { mode: 'remote', remote: { url: 'not a url' } },
+    { mode: 'remote', remote: {} },
+    null
+  ]) {
+    const drifted = reconcileRegistryDrift(registry, v1)
+
+    assert.equal(drifted.changed, false, `expected no heal for ${JSON.stringify(v1)}`)
+    assert.equal(drifted.registry, registry)
+  }
+})
+
+test('drift heal adds the missing remote without disturbing other registered sources', () => {
+  let registry = emptyRegistry()
+
+  registry = upsertConnection(registry, {
+    id: 'homelab',
+    kind: 'remote',
+    label: 'Homelab',
+    url: 'https://homelab.example.com',
+    authMode: 'token',
+    token: { keep: true }
+  })
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'remote',
+    remote: { url: 'https://agent.example.com:4443', authMode: 'oauth' }
+  })
+
+  assert.equal(drifted.changed, true)
+  assert.equal(drifted.registry.connections.filter(connection => connection.kind === 'remote').length, 2)
+  assert.ok(drifted.registry.connections.some(connection => connection.id === 'homelab'))
+})
+
 // --- connectionDialFieldsChanged (edit → recycle decision) ---
 
 test('connectionDialFieldsChanged: label-only edits do not recycle', () => {
@@ -1102,4 +1807,117 @@ test('migrateV1ToRegistry carries v1 remote headers into the registry entry', ()
   assert.deepEqual(remote.headers, {
     'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' }
   })
+})
+
+// --- normalizeRegistry per-entry quarantine (#94246 remainder) ---
+//
+// One malformed entry must never cost the user the rest of the registry, and
+// malformed entries are USER DATA: they are preserved under `quarantined`
+// (with the raw entry verbatim) instead of being silently deleted on the next
+// registry write. "Only deleting connections.json recovers" was the reported
+// failure shape; the recovery must never be data loss.
+
+test('normalizeRegistry quarantines malformed entries instead of silently dropping them', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'a',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' },
+      { id: 'c', kind: 'remote', label: 'No URL entry' },
+      { kind: 'nonsense', label: 'Mystery box', extra: 'still my data' },
+      { id: 's', kind: 'ssh', label: 'No host ssh' }
+    ]
+  })
+
+  // Healthy entries all load.
+  assert.deepEqual(
+    registry.connections.map(c => c.id),
+    ['local', 'a']
+  )
+  assert.equal(registry.primary, 'a')
+
+  // The malformed ones are preserved verbatim, with reasons.
+  assert.equal((registry.quarantined || []).length, 3)
+
+  const reasons = registry.quarantined!.map(q => q.reason).sort()
+
+  assert.deepEqual(reasons, ['entry-missing-ssh-host', 'entry-missing-url', 'entry-unrecognized-kind'])
+
+  const mystery = registry.quarantined!.find(q => q.reason === 'entry-unrecognized-kind')
+
+  assert.deepEqual(mystery!.entry, { kind: 'nonsense', label: 'Mystery box', extra: 'still my data' })
+})
+
+test('normalizeRegistry preserves previously quarantined entries across round trips', () => {
+  const first = normalizeRegistry({
+    version: 2,
+    connections: [{ id: 'c', kind: 'remote', label: 'No URL entry' }]
+  })
+
+  assert.equal((first.quarantined || []).length, 1)
+
+  // Simulate write → read → normalize again (what every registry save does).
+  const second = normalizeRegistry(JSON.parse(JSON.stringify(first)))
+
+  assert.equal((second.quarantined || []).length, 1)
+  assert.deepEqual(second.quarantined![0].entry, { id: 'c', kind: 'remote', label: 'No URL entry' })
+})
+
+test('normalizeRegistry quarantines an entry that explodes during normalization (no whole-load abort)', () => {
+  const poisoned: any = { id: 'boom', kind: 'remote', url: 'http://10.0.0.9:9119' }
+
+  Object.defineProperty(poisoned, 'label', {
+    enumerable: true,
+    get() {
+      throw new Error('poisoned entry')
+    }
+  })
+
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'a',
+    connections: [poisoned, { id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }]
+  })
+
+  // The healthy entry still loads and keeps primary; the poisoned one is
+  // quarantined rather than aborting the whole registry load.
+  assert.deepEqual(
+    registry.connections.filter(c => c.kind === 'remote').map(c => c.id),
+    ['a']
+  )
+  assert.equal(registry.primary, 'a')
+  assert.equal((registry.quarantined || []).length, 1)
+  assert.equal(registry.quarantined![0].reason, 'entry-normalization-failed')
+})
+
+test('normalizeRegistry keeps a clean registry free of the quarantined key and caps quarantine growth', () => {
+  const clean = normalizeRegistry({
+    version: 2,
+    connections: [{ id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }]
+  })
+
+  assert.equal('quarantined' in clean, false)
+
+  const flooded = normalizeRegistry({
+    version: 2,
+    connections: Array.from({ length: 100 }, (_, i) => ({ id: `q${i}`, kind: 'remote', label: `No URL ${i}` }))
+  })
+
+  assert.ok((flooded.quarantined || []).length <= 20)
+})
+
+test('normalizeRegistry quarantines non-object junk items that could still be user data', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    connections: ['{ mangled json fragment }', null, false, { id: 'a', kind: 'remote', label: 'A', url: 'http://x:1' }]
+  })
+
+  assert.deepEqual(
+    registry.connections.map(c => c.kind),
+    ['local', 'remote']
+  )
+  // null/false carry no data and are dropped; the string is preserved.
+  assert.equal((registry.quarantined || []).length, 1)
+  assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
 })

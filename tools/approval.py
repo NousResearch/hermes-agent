@@ -532,15 +532,31 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
-    # Filesystem format
-    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
-    # Raw block device overwrites (dd + redirection)
-    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Filesystem format — anchor to command position like every other
+    # hardline entry so quoted prose ("echo \"does this workflow use mkfs
+    # anywhere?\"") does not trip the unconditional floor (#93392).
+    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection). `dd` is a command-name
+    # token, so anchor it to command position like mkfs/rm/shutdown (#93392):
+    # quoted prose such as `git commit -m "never dd of=/dev/sda"` is an
+    # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
+    # so flag order doesn't matter.
+    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # The redirect rule has no command-name token to anchor (`>` appears
+    # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
+    # wrong tool. It is instead matched against a QUOTE-MASKED variant of the
+    # command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted
+    # prose (`echo "cat f > /dev/sda"`) cannot trip it, while shell-carrying
+    # wrappers (sh -c / bash -c / eval) still surface their payload as a raw
+    # detection variant — quoting is not a bypass (#93392).
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
-    # Fork bomb (classic shell form)
+    # Fork bomb (classic shell form). Also positionless (the trigger is the
+    # function definition itself, valid anywhere in a command line), so it is
+    # quote-masked like the redirect rule above rather than _CMDPOS-anchored.
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Kill every process on the system
-    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # Kill every process on the system — anchor the command-name token so
+    # `echo "kill -1 sends SIGHUP to everything"` doesn't trip (#93392).
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
@@ -558,10 +574,111 @@ HARDLINE_PATTERNS = [
 # regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
 # at the end of this module after DANGEROUS_PATTERNS is defined.
 _RE_FLAGS = re.IGNORECASE | re.DOTALL
+
+# Hardline rules whose trigger has no command-name token to anchor (the
+# redirect target / fork-bomb definition are valid anywhere in a command
+# line). These are matched against QUOTE-MASKED variants of the command so
+# quoted prose (`echo "cat f > /dev/sda"`, `git commit -m "fork bomb
+# :(){ :|:& };:"`) cannot trip the unconditional floor, while the raw
+# payloads of shell-carrying wrappers (sh -c, bash -c, eval) are still
+# scanned unmasked — quoting is not a bypass (#93392).
+_QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({
+    "redirect to raw block device",
+    "fork bomb",
+})
+
 HARDLINE_PATTERNS_COMPILED = [
-    (re.compile(pattern, _RE_FLAGS), description)
+    (
+        re.compile(pattern, _RE_FLAGS),
+        description,
+        description in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS,
+    )
     for pattern, description in HARDLINE_PATTERNS
 ]
+
+
+# Command names that hand a quoted argument to another shell/parser to
+# EXECUTE. For these, quoted text is code, not prose, so the quote-masked
+# hardline rules must scan the raw string (see detect_hardline_command).
+_SHELL_CARRIER_NAMES = frozenset({
+    "eval", "sh", "bash", "zsh", "ksh", "dash", "source", ".",
+})
+
+
+def _contains_shell_carrier(command: str) -> bool:
+    """Return whether any command-position word is a shell-carrying command."""
+    for _, _, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(
+            _deobfuscate_shell_word_for_detection(word)
+        ).lower()
+        if name in _SHELL_CARRIER_NAMES:
+            return True
+    return False
+
+
+def _mask_quoted_prose(command: str) -> str:
+    """Blank out quoted string CONTENT for positionless hardline matching.
+
+    Detection-only rewrite used by the quote-masked hardline rules
+    (redirect-to-block-device, fork bomb): text inside single or double
+    quotes is data the shell passes as an argument, so `echo "cat f >
+    /dev/sda"` must not trip the unconditional floor (#93392). Structure is
+    preserved: the quote characters themselves stay, and inside double
+    quotes `$(...)` command substitutions and backtick spans are kept RAW
+    because the shell really executes them (`echo "$(cat f > /dev/sda)"`
+    remains a true positive). Unquoted text is untouched. Quote tracking
+    mirrors _mask_quoted_newlines; an unclosed quote masks to end-of-string,
+    which cannot hide a runnable command (the shell would not run it
+    either).
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+                out.append(ch)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                out.append("  ")
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                end = _scan_dollar_paren_end(command, i)
+                if end is not None:
+                    out.append(command[i:end])
+                    i = end
+                    continue
+            if ch == "`":
+                close = command.find("`", i + 1)
+                if close != -1:
+                    out.append(command[i:close + 1])
+                    i = close + 1
+                    continue
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 # =========================================================================
@@ -614,8 +731,26 @@ def detect_hardline_command(command: str) -> tuple:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
-        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(variant_lower):
+        masked_lower: str | None = None
+        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if quote_masked:
+                # Positionless rules (redirect-to-block-device, fork bomb)
+                # match a quote-masked variant so quoted prose in echo /
+                # git commit -m / gh --body arguments is DATA (#93392).
+                # Shell-carrying commands (sh/bash -c, eval, source) hand
+                # their quoted argument to another parser, so those scan
+                # the raw variant — quoting is not a bypass. bash/sh -c
+                # payloads additionally surface as their own raw variants
+                # via _execution_flag_findings.
+                if masked_lower is None:
+                    if _contains_shell_carrier(command_variant):
+                        masked_lower = variant_lower
+                    else:
+                        masked_lower = _mask_quoted_prose(command_variant).lower()
+                haystack = masked_lower
+            else:
+                haystack = variant_lower
+            if pattern_re.search(haystack):
                 return (True, description)
     return (False, None)
 
@@ -858,8 +993,10 @@ DANGEROUS_PATTERNS = [
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
-    (r'\bmkfs\b', "format filesystem"),
-    (r'\bdd\s+.*if=', "disk copy"),
+    # Anchored to command position like the hardline twins (#93392):
+    # quoted prose mentioning mkfs/dd must not require approval to echo.
+    (_CMDPOS + r'mkfs\b', "format filesystem"),
+    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the
@@ -976,7 +1113,22 @@ DANGEROUS_PATTERNS = [
     # the `hermes gateway stop|restart` pattern above by driving launchd
     # directly against the service label (commonly `ai.hermes.gateway`).
     # Catch the operations that stop, restart, or unload it.
-    (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
+    #
+    # Order-independent (2026-08-02 incident): the previous version required
+    # "hermes"/"ai.hermes" to appear AFTER the launchctl verb in the same
+    # string (`.*` only scans forward). A shell for-loop that builds the
+    # label from a list defined earlier in the command — e.g. `for item in
+    # 'ai.hermes.gateway-apollo:...' ...; do label=${item%%:*}; launchctl
+    # bootout "$label"; done` — never has the literal text "hermes" appear
+    # after "bootout" (only the expanded variable does), so it slipped past
+    # undetected and restarted 4 gateways with zero approval. Two
+    # independent lookaheads instead of one sequential match: both
+    # substrings must appear SOMEWHERE in the command, in either order.
+    # This is intentionally broader (a launchctl-verb command anywhere near
+    # an unrelated "hermes" mention now also matches) — for an approval gate
+    # that's the correct direction to err: an extra approval prompt is
+    # cheap, a missed one took down the whole gateway fleet.
+    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
@@ -2318,6 +2470,38 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+_GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = (
+    "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
+)
+
+
+def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
+    """Catch gateway-lifecycle verbs spelled with quote/backslash splicing.
+
+    ``_normalize_command_for_detection`` strips backslash escapes, so
+    ``kick\\start`` already reaches the launchctl pattern above. Quote
+    splicing does not: ``_deobfuscate_shell_word_for_detection`` is
+    deliberately scoped to command-position words (widening it would let
+    quoted prose like ``git commit -m "rm -rf /"`` match the destructive
+    patterns), and the spliced verb sits in an ARGUMENT position. So
+    ``launchctl kick"start" -k gui/501/ai.hermes.gateway`` auto-approved
+    while executing exactly as the gated ``kickstart`` form (#80269).
+
+    Delegate to ``cron.lifecycle_guard``, which tokenizes with shlex and is
+    anchored on a hermes-gateway identifier — reusing its prose
+    false-positive coverage instead of loosening the generic pattern
+    engine. This runs last, so an ordinary pattern match still wins and
+    keeps its more specific reason string. Unlike the guard's use inside
+    ``terminal_tool``, this layer only raises an approval prompt; the
+    non-bypassable block still lives in ``cron.lifecycle_guard``.
+    """
+    try:
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+    except Exception:
+        return False
+    return contains_gateway_lifecycle_command(command)
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -2338,6 +2522,12 @@ def detect_dangerous_command(command: str) -> tuple:
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
+    if _is_shell_token_spliced_gateway_lifecycle(command):
+        return (
+            True,
+            _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION,
+            _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION,
+        )
     return (False, None, None)
 
 
@@ -2965,20 +3155,27 @@ def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None,
-                              *, smart_denied: bool = False) -> str:
+                              *, allow_session: bool = True,
+                              smart_denied: bool = False) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
         allow_permanent: When False, hide the [a]lways option (used when
             tirith warnings are present, since broad permanent allowlisting
             is inappropriate for content-level security findings).
+        allow_session: When False, hide the [s]ession option too — the
+            caller grants one operation and re-asks next time (the
+            protected agent-instruction gate in ``tools/file_tools.py``).
+            Offering a scope the caller discards makes every subsequent
+            write re-prompt and reads as a broken gate (#81887).
         smart_denied: When True, this is an owner override of a Smart DENY.
             Offer only one-operation approval or denial.
         approval_callback: Optional callback registered by the CLI for
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True,
-            smart_denied=False) -> str. Legacy callback signatures remain
-            supported when ``smart_denied`` is false.
+            allow_session=True, smart_denied=False) -> str. Legacy callback
+            signatures remain supported while both keywords hold their
+            defaults.
 
     Returns: 'once', 'session', 'always', 'deny', or 'timeout'.
         'timeout' means the prompt expired without a user response — the
@@ -2999,6 +3196,7 @@ def prompt_dangerous_approval(command: str, description: str,
             timeout_seconds,
             allow_permanent,
             approval_callback,
+            allow_session=allow_session,
             smart_denied=smart_denied,
         )
 
@@ -3007,7 +3205,8 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                                      timeout_seconds: int,
                                      allow_permanent: bool = True,
                                      approval_callback=None,
-                                     *, smart_denied: bool = False) -> str:
+                                     *, allow_session: bool = True,
+                                     smart_denied: bool = False) -> str:
     # Redact secrets before any user-visible rendering. The original
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory
@@ -3016,9 +3215,15 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     display_command = redact_sensitive_text(command)
     display_description = redact_sensitive_text(description)
 
+    # Smart DENY and a session-less gate both reduce the menu to
+    # once/deny; the rendered strings are the same either way.
+    once_only = smart_denied or not allow_session
+
     if approval_callback is not None:
         try:
             callback_kwargs = {"allow_permanent": allow_permanent}
+            if not allow_session:
+                callback_kwargs["allow_session"] = False
             if smart_denied:
                 callback_kwargs["smart_denied"] = True
             return approval_callback(
@@ -3065,7 +3270,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
             print(f"  {t('approval.dangerous_header', description=display_description)}")
             print(f"      {display_command}")
             print()
-            if smart_denied:
+            if once_only:
                 print(t("approval.choose_smart_deny"))
             elif allow_permanent:
                 print(t("approval.choose_long"))
@@ -3078,7 +3283,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
 
             def get_input():
                 try:
-                    if smart_denied:
+                    if once_only:
                         prompt = t("approval.prompt_smart_deny")
                     else:
                         prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
@@ -3098,7 +3303,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                 return "timeout"
 
             choice = result["choice"]
-            if smart_denied:
+            if once_only:
                 choice_map = {
                     **{
                         value: "once"
@@ -3576,6 +3781,8 @@ def _run_approval_gate(
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -3585,9 +3792,11 @@ def _run_approval_gate(
                 if not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
+                    outcome = "timeout"
                 else:
                     reason = "denied by user"
                     timeout_addendum = ""
+                    outcome = "denied"
                 reason_addendum = ""
                 if resolved and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
@@ -3601,7 +3810,9 @@ def _run_approval_gate(
                     ),
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": outcome,
                     "user_consent": False,
+                    "deny_reason": deny_reason,
                 }
 
             if choice == "session":
@@ -4300,6 +4511,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             # exact thread AIAgent.interrupt() flags — so is_interrupted() here
             # sees the signal. Resolve as "deny" so the agent loop receives a
             # normal denial and unwinds cleanly (#8697).
+            #
+            # NOTE (#85125 2e): is_interrupted() here deliberately does NOT
+            # distinguish a deliberate /stop from a gateway INACTIVITY
+            # timeout — both intentionally resolve as 'deny' (not
+            # outcome='timeout'). The per-thread interrupt flag carries only
+            # an optional free-text reason (tools/interrupt.py
+            # _interrupt_reasons), and the producers do not set a stable,
+            # machine-checkable category for this distinction: the gateway's
+            # inactivity watchdog (gateway/run.py
+            # _watch_gateway_turn_inactivity → request_hard_interrupt with
+            # _INTERRUPT_REASON_TIMEOUT) and a user /stop both funnel through
+            # AIAgent.interrupt(), whose tool_reason strings ("explicit stop
+            # requested" vs the fallback "user sent a new message") are not a
+            # reliable discriminator and would require new plumbing to make
+            # so. Fail-closed deny preserves #8697 semantics; changing this
+            # needs a dedicated interrupt-cause channel, not string matching.
             if is_interrupted():
                 logger.info(
                     "Approval wait interrupted by user signal — "
@@ -4796,6 +5023,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -4891,7 +5120,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "command": _disp_command,
                 "description": _disp_combined_desc,
                 "message": (
-                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
+                    f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
+                    "STOP: do NOT re-run, rephrase, or re-issue this command — each "
+                    "variant sends the user ANOTHER approval card. Wait for the "
+                    "user's decision; if this turn must end, report that approval "
+                    "is pending."
                 ),
             }
             if smart_denied_for_owner:
@@ -5320,7 +5553,11 @@ def check_execute_code_guard(code: str, env_type: str,
             "description": display_description,
             "message": (
                 f"⚠️ {display_description}. Asking the user for approval.\n\n"
-                f"**Code:**\n```python\n{display_code}\n```"
+                f"**Code:**\n```python\n{display_code}\n```\n\n"
+                "STOP: do NOT re-run, rephrase, or re-issue this code — each "
+                "variant sends the user ANOTHER approval card. Wait for the "
+                "user's decision; if this turn must end, report that approval "
+                "is pending."
             ),
         }
         if smart_denied_for_owner:

@@ -2423,6 +2423,41 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _fallback_reason_text(reason: "FailoverReason | None") -> str:
+    """Return a concise operator-facing explanation for a fallback switch."""
+    if reason is None:
+        return "provider failure"
+    labels = {
+        FailoverReason.auth: "authentication failed",
+        FailoverReason.auth_permanent: "authentication permanently failed",
+        FailoverReason.billing: "billing or quota exhausted",
+        FailoverReason.rate_limit: "rate limit",
+        FailoverReason.upstream_rate_limit: "upstream model rate limit",
+        FailoverReason.overloaded: "provider overloaded",
+        FailoverReason.server_error: "provider server error",
+        FailoverReason.timeout: "request timeout",
+        FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
+        FailoverReason.context_overflow: "context window exceeded",
+        FailoverReason.payload_too_large: "request payload too large",
+        FailoverReason.image_too_large: "image payload too large",
+        FailoverReason.model_not_found: "model not found",
+        FailoverReason.provider_policy_blocked: "provider policy blocked the request",
+        FailoverReason.content_policy_blocked: "content policy blocked the request",
+        FailoverReason.format_error: "request format rejected",
+        FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
+        FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
+        FailoverReason.thinking_signature: "thinking signature rejected",
+        FailoverReason.long_context_tier: "long-context tier unavailable",
+        FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
+        FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
+        FailoverReason.unknown: "provider failure",
+    }
+    label = labels.get(reason)
+    if label:
+        return label
+    value = getattr(reason, "value", None)
+    return str(value or reason or "provider failure").replace("_", " ")
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
@@ -2814,20 +2849,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
+        notice = (
+            f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
+            f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."
         )
-        # The buffered line above is dropped on successful recovery, but a
-        # provider/model switch is a durable state change operators must see
-        # even when the fallback succeeds.  Record a one-shot notice that the
-        # success path surfaces exactly once via _emit_pending_fallback_notice
-        # (see run_agent.py); it is discarded on terminal failure since the
-        # buffered line is flushed instead.  See fallback-observability fix.
-        agent._pending_fallback_notice = (
-            f"🔄 Switched to fallback model: {old_model} via {old_provider} "
-            f"→ {fb_model} via {fb_provider}"
-        )
+        # The buffered switch is surfaced on terminal failure. A successful
+        # fallback clears retry chatter, so retain every switch as a durable
+        # one-shot notice for _emit_pending_fallback_notice (run_agent.py).
+        agent._buffer_status(notice)
+        pending = getattr(agent, "_pending_fallback_notice", None)
+        if isinstance(pending, list):
+            pending.append(notice)
+        elif pending:
+            agent._pending_fallback_notice = [str(pending), notice]
+        else:
+            agent._pending_fallback_notice = [notice]
+        # ``_fallback_activated`` is also reused by temporary `/model --once`
+        # restoration. Keep separate provenance so the restore path only emits
+        # a fallback-recovery notice after an actual provider fallback.
+        agent._provider_fallback_active = True
+        agent._provider_fallback_route = (str(fb_model), str(fb_provider))
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
@@ -2848,8 +2889,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
-    agent._safe_print(
-        f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
+    warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
+    if getattr(agent, "suppress_status_output", False):
+        # Strict machine-readable mode (hermes chat -Q, oneshot, background
+        # review): keep diagnostics out of stdout so wrappers receive only
+        # the final assistant content (#93220 class). Note: plain quiet_mode
+        # is NOT the right gate — the interactive CLI runs quiet_mode=True by
+        # default and should still see this warning.
+        logger.warning(warning)
+    else:
+        agent._safe_print(warning)
+
+    summary_request = (
+        "You've reached the maximum number of tool-calling iterations allowed. "
+        "Please provide a final response summarizing what you've found and accomplished so far, "
+        "without calling any more tools."
     )
 
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"

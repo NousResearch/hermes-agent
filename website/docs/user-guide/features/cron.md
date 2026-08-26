@@ -31,6 +31,10 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
+:::tip
+**Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
+:::
+
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
@@ -330,18 +334,48 @@ ledger is included in quick backups.
 
 ### Repeated-failure review nudge
 
-Each job tracks a `failure_streak` — consecutive runs where the agent failed
-(delivery failures don't count). When a *recurring* job's streak reaches the
-threshold, the failure message delivered to chat gains a review nudge telling
-you the job has failed N runs in a row and suggesting you fix, pause
-(`hermes cron pause <job>`), or remove it. Any successful run resets the
-streak, and `hermes cron list` shows the streak alongside a failing job's last
-run. One-shot jobs never nudge.
+Each job tracks a `failure_streak` — consecutive failed runs (delivery
+failures don't count). A run that fails before the agent is reached at all —
+a bad import after a half-applied update, a provider client that cannot be
+constructed — counts and alerts the same as one the agent itself failed. When
+a *recurring* job's streak reaches the threshold, the failure message
+delivered to chat gains a review nudge telling you the job has failed N runs
+in a row and suggesting you fix, pause (`hermes cron pause <job>`), or remove
+it. Any successful run resets the streak, and `hermes cron list` shows the
+streak alongside a failing job's last run. One-shot jobs never nudge.
 
 ```yaml
 cron:
   failure_nudge_threshold: 3   # default; 0 disables the nudge
 ```
+
+### Failure incidents: acknowledge a known failure
+
+A recurring job that keeps failing with the *same* error pings you on every
+run. Each failure is also recorded as a durable **incident**, keyed by the
+job plus a normalized signature of the error text, in the same per-profile
+ledger database as the execution history.
+
+```bash
+hermes cron incidents                 # list incidents (newest activity first)
+hermes cron incidents --state alerted # filter: detected | alerted | closed
+hermes cron incidents ack <id>        # acknowledge — stop re-pinging
+```
+
+Acknowledging an incident silences the per-run failure ping for that exact
+signature only. Nothing else changes: the run history still records every
+failure, the failure streak keeps counting, and the moment the job starts
+failing with a *different* error a new incident is minted and alerts fire
+again. A successful run doesn't touch incidents — they are per-signature, not
+per-job.
+
+Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
+failure ping reached delivery) → `closed` (acknowledged; terminal for that
+signature). Stored error text is secret-redacted and truncated before it is
+written.
+
+Recording is always on and costs nothing to ignore — no ping is ever
+suppressed until you explicitly `ack`.
 
 ## Delivery options
 
@@ -370,11 +404,22 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
+| `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
+
+### Bot Chat delivery (`bot-chat`)
+
+`bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.
+
+- `bot-chat` (bare) targets the job's own profile.
+- `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
+- Each delivery costs the target bot one full agent turn — mind the schedule frequency.
+- Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
 
 ### Routing intent (`all`)
 
@@ -433,7 +478,7 @@ cron:
   mirror_delivery: false   # set true to make cron deliveries continuable
 ```
 
-Behaviour is **thread-preferred**, scoped to the job's origin chat:
+Behaviour is **thread-preferred**, scoped to the job's own conversation:
 
 - **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
   delivery opens its own dedicated thread and the brief is seeded into that
@@ -444,8 +489,19 @@ Behaviour is **thread-preferred**, scoped to the job's origin chat:
   is mirrored into the origin DM session instead — the DM itself is the
   continuation surface.
 
-Only the origin chat is ever touched: fan-out / broadcast targets (`all`,
-explicit other-chat deliveries) are never made continuable. The mirror is
+Only the job's **own conversation** is ever touched:
+
+- the **origin chat** the job was created in;
+- the **home-channel fallback** when `deliver: origin` captured no origin (jobs
+  created by scripts or the API rather than from a live gateway chat) — the
+  user's primary conversation standing in for the origin;
+- a job's **single explicit `platform:chat` target**, but only when the job
+  itself opts in with `attach_to_session: true` — the job author declares that
+  target a conversation. The global `mirror_delivery` flag alone never makes an
+  explicitly-addressed chat continuable.
+
+Broadcast / fan-out targets (`all`, bare-platform home channels) are never made
+continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
@@ -552,6 +608,18 @@ cron:
 ```
 
 Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
+
+## Bot Chat delivery timeout
+
+A `bot-chat` delivery runs a full agent turn in the target bot's chat, so its bound is minutes, not seconds — 600s by default:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  bot_chat_delivery_timeout_seconds: 900
+```
+
+A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may still complete on its own.
 
 ## No-agent mode (script-only jobs)
 

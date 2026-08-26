@@ -280,6 +280,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
     kept_user_edits:       "↷ 已保留您的手動編輯：{files}\n若也要還原這些檔案，請使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
+    failed_deletes:        "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:

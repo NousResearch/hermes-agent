@@ -1,6 +1,28 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  sendDiagnostics: {
+    title: 'إرسال التشخيصات إلى Nous',
+    privacyNotice:
+      'سيؤدي هذا إلى رفع حزمة تصحيح إلى التخزين الداخلي لدى Nous (ليست لصيقة عامة). تتضمن معلومات النظام (نظام التشغيل، الإصدارات، المزوّد، وأنواع مفاتيح API المُهيأة — وليس المفاتيح نفسها أبداً) والسجلات الكاملة للوكيل والبوابة وسطح المكتب (حتى 512 كيلوبايت لكل منها، ومن المرجح أن تحتوي على محتوى المحادثات ومخرجات الأدوات ومسارات الملفات). تُحجب الأسرار قبل الرفع. لا يمكن الاطلاع عليها إلا لموظفي Nous ومشرفي Discord المعتمدين، وتُحذف تلقائياً بعد 14 يوماً.',
+    upload: 'رفع',
+    uploading: 'جارٍ الرفع…',
+    cancel: 'إلغاء',
+    close: 'إغلاق',
+    copyLink: 'نسخ الرابط',
+    uploadIdFallback: id => `لم يتم إرجاع رابط عرض — اذكر معرّف الرفع ${id} للدعم`,
+    doneTitle: 'تم إرسال التشخيصات',
+    doneDescription: 'تم رفع الحزمة بشكل خاص. شارك الرابط أدناه في محادثة الدعم لكي يتمكن الفريق من رؤية سجلاتك.',
+    failedTitle: 'فشل الرفع',
+    failedHint:
+      'يمكنك أيضاً تشغيل `hermes debug share --nous` من الطرفية، أو `hermes debug share --local` لعرض التقرير دون رفعه.',
+    handoffLead: 'تابع النقاش في:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'دعم بوابة Nous',
+      discord: 'Discord'
+    }
+  },
   common: {
     apply: 'تطبيق',
     back: 'رجوع',
@@ -74,6 +96,8 @@ export const ar = defineLocale({
       backendStopped: 'توقف الخلفية',
       desktopBootFailed: 'فشل تشغيل سطح المكتب',
       gatewayConnectionLost: 'انقطع الاتصال بالبوابة',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'تسجيل الدخول للبوابة مطلوب',
       ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
     },
@@ -85,6 +109,12 @@ export const ar = defineLocale({
       retry: 'إعادة المحاولة',
       repairInstall: 'إصلاح التثبيت',
       useLocalGateway: 'استخدام البوابة المحلية',
+      cloudDownTitle: 'عامل Nous Cloud معطّل',
+      cloudDownDescription:
+        'يعيد عامل السحابة المُدار من Nous الذي يتصل به هذا البوابة خطأً من الخادم. لا يمكن إعادة تشغيله من هنا — تحقق من حالته، أو بدّل إلى البوابة المحلية، أو احصل على الدعم.',
+      cloudDownHint: 'تفتح الأزرار أدناه بوابة Nous (حالة المثيل وعناصر التحكم) أو Discord للحصول على الدعم.',
+      cloudDownCheckPortal: 'التحقق من حالة البوابة',
+      cloudDownDiscord: 'الحصول على مساعدة عبر Discord',
       openLogs: 'فتح السجلات',
       repairHint: 'يعيد الإصلاح تشغيل المثبت وقد يستغرق بضع دقائق على جهاز جديد.',
       remoteSignInHint: signInLabel =>
@@ -188,6 +218,7 @@ export const ar = defineLocale({
     openStarmap: 'فتح خريطة الذاكرة',
     enterHud: 'وضع HUD',
     exitHud: 'إنهاء وضع HUD',
+    resetHudLayout: 'إعادة تعيين حجم HUD وموضعه',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
   },
@@ -248,7 +279,7 @@ export const ar = defineLocale({
       'view.showTerminal': 'إظهار الطرفية',
       'view.closeTab': 'إغلاق علامة التبويب',
       'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',
-      'view.terminalSelection': 'إرسال تحديد الطرفية إلى المحرّر',
+      'view.selectionToComposer': 'إرسال التحديد إلى المحرّر',
       'view.terminalCopy': 'نسخ تحديد الطرفية',
       'view.terminalPaste': 'لصق في الطرفية',
       'view.closePreviewTab': 'إغلاق علامة تبويب المعاينة',
@@ -440,6 +471,8 @@ export const ar = defineLocale({
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
+      vibeHeartsTitle: 'قلوب المزاج',
+      vibeHeartsDesc: 'قلوب عائمة عند قول شكراً أو أحبك أو good bot أو إرسال قلب. منفصلة عن تفاعلات الرسائل أعلاه.',
       embedsTitle: 'التضمينات المضمّنة',
       embedsDesc:
         'تُحمّل المعاينات الغنية من مواقع طرف ثالث (YouTube، X، …). "اسأل" يعرض عنصرا نائبا حتى تسمح لكل واحد؛ "دائما" يحمّلها تلقائيا؛ "إيقاف" يبقي الروابط عادية.',
@@ -733,6 +766,10 @@ export const ar = defineLocale({
       existingToken: value => `رمز موجود ${value}`,
       savedToken: 'محفوظ',
       pasteSessionToken: 'ألصق رمز الجلسة',
+      keychainEncryptionTitle: 'تشفير الأسرار المحفوظة باستخدام سلسلة مفاتيح النظام',
+      keychainEncryptionDesc:
+        'معطّل افتراضياً. عند التفعيل، تُشفَّر رموز البوابة وبيانات تسجيل الدخول باستخدام سلسلة مفاتيح النظام (Keychain Access أو GNOME Keyring أو Windows DPAPI) — وقد يطلب النظام إذناً أو كلمة مرور. عند التعطيل، تُخزَّن كملفات عادية لا يقرؤها سوى حساب المستخدم الحالي.',
+      keychainEncryptionFailed: 'تعذّر تغيير إعداد تشفير الأسرار',
       testRemote: 'اختبار البعيد',
       saveForRestart: 'حفظ للتشغيل القادم',
       saveAndReconnect: 'حفظ وإعادة الاتصال',
@@ -833,10 +870,6 @@ export const ar = defineLocale({
           label: 'الرؤية',
           hint: 'تحليل الصور'
         },
-        web_extract: {
-          label: 'استخراج الويب',
-          hint: 'تلخيص الصفحات'
-        },
         compression: {
           label: 'الضغط',
           hint: 'ضغط السياق'
@@ -856,6 +889,10 @@ export const ar = defineLocale({
         title_generation: {
           label: 'توليد العناوين',
           hint: 'عناوين الجلسات'
+        },
+        review: {
+          label: 'المراجعة',
+          hint: 'وكيل المراجعة الفرعي /review'
         },
         curator: {
           label: 'المنسّق',
@@ -1362,6 +1399,38 @@ export const ar = defineLocale({
     switchToConnection: name => `التبديل إلى ${name}`,
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
+    remoteOverride: {
+      menuItem: 'الاتصال بمضيف بعيد…',
+      badge: (host: string) => `يعمل على ${host}`,
+      title: (profile: string) => `ربط ${profile} بمضيف بعيد`,
+      description: 'ستعمل جلسات هذا الملف الشخصي على خادم Hermes البعيد الذي تحدده، بدلاً من هذا الجهاز.',
+      urlLabel: 'العنوان البعيد',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'أدخل عنواناً كاملاً يبدأ بـ http:// أو https://',
+      tokenLabel: 'رمز الوصول',
+      tokenPlaceholder: 'الصق رمز الجلسة البعيد',
+      tokenSavedHint: 'يوجد رمز محفوظ بالفعل. اتركه فارغاً للاحتفاظ به.',
+      plainTextOptIn:
+        'لا يتوفر تخزين مفاتيح آمن على هذا الجهاز، لذا سيُحفظ الرمز على القرص دون تشفير. احفظه على أي حال.',
+      collisionWarning: (label: string) =>
+        `توجد بوابة باسم «${label}» في الإعدادات بالفعل. اتصال هذا الملف الشخصي منفصل ولن يغيّرها.`,
+      confirmTitle: 'ربط هذا الملف الشخصي بمضيف بعيد؟',
+      confirmNote: (profile: string, host: string) =>
+        `ستعمل المحادثات الجديدة في ${profile} على ${host}. سيقوم ذلك الجهاز بتنفيذ الأوامر وقراءة الملفات هناك، وليس هنا. اتصل فقط بمضيف تثق به.`,
+      confirmBack: 'رجوع',
+      connect: 'اتصال',
+      connecting: 'جارٍ الاتصال…',
+      disconnect: 'إزالة الاتصال البعيد',
+      savedTitle: 'تم ربط الملف الشخصي',
+      savedMessage: (profile: string, host: string) => `${profile} يعمل الآن على ${host}`,
+      removedTitle: 'تمت إزالة الاتصال البعيد',
+      removedMessage: (profile: string) => `${profile} يعمل الآن على هذا الجهاز`,
+      removeFailed: 'تعذّرت إزالة الاتصال البعيد',
+      authFailedTitle: 'رفض المضيف البعيد الرمز المحفوظ',
+      authFailedMessage: (profile: string, host: string) =>
+        `رفض ${host} الرمز المحفوظ لـ ${profile}. ربما تم تغييره على الجانب البعيد.`,
+      updateToken: 'أدخل رمزاً جديداً…'
+    },
     actions: 'إجراءات',
     color: 'اللون',
     colorFor: 'اللون',
@@ -2189,6 +2258,7 @@ export const ar = defineLocale({
       gateway: 'البوابة',
       gatewayReady: 'البوابة جاهزة',
       gatewayNeedsSetup: 'البوابة تحتاج إعدادا',
+      gatewayUnavailable: 'الاستدلال غير متاح',
       gatewayChecking: 'جار فحص البوابة',
       gatewayConnecting: 'جار اتصال البوابة',
       gatewayOffline: 'البوابة غير متصلة',
@@ -2257,6 +2327,9 @@ export const ar = defineLocale({
     hide: 'إخفاء',
     openPreview: 'فتح المعاينة',
     openInBrowser: 'فتح في المتصفح',
+    openInExternal: 'فتح في الخارج',
+    popIn: 'إدخال',
+    popOut: 'إخراج',
     linkHint: '⌘/Ctrl-نقر لجزء المعاينة',
     sourceLineTitle: 'انقر للتحديد · shift-نقر للتوسيع · اسحب إلى المُنشئ',
     source: 'المصدر',
@@ -2345,8 +2418,8 @@ export const ar = defineLocale({
     }
   },
   zones: {
-    showHeader: 'إظهار الرأس',
-    hideHeader: 'إخفاء الرأس',
+    showTabStrip: 'إظهار علامات التبويب',
+    hideTabStrip: 'إخفاء علامات التبويب',
     showStripTab: title => `إظهار ${title}`,
     hideStripTab: title => `إخفاء ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
@@ -2434,6 +2507,24 @@ export const ar = defineLocale({
       branchNewChat: 'تفريع إلى محادثة جديدة',
       react: 'تفاعل',
       dismissError: 'تجاهل الخطأ',
+      errorLayers: {
+        auth: 'خطأ في المصادقة',
+        billing: 'نفاد الرصيد',
+        disk: 'القرص ممتلئ',
+        endpoint: 'خطأ في نقطة النهاية المخصصة',
+        gateway: 'خطأ في البوابة',
+        generic: 'فشلت الجولة',
+        provider: 'خطأ من المزوّد',
+        runtime: 'خطأ في بيئة التشغيل المحلية',
+        streaming: 'خطأ في اتصال البث'
+      },
+      errorRetry: 'إعادة المحاولة',
+      errorSwitchProvider: 'تبديل المزوّد',
+      errorOpenLogs: 'فتح السجلات',
+      errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
+      errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',
+      errorCopyDiagnostics: 'نسخ تفاصيل الخطأ',
+      errorSendDiagnostics: 'إرسال التشخيصات',
       filesChanged: count => `${count} ملفات تم تغييرها`,
       reviewChanges: 'مراجعة',
       readAloudFailed: 'فشلت القراءة بصوت عال',
@@ -2702,6 +2793,7 @@ export const ar = defineLocale({
     cwdStagedTitle: 'تم تجهيز مجلد العمل',
     cwdStagedMessage: 'سيطبق مجلد العمل على الرسالة التالية.',
     modelSwitchFailed: 'فشل تبديل النموذج',
+    hydrationSyncing: (profile: string) => `جارٍ مزامنة ${profile}\u2026`,
     sessionExported: 'تم تصدير الجلسة',
     sessionExportFailed: 'فشل تصدير الجلسة',
     imageSaved: 'تم حفظ الصورة',

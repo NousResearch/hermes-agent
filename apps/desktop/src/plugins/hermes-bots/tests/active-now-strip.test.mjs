@@ -84,11 +84,11 @@ test('roster without profiles never throws', () => {
 
 // ── botActivitySession: canonical Bot Chat activity counts (hermes-agent "6d ago" bug) ──
 
-test('botActivitySession picks the fresher preferred_session over a stale last_session', () => {
+test('botActivitySession picks the fresher canonical_session over a stale last_session', () => {
   const botActivitySession = loadBotActivitySession()
   const bot = {
     // Canonical Bot Chat (hidden from session lists): messaged seconds ago.
-    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 5, preview: 'fresh DM' },
+    canonical_session: { id: 'bot-chat', last_active: NOW / 1000 - 5, preview: 'fresh DM' },
     // Newest VISIBLE session: 6 days old — what last_session alone reports.
     last_session: { id: 'old-scratch', last_active: NOW / 1000 - 6 * 86400, preview: 'ancient' }
   }
@@ -98,16 +98,16 @@ test('botActivitySession picks the fresher preferred_session over a stale last_s
 test('botActivitySession keeps last_session when it is the fresher one', () => {
   const botActivitySession = loadBotActivitySession()
   const bot = {
-    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 3600 },
+    canonical_session: { id: 'bot-chat', last_active: NOW / 1000 - 3600 },
     last_session: { id: 'scratch', last_active: NOW / 1000 - 10 }
   }
   assert.equal(botActivitySession(bot).id, 'scratch')
 })
 
-test('botActivitySession degrades to whichever side exists (older gateways / no pin)', () => {
+test('botActivitySession degrades to whichever session summary exists on an older gateway', () => {
   const botActivitySession = loadBotActivitySession()
   assert.equal(botActivitySession({ last_session: { id: 'only', last_active: 1 } }).id, 'only')
-  assert.equal(botActivitySession({ preferred_session: { id: 'pin', last_active: 1 } }).id, 'pin')
+  assert.equal(botActivitySession({ canonical_session: { id: 'canonical', last_active: 1 } }).id, 'canonical')
   assert.equal(botActivitySession({}), null)
   assert.equal(botActivitySession(null), null)
 })
@@ -117,7 +117,7 @@ test('activeBots counts Bot Chat activity that last_session cannot see', () => {
   const bots = [
     {
       name: 'default',
-      preferred_session: { last_active: NOW / 1000 - 5 },
+      canonical_session: { last_active: NOW / 1000 - 5 },
       last_session: { last_active: NOW / 1000 - 6 * 86400 }
     }
   ]
@@ -164,7 +164,7 @@ test('activeBots ignores a finished worker outside the liveness window', () => {
 test('ActiveNowStrip renders above the roster, is a live region, and is click-accessible', () => {
   // Strip is placed between the pane header and the search field.
   const headerEnd = source.indexOf("children: 'Bots'")
-  const searchField = source.indexOf("placeholder: 'Search bots…'")
+  const searchField = source.indexOf("placeholder: 'Search bots and group chats…'")
   assert.ok(headerEnd >= 0 && searchField > headerEnd)
 
   const stripStart = source.indexOf('jsx(ActiveNowStrip')
@@ -172,14 +172,22 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
 
   // Live region announces membership changes politely.
   assert.match(source, /'aria-live': 'polite'/)
-  // Chips are real buttons (keyboard/click accessible), reuse BotFace, and
-  // open the canonical chat via the same path as roster rows.
-  assert.match(source, /jsx\('button', \{\s*type: 'button',\s*title: `Open \$\{label\}'s chat`/)
-  // The key rides as jsx()'s third argument — the ONLY form React treats as
-  // a list key; a `key:` prop leaves chips unkeyed (index identity).
-  assert.match(source, /\}, botRosterKey\(bot\)\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
+  // Chips use the shared Tip component, remain keyboard/click accessible,
+  // and open the canonical chat via the same path as roster rows.
+  assert.match(source, /label: `Open \$\{label\}'s chat`/)
+  assert.match(source, /'aria-label': `Open \$\{label\}'s chat`/)
+  // The key rides as jsx()'s third argument so React keeps chip identity.
+  assert.match(source, /botRosterKey\(bot\)\s*\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
-  assert.match(source, /let pinnedChat = botRosterMeta\(bot, allMeta\)\?\.chat/)
-  assert.match(source, /await prepareBotSource\(bot, pinnedChat\)/)
-  assert.match(source, /bot\.preferred_session \|\| bot\.last_session/)
+  // Chips share the exact-owner route with roster rows. That route activates the
+  // owner source, then resolves the profile's canonical name registry; no
+  // renderer pointer or preview-derived session id participates.
+  assert.match(source, /onOpen: bot => void openRosterBot\(bot\)/)
+
+  const openStart = source.indexOf('async function openRosterBot(')
+  assert.ok(openStart >= 0)
+  const open = source.slice(openStart, openStart + 3200)
+
+  assert.match(open, /await prepareBotSource\(bot\)/)
+  assert.match(open, /await openBotCanonicalChat\(bot\)/)
 })

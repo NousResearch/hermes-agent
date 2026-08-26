@@ -50,19 +50,13 @@ class TestSchema:
             "focus_app",
         }
 
-    def test_schema_max_elements_documents_default_and_upper_bound(self):
-        """Schema description must agree with the runtime. The original PR
-        text said "Default 100" without a corresponding `default` field, and
-        had no upper bound — both Copilot findings.
+    def test_schema_no_longer_advertises_max_elements(self):
+        """max_elements was removed: captures always cap the surfaced element
+        window at the fixed default and spill the full tree to elements_file,
+        so there is no caller-tunable cap to document.
         """
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        from tools.computer_use.tool import (
-            _DEFAULT_MAX_ELEMENTS,
-            _MAX_ALLOWED_MAX_ELEMENTS,
-        )
-        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
-        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
-        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+        assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
 
 class TestRegistration:
@@ -362,10 +356,10 @@ class TestCaptureResponse:
         # the JSON view is partial and can re-issue with a tighter scope.
         assert "truncated to" in parsed["summary"]
 
-    def test_capture_ax_clamps_oversized_max_elements_to_hard_cap(self):
-        """A caller passing a very large `max_elements` must not be able to
-        disable the safeguard. The cap is clamped to a hard upper bound so
-        the context-blow-up protection cannot be bypassed by argument.
+    def test_capture_ax_ignores_stale_max_elements_argument(self):
+        """`max_elements` was removed from the schema; the surfaced window is a
+        fixed cap with the full tree spilled to elements_file. A stale caller
+        still passing max_elements must not be able to raise the cap.
         """
         from tools.computer_use import tool as cu_tool
 
@@ -376,9 +370,12 @@ class TestCaptureResponse:
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
             )
         parsed = json.loads(out)
-        assert len(parsed["elements"]) == cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        # Ignored: cap stays at the fixed default regardless of the argument.
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
         assert parsed["total_elements"] == 5000
-        assert parsed["truncated_elements"] == 5000 - cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        assert parsed["truncated_elements"] == 5000 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # The full tree is spilled so nothing is lost.
+        assert parsed.get("elements_file")
 
 class TestCuaCaptureImageDimensions:
     def test_png_dimensions_are_sniffed_from_image_bytes(self):
@@ -1256,6 +1253,89 @@ class TestCuaDriverSessionReconnect:
         assert session._reconnect_log == ["stop", "start"]
         assert len(bridge.calls) == 1
 
+    def test_timeout_marks_session_suspect_without_replaying(self):
+        """An MCP timeout fails closed: outcome unknown, no silent replay (#74799)."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise concurrent.futures.TimeoutError()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        # Uncertainty surfaced in the error shape: the action MAY have taken
+        # effect on the remote screen before the deadline hit.
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "timeout_outcome_unknown"
+        assert result["structuredContent"]["next_step"] == "fresh_state"
+        assert "unknown" in result["data"]
+        # The timed-out call was NOT replayed and the session was not
+        # eagerly torn down — recreation is deferred to the next call.
+        assert len(bridge.calls) == 1
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is True
+
+    def test_suspect_session_is_recreated_before_next_call(self):
+        """The next call_tool tears down + recreates the suspect session first."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.timeout = True
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                if self.timeout:
+                    raise concurrent.futures.TimeoutError()
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        session.call_tool("get_window_state", {"window_id": 42})
+        assert session._timeout_suspect is True
+
+        bridge.timeout = False
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+
+        # Recreate-before-call: stop/start happened ahead of the second call,
+        # and only one call per call_tool — no replay of either operation.
+        assert session._reconnect_log == ["stop", "start"]
+        assert [c for c in bridge.calls] == [
+            ("call", "get_window_state", {"window_id": 42}),
+            ("call", "list_apps", {}),
+        ]
+        # Flag cleared: subsequent calls do not trigger another restart.
+        assert session._timeout_suspect is False
+        session.call_tool("list_windows", {})
+        assert session._reconnect_log == ["stop", "start"]
+
+    def test_healthy_session_is_never_restarted(self):
+        """Negative probe: a clean call must not touch the session lifecycle."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is False
+
     def test_mutation_does_not_cross_to_cli_on_transient_proxy_error(self):
         class FakeBridge:
             def run(self, value, timeout=None):
@@ -1452,7 +1532,8 @@ class TestCaptureAppFilterNoMatch:
              "structuredContent": None},
         ]
 
-        backend.capture(mode="ax")
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            backend.capture(mode="ax")
 
         assert backend._active_pid == 200
         assert backend._active_window_id == 2

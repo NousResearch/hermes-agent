@@ -179,6 +179,37 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
     assert db.rows == ["exactly once"]
 
 
+def test_malformed_memory_config_still_builds_default_store():
+    """A non-mapping memory section must not leave an advertised dead tool."""
+    malformed = {"memory": "not-a-mapping"}
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value=malformed,
+        ),
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=["memory"],
+        )
+
+    assert agent._memory_enabled is True
+    assert agent._user_profile_enabled is True
+    assert agent._memory_store is not None
+    assert agent._memory_store.memory_enabled is True
+    assert agent._memory_store.user_profile_enabled is True
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
@@ -1007,11 +1038,6 @@ class TestBuildSystemPrompt:
             return next(ln for ln in p.splitlines()
                         if ln.startswith("Conversation started:"))
         assert _line(agent._build_system_prompt()) == _line(agent._build_system_prompt())
-
-    def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
-        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
-        prompt = agent._build_system_prompt()
-        assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -2658,6 +2684,42 @@ class TestHandleMaxIterations:
             outcome="success",
         )
 
+    def test_suppress_status_output_keeps_iteration_warning_off_stdout(self, agent, capsys):
+        """Machine-readable mode (-Q/oneshot) must not contaminate stdout (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.suppress_status_output = True
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        captured = capsys.readouterr()
+        assert result == "Summary"
+        assert "Reached maximum iterations" not in captured.out
+
+    def test_plain_quiet_mode_still_prints_iteration_warning(self, agent, capsys):
+        """Interactive CLI runs quiet_mode=True by default — the warning must
+        still show there; only suppress_status_output gates it (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.quiet_mode = True
+        agent.suppress_status_output = False
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        assert result == "Summary"
+        combined = "\n".join(printed) + capsys.readouterr().out
+        assert "Reached maximum iterations" in combined
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
@@ -2816,6 +2878,51 @@ class TestHandleMaxIterations:
         assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
             "call_123"
         ]
+
+    def test_api_sanitizer_matches_responses_id_when_result_keyed_on_id(self, agent):
+        """Inverse of the call_id case: a tool_call carries BOTH ``id`` (fc_...)
+        and a distinct ``call_id``, but the matching result is keyed on ``id``.
+        The sanitizer preferred ``call_id`` only, so it treated the valid
+        result as orphaned, dropped it, and injected a bogus
+        '[Result unavailable ...]' stub — silently eating a real tool result
+        (e.g. mnemosyne_recall / cronjob list). The result must survive intact.
+        (#55626)"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_456",
+                        "call_id": "call_456",
+                        "type": "function",
+                        "function": {"name": "mnemosyne_recall", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "fc_456", "content": '{"results": [1, 2]}'},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "fc_456"
+        assert tool_msgs[0]["content"] == '{"results": [1, 2]}'
+        assert "Result unavailable" not in tool_msgs[0]["content"]
+
+    def test_api_sanitizer_still_drops_genuinely_orphaned_result(self, agent):
+        """The id-variant matching must not weaken orphan removal: a tool result
+        whose tool_call_id matches NO assistant tool_call (neither call_id nor
+        id) is still dropped. (#55626 regression guard)"""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "call_nomatch", "content": "orphan"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert all(m.get("role") != "tool" for m in sanitized)
 
     def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
         """A tool_call with id but empty function.name makes the Responses-API
@@ -3468,6 +3575,49 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
+
+    def test_openrouter_empty_retry_bypasses_response_cache(self, agent, monkeypatch):
+        """An OpenRouter empty retry must not replay the cached empty response."""
+        self._setup_agent(agent)
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        content_resp = _mock_response(
+            content="Fresh provider response.",
+            finish_reason="stop",
+        )
+        responses = iter([empty_resp, content_resp])
+        request_kwargs = []
+
+        def _create(**kwargs):
+            request_kwargs.append(kwargs)
+            return next(responses)
+
+        original_build_api_kwargs = agent._build_api_kwargs
+
+        def _build_api_kwargs(*args, **kwargs):
+            built = original_build_api_kwargs(*args, **kwargs)
+            built["extra_headers"] = {"X-Custom-Header": "preserved"}
+            return built
+
+        agent.client.chat.completions.create.side_effect = _create
+        monkeypatch.setattr(agent, "_build_api_kwargs", _build_api_kwargs)
+        monkeypatch.setattr(
+            "agent.conversation_loop.jittered_backoff",
+            lambda *args, **kwargs: 0.0,
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["final_response"] == "Fresh provider response."
+        assert "X-OpenRouter-Cache" not in request_kwargs[0].get(
+            "extra_headers", {}
+        )
+        assert request_kwargs[1]["extra_headers"]["X-Custom-Header"] == "preserved"
+        assert request_kwargs[1]["extra_headers"]["X-OpenRouter-Cache"] == "false"
 
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""

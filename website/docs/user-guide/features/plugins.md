@@ -112,6 +112,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
 | Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
 | Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](/developer-guide/context-engine-plugin) |
+| Register a terminal execution backend (cloud sandbox) | `ctx.register_terminal_environment_provider(provider)` — see [Terminal Environment Plugins](/developer-guide/terminal-environment-plugin) |
 | Route human approval prompts | `ctx.register_approval_transport(name, present_fn)` — see [Approval transports](#approval-transports) |
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (uses a separate discovery system) |
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/developer-guide/plugin-llm-access) |

@@ -76,12 +76,14 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
+          # arm64 builds on the native arm64 larger runner. A build of
+          # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64
@@ -169,7 +171,11 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
         run: |
-          scripts/run_tests.sh tests/docker/ --file-timeout 600
+          # Each of these tests drives a container, so the docker daemon sets
+          # the limit and not the processor. This caps the workers. The
+          # default from run_tests.sh is cpu_count*2, which starts 64
+          # containers together on the 32-core amd64 runner.
+          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
   # Rebuild and push each architecture only after the unprivileged build/test
@@ -184,12 +190,13 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
+          # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64

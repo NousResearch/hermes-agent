@@ -226,6 +226,68 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
     return migrate_config(interactive=interactive, quiet=quiet)
 
 
+def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
+    """Migrate every SIBLING profile's config.yaml to the current version.
+
+    #91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the
+    shared checkout serves every profile, but ``hermes update`` historically
+    migrated only the active profile's config — siblings drifted versions
+    until their gateway hit a config the new code couldn't read.
+
+    Per profile home (skipping the active one, already migrated by the
+    caller): scope config reads/writes via the context-local HERMES_HOME
+    override (thread-safe — never ``os.environ``), check the version, and
+    run the NON-INTERACTIVE, quiet migration. Prompt-requiring settings are
+    left for the profile's own next interactive session, identical to the
+    gateway-mode contract for the active profile.
+
+    Returns ``[(profile_name, from_version, to_version), ...]`` for profiles
+    actually migrated. Never raises; a failing profile is skipped (its own
+    startup migration remains the fallback).
+    """
+    migrated: list[tuple[str, int, int]] = []
+    try:
+        from hermes_constants import (
+            get_process_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
+
+        active_home = get_process_hermes_home()
+        root = _get_profiles_root()
+        if not root.is_dir():
+            return migrated
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+                continue
+            try:
+                if entry.resolve() == Path(active_home).resolve():
+                    continue
+            except OSError:
+                continue
+            if not (entry / "config.yaml").is_file():
+                continue  # profile never configured — nothing to migrate
+            token = set_hermes_home_override(entry)
+            try:
+                current_ver, latest_ver = _run_config_check_fresh()
+                if current_ver >= latest_ver:
+                    continue
+                _run_migrate_config_fresh(interactive=False, quiet=True)
+                after_ver, _ = _run_config_check_fresh()
+                if after_ver > current_ver:
+                    migrated.append((entry.name, current_ver, after_ver))
+            except Exception as exc:
+                logger.debug(
+                    "Config migration for profile %s failed: %s", entry.name, exc
+                )
+            finally:
+                reset_hermes_home_override(token)
+    except Exception as exc:
+        logger.debug("Sibling profile enumeration failed: %s", exc)
+    return migrated
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -1004,14 +1066,23 @@ def _assess_parked_branch_switch(
     autostashed, ran its post-update steps and printed "✓ Code updated!"
     while the running code stayed days behind main. The guard's contract:
 
-    - safe (True, "") only when the working tree + index are clean AND every
-      commit on the parked branch is already contained in
-      ``origin/<target_branch>`` (``git cherry`` reports no ``+`` lines).
-    - anything else — dirty tree, unmerged commits, git errors, or the
-      ``updates.auto_switch_parked_branch: false`` config opt-out — returns
-      (False, <reason>) and the caller must NOT touch the branch.
+    - (True, "") when the working tree + index are clean AND every commit on
+      the parked branch is already contained in ``origin/<target_branch>``
+      (``git cherry`` reports no ``+`` lines).
+    - (True, "unmerged:<count>") when the tree is clean but the branch has
+      commits not yet in the target. Switching is safe — ``git checkout``
+      never discards committed work and the branch keeps the commits — but
+      the caller must print a LOUD notice naming the branch and count so the
+      work is not forgotten. This is what non-interactive callers (desktop
+      update button, gateway /update, cron) rely on: they have no way to
+      resolve a skip, so a clean checkout must always reach the target.
+    - (False, <reason>) — dirty tree, git errors, or the
+      ``updates.auto_switch_parked_branch: false`` config opt-out — and the
+      caller must NOT touch the branch. A dirty tree is the one genuinely
+      unsafe case: uncommitted work would have to ride an autostash across
+      branches, which is how the 2026-08-17 incident started.
 
-    Reasons: "disabled", "dirty", "unmerged:<count>", "unverifiable".
+    Block reasons: "disabled", "dirty", "unverifiable".
     """
     try:
         from hermes_cli.config import load_config
@@ -1047,7 +1118,10 @@ def _assess_parked_branch_switch(
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
     if unmerged:
-        return False, f"unmerged:{len(unmerged)}"
+        # Clean tree: switching is safe (checkout keeps the commits on the
+        # branch). The reason string tells the caller to print the loud
+        # "branch kept with N unmerged commit(s)" notice.
+        return True, f"unmerged:{len(unmerged)}"
     return True, ""
 
 
@@ -1074,12 +1148,6 @@ def _print_parked_branch_skip_warning(
 
     if reason == "dirty":
         why = "the working tree has uncommitted changes"
-    elif reason.startswith("unmerged:"):
-        count = reason.split(":", 1)[1]
-        why = (
-            f"the branch has {count} commit(s) not merged into "
-            f"origin/{target_branch}"
-        )
     elif reason == "disabled":
         why = "updates.auto_switch_parked_branch is set to false in config.yaml"
     else:
@@ -1109,6 +1177,35 @@ def _print_parked_branch_skip_warning(
     print(bar)
 
 
+def _print_parked_branch_kept_notice(
+    current_branch: str, target_branch: str, unmerged_count: str
+) -> None:
+    """LOUD notice printed when a clean parked branch with unmerged commits
+    is auto-switched back to the update target.
+
+    Non-interactive callers (desktop update button, gateway /update, cron)
+    cannot resolve a skip, so a clean checkout always proceeds to the
+    target — but the unmerged work must be impossible to miss.  The commits
+    are untouched: ``git checkout`` never discards committed work; the
+    branch keeps them until the user returns.
+    """
+    bar = "=" * 68
+    print()
+    print(bar)
+    print(
+        f"⚠ Checkout was parked on '{current_branch}' with "
+        f"{unmerged_count} commit(s) not merged into origin/{target_branch}."
+    )
+    print(
+        f"  Switching to {target_branch} so the update can proceed — your "
+        f"commit(s) are safe on '{current_branch}'."
+    )
+    print()
+    print("  To pick the work back up later:")
+    print(f"    git checkout {current_branch}")
+    print(bar)
+
+
 def _print_update_completion(message: str) -> None:
     """Print an update outcome plus, when the dashboard launched this run
     with an action id, a terminal receipt line the Desktop can match after
@@ -1121,6 +1218,208 @@ def _print_update_completion(message: str) -> None:
     action_id = os.environ.get("HERMES_ACTION_ID", "")
     if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
         print(f"=== hermes-update completed {action_id} ===")
+
+
+def _called_process_error_cmd_parts(exc: subprocess.CalledProcessError) -> list[str]:
+    """Normalize ``CalledProcessError.cmd`` into argv-style tokens."""
+    cmd = exc.cmd
+    if cmd is None:
+        return []
+    if isinstance(cmd, (str, bytes)):
+        text = cmd.decode("utf-8", "replace") if isinstance(cmd, bytes) else cmd
+        try:
+            return shlex.split(text, posix=os.name != "nt")
+        except ValueError:
+            return text.split()
+    return [str(part) for part in cmd]
+
+
+def _called_process_error_is_git(exc: subprocess.CalledProcessError) -> bool:
+    """True when the failed subprocess was git itself."""
+    parts = _called_process_error_cmd_parts(exc)
+    if not parts:
+        return False
+    # Windows argv may use backslashes; basename() on POSIX would otherwise
+    # keep the whole path. Normalize separators before taking the name.
+    name = os.path.basename(parts[0].replace("\\", "/")).lower()
+    return name in {"git", "git.exe"}
+
+
+def _called_process_error_is_python_dep_install(
+    exc: subprocess.CalledProcessError,
+) -> bool:
+    """True when the failed subprocess was a uv/pip (or ensurepip) install."""
+    parts = [part.lower() for part in _called_process_error_cmd_parts(exc)]
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0].replace("\\", "/"))
+    if "ensurepip" in parts:
+        return True
+    if "install" in parts and (
+        "pip" in parts or exe in {"pip", "pip.exe", "pip3", "pip3.exe", "uv", "uv.exe"}
+    ):
+        return True
+    return False
+
+
+def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
+    """Name the update stage that actually failed.
+
+    The git pull and the Python-dependency install share one ``try`` in
+    ``_cmd_update_impl``. Calling every ``CalledProcessError`` a git failure
+    (the historical Windows message) sent users hunting in the wrong place
+    and, worse, keyed the ZIP overlay on exception *type* rather than on git
+    actually having failed (#87304, #85840).
+    """
+    if _called_process_error_is_python_dep_install(exc):
+        return "Python dependency install failed"
+    if _called_process_error_is_git(exc):
+        return "Git update failed"
+    return "Update step failed"
+
+
+def _shim_quarantine_error_type() -> "type[BaseException]":
+    """The strict-quarantine refusal type, resolved lazily through ``_m()``.
+
+    Falls back to a never-raised private type when main.py lacks it (torn
+    mid-update tree), so the ``except`` clause stays valid.
+    """
+    cls = getattr(_m(), "ShimQuarantineError", None)
+    if isinstance(cls, type) and issubclass(cls, BaseException):
+        return cls
+
+    class _Never(Exception):
+        pass
+
+    return _Never
+
+
+def _refuse_update_for_contended_shims(exc: BaseException) -> None:
+    """Refuse the dependency sync when live shims could not be quarantined.
+
+    #87331 fail-closed half: a shim rename that failed every retry proves a
+    process holds the venv without FILE_SHARE_DELETE — running the installer
+    anyway is exactly how the venv ends up stranded between versions. The
+    code swap (when one happened) is already committed; only the dependency
+    install is deferred, via the update-incomplete marker, to the next fresh
+    launch after the holder exits. Exits 2 (refused) so the command-boundary
+    receipt net records it as a refusal, not a failure.
+    """
+    print("✗ Cannot continue the update: live Hermes launcher(s) could not be")
+    print("  moved aside:")
+    for name in getattr(exc, "failed_shims", []) or ["hermes.exe"]:
+        print(f"    {name}")
+    print("  Another process is holding this install's venv — typically Hermes")
+    print("  Desktop, a gateway, or another hermes REPL — and mutating the venv")
+    print("  now would strand it half-updated.")
+    print("  The dependency install has been deferred: close the process(es)")
+    print("  above, then run any `hermes` command to finish it automatically.")
+    # Idempotent: the git path already dropped the marker before the sync;
+    # this covers the ZIP/repair paths so the deferral is never silent.
+    _write_update_incomplete_marker()
+    sys.exit(2)
+
+
+def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
+    """ZIP fallback is for Windows git file-I/O breakage, not later stages.
+
+    A dependency-install failure (locked ``hermes.exe`` / ``uv pip install``
+    exit 2) is not a git failure. The pull has already succeeded by then, so
+    re-downloading the source ZIP cannot fix the install and would replace
+    every top-level entry except ``venv`` / ``node_modules`` / ``.git`` /
+    ``.env`` — permanently deleting uncommitted edits and untracked files.
+    """
+    return (
+        isinstance(exc, subprocess.CalledProcessError)
+        and _m()._is_windows()
+        and _called_process_error_is_git(exc)
+    )
+
+
+def _print_called_process_error_tail(
+    exc: subprocess.CalledProcessError, *, limit: int = 12
+) -> None:
+    """Print a captured stderr/stdout tail when the failing call recorded one."""
+    blob = exc.stderr or exc.stdout or ""
+    if isinstance(blob, bytes):
+        blob = blob.decode("utf-8", "replace")
+    lines = [line for line in str(blob).splitlines() if line.strip()]
+    if not lines:
+        return
+    print("  Last output:")
+    for line in lines[-limit:]:
+        print(f"    {line}")
+
+
+def _zip_overlay_block_reason(
+    root: Path, *, ignore_staging_artifacts: bool = False
+) -> Optional[str]:
+    """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
+
+    The ZIP path swaps every top-level entry (except a tiny preserve set) and
+    then deletes the backups, so uncommitted edits and untracked files under
+    a replaced directory are gone. Fail closed when git status cannot run:
+    unknown dirtiness is not a license to clobber the tree (#87304).
+
+    ``ignore_staging_artifacts`` is for the pre-swap re-check: phase 1 of the
+    two-phase replace creates ``*.hermes-update-staging`` siblings inside the
+    checkout, which git reports as untracked. Those are our own artifacts,
+    not user work — without the filter the re-check would always refuse.
+    """
+    if not (root / ".git").exists():
+        return None
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    result = subprocess.run(
+        # -uall: a user-level ``status.showUntrackedFiles = no`` git config
+        # would otherwise hide untracked files and silently blind this guard.
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        suffix = f" ({detail[0]})" if detail else ""
+        return f"could not check the working tree{suffix}"
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    if ignore_staging_artifacts:
+        lines = [
+            line for line in lines if not _is_zip_staging_artifact_status_line(line)
+        ]
+    if lines:
+        return "the working tree has uncommitted changes or untracked files"
+    return None
+
+
+_ZIP_STAGING_ARTIFACT_SUFFIXES = (".hermes-update-staging", ".hermes-update-old")
+
+
+def _is_zip_staging_artifact_status_line(line: str) -> bool:
+    """True when a porcelain status line is our own two-phase-swap artifact."""
+    payload = line[3:] if len(line) >= 3 else line
+    top_level = (
+        payload.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
+    )
+    return top_level.endswith(_ZIP_STAGING_ARTIFACT_SUFFIXES)
+
+
+def _abort_zip_update_if_dirty_tree() -> None:
+    """Refuse to overlay a ZIP onto a dirty git checkout (#87304)."""
+    reason = _zip_overlay_block_reason(_m().PROJECT_ROOT)
+    if reason is None:
+        return
+    print(f"✗ ZIP fallback refused: {reason}.")
+    print(
+        "  Overlaying the ZIP would overwrite uncommitted edits and permanently "
+        "delete untracked files."
+    )
+    print("  Stash or commit your changes, then rerun `hermes update`.")
+    print("  To inspect: git status --porcelain")
+    _m().sys.exit(1)
 
 
 def _read_project_version() -> str | None:
@@ -1157,6 +1456,27 @@ def _update_complete_message(pre_version: str | None) -> str:
     if post_version:
         return f"✓ Update complete! (v{post_version})"
     return "✓ Update complete!"
+ 
+ 
+def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
+    """Delete the WAL / shared-memory / rollback-journal files next to *db_path*.
+
+    Call this immediately before overwriting a database file with a snapshot
+    image. Quick snapshots are produced by ``backup._safe_copy_db`` through
+    ``sqlite3.backup()``, so the image is already checkpointed and owns no WAL —
+    which is exactly why ``backup._EXCLUDED_SUFFIXES`` refuses to ship sidecars
+    inside a snapshot. Copying the image over the destination replaces only the
+    main database file, so any ``-wal`` / ``-shm`` left behind by the *old*
+    database (a crashed writer, or a second Hermes process the updater's drain
+    did not stop) survives and is replayed over the fresh image on the next
+    open. The result passes ``PRAGMA integrity_check`` while serving the old
+    database's contents, and the first checkpoint folds it in permanently.
+
+    Removing them is safe here specifically: they belong to a database the
+    caller has already declared corrupt and is about to discard.
+    """
+    for suffix in ("-wal", "-shm", "-journal"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
 def _print_update_summary(
@@ -1196,6 +1516,43 @@ def _write_gateway_update_exit_code(ok: bool) -> None:
         pass
 
 
+def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
+    """Replace *state_path* with the snapshot image at *snap_state*.
+
+    Shared by both post-update auto-restore paths (the ZIP update and the git
+    pull). The destination's stale sidecars are cleared before the copy, so the
+    restored image cannot be silently overwritten by the corrupt database's WAL
+    replay — see :func:`_clear_stale_sqlite_sidecars`.
+
+    Refuses (returns ``False``) while another process still holds the database
+    or its sidecars open: copying a snapshot over a live writer's inode makes
+    the writer's page cache and WAL index disagree with the file bytes, and
+    its next checkpoint writes pages at offsets that no longer mean what it
+    thinks — the #90950 page-1 clobber. ``None`` (scan unavailable) proceeds:
+    the updater has already drained gateways, and refusing on "unknown" would
+    disable auto-restore on every non-Linux host.
+
+    Returns ``True`` when the restored file passes an integrity check. Raises
+    ``OSError`` if the copy itself fails, which callers already report.
+    """
+    from hermes_cli.backup import _foreign_db_holder_pids, verify_sqlite_integrity
+
+    holders = _foreign_db_holder_pids(state_path)
+    if holders:
+        print(
+            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
+            "state.db or its WAL open. Stop them (hermes gateway stop), "
+            "then restore manually with /snapshot restore."
+        )
+        return False
+    _clear_stale_sqlite_sidecars(state_path)
+    shutil.copy2(snap_state, state_path)
+    restored = verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True
+    )
+    return bool(restored.get("valid"))
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -1233,6 +1590,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    _abort_zip_update_if_dirty_tree()
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -1326,6 +1684,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                 src = os.path.join(extracted, item)
                 dst = os.path.join(str(_m().PROJECT_ROOT), item)
                 staged.append((_stage_replacement(src, dst), dst))
+                # #70337/#87331: the GitHub source ZIP contains only source —
+                # apps/desktop/release/ (the BUILT desktop app, win-unpacked/
+                # Hermes.exe) exists only in the LIVE tree. Swapping `apps`
+                # without it deletes the desktop build and breaks the
+                # shortcut. Graft the live release dir into the staged copy
+                # BEFORE the swap so the commit preserves it atomically.
+                if item == "apps":
+                    live_release = os.path.join(dst, "desktop", "release")
+                    staged_release = os.path.join(
+                        staged[-1][0], "desktop", "release"
+                    )
+                    if os.path.isdir(live_release) and not os.path.exists(
+                        staged_release
+                    ):
+                        os.makedirs(os.path.dirname(staged_release), exist_ok=True)
+                        shutil.copytree(live_release, staged_release)
         except Exception:
             # Nothing is live yet; drop the partial staging copies so a retry
             # starts from the same free space this attempt did.
@@ -1333,6 +1707,23 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             raise
 
         try:
+            # Re-check the tree right before the swap (#87304 TOCTOU): the
+            # download + extract + staging window above can take minutes, and
+            # work created in it would be destroyed by the commit below. Our
+            # own phase-1 staging siblings are filtered out — they are the
+            # expected artifacts of getting here, not user work.
+            recheck_reason = _zip_overlay_block_reason(
+                _m().PROJECT_ROOT, ignore_staging_artifacts=True
+            )
+            if recheck_reason is not None:
+                _discard_staged(staged)
+                print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
+                print(
+                    "  Files appeared in the checkout while the update was "
+                    "downloading; committing the swap would delete them."
+                )
+                print("  Stash or commit your changes, then rerun `hermes update`.")
+                _m().sys.exit(1)
             _commit_staged_replacements(staged)
         except Exception:
             # The rollback already restored every swapped entry, but staging
@@ -1394,11 +1785,23 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+        # Same third-party UV-env isolation as the main update path (#83914):
+        # a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON from unrelated
+        # software must not steer which interpreter uv resolves here.
+        from hermes_cli.managed_uv import managed_python_env
+
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        try:
+            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        except _shim_quarantine_error_type() as _sqe:
+            # #87331: this runs inside the ZIP-fallback error handler, so the
+            # boundary except clause in cmd_update cannot catch it — refuse
+            # here with the same defer-via-marker contract.
+            _refuse_update_for_contended_shims(_sqe)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -1531,15 +1934,9 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from snapshot "
                                             f"{_snap_dir.name}"
@@ -1576,6 +1973,14 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
+    try:
+        from hermes_cli.update_receipt import finalize_update_receipt
+
+        finalize_update_receipt(
+            "success" if (desktop_build_ok and not node_failures) else "partial"
+        )
+    except Exception as _receipt_exc:
+        logger.debug("Update receipt finalize (zip path) failed: %s", _receipt_exc)
     return desktop_build_ok
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -2224,6 +2629,65 @@ def _format_concurrent_instances_message(
     lines.append("  Override with `hermes update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)
+
+
+def _classify_concurrent_instance(pid: int) -> str:
+    """Return ``"gateway"`` when ``pid``'s command line is a gateway runtime.
+
+    Delegates to ``_is_pausable_gateway`` — the same canonical
+    ``gateway run`` matcher (``gateway.status.looks_like_gateway_command_line``,
+    shlex-tokenized, profile-selector aware) used by the Desktop preflight
+    exemption and the venv-holder guard fallback — so a PID classified as
+    ``"gateway"`` here is exactly the set the pause/kill+restart machinery
+    downstream will stop. That symmetry is what lets the pre-update
+    concurrent gate skip the abort for gateway-only matches: the gateway is
+    going to be stopped by ``_pause_windows_gateways_for_update()`` moments
+    later anyway, so refusing the update just to make the user kill it
+    manually is friction without benefit.
+
+    Returns ``"non-gateway"`` when the cmdline doesn't match, and
+    ``"unknown"`` when psutil can't read it (process gone, access denied,
+    psutil missing). The gate treats ``"unknown"`` as non-gateway — we'd
+    rather block an update we could have completed than proceed against a
+    process we couldn't positively identify as a gateway.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+    except Exception:
+        return "unknown"
+
+    try:
+        proc = psutil.Process(int(pid))
+        cmdline_list = proc.cmdline()
+    except Exception:
+        return "unknown"
+
+    from hermes_cli._scan_venv_blockers import _is_pausable_gateway  # noqa: PLC0415
+
+    cmdline = " ".join(cmdline_list or [])
+    if _is_pausable_gateway(cmdline):
+        return "gateway"
+    return "non-gateway"
+
+
+def _filter_non_gateway_concurrent_instances(
+    matches: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """Return only the concurrent-instance matches that are NOT the gateway.
+
+    Used by the pre-update concurrent gate to decide whether to abort
+    ``hermes update``. If every concurrent instance is a gateway, the pause
+    machinery (``_pause_windows_gateways_for_update``) and the post-update
+    kill+restart block handle it — the update proceeds. If anything else (a
+    TUI shell, a Hermes Desktop backend child, an unrelated ``hermes`` REPL)
+    is in the list, the gate still aborts with the existing message, since
+    those have no pause machinery downstream.
+    """
+    non_gateway: list[tuple[int, str]] = []
+    for pid, name in matches:
+        if _classify_concurrent_instance(pid) != "gateway":
+            non_gateway.append((pid, name))
+    return non_gateway
 
 def _upgrade_pip_before_lazy_refresh(
     install_cmd_prefix: list[str],
@@ -3173,7 +3637,7 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+    r"""Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
     gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
@@ -3187,14 +3651,19 @@ def _ensure_acp_launcher() -> None:
     (venv wrapper, FHS symlink, pipx/pip console script) without having to
     reconstruct interpreter/entrypoint paths.
 
-    No-op on Windows (install.ps1 copies ``hermes.exe`` + ``hermes-acp.exe``
-    into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
-    so ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
-    already present next to the ``hermes`` command.  Unwritable directories
-    (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
+    No-op on Windows (install.ps1 stages the ``hermes`` / ``hermes-acp``
+    launchers into the managed binary dir ``$HermesHome\bin`` and puts THAT
+    on the user PATH — never the whole ``venv\Scripts`` dir, which would
+    shadow the user's ``python`` (#83797); when those launchers go missing,
+    ``hermes_cli._install_repair.ensure_windows_bin_launchers`` re-stages
+    them) and wherever a ``hermes-acp`` is already present next to the
+    ``hermes`` command.  Unwritable directories (e.g. ``/usr/local/bin`` as
+    non-root) are skipped silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
+        # Windows launcher staging/repair lives in _install_repair
+        # (ensure_windows_bin_launchers at process start,
+        # migrate_windows_bin_path in this command's tail) — not here.
         return
     for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
         hermes_cmd = bin_dir / "hermes"
@@ -3222,6 +3691,11 @@ def _ensure_acp_launcher() -> None:
         print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
+# Sibling-profile snapshot ids from the current run's pre-update backup
+# ({profile: snapshot_id}) — consumed by the post-update per-profile
+# cron-jobs safety net (#66140). Module-level because the snapshot and the
+# restore run in the same process but far apart in _cmd_update_impl.
+_LAST_SIBLING_SNAPSHOTS: dict = {}
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
 # skipped with a warning: the snapshot exists to protect small, hard-to-
@@ -3371,6 +3845,40 @@ def _run_pre_update_backup(args) -> Optional[str]:
                     print()
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
+
+        # #66140: the code swap + fleet restart touch EVERY profile, so
+        # every profile gets the same snapshot (same set, same 1GiB cap,
+        # keep=1) under its own state-snapshots/. Best-effort per profile.
+        try:
+            from hermes_cli.backup import create_pre_update_snapshots_all_profiles
+
+            _sibling_snaps = create_pre_update_snapshots_all_profiles(
+                keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+                max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            )
+            if _sibling_snaps:
+                print(
+                    f"◆ Sibling profile snapshot(s): "
+                    + ", ".join(sorted(_sibling_snaps))
+                )
+                try:
+                    from hermes_cli.update_receipt import record_step
+
+                    record_step(
+                        "sibling_profile_snapshots",
+                        True,
+                        ", ".join(
+                            f"{k}={v}" for k, v in sorted(_sibling_snaps.items())
+                        ),
+                    )
+                except Exception:
+                    pass
+                global _LAST_SIBLING_SNAPSHOTS
+                _LAST_SIBLING_SNAPSHOTS = _sibling_snaps
+        except Exception as _sib_exc:
+            logging.getLogger(__name__).debug(
+                "Sibling profile snapshots failed: %s", _sib_exc
+            )
     except Exception as exc:
         # Never let a snapshot failure block an update.
         logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
@@ -3602,7 +4110,27 @@ def _detect_venv_python_processes(
     skip: set[int] = set(exclude_pids or set())
     skip.add(os.getpid())
     try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
+    try:
         for anc in psutil.Process().parents():
+            # #87594: do NOT blanket-exclude ancestors. When `/update` runs
+            # from a messaging platform the updater is a CHILD of the gateway
+            # — excluding all ancestors hides the gateway from the scan, so
+            # the pause machinery downstream never sees the one process it
+            # exists to stop, and the update dead-ends on `venv-blocked`.
+            # A GATEWAY ancestor stays visible (the pause path stops it
+            # gracefully; a detached child updater survives its parent's
+            # stop on Windows). Every other ancestor (shells, terminals,
+            # this CLI's own venv python chain) stays excluded — an updater
+            # must never nominate its own interactive ancestry as blockers.
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -3833,18 +4361,115 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
     _m()._write_update_incomplete_marker()
 
 
+_HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
+    {
+        "--profile", "-p", "--config",
+        "--model", "-m", "--provider", "--reasoning",
+        "--toolsets", "-t", "--skills", "-s",
+        "--continue", "-c", "--resume", "-r",
+        "--oneshot", "-z", "--in", "--usage-file",
+    }
+)
+_holder_value_flags_cache: frozenset | None = None
+
+
+def _holder_value_flags() -> frozenset:
+    """Top-level CLI flags that consume a value — derived from the REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the holder classifier can never drift from the argparse surface
+    (#91869 review: a handwritten subset misparsed ``--reasoning high
+    serve`` as subcommand ``high`` and ``-m dashboard serve`` as
+    ``dashboard`` — recreating the wrong-hint class). The pre-argparse
+    profile selectors (``--profile``/``-p``, ``--config``) are added
+    explicitly since they are stripped before argparse sees argv. Falls
+    back to a static snapshot when the parser cannot be imported (the
+    updater must classify holders even mid-upgrade on a broken tree).
+    Cached per process.
+    """
+    global _holder_value_flags_cache
+    if _holder_value_flags_cache is not None:
+        return _holder_value_flags_cache
+    flags: set[str] = {"--profile", "-p", "--config"}
+    try:
+        from hermes_cli._parser import build_top_level_parser
+
+        parser = build_top_level_parser()[0]
+        for action in parser._actions:
+            if action.option_strings and action.nargs != 0:
+                flags.update(action.option_strings)
+        _holder_value_flags_cache = frozenset(flags)
+    except Exception:
+        _holder_value_flags_cache = _HOLDER_VALUE_FLAGS_FALLBACK
+    return _holder_value_flags_cache
+
+
+def _hermes_holder_subcommand(cmdline: str) -> str | None:
+    """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None.
+
+    Token-based, never substring (#90778: ``kanban --preserve-cache``
+    contained \"serve\" and got labeled as the Desktop backend). Finds the
+    ``hermes_cli.main`` / ``hermes(.exe)`` entry token, then returns the
+    first following token that is not a flag or a flag's value. Profile
+    selectors (``--profile X``, ``-p X``) are skipped like the canonical
+    gateway matcher does. Returns None when no subcommand can be
+    determined — callers must NOT guess a label in that case.
+    """
+    try:
+        import shlex
+
+        tokens = shlex.split(cmdline, posix=False)
+    except Exception:
+        tokens = cmdline.split()
+
+    entry_idx: int | None = None
+    for i, token in enumerate(tokens):
+        low = token.lower().strip('"')
+        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        if base in ("hermes", "hermes.exe"):
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return None
+
+    value_flags = _holder_value_flags()
+    i = entry_idx + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token in value_flags or token.split("=", 1)[0] in value_flags:
+            # --flag value consumes two tokens; --flag=value consumes one.
+            i += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token.lower()
+    return None
+
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them."""
+    """Explain which venv processes block the update and how to clear them.
+
+    Holder labels come from the parsed SUBCOMMAND, never substring matching
+    (#90778): a standalone ``hermes dashboard`` must not be labeled as the
+    Desktop backend (advice to close an app that isn't running), and flags
+    like ``--preserve-cache`` must not match \"serve\". Unknown argv gets no
+    hint rather than a wrong one.
+    """
     lines = [
         "✗ Other Hermes processes are running from this install's venv:",
     ]
+    hint_by_subcommand = {
+        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
+        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
+        "gateway": "  ← gateway",
+    }
     for pid, name, cmdline in matches[:6]:
-        hint = ""
-        low = cmdline.lower()
-        if "serve" in low or "dashboard" in low:
-            hint = "  ← Hermes Desktop backend (close the desktop app)"
-        elif "gateway" in low:
-            hint = "  ← gateway"
+        sub = _hermes_holder_subcommand(cmdline)
+        hint = hint_by_subcommand.get(sub or "", "")
         lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
@@ -3901,9 +4526,23 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 
     # Never return ourselves or our own ancestry: a CLI ``hermes update``
     # runs from the venv python and would otherwise nominate itself.
+    # Same #87594 carve-out as _detect_venv_python_processes: a GATEWAY
+    # ancestor is not "our own ancestry" in the interactive sense — it is
+    # the process the pause machinery must see (the /update-from-gateway
+    # topology makes the updater the gateway's child).
+    try:
+        from gateway.status import looks_like_gateway_command_line as _is_gw
+    except Exception:
+        _is_gw = None
     skip: set[int] = {os.getpid()}
     try:
         for anc in psutil.Process().parents():
+            try:
+                anc_cmdline = " ".join(anc.cmdline() or [])
+            except Exception:
+                anc_cmdline = ""
+            if _is_gw is not None and anc_cmdline and _is_gw(anc_cmdline):
+                continue
             skip.add(int(anc.pid))
     except Exception:
         pass
@@ -3972,6 +4611,113 @@ def _leftover_pausable_gateway_pids(
             return None
         pids.append(int(pid))
     return pids
+
+
+def _ledger_manual_serve_holders(
+    matches: list[tuple[int, str, str]],
+) -> list[dict]:
+    """Ledger entries for venv holders that are MANUAL serve/dashboard backends.
+
+    Positive identity only (#63206): the process self-registered in the spawn
+    ledger with purpose serve/dashboard, its (pid, create_time) still matches
+    a live process, and its recorded spawner is NOT alive (a Desktop-owned
+    backend keeps its live Electron spawner and must keep the refusal — the
+    app would respawn what we kill; a PowerShell-launched serve has no live
+    Hermes spawner). Returns the full ledger entries so the relauncher can
+    rebuild the launch command from structured host/port/profile instead of
+    parsing argv.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+    except Exception:
+        return []
+    holder_pids = {int(pid) for pid, _name, _cmd in matches}
+    out: list[dict] = []
+    for entry in ledger_entries():
+        if entry.get("purpose") not in ("serve", "dashboard"):
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid not in holder_pids:
+            continue
+        if spawner_is_dead(entry) is False:
+            continue  # live Desktop supervisor owns it — keep refusing
+        out.append(entry)
+    return out
+
+
+def _serve_relaunch_commands(entries: list[dict]) -> list[list[str]]:
+    """Rebuild launch commands for stopped serves from structured identity.
+
+    Uses the ledger's host/port/profile fields — never argv parsing (a
+    joined argv string cannot round-trip Windows paths with spaces). Entries
+    without a recorded port are skipped; the caller prints the manual hint
+    for those.
+    """
+    commands: list[list[str]] = []
+    hermes = None
+    try:
+        scripts_dir = _m()._venv_scripts_dir()
+        if scripts_dir is not None:
+            for name in ("hermes.exe", "hermes"):
+                candidate = scripts_dir / name
+                if candidate.is_file():
+                    hermes = str(candidate)
+                    break
+    except Exception:
+        hermes = None
+    if hermes is None:
+        hermes = "hermes"
+    for entry in entries:
+        port = entry.get("port")
+        if not isinstance(port, int) or port <= 0:
+            continue
+        cmd = [hermes]
+        profile = str(entry.get("profile") or "")
+        if profile and profile != "default":
+            cmd += ["--profile", profile]
+        cmd.append(str(entry.get("purpose")))
+        host = str(entry.get("host") or "")
+        if host:
+            cmd += ["--host", host]
+        cmd += ["--port", str(port)]
+        commands.append(cmd)
+    return commands
+
+
+def _relaunch_stopped_serves(token: dict) -> None:
+    """Idempotent atexit relaunch of manual serves stopped by the venv guard.
+
+    Mirrors the gateway resume token contract: `pending` flips False on the
+    first invocation so the explicit call and the atexit registration cannot
+    double-spawn (#63206).
+    """
+    if not token.get("pending"):
+        return
+    token["pending"] = False
+    entries = token.get("entries") or []
+    if not entries:
+        return
+    commands = _serve_relaunch_commands(entries)
+    skipped = len(entries) - len(commands)
+    failed: list = []
+    if commands:
+        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
+        failed = _m()._respawn_dashboard_processes(commands)
+    if skipped or failed:
+        print(
+            "  ⚠ Some stopped backends could not be relaunched automatically; "
+            "restart them manually (hermes serve --host <ip> --port <port>)."
+        )
+    try:
+        from hermes_cli.update_receipt import record_step
+
+        record_step(
+            "serve_relaunch",
+            not failed and not skipped,
+            f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
+        )
+    except Exception:
+        pass
 
 
 def _orphaned_desktop_backend_pids(
@@ -4214,6 +4960,78 @@ def _stop_process_trees(pids: list[int]) -> None:
             logger.debug("Could not stop process tree %s: %s", pid, exc)
 
 
+def _looks_like_desktop_control_plane(cmdline: str) -> bool:
+    """True for this-install ``hermes serve`` / ``hermes dashboard`` argv.
+
+    That is the Desktop control plane, not the messaging gateway. Serve and
+    dashboard do not host platform adapters (#92091); do not feed this into
+    ``looks_like_gateway_command_line``.
+
+    Token-based via the parser-derived subcommand classifier — never
+    substring (#90778/#91869: ``kanban --preserve-cache`` contains "serve",
+    ``-m dashboard chat`` contains " dashboard"; both are NOT control
+    planes). A cmdline whose subcommand cannot be determined is NOT a
+    control plane — callers must not guess ownership.
+    """
+    if "hermes_cli.main" not in (cmdline or "").lower():
+        return False
+    return _hermes_holder_subcommand(cmdline) in ("serve", "dashboard")
+
+
+def _desktop_owns_gateway_lifecycle() -> bool:
+    """True when Desktop currently supervises this install's control plane.
+
+    The updater must not steal gateway start in that case: Desktop owns
+    start/stop via ``/api/gateway/*``. This is *not* proof messaging is
+    already served — a live serve process is the control plane, and the
+    gateway is a detached sibling (#76129 / #92091).
+
+    Prefer the spawn ledger (owned identity). Fall back to the install-scoped
+    venv-holder scan already used by the lock guard; an orphaned control-plane
+    process (supervisor gone) does not count.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            if entry.get("purpose") not in ("serve", "dashboard"):
+                continue
+            if spawner_is_dead(entry) is False:
+                return True
+    except Exception as exc:
+        logger.debug("Desktop-lifecycle ledger probe failed: %s", exc)
+
+    try:
+        import psutil
+    except Exception:
+        psutil = None
+
+    try:
+        holders = _m()._detect_venv_python_processes()
+    except Exception as exc:
+        logger.debug("Desktop-lifecycle holder scan failed: %s", exc)
+        return False
+
+    for pid, _name, cmdline in holders:
+        if not _looks_like_desktop_control_plane(cmdline):
+            continue
+        if psutil is None:
+            # Cannot prove orphanhood; a live this-install control plane is
+            # enough to refuse stealing gateway start.
+            return True
+        try:
+            proc = psutil.Process(int(pid))
+            parent = proc.parent()
+            if parent is None or not parent.is_running():
+                continue
+            if parent.create_time() > proc.create_time():
+                continue
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -4252,6 +5070,24 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # gateways that were running when the update began. Cold-start one after
         # the update so an installed gateway is actually up post-update. Users
         # who run gateway-less (no autostart entry) get nothing forced on them.
+        #
+        # Exception: Desktop currently owns this install's gateway lifecycle
+        # (live supervised serve/dashboard). A vestigial Startup/Scheduled
+        # Task is not the owner — spawning ``gateway run`` beside Desktop
+        # races ports/state (#76129). Serve is the control plane, not proof
+        # messaging is served; the skip is ownership, not liveness (#92091).
+        try:
+            if _desktop_owns_gateway_lifecycle():
+                logger.debug(
+                    "Skipping Windows gateway cold-start plan: "
+                    "Desktop owns gateway lifecycle"
+                )
+                return None
+        except Exception as exc:
+            logger.debug(
+                "Could not check Desktop gateway-lifecycle ownership before update: %s",
+                exc,
+            )
         try:
             from hermes_cli import gateway_windows
 
@@ -4405,6 +5241,18 @@ def _cold_start_windows_gateway_after_update() -> None:
         return
 
     try:
+        if _desktop_owns_gateway_lifecycle():
+            logger.debug(
+                "Skipping Windows gateway cold-start: Desktop owns gateway lifecycle"
+            )
+            return
+    except Exception as exc:
+        logger.debug(
+            "Could not re-check Desktop gateway-lifecycle ownership before cold-start: %s",
+            exc,
+        )
+
+    try:
         pid = gateway_windows._spawn_detached()
     except Exception as exc:
         logger.debug("Could not cold-start Windows gateway after update: %s", exc)
@@ -4472,6 +5320,8 @@ def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
+    from hermes_cli.gateway import is_macos
+
     if not failed_units:
         return
     # Preserve discovery order while de-duplicating.
@@ -4486,11 +5336,203 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("⚠ Update incomplete — some units were not restarted:")
     for name in ordered:
         print(f"    - {name}")
+    if is_macos():
+        # A launchd label reaches this list when launchd was not supervising a
+        # live process after the restart (#88848), so the unit is not merely
+        # stale — it is very likely deregistered, and `launchctl kickstart`
+        # cannot revive a job launchd no longer knows about.
+        print("  Listed services may be deregistered from launchd, or still")
+        print("  running pre-update code (mixed sys.modules). Recover with:")
+        print("    hermes gateway status")
+        print("    launchctl list | grep <label>")
+        print("    launchctl bootstrap gui/$(id -u) "
+              "~/Library/LaunchAgents/<label>.plist")
+        return
     print("  Skipped units may still be running pre-update code (mixed")
     print("  sys.modules). Restart them manually, then verify:")
     print("    hermes gateway status")
-    print("    systemctl --user restart <unit>   # user-scope")
-    print("    sudo systemctl restart <unit>     # system-scope")
+    if any(not name.startswith("ai.hermes.") for name in ordered):
+        print("    systemctl --user restart <unit>   # user-scope")
+        print("    sudo systemctl restart <unit>     # system-scope")
+    if any(name.startswith("ai.hermes.") for name in ordered):
+        print("    launchctl kickstart -k gui/$UID/<label>   # macOS (or user/$UID)")
+
+
+def _restart_launchd_gateway_after_update(
+    *, supervision_verify: bool = True
+) -> tuple[list, list]:
+    """Restart the invoking profile's launchd gateway after an update.
+
+    #74973 (salvage #75021 by @jeff-mettel): the restart used to be gated on
+    ``launchctl list <label>`` exiting 0. A *booted-out* job — plist present,
+    definition deregistered from launchd (crashed helper, manual bootout,
+    failed prior update) — fails that check, so the whole branch silently
+    skipped: no restart, no message, ``KeepAlive`` unable to revive a
+    definition launchd no longer knows, and the update still printed
+    "Update complete!". ``launchctl list`` is also session-scoped and can
+    exit non-zero while the job is alive in its gui/user domain, so it is
+    not a reliable classifier at all.
+
+    The fix performs NO list-based classification: when the plist exists,
+    ``launchd_restart()`` always runs — it drains a live PID, kickstarts
+    with ``-k``, and owns the bootout/bootstrap/kickstart ladder for the
+    genuinely unloaded state. Every failure path is loud and names the
+    manual recovery command.
+
+    Returns ``(restarted_labels, failed_labels)``. With
+    ``supervision_verify`` (the update path), success additionally requires
+    launchd reporting a fresh supervised PID (#88848 — "the call returned"
+    is not "the gateway is supervised").
+    """
+    from hermes_cli.gateway import (
+        get_launchd_label,
+        get_launchd_plist_path,
+        launchd_restart,
+        wait_for_launchd_gateway_supervision,
+    )
+
+    current_label = get_launchd_label()
+    try:
+        if not get_launchd_plist_path().exists():
+            return [], []  # not a launchd install — nothing to do or warn
+        try:
+            launchd_restart()
+        except subprocess.CalledProcessError as e:
+            stderr = (getattr(e, "stderr", "") or "").strip()
+            print(
+                f"  ⚠ Gateway restart failed: {stderr}\n"
+                "    The gateway may be DOWN on pre-update code. "
+                "Recover manually: hermes gateway restart"
+            )
+            return [], [current_label]
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        # A plist exists, so a gateway is SUPPOSED to be supervised here —
+        # a broken/missing/wedged launchctl is not proof nothing needs
+        # restarting. The old code `pass`ed here (#74973's second silent
+        # variant); count it and tell the operator.
+        print(
+            "  ⚠ Could not restart the gateway "
+            f"({e.__class__.__name__}: {e}).\n"
+            "    Recover manually: hermes gateway restart"
+        )
+        return [], [current_label]
+
+    if not supervision_verify:
+        return [current_label], []
+
+    # launchd_restart() returning is only "restart REQUESTED" — the
+    # self-restart branch hands work to the running gateway, a plist reload
+    # to a detached helper; both asynchronous. A helper that dies before its
+    # first bootstrap (#88848), or a bootstrap that exits 0 without
+    # registering (measured on macOS 26.6.1), otherwise reaches "Update
+    # complete!" with nothing supervising the gateway. Verified
+    # domain-agnostically (a domain locate fails on macOS-26 hosts whose
+    # per-user domains reject service management).
+    if wait_for_launchd_gateway_supervision(label=current_label):
+        return [current_label], []
+    print(
+        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
+        "    Check logs, then: hermes gateway restart"
+    )
+    return [], [current_label]
+
+
+def _restart_macos_launchd_gateways(
+    restarted_services: list,
+    failed_or_stale_units: list,
+    drain_budget: float,
+) -> None:
+    """Restart every launchd-managed gateway after an update (macOS).
+
+    The code update (git pull) is shared across all profiles, so every
+    ``ai.hermes.gateway*`` LaunchAgent must reload it — restarting only the
+    invoking profile's service leaves siblings on pre-update ``sys.modules``
+    until their next agent turn imports a symbol the old module generation
+    doesn't have (#41403).  Parity with the systemd fleet path.
+
+    The invoking profile keeps the existing ``launchd_restart()`` treatment
+    (self-restart request → graceful drain → kickstart).  Siblings get the
+    same drain-first sequence, with their launchd domain resolved per label:
+    a sibling bootstrapped in the other supported domain (``gui/<uid>`` vs
+    ``user/<uid>``) must not be kickstarted in the current profile's domain.
+    ``subprocess.TimeoutExpired`` is isolated per label so one wedged
+    launchctl call cannot leave the rest of the fleet on old code (#68523).
+    """
+    from hermes_cli.gateway import (
+        get_launchd_label,
+        get_launchd_plist_path,
+        launchd_restart,
+        launchd_gateway_labels_for_install,
+        _graceful_restart_via_sigusr1,
+        _launchd_kickstart,
+        _launchd_service_registered,
+        _locate_launchd_gateway_service,
+        _wait_for_launchd_service_pid,
+        wait_for_launchd_gateway_supervision,
+    )
+
+    # --- Current profile: unchanged single-service path ---------------------
+    _restarted, _failed = _restart_launchd_gateway_after_update(
+        supervision_verify=True
+    )
+    restarted_services.extend(_restarted)
+    failed_or_stale_units.extend(_failed)
+    current_label = get_launchd_label()
+
+    # --- Sibling profiles ---------------------------------------------------
+    for label in launchd_gateway_labels_for_install():
+        if label == current_label:
+            continue
+        try:
+            # Locate = liveness + domain in one domain-explicit probe; the
+            # kickstart and fresh-PID verification below reuse the located
+            # domain, so a sibling in the other gui/user domain can never be
+            # probed in one domain and restarted in another.
+            domain, old_pid = _locate_launchd_gateway_service(label)
+            if domain is None:
+                # Installed but not bootstrapped (stopped/uninstalled
+                # mid-way) — nothing is running old code here.
+                continue
+            graceful_ok = False
+            if old_pid is not None and old_pid > 0:
+                print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
+                graceful_ok = _graceful_restart_via_sigusr1(
+                    old_pid, drain_timeout=drain_budget
+                )
+            if graceful_ok and _wait_for_launchd_service_pid(
+                label, old_pid=old_pid, timeout=10.0, domain=domain
+            ):
+                # Unconditional KeepAlive already respawned it on the new
+                # code — a hard kickstart now would kill the fresh process.
+                restarted_services.append(label)
+                continue
+            try:
+                _launchd_kickstart(label, domain)
+            except subprocess.CalledProcessError as e:
+                stderr = (getattr(e, "stderr", "") or "").strip()
+                failed_or_stale_units.append(label)
+                print(
+                    f"  ⚠ Failed to restart {label}: {stderr}\n"
+                    f"    Recover manually: launchctl kickstart -k {domain}/{label}"
+                )
+                continue
+            if _wait_for_launchd_service_pid(
+                label, old_pid=old_pid, timeout=15.0, domain=domain
+            ):
+                restarted_services.append(label)
+            else:
+                failed_or_stale_units.append(label)
+                print(
+                    f"  ✗ {label} failed to come back after restart.\n"
+                    f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
+                )
+        except subprocess.TimeoutExpired:
+            failed_or_stale_units.append(label)
+            print(
+                f"  ⚠ launchctl timed out restarting {label}; "
+                "continuing with remaining gateways"
+            )
+
 
 def _surviving_gateway_pids_after_failed_restart():
     """Best-effort PIDs of gateways still running after the restart phase died.
@@ -4972,6 +6014,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # stash. Only applies when an update actually landed; abort/no-op paths
     # still restore, since the tree they restore onto is unchanged.
     keep_stash = bool(getattr(args, "keep_stash", False))
+    # --switch-branch: on a branch carrying unmerged commits, prefer switching
+    # to the update target over an in-place merge, so the branch's history is
+    # never written to by an update (#89507 review feedback). Only meaningful
+    # when updates.parked_branch_strategy is "update_in_place".
+    switch_branch = bool(getattr(args, "switch_branch", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -5000,23 +6047,85 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print("⚕ Updating Hermes Agent...")
     print()
 
+    # Phase 1 (#91277): structured update receipt — record what this run
+    # discovers, does, and skips, so silent-failure classes (#88848,
+    # #74973, #85753, #81193) become diagnosable from disk.
+    try:
+        from hermes_cli.update_receipt import begin_update_receipt
+
+        begin_update_receipt()
+    except Exception as _receipt_exc:
+        logger.debug("Update receipt unavailable: %s", _receipt_exc)
+
+    # Plan phase (#91277 Phase 2): snapshot the pre-update fleet — every
+    # running Hermes runtime, its supervisor, and its running code version —
+    # into the receipt, so a post-mortem can compare what the update SAW
+    # against what it did. Read-only; a probe failure records nothing.
+    # ``_pre_update_plan`` is read again AFTER the restart phase to reconcile
+    # every planned runtime against the phase's bookkeeping (restart via
+    # declared mechanism — the plan is the worklist, not just a printout).
+    _pre_update_plan = None
+    try:
+        from hermes_cli.update_inventory import (
+            collect_runtime_inventory,
+            record_plan_in_receipt,
+        )
+
+        _pre_update_plan = collect_runtime_inventory()
+        record_plan_in_receipt(_pre_update_plan)
+        if _pre_update_plan.runtimes:
+            _n = len(_pre_update_plan.runtimes)
+            _profiles = ", ".join(
+                sorted({r.profile for r in _pre_update_plan.runtimes})
+            )
+            print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
+    except Exception as _plan_exc:
+        logger.debug("Update plan phase failed: %s", _plan_exc)
+
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
+    #
+    # Exception (#37039): when every concurrent instance is a gateway
+    # runtime, the pause machinery a few lines below
+    # (``_pause_windows_gateways_for_update``) stops it before any file
+    # mutation, and the post-update restart phase brings it back. Aborting
+    # just to make the user run the same kill manually is friction without
+    # benefit. Anything not positively identified as a gateway (TUI shell,
+    # Desktop backend child, unreadable cmdline) still aborts exactly as
+    # before.
     if _m()._is_windows() and not getattr(args, "force", False):
         scripts_dir = _m()._venv_scripts_dir()
         if scripts_dir is not None:
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
-                print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                sys.exit(2)
+                non_gateway = _m()._filter_non_gateway_concurrent_instances(
+                    concurrent
+                )
+                if non_gateway:
+                    print(
+                        _format_concurrent_instances_message(
+                            non_gateway, scripts_dir
+                        )
+                    )
+                    sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     # Returns the quick-snapshot id (or None when disabled/failed); the
     # post-update cron-jobs safety net uses it to detect job loss.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+    try:
+        from hermes_cli.update_receipt import record_step
+
+        record_step(
+            "pre_update_backup",
+            pre_update_snapshot_id is not None,
+            f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed",
+        )
+    except Exception:
+        pass
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
@@ -5096,6 +6205,49 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "process(es) still hold the venv; stopping their trees"
                 )
                 _m()._stop_process_trees(_orphan_backends)
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Manual serve/dashboard rung (#63206): a network-bound
+            # `hermes serve --host <ip>` powering a REMOTE Desktop holds the
+            # venv and used to dead-end the update with exit 2 — the user's
+            # only option was killing the backend by hand, and nothing ever
+            # brought it back (the remote client's endpoint stayed dead).
+            # Positive ledger identity only: self-registered serve/dashboard
+            # whose recorded spawner is not alive (Desktop-owned backends
+            # keep the refusal — the app respawns what we kill). Stop them,
+            # and register an idempotent atexit relaunch built from the
+            # ledger's structured host/port/profile so the endpoint comes
+            # back on the SAME bind after the update — success or failure.
+            _serve_entries = _m()._ledger_manual_serve_holders(_venv_holders)
+            if _serve_entries:
+                print(
+                    f"  ⚠ {len(_serve_entries)} manual serve/dashboard "
+                    "backend(s) hold the venv; stopping them for the update "
+                    "(they will be relaunched on their recorded endpoints)"
+                )
+                _m()._stop_process_trees(
+                    [int(e["pid"]) for e in _serve_entries]
+                )
+                _serve_resume_token = {
+                    "pending": True,
+                    "entries": _serve_entries,
+                }
+                try:
+                    from hermes_cli.update_receipt import record_step
+
+                    record_step(
+                        "serve_pause",
+                        True,
+                        f"stopped={len(_serve_entries)}",
+                    )
+                except Exception:
+                    pass
+                import atexit as _serve_atexit
+
+                _serve_atexit.register(
+                    _m()._relaunch_stopped_serves, _serve_resume_token
+                )
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
@@ -5270,48 +6422,105 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # If user is on a different branch than the update target, switch
-        # to the target. When the target is "main" this is the historical
-        # "always update against main" behavior; for any other target it's
-        # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        #
         # Parked-branch guard (2026-08-17 live incident): the checkout can be
         # left parked on a stale feature branch by earlier tooling. Blindly
         # stash-switch-pull-switch-back "updates" main while the running code
-        # stays days behind, then prints "✓ Code updated!". Only auto-switch
-        # when the parked branch is clean AND fully merged into the target;
-        # otherwise warn loudly, mark the code update SKIPPED, and stop
-        # before the post-update steps reinforce the stale tree.
+        # stays days behind, then prints "✓ Code updated!".
+        #
+        # What happens next is routed by what the branch carries (which is
+        # exactly what the guard measures) plus updates.parked_branch_strategy:
+        #
+        #   fully merged  -> a stale leftover with nothing to lose: switch
+        #                    back to the target.
+        #   unmerged: N   -> strategy "switch" (default): switch to the
+        #                    target anyway — committed work is safe on the
+        #                    branch (git checkout never discards commits) and
+        #                    a loud "kept" notice names the branch + count.
+        #                    Deterministic, so non-interactive callers
+        #                    (desktop update button, gateway /update, cron)
+        #                    always reach the target.
+        #                    strategy "update_in_place": a maintained custom
+        #                    branch (local patches on top of main) is updated
+        #                    IN PLACE from origin/<target> — the checkout
+        #                    never moves, local commits survive, the running
+        #                    code advances. --switch-branch overrides back to
+        #                    the switch path for one run.
+        #   anything else -> dirty / unverifiable / opted out: touch nothing,
+        #                    warn loudly, mark the code update SKIPPED, and
+        #                    stop before the post-update steps reinforce the
+        #                    stale tree.
         parked_branch_switched = False
-        if current_branch != branch:
-            if current_branch != "HEAD":
-                switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
-                    git_cmd, _m().PROJECT_ROOT, current_branch, branch
+        in_place_update = False
+        if current_branch != branch and current_branch != "HEAD":
+            switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
+                git_cmd, _m().PROJECT_ROOT, current_branch, branch
+            )
+            if not switch_safe:
+                _m()._print_parked_branch_skip_warning(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    current_branch,
+                    branch,
+                    switch_block_reason,
                 )
-                if not switch_safe:
-                    _m()._print_parked_branch_skip_warning(
-                        git_cmd,
-                        _m().PROJECT_ROOT,
+                print()
+                print(
+                    "⚠ Update finished — code update SKIPPED"
+                    f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
+                )
+                _m()._resume_windows_gateways_after_update(
+                    _windows_gateway_resume
+                )
+                sys.exit(1)
+            if switch_block_reason.startswith("unmerged:"):
+                _in_place_configured = False
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+
+                    _upd_cfg = (_load_cfg() or {}).get("updates", {})
+                    _in_place_configured = (
+                        isinstance(_upd_cfg, dict)
+                        and _upd_cfg.get("parked_branch_strategy", "switch")
+                        == "update_in_place"
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Could not read updates.parked_branch_strategy: %s", exc
+                    )
+                if _in_place_configured and not switch_branch:
+                    # The merge source must exist upstream; --branch typos
+                    # previously surfaced through the checkout failing, which
+                    # does not run on this path.
+                    verify_ref = subprocess.run(
+                        git_cmd + ["rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if verify_ref.returncode != 0:
+                        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                        sys.exit(1)
+                    in_place_update = True
+                    print(
+                        f"  ℹ On branch '{current_branch}' — updating it in place from "
+                        f"origin/{branch} (no branch switch; local commits preserved)."
+                    )
+                else:
+                    parked_branch_switched = True
+                    _m()._print_parked_branch_kept_notice(
                         current_branch,
                         branch,
-                        switch_block_reason,
+                        switch_block_reason.split(":", 1)[1],
                     )
-                    print()
-                    print(
-                        "⚠ Update finished — code update SKIPPED"
-                        f"{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}"
-                    )
-                    _m()._resume_windows_gateways_after_update(
-                        _windows_gateway_resume
-                    )
-                    sys.exit(1)
+            else:
                 parked_branch_switched = True
                 print(
                     f"  ⚠ Checkout was parked on '{current_branch}' "
                     f"(fully merged) — switching back to {branch}..."
                 )
-            else:
+
+        if not in_place_update and current_branch != branch:
+            if current_branch == "HEAD":
                 print(
                     f"  ⚠ Currently on detached HEAD — switching to {branch} "
                     "for update..."
@@ -5336,7 +6545,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True, encoding="utf-8", errors="replace",
                 )
                 if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
+                    # Restore the user's prior stash before bailing
                     # so we don't leave them stranded in a weird state.
                     if auto_stash_ref is not None:
                         _m()._restore_stashed_changes(
@@ -5401,12 +6610,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # not behind, fall through to the up-to-date path.
             commit_count = counted if counted is not None else -1
 
+        # A fork can match origin while still trailing upstream. The sync can
+        # therefore advance HEAD even though the origin comparison found no
+        # commits. Detect that BEFORE taking the no-update return so dependency
+        # refreshes, gateway restarts, AND the fleet version matrix still run
+        # for the pulled code (#73108 — previously the sync lived inside the
+        # commit_count == 0 branch, which returns immediately after: an update
+        # that pulled hundreds of upstream commits printed "Already up to
+        # date!" and verified nothing).
+        if commit_count == 0 and is_fork and branch == "main":
+            pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+            post_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            if pre_sync_sha and post_sync_sha and pre_sync_sha != post_sync_sha:
+                synced_count = _count_commits_between(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    pre_sync_sha,
+                    post_sync_sha,
+                )
+                # HEAD moving is itself proof of an update. Keep the update
+                # path active even if the informational count cannot be read.
+                commit_count = max(1, synced_count)
+
         if commit_count == 0:
             _invalidate_update_cache()
-
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
-                _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved.
             # EXCEPTION: a parked feature branch we verified clean + fully
@@ -5421,10 +6649,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     input_fn=gw_input_fn,
                 )
             if parked_branch_switched:
-                print(
-                    f"  ✓ Checkout was parked on '{current_branch}' (fully "
-                    f"merged) — switched back to {branch}."
-                )
+                if switch_block_reason.startswith("unmerged:"):
+                    _count = switch_block_reason.split(":", 1)[1]
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' — "
+                        f"switched back to {branch}; {_count} unmerged "
+                        f"commit(s) kept on '{current_branch}'."
+                    )
+                else:
+                    print(
+                        f"  ✓ Checkout was parked on '{current_branch}' (fully "
+                        f"merged) — switched back to {branch}."
+                    )
             elif current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
@@ -5493,7 +6729,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check=False,
                     )
                 if repair_uv:
-                    repair_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+                    # Isolated from third-party UV env vars (#83914), same as
+                    # the main-path and git-path dependency syncs.
+                    from hermes_cli.managed_uv import managed_python_env
+
+                    repair_env = managed_python_env()
+                    repair_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
                     _m()._install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
@@ -5571,26 +6812,80 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True, encoding="utf-8", errors="replace",
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=_m().PROJECT_ROOT,
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                # ff-only failed — local and remote have diverged. Before
+                # assuming an upstream force-push, check WHY: a checkout on a
+                # custom branch (local commits on top of origin/<branch>) also
+                # cannot fast-forward, and `reset --hard` here would silently
+                # discard that work. Merge instead and stop cleanly on
+                # conflict — an update must never destroy local commits.
+                _cur_branch = (
+                    subprocess.run(
+                        git_cmd + ["branch", "--show-current"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    ).stdout
+                    or ""
+                ).strip()
+                if _cur_branch and _cur_branch != branch:
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
+                        f"merging origin/{branch} instead of resetting so local commits survive..."
                     )
-                    sys.exit(1)
+                    # Best-effort safety tag; recovery anchor if anything goes wrong.
+                    subprocess.run(
+                        git_cmd
+                        + ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    merge_result = subprocess.run(
+                        git_cmd + ["merge", "--no-edit", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if merge_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["merge", "--abort"],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            check=False,
+                        )
+                        print(
+                            "✗ Merge conflict between local commits and upstream — "
+                            "update stopped, nothing was changed."
+                        )
+                        print(
+                            f"  Resolve manually: cd {_m().PROJECT_ROOT} && "
+                            f"git merge origin/{branch}"
+                        )
+                        print(
+                            "  Then re-run the update. Local work is untouched."
+                        )
+                        sys.exit(1)
+                else:
+                    # Same branch as the update target — a true upstream
+                    # force-push/rebase. Local changes are already stashed;
+                    # reset to match the remote exactly (original behaviour).
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -5697,13 +6992,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # branch guard above should make this unreachable, but if any path
         # leaves the checkout attached elsewhere, "✓ Code updated!" would be
         # a lie — refuse to claim success (2026-08-17 incident class).
+        #
+        # An IN-PLACE branch update is the one legitimate way to end on a
+        # non-target branch: origin/<target> was merged INTO the checked-out
+        # branch, so the running code *is* up to date and HEAD staying put is
+        # the whole point. Claiming failure there would make every update on a
+        # real working branch exit 1 after doing exactly the right thing.
         post_pull_branch = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
-        if post_pull_branch and post_pull_branch not in {branch, "HEAD"}:
+        if (
+            not in_place_update
+            and post_pull_branch
+            and post_pull_branch not in {branch, "HEAD"}
+        ):
             print()
             print(
                 f"✗ Update pulled origin/{branch}, but the checkout is on "
@@ -5767,7 +7072,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+            # Use official managed_python_env() isolation so third-party
+            # UV_PYTHON_INSTALL_DIR (e.g. WorkBuddy) cannot hijack uv; then
+            # point VIRTUAL_ENV at this install's venv.
+            from hermes_cli.managed_uv import managed_python_env
+
+            uv_env = managed_python_env()
+            uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
             if _m()._is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
@@ -5902,6 +7213,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
 
+        # ── macOS TCC stale-grant notice (#86385) ──────────────────────
+        # Locally-built desktop bundles are re-signed on every update. With the
+        # post-#73681 identifier-pinned DR, new grants survive rebuilds — but a
+        # grant made to a pre-fix binary stays stale: the System Settings toggle
+        # shows ON while macOS re-prompts on every capture, and the modern prompt
+        # has no Allow button, so users loop. One line of guidance after update
+        # tells affected users how to complete the one-time re-grant.
+        if sys.platform == "darwin" and had_desktop_app_before_update:
+            print()
+            print(
+                "  ℹ macOS: if Hermes re-prompts for permissions you already "
+                "granted (toggle shows ON), the stored grant is stale — run "
+                "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat "
+                "per affected service), toggle it ON in System Settings, then "
+                "fully quit & relaunch once."
+            )
+
+        # NOTE: the macOS TCC interpreter anchor that used to refresh here
+        # (#95131/#95478) is REVERTED: the anchored real-file copy could not
+        # load libpython (LC_RPATH resolved into venv/lib/), bricking every
+        # hermes command on real Macs (#95425), and re-pointed aliases lost
+        # the stdlib (#95541). `hermes doctor` now heals already-anchored
+        # venvs back to symlinks. Re-land requires a dylib-complete design
+        # verified on macOS hardware first.
+
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file
         # is now corrupted (zeroed, missing header, integrity failure),
@@ -5941,15 +7277,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             )
                             if _snap_ok.get("valid"):
                                 try:
-                                    import shutil as _shutil
-
-                                    _shutil.copy2(_snap_state, _state_path)
-                                    _restored_ok = verify_sqlite_integrity(
-                                        _state_path,
-                                        check_header=True,
-                                        run_pragma=True,
-                                    )
-                                    if _restored_ok.get("valid"):
+                                    if _restore_state_db_from_snapshot(
+                                        _state_path, _snap_state
+                                    ):
                                         print(
                                             "  ✓ Auto-restored from pre-update "
                                             f"snapshot ({_pre_snap_id})"
@@ -6250,6 +7580,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("  ✓ Configuration is up to date")
 
+        # Fleet-wide config migration (#91277 Phase 2; #20438 earliest report,
+        # #54926, #79048): the shared checkout serves EVERY profile, but the
+        # migration above only touched the active profile's config.yaml.
+        # Sibling profiles kept their old _config_version and silently
+        # drifted (field repro: sibling gateway restarted onto new code but
+        # stayed at config v33 vs v37). Run the same NON-INTERACTIVE safe
+        # migration for every sibling profile home, scoped via the
+        # context-local HERMES_HOME override (never os.environ — other
+        # threads must not see it).
+        try:
+            _migrated_siblings = _migrate_sibling_profile_configs()
+            for _name, _from_ver, _to_ver in _migrated_siblings:
+                print(
+                    f"  ✓ Profile '{_name}': config format updated "
+                    f"(v{_from_ver} → v{_to_ver})"
+                )
+        except Exception as exc:
+            logger.debug("Sibling config migration failed: %s", exc)
+
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
         # job (issue #34600). The desktop scheduler can also overwrite with
@@ -6270,6 +7619,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as exc:
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
+
+        # #66140: run the same cron-jobs safety net for every sibling
+        # profile against ITS OWN pre-update snapshot (same-generation by
+        # construction — both taken by this run).
+        try:
+            from hermes_cli.backup import restore_cron_jobs_all_profiles
+
+            for _restored in restore_cron_jobs_all_profiles(
+                _LAST_SIBLING_SNAPSHOTS
+            ):
+                print()
+                print(
+                    f"  ⚠️  Profile '{_restored['profile']}': cron/jobs.json "
+                    f"lost jobs during this update — restored "
+                    f"{_restored['job_count']} job(s) from pre-update "
+                    f"snapshot {_restored['snapshot_id']}."
+                )
+        except Exception as exc:
+            logger.debug("Sibling cron auto-restore check failed: %s", exc)
 
         _print_update_summary(
             node_failures=node_failures,
@@ -6316,11 +7684,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Self-heal the hermes-acp launcher for installs that predate it, so
         # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
-        # a reinstall.  No-op on Windows and when already present.
+        # a reinstall.  No-op on Windows (the launcher migration below owns
+        # that) and when already present.
         try:
             _ensure_acp_launcher()
         except Exception as e:
             logger.debug("hermes-acp launcher self-heal failed: %s", e)
+
+        # Migrate the Windows hermes launchers to the managed binary dir
+        # (the default Hermes root's bin, next to the managed uv) and repair
+        # them if they are missing. Earlier layouts put them inside the git
+        # checkout (hermes-agent\bin) or put venv\Scripts itself on PATH; the
+        # in-checkout copies were swept by this command's own pre-update
+        # autostash (git stash push --include-untracked) and, with
+        # --keep-stash (the desktop updater), never restored — `hermes`
+        # stopped resolving in every new terminal. Updates never run
+        # install.ps1, so this tail call is how existing installs reach the
+        # new layout. No-op on POSIX and on source checkouts (root is not
+        # the managed clone under the default Hermes root).
+        try:
+            from hermes_cli._install_repair import migrate_windows_bin_path
+
+            migrate_windows_bin_path(_m().PROJECT_ROOT)
+        except Exception as e:
+            logger.debug("Windows bin launcher migration failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
@@ -6356,7 +7743,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # An indeterminate check (offline, rate-limited, old
                 # driver) keeps the installed version — `hermes update`
                 # must stay fast; `hermes computer-use install --upgrade`
-                # remains the force path.
+                # remains the force path. Windows also defers confirmed
+                # updates and contract repairs to that explicit command
+                # because the upstream installer may prompt for console/UAC
+                # consent that this hidden updater cannot provide.
                 install_cua_driver(
                     upgrade=True,
                     require_confirmed_update=True,
@@ -6400,6 +7790,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # needed to forward already-restarted units to
         # ``_finish_dashboard_update_cleanup`` (review on #83595).
         restarted_services: list = []
+        # Same outside-the-try treatment: the post-restart fleet version
+        # check consults killed_pids to decide whether to wait for
+        # freshly-restarted gateways to settle, and the phase's except
+        # path forwards it to the update receipt.
+        killed_pids: set = set()
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -6933,37 +8328,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
 
             # --- Launchd services (macOS) ---
+            # Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
+            # invoking profile's — parity with the systemd branch above
+            # (#41403). Per-label TimeoutExpired isolation happens inside.
             if is_macos():
                 try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
+                    _restart_macos_launchd_gateways(
+                        restarted_services,
+                        failed_or_stale_units,
+                        _drain_budget,
                     )
-
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                except (FileNotFoundError, ImportError):
                     pass
 
             # --- Manual (non-service) gateways ---
             # Kill any remaining gateway processes not managed by a service.
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
-            service_pids = _get_service_pids()
+            service_pids = _get_service_pids(all_profiles=True)
             manual_pids = find_gateway_pids(
                 exclude_pids=service_pids, all_profiles=True
             )
@@ -6972,11 +8354,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 for proc in find_profile_gateway_processes(exclude_pids=service_pids)
                 if proc.pid in manual_pids
             }
+            # Profile gateways we could not arm a relaunch for.  These must
+            # NOT be left running: their modules are the pre-update ones and
+            # every lazy import from here on mixes versions against the new
+            # code on disk (#88654).  Handing them to the unmapped sweep
+            # below stops them and surfaces them in the "Stopped N manual
+            # gateway process(es) / Restart manually" summary, which is the
+            # contract already used for gateways with no profile mapping.
+            unrestartable_pids = set()
             for pid, proc in profile_processes.items():
                 restart_mode = _prepare_profile_gateway_update_restart(
                     proc.profile, pid
                 )
                 if restart_mode is None:
+                    # Previously a bare ``continue``: the gateway was neither
+                    # relaunched nor stopped nor mentioned, so it kept serving
+                    # from stale modules with no operator signal at all.
+                    print(
+                        f"  ⚠ {proc.profile}: could not arm an automatic "
+                        f"gateway restart for PID {pid} — stopping it instead "
+                        "so it cannot keep running pre-update code"
+                    )
+                    unrestartable_pids.add(pid)
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -7043,7 +8442,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
-                if pid in profile_processes:
+                if pid in profile_processes and pid not in unrestartable_pids:
                     continue
                 try:
                     os.kill(pid, _signal.SIGTERM)
@@ -7087,6 +8486,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
 
+            try:
+                from hermes_cli.update_receipt import record_gateway_restart
+
+                record_gateway_restart(
+                    restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=sorted(killed_pids),
+                    failed_units=failed_or_stale_units,
+                    incomplete=bool(failed_or_stale_units),
+                )
+            except Exception:
+                pass
+
             if not restarted_services and not killed_pids:
                 # No gateways were running — nothing to do
                 pass
@@ -7102,7 +8515,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # manager can relaunch with fresh code.
             try:
                 _time.sleep(3.0)
-                _service_pids_after = _get_service_pids()
+                _service_pids_after = _get_service_pids(all_profiles=True)
                 _surviving = find_gateway_pids(
                     exclude_pids=_service_pids_after,
                     all_profiles=True,
@@ -7157,6 +8570,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _exit_code_path.write_text("1", encoding="utf-8")
                     except OSError:
                         pass
+            try:
+                from hermes_cli.update_receipt import record_gateway_restart
+
+                record_gateway_restart(
+                    restarted_services=restarted_services,
+                    incomplete=gateway_fleet_restart_incomplete,
+                    phase_error=str(e),
+                )
+            except Exception:
+                pass
 
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
@@ -7206,15 +8629,121 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
 
+        # Phase 1 (#91277): post-update fleet version verification. Compare
+        # every live gateway's stamped code_sha against the freshly-updated
+        # checkout and surface any gateway still serving pre-update code —
+        # instead of assuming the restart phase worked (#88654, #69754).
+        _fleet_snapshot: list = []
+        try:
+            from hermes_cli.update_receipt import (
+                collect_fleet_versions,
+                print_fleet_version_matrix,
+            )
+
+            # Cross-platform "we expected fleet rows" signal (#93406). The
+            # old (restarted_services or killed_pids) condition never fires
+            # on Windows: the pause/resume phase populates neither list, so
+            # a healthy resumed gateway yielded zero rows and exit 0.
+            _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
+                _pre_update_plan,
+                _pre_restart_gateway_pids,
+                _windows_gateway_resume,
+                restarted_services,
+                killed_pids,
+            )
+            # A brief settle window: freshly restarted/resumed gateways need
+            # a moment to rewrite gateway_state.json with their new identity.
+            # Skipped when the restart phase touched nothing (no gateways
+            # were running) — nothing to settle.
+            if _fleet_rows_expected:
+                _time.sleep(2.0)
+            # Pass the pre-restart PID snapshot so a gateway the restart
+            # phase stopped WITHOUT a verified replacement shows as a DOWN
+            # row (exit 1) instead of silently producing no row at all.
+            _fleet_snapshot = collect_fleet_versions(
+                pre_restart_pids=_pre_restart_gateway_pids
+            )
+            if print_fleet_version_matrix(_fleet_snapshot):
+                gateway_fleet_restart_incomplete = True
+            elif not _fleet_snapshot and _fleet_rows_expected:
+                # Fleet probe returned zero rows even though at least one
+                # gateway runtime was (or may have been) live pre-update —
+                # POSIX restart bookkeeping, the pre-restart PID snapshot,
+                # the pre-update plan inventory, or the Windows pause/resume
+                # token all count as that signal.  Every failure path inside
+                # collect_fleet_versions() is swallowed via logger.debug(),
+                # so an empty list is indistinguishable from a healthy fleet
+                # in the current output.  Treat it as verification failure
+                # so the receipt records "partial" and the exit code is 1
+                # (#93406).
+                print(
+                    "\n⚠ Fleet version check returned no rows even though"
+                    " gateway runtimes were expected — verification incomplete."
+                )
+                gateway_fleet_restart_incomplete = True
+        except Exception as _fleet_exc:
+            logger.debug("Fleet version verification failed: %s", _fleet_exc)
+
+        # Plan-vs-execution reconciliation (#91277 Phase 2, restart via
+        # declared mechanism): every runtime the PLAN saw must be accounted
+        # for by the restart phase's bookkeeping. An unaccounted runtime is
+        # the silent-miss class (a platform branch re-discovered its own
+        # targets and skipped one the inventory knew about) — escalate it
+        # exactly like a STALE/DOWN fleet row.
+        _runtime_outcomes: list = []
+        try:
+            if _pre_update_plan is not None and _pre_update_plan.runtimes:
+                from hermes_cli.update_inventory import (
+                    match_runtime_outcomes,
+                    report_unaccounted_runtimes,
+                )
+
+                _runtime_outcomes = match_runtime_outcomes(
+                    _pre_update_plan,
+                    restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=killed_pids,
+                    failed_units=failed_or_stale_units,
+                )
+                if report_unaccounted_runtimes(_runtime_outcomes):
+                    gateway_fleet_restart_incomplete = True
+                try:
+                    import hermes_cli.update_receipt as _ur
+
+                    if _ur._current is not None:
+                        _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+                except Exception:
+                    pass
+        except Exception as _outcome_exc:
+            logger.debug("Runtime-outcome reconciliation failed: %s", _outcome_exc)
+
+        try:
+            from hermes_cli.update_receipt import finalize_update_receipt
+
+            _receipt_path = finalize_update_receipt(
+                "partial" if gateway_fleet_restart_incomplete else "success",
+                fleet=_fleet_snapshot,
+            )
+            if _receipt_path is not None:
+                logger.info("Update receipt written: %s", _receipt_path)
+        except Exception as _receipt_exc:
+            logger.debug("Update receipt finalize failed: %s", _receipt_exc)
+
         if gateway_fleet_restart_incomplete:
             # Code update itself succeeded, but at least one gateway still
             # runs pre-update modules — surface that as a failed update so
             # automation / operators do not treat the fleet as healthy.
             sys.exit(1)
 
+    except _shim_quarantine_error_type() as e:
+        # Fail-closed shim contention (#87331): strict quarantine refused
+        # BEFORE any installer ran — defer via marker, exit 2, no ZIP.
+        _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
+        stage = _format_update_failure_stage(e)
+        if _should_zip_fallback_on_update_error(e):
+            print(f"⚠ {stage}: {e}")
             print("→ Falling back to ZIP download...")
             print()
             desktop_build_ok = _update_via_zip(
@@ -7224,7 +8753,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)
         else:
-            print(f"✗ Update failed: {e}")
+            print(f"✗ {stage}: {e}")
+            _print_called_process_error_tail(e)
+            if _called_process_error_is_python_dep_install(e):
+                print(
+                    "  The git update already finished. Re-downloading the source "
+                    "ZIP cannot fix a dependency install error and would overwrite "
+                    "local files."
+                )
+                if _m()._is_windows():
+                    print("  Retry through the venv interpreter:")
+                    print(
+                        '    venv\\Scripts\\python.exe -c '
+                        '"from hermes_cli.main import main; main()" update --yes'
+                    )
+            try:
+                from hermes_cli.update_receipt import finalize_update_receipt
+
+                finalize_update_receipt("failed")
+            except Exception:
+                pass
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
@@ -7248,6 +8796,61 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
         return True
     # surviving == []: safe only if we know nothing was running beforehand.
     return pre_restart_pids is None or bool(pre_restart_pids)
+
+
+def _fleet_probe_expected_runtimes(
+    pre_update_plan,
+    pre_restart_pids,
+    windows_resume_token,
+    restarted_services,
+    killed_pids,
+) -> bool:
+    """Whether the post-update fleet probe should have produced rows.
+
+    The zero-rows fail-open (#93406): ``collect_fleet_versions()`` swallows
+    every probe failure via ``logger.debug()`` and ``print_fleet_version_matrix([])``
+    early-returns ``False``, so an empty snapshot reads as \"healthy fleet\" and
+    the update exits 0.  An empty snapshot is only proof-of-safety when NOTHING
+    says a gateway existed before the update.  Any of these signals means at
+    least one runtime was (or may have been) live pre-update, so zero rows is
+    verification failure, not health:
+
+    * ``restarted_services`` / ``killed_pids`` — the POSIX restart phase
+      touched live gateways.
+    * ``pre_restart_pids`` non-empty, or ``None`` (pre-state unreadable —
+      cannot prove nothing was running; same contract as
+      ``_restart_phase_failure_is_incomplete``, #78574).
+    * the pre-update plan inventoried ≥1 runtime.
+    * the Windows pause/resume token carries paused ``profiles`` or
+      ``unmapped`` entries — ``_pause_windows_gateways_for_update`` /
+      ``_resume_windows_gateways_after_update`` populate NEITHER
+      ``restarted_services`` NOR ``killed_pids``, which is exactly why the
+      original ``(restarted_services or killed_pids)`` guard never fires on
+      Windows.
+
+    The same condition gates the 2.0s settle sleep: a freshly resumed Windows
+    gateway needs the settle window to rewrite ``gateway_state.json`` just
+    like a systemd-restarted one.
+
+    Note this keys ONLY on zero-rows-despite-expected-runtimes.  A non-empty
+    snapshot — including rows in ``unknown`` state — is still judged solely by
+    ``print_fleet_version_matrix``.
+    """
+    if restarted_services or killed_pids:
+        return True
+    if pre_restart_pids is None or pre_restart_pids:
+        return True
+    try:
+        if pre_update_plan is not None and pre_update_plan.runtimes:
+            return True
+    except Exception:
+        pass
+    if isinstance(windows_resume_token, dict) and (
+        windows_resume_token.get("profiles")
+        or windows_resume_token.get("unmapped")
+    ):
+        return True
+    return False
 
 
 def _print_items(items, label, key, fallback_key=None):

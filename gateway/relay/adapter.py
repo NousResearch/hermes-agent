@@ -107,6 +107,13 @@ class RelayAdapter(BasePlatformAdapter):
         # per-chat keying collided three concurrent turns: merged task
         # cards, clobbered seal state, 3x duplicate finals).
         self._open_draft_by_chat: Dict[str, int] = {}
+        # Strong refs for in-flight fire-and-forget lifecycle acks (asyncio
+        # holds tasks weakly; unreferenced tasks can be GC'd mid-flight).
+        self._lifecycle_ack_tasks: set = set()
+        # Draft keys whose post-seal tombstone swallow has been logged once
+        # (observability for the hijacked-live-stream class; bounded FIFO
+        # like the sibling caches).
+        self._tombstone_swallow_logged: Dict[str, int] = {}
         # chat_id -> draft_id of the most recently SEALED stream (gateway
         # mirror of the connector's sealed-key tombstone): post-seal
         # straggler frames must neither re-arm interception nor re-open a
@@ -465,6 +472,15 @@ class RelayAdapter(BasePlatformAdapter):
             k for k in self._open_draft_by_chat if k.startswith(prefix)
         ]
         if len(candidates) == 1:
+            # Absorbing a send into a stream is a significant, previously
+            # silent decision — the wrong caller matching here is exactly
+            # the prompt-ack-seals-own-stream bug (rc.4 live finding). Say
+            # it out loud so the next mismatch is a grep, not a hunt.
+            logger.info(
+                "relay: absorbing identity-less send into the single open "
+                "stream %s (single-open-stream fallback)",
+                candidates[0],
+            )
             return candidates[0]
         return None
 
@@ -494,7 +510,24 @@ class RelayAdapter(BasePlatformAdapter):
         chat_key = self._draft_key(str(chat_id), metadata)
         if self._sealed_draft_by_chat.get(chat_key) == draft_id:
             # Post-seal straggler: its content is already in the sealed
-            # message; report success, send nothing, arm nothing.
+            # message; report success, send nothing, arm nothing. Log the
+            # FIRST swallow per key at WARNING — one straggler is the
+            # normal race this tombstone exists for, but a hijacked live
+            # stream (something else sealed this draft mid-flight) shows
+            # up as a burst of swallows, and silence here cost a full
+            # forensic hunt (rc.4: prompt ack sealed the turn's own draft
+            # and every later append vanished without a line).
+            if chat_key not in self._tombstone_swallow_logged:
+                self._tombstone_swallow_logged[chat_key] = draft_id
+                self._evict_oldest(self._tombstone_swallow_logged)
+                logger.warning(
+                    "relay: draft frame for %s swallowed by post-seal "
+                    "tombstone (draft_id=%s) — expected for a straggler; "
+                    "a live stream freezing NOW means something sealed it "
+                    "mid-flight",
+                    chat_key,
+                    draft_id,
+                )
             return SendResult(success=True)
         # Arm seal-interception ONLY for stream-is-the-message chats
         # (review B4, per-chat in r2 finding 2): on a Telegram-shaped
@@ -513,7 +546,15 @@ class RelayAdapter(BasePlatformAdapter):
                     "draft_id": draft_id,
                     "content": content,
                     "final": False,
-                    "metadata": self._with_scope(chat_id, dict(metadata or {})),
+                    # Boundary rule (observed in live relay testing): the draft lane
+                    # is a text egress lane like send/edit — a streamed final
+                    # can only render blocks if its frames carry the hint.
+                    "metadata": self._with_scope(
+                        chat_id,
+                        self._with_format_hints_for_chat(
+                            chat_id, dict(metadata or {})
+                        ),
+                    ),
                 },
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
@@ -576,7 +617,13 @@ class RelayAdapter(BasePlatformAdapter):
             "draft_id": draft_id,
             "content": content,
             "final": True,
-            "metadata": self._with_scope(chat_id, dict(metadata or {})),
+            # Same boundary rule as the interim frame: the SEAL frame is the
+            # one the connector's block reconcile reads — a hintless seal is
+            # exactly the plain-code-block downgrade seen in live relay testing.
+            "metadata": self._with_scope(
+                chat_id,
+                self._with_format_hints_for_chat(chat_id, dict(metadata or {})),
+            ),
         }
         _seal_platform = self._platform_by_chat.get(str(chat_id))
         _transport = self._transport  # narrowed by the None-guard above
@@ -2910,8 +2957,11 @@ class RelayAdapter(BasePlatformAdapter):
                 # Acknowledge in-channel (the connector's prompt message can't
                 # be edited cross-platform yet — edit support varies; a short
                 # confirmation preserves the audit trail the native edit gives).
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget: we are ON the read loop here (see
+                # _send_lifecycle_ack) — awaiting the send self-deadlocks the
+                # transport for the full outbound timeout.
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if count:
                     self.resume_typing_for_chat(chat_id)
@@ -2929,14 +2979,15 @@ class RelayAdapter(BasePlatformAdapter):
                     "always": "🔒 Always approve",
                     "cancel": "❌ Cancelled",
                 }.get(choice, "Resolved")
-                await self.send(
-                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                # Fire-and-forget (read-loop context — see _send_lifecycle_ack).
+                self._send_lifecycle_ack(
+                    chat_id, label, self._prompt_reply_metadata(event)
                 )
                 if result_text:
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         str(result_text),
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
             elif kind == "clarify":
                 from tools.clarify_gateway import (
@@ -2947,10 +2998,10 @@ class RelayAdapter(BasePlatformAdapter):
                 clarify_id = str(state.get("clarify_id") or "")
                 if option_id == "other":
                     mark_awaiting_text(clarify_id)
-                    await self.send(
+                    self._send_lifecycle_ack(
                         chat_id,
                         "✏️ Type your answer:",
-                        metadata=self._prompt_reply_metadata(event),
+                        self._prompt_reply_metadata(event),
                     )
                 else:
                     choices = state.get("choices") or []
@@ -2960,10 +3011,10 @@ class RelayAdapter(BasePlatformAdapter):
                         idx = -1
                     if 0 <= idx < len(choices):
                         resolve_gateway_clarify(clarify_id, str(choices[idx]))
-                        await self.send(
+                        self._send_lifecycle_ack(
                             chat_id,
                             f"✅ {choices[idx]}",
-                            metadata=self._prompt_reply_metadata(event),
+                            self._prompt_reply_metadata(event),
                         )
                     else:
                         # Unmappable option: flip to text capture so the user
@@ -2975,6 +3026,40 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
 
+    def _send_lifecycle_ack(
+        self, chat_id: str, text: str, metadata: Dict[str, Any]
+    ) -> None:
+        """Fire-and-forget a prompt-lifecycle ack from read-loop context.
+
+        Live finding round 2 (rc.4): _consume_prompt_response executes ON
+        the transport read loop (inbound frame -> _handle_frame -> the
+        _inbound handler). ``await self.send(...)`` there is a
+        SELF-DEADLOCK: send() blocks on an outbound_result future that only
+        the read loop can resolve — and the read loop is blocked inside
+        this very handler. Every button tap wedged the transport for the
+        full outbound timeout: draft appends starved (the observed frozen
+        stream right after approving), sibling approval-card sends timed
+        out into 'possibly-delivered' ambiguity, and the turn's seal timed
+        out ambiguous -> plain-send fallback (the duplicate final).
+
+        Acks are cosmetic by contract (the audit trail), so they ride a
+        background task: the handler returns immediately, the read loop
+        keeps consuming, and the ack's own result frame resolves normally.
+        Failures are logged at debug — an undelivered ack must never break
+        the reader or the turn. The task ref is retained (asyncio only
+        weakly references tasks) and dropped on completion.
+        """
+
+        async def _ack() -> None:
+            try:
+                await self.send(chat_id, text, metadata=metadata)
+            except Exception:  # noqa: BLE001 - ack is best-effort
+                logger.debug("relay lifecycle ack failed", exc_info=True)
+
+        task = asyncio.create_task(_ack(), name="relay-lifecycle-ack")
+        self._lifecycle_ack_tasks.add(task)
+        task.add_done_callback(self._lifecycle_ack_tasks.discard)
+
     async def _notify_prompt_expired(self, event) -> None:
         """Tell the presser their prompt is no longer waiting.
 
@@ -2985,19 +3070,31 @@ class RelayAdapter(BasePlatformAdapter):
         chat_id = str(getattr(event.source, "chat_id", "") or "")
         if not chat_id:
             return
-        try:
-            await self.send(
-                chat_id,
-                "⌛ That prompt is no longer waiting for an answer. "
-                "Send your reply as a normal message.",
-                metadata=self._prompt_reply_metadata(event),
-            )
-        except Exception:  # noqa: BLE001 - notification is best-effort
-            logger.debug("relay expired-prompt notice failed", exc_info=True)
+        # Fire-and-forget (read-loop context — see _send_lifecycle_ack):
+        # _notify_prompt_expired is called from _consume_prompt_response too.
+        self._send_lifecycle_ack(
+            chat_id,
+            "⌛ That prompt is no longer waiting for an answer. "
+            "Send your reply as a normal message.",
+            self._prompt_reply_metadata(event),
+        )
 
     def _prompt_reply_metadata(self, event) -> Dict[str, Any]:
-        """Thread/topic metadata so prompt acks land where the prompt lives."""
-        meta: Dict[str, Any] = {}
+        """Thread/topic metadata so prompt acks land where the prompt lives.
+
+        Marked as an INTERIM send (live finding, rc.4 staging): prompt
+        lifecycle acks ("✅ Approved once", slash-confirm acks, expiry
+        notices) are system messages that fire while the approval turn's
+        OWN draft stream is open. Without the interim marker they carry
+        only placement metadata — no per-turn identity — so send()'s
+        single-open-stream fallback matched them to the live draft and
+        sealed it with the ack text. Every later append then died on the
+        post-seal tombstone (silent by design), freezing the visible
+        stream mid-word, and the real turn-final fell through to a plain
+        send: the observed 100%-reproducible stuck-draft + duplicate-final
+        on approval turns. Interim sends bypass draft matching entirely.
+        """
+        meta: Dict[str, Any] = {"_interim_send": True}
         thread_id = getattr(event.source, "thread_id", None)
         if thread_id:
             meta["thread_id"] = str(thread_id)

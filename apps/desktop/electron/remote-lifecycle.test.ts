@@ -10,8 +10,10 @@ import { test } from 'vitest'
 import { profileSshOverride } from './connection-config'
 import {
   buildSpawnCommand,
+  classifySshReuseProof,
   cleanupStale,
   connect,
+  disconnect,
   expandRemotePath,
   fingerprintToken,
   isForwardBindCollision,
@@ -39,6 +41,23 @@ import {
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
 const exec = promisify(execCallback)
+
+test('SSH reuse proof rejects a backend whose runtime was replaced', () => {
+  assert.equal(
+    classifySshReuseProof(
+      { ok: true, sshOwnerNonce: SPAWN_NONCE, protocolVersion: 1, runtimeIntact: false },
+      SPAWN_NONCE
+    ),
+    'authenticated-stale'
+  )
+})
+
+test('SSH reuse proof remains compatible when runtime state is absent', () => {
+  assert.equal(
+    classifySshReuseProof({ ok: true, sshOwnerNonce: SPAWN_NONCE, protocolVersion: 1 }, SPAWN_NONCE),
+    'authenticated-ok'
+  )
+})
 
 function ownedLock(over: any = {}) {
   return {
@@ -469,6 +488,29 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+test('disconnect reaps the backend recorded for this desktop ownership', async () => {
+  const lock = ownedLock()
+
+  const ssh = fakeSsh([
+    [/cat .*backend\.lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE\n'],
+    [/print\("OWNED"/, 'OWNED\n']
+  ])
+
+  await disconnect(ssh, OWNERSHIP_ID)
+
+  assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+})
+
+test('disconnect is a no-op when this desktop has no lockfile', async () => {
+  const ssh = fakeSsh([[/cat .*backend\.lock\.json/, '']])
+
+  await disconnect(ssh, OWNERSHIP_ID)
+
+  assert.ok(!ssh.calls.some(command => /\bkill\b/.test(command)))
+})
 
 test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])
@@ -1322,4 +1364,53 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
 
   const unsupported = fakeSsh([[/serve --help/, 'NO\n']])
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
+})
+
+test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {
+  // A serve mid-turn (in-flight LLM call, live MCP children) can ride out
+  // SIGTERM well past the 5s graceful wait. Before-quit races the whole
+  // teardown against 6s and then closes SSH — so a give-up here reparents
+  // the still-running backend to pid 1: exactly the #91668 leak. The
+  // graceful-wait failure must escalate to SIGKILL and still drop the lock.
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [(cmd: string) => /kill 9 &&/.test(cmd), new Error('exit 1: pid alive after graceful wait')]
+  ])
+
+  await cleanupStale(ssh, OWNERSHIP_ID, {
+    pid: 9,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.ok(
+    ssh.calls.some(c => /kill -9 9\b/.test(c)),
+    'must escalate to SIGKILL after the graceful wait fails'
+  )
+  assert.ok(
+    ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'lockfile must still be dropped after the forced kill'
+  )
+})
+
+test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid died', async () => {
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [(cmd: string) => /kill 9 &&/.test(cmd), new Error('exit 1: pid alive after graceful wait')],
+    [(cmd: string) => /kill -9 9\b/.test(cmd), new Error('exit 1: unkillable (D-state)')]
+  ])
+
+  await assert.rejects(
+    cleanupStale(ssh, OWNERSHIP_ID, {
+      pid: 9,
+      spawnNonce: SPAWN_NONCE,
+      hermesPath: '/x/hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+    }),
+    /Could not terminate/
+  )
+
+  // The record must survive so the next connect's reap pass retries.
+  assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 })

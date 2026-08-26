@@ -6,7 +6,7 @@ import type {
   ProfilesResponse
 } from '@/types/hermes'
 
-import { hermesApi, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getProfiles(): Promise<ProfilesResponse> {
   return hermesApi<ProfilesResponse>({
@@ -23,29 +23,58 @@ export function createProfile(body: ProfileCreatePayload): Promise<{ name: strin
   })
 }
 
-export function renameProfile(name: string, newName: string): Promise<{ name: string; ok: boolean; path: string }> {
+// Explicit (connection, profile) pin for a profile that lives on a gateway
+// other than the foreground one — the fleet profile rail edits a remote
+// square's SOUL/name in place. Same contract as deleteProfile's scope.
+function profileOwnerScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+  return {
+    ...capabilityScoped(scope),
+    ...(scope && typeof scope === 'object' && scope.connectionId?.trim() === 'local' ? { connectionId: 'local' } : {})
+  }
+}
+
+export function renameProfile(
+  name: string,
+  newName: string,
+  scope?: ProfileScope
+): Promise<{ name: string; ok: boolean; path: string }> {
   return hermesApi<{ name: string; ok: boolean; path: string }>({
+    ...profileOwnerScoped(scope),
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'PATCH',
     body: { new_name: newName }
   })
 }
 
-export function deleteProfile(name: string): Promise<{ ok: boolean; path: string }> {
+export function deleteProfile(name: string, scope?: ProfileScope): Promise<{ ok: boolean; path: string }> {
+  const normalized = name.trim()
+  const scopedProfile = scope && typeof scope === 'object' ? scope.profile?.trim() : undefined
+
+  if (!normalized) {
+    return Promise.reject(new Error('Profile name required'))
+  }
+
+  if (normalized.toLowerCase() === 'default' || scopedProfile?.toLowerCase() === 'default') {
+    return Promise.reject(new Error('The default profile cannot be deleted.'))
+  }
+
   return hermesApi<{ ok: boolean; path: string }>({
-    path: `/api/profiles/${encodeURIComponent(name)}`,
+    ...profileOwnerScoped(scope),
+    path: `/api/profiles/${encodeURIComponent(normalized)}`,
     method: 'DELETE'
   })
 }
 
-export function getProfileSoul(name: string): Promise<ProfileSoul> {
+export function getProfileSoul(name: string, scope?: ProfileScope): Promise<ProfileSoul> {
   return hermesApi<ProfileSoul>({
+    ...profileOwnerScoped(scope),
     path: `/api/profiles/${encodeURIComponent(name)}/soul`
   })
 }
 
-export function updateProfileSoul(name: string, content: string): Promise<{ ok: boolean }> {
+export function updateProfileSoul(name: string, content: string, scope?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
+    ...profileOwnerScoped(scope),
     path: `/api/profiles/${encodeURIComponent(name)}/soul`,
     method: 'PUT',
     body: { content }

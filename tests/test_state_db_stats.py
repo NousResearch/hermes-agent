@@ -10,6 +10,7 @@ Covers:
   the doctor state.db section prints from.
 """
 
+import json
 import os
 import sqlite3
 import sys
@@ -76,6 +77,33 @@ def test_collect_stats_is_read_only(populated_db):
     db = SessionDB(db_path=populated_db)
     assert db.get_session("sess-alpha") is not None
     db.close()
+
+
+def test_collect_and_render_stale_fts_holder_deferral(populated_db):
+    conn = sqlite3.connect(str(populated_db))
+    conn.execute(
+        "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+        (
+            "fts_rebuild_deferral",
+            json.dumps({"attempts": 4, "holder_pids": [4242], "first_seen": 1.0}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    stats = collect_state_db_stats(populated_db)
+    assert stats["fts_rebuild_deferral"]["attempts"] == 4
+    assert stats["fts_rebuild_deferral"]["holder_pids"] == [4242]
+
+    from hermes_cli.doctor import _render_state_db_stats
+
+    rendered = _render_state_db_stats(stats)
+    warnings = [
+        " ".join((text, detail))
+        for kind, text, detail in rendered
+        if kind == "warn"
+    ]
+    assert any("4242" in warning and "optimize-storage" in warning for warning in warnings)
 
 
 def test_collect_stats_missing_file_never_raises(tmp_path):

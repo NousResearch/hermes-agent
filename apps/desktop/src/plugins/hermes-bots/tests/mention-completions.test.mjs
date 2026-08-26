@@ -9,7 +9,7 @@ import vm from 'node:vm'
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-function loadProvide({ roster, active = 'default', meta = {} } = {}) {
+function loadProvide({ roster, active = 'default', focused = active, meta = {} } = {}) {
   const registrations = []
   const atom = value => {
     let current = value
@@ -38,12 +38,25 @@ function loadProvide({ roster, active = 'default', meta = {} } = {}) {
     },
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
     queryClient: {
-      getQueryData: () => roster,
+      // Key-exact semantics like the real QueryClient (v5): a 2-element
+      // ROSTER_KEY lookup MUST miss the 3-element cache keys useRoster
+      // writes — the bug behind issue #89303 was invisible under the old
+      // key-ignoring mock.
+      getQueryData: key =>
+        key.length === 3 && key[0] === 'hermes-bots' && key[1] === 'roster'
+          ? roster
+          : undefined,
+      getQueriesData: () => (Array.isArray(roster?.profiles) ? [[['hermes-bots', 'roster', 'local'], roster]] : []),
       invalidateQueries: () => undefined,
       setQueryData: () => undefined
     },
     host: {
-      state: { profile: { get: () => active, listen: () => () => undefined }, gateway: { get: () => null, listen: () => () => undefined } },
+      state: {
+        profile: { get: () => active, listen: () => () => undefined },
+        focusedSessionProfile: { get: () => focused, listen: () => () => undefined },
+        gateway: { get: () => null, listen: () => () => undefined },
+        connectionId: { get: () => 'local', listen: () => () => undefined }
+      },
       request: async () => ({}),
       onEvent: () => () => undefined
     },
@@ -101,6 +114,29 @@ test('prefix-filters against the handle', () => {
 
   assert.deepStrictEqual([...provide('wri').map(i => i.insert)], ['@writer-homelab'])
   assert.strictEqual(provide('zzz').length, 0)
+})
+
+test('filters self by the focused Bot Chat owner, not the gateway socket profile', () => {
+  const provide = loadProvide({
+    active: 'default',
+    focused: 'renametest',
+    roster: {
+      profiles: [
+        { name: 'default', display_name: 'Lucy' },
+        { name: 'renametest' }
+      ]
+    }
+  })
+
+  const inserts = provide('').map(item => item.insert)
+  assert.ok(
+    inserts.includes('@lucy'),
+    'renamed default profile remains mentionable from the focused bot chat'
+  )
+  assert.ok(
+    !inserts.includes('@renametest'),
+    'focused bot excludes itself even when the socket stays on default'
+  )
 })
 
 test('empty roster cache yields no rows (never throws)', () => {

@@ -18,7 +18,16 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
+import {
+  $browserPages,
+  $previewServerRestart,
+  commitBrowserTabLocation,
+  failPreviewServerRestart,
+  noteBrowserPage,
+  popOutBrowserTab,
+  type PreviewTarget
+} from '@/store/preview'
+import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
@@ -59,6 +68,20 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+}
+
+/** Electron throws if getURL/getTitle run before attach + dom-ready, or after
+ *  the guest has been removed. Optional chaining does not help — the method
+ *  exists, it just refuses. */
+function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
+  try {
+    return {
+      title: webview?.getTitle?.() ?? '',
+      url: webview?.getURL?.() || fallbackUrl
+    }
+  } catch {
+    return { title: '', url: fallbackUrl }
+  }
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -213,6 +236,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
+  const liveUrlRef = useRef(currentUrl)
+  liveUrlRef.current = currentUrl
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
@@ -227,6 +252,27 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
   const isRemoteHtmlTarget =
     target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  // Hand the live address to storage when this guest is about to go away
+  // (pop-out, dock-back, tab close). The other renderer builds from
+  // `target.url`; without this it would reopen the tab's original page.
+  useEffect(() => {
+    if (target.kind !== 'url' || !tabId) {
+      return
+    }
+
+    const persist = () => {
+      const page = $browserPages.get()[tabId]
+      commitBrowserTabLocation(tabId, page?.url || liveUrlRef.current, page?.title)
+    }
+
+    window.addEventListener('pagehide', persist)
+
+    return () => {
+      window.removeEventListener('pagehide', persist)
+      persist()
+    }
+  }, [tabId, target.kind])
 
   const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
 
@@ -385,6 +431,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const navigateTo = useCallback(
     (url: string) => {
       setLoadError(null)
+      // The reach probe below is a round-trip of its own, and `did-start-loading`
+      // can't fire until it resolves — so own the loading state from the moment
+      // we accept the address, or the bar sits idle over a request in flight.
+      setLoading(true)
       // Typed addresses get the same loopback reach as agent-opened ones — on a
       // remote gateway `localhost:5173` is usually the dev server the user is
       // there to look at, not something on their own laptop.
@@ -455,8 +505,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
       return {
         text: typeof text === 'string' ? text : '',
-        title: webview.getTitle?.() ?? '',
-        url: webview.getURL?.() ?? ''
+        ...guestPage(webview)
       }
     })
   }, [isWebPreview, tabId])
@@ -737,14 +786,31 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       if ((detail.level ?? 0) >= 3 && isModuleMimeError(message)) {
         setLoadError({
           description: copy.moduleMimeDescription,
-          url: webview.getURL?.() || target.url
+          url: guestPage(webview, target.url).url
         })
         setLoading(false)
       }
     }
 
-    const syncHistory = () =>
-      setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
+    const syncHistory = () => {
+      try {
+        setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
+      } catch {
+        // Same attach / dom-ready rule as getURL.
+      }
+    }
+
+    // Tell the strip what this Browser is showing, so its tab renames itself
+    // like a tab anywhere else. Deliberately NOT written back into the tab's
+    // target: the guest is built from `target.url`, so that would rebuild the
+    // webview mid-navigation and throw away the history.
+    const notePage = () => {
+      if (target.kind !== 'url' || !tabId) {
+        return
+      }
+
+      noteBrowserPage(tabId, guestPage(webview, target.url))
+    }
 
     const onNavigate = (event: Event) => {
       const detail = event as Event & { url?: string }
@@ -753,6 +819,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         setLoadError(null)
         setCurrentUrl(detail.url)
       }
+
+      notePage()
 
       // Ask the webview rather than counting navigations: the guest page can
       // move itself (redirects, history.pushState, a link into a new document),
@@ -781,7 +849,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       setLoadError({
         code: errorCode,
         description: detail.errorDescription || copy.unreachableDescription,
-        url: detail.validatedURL || webview.getURL?.() || target.url
+        url: detail.validatedURL || guestPage(webview, target.url).url
       })
       setLoading(false)
     }
@@ -794,6 +862,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       // cancelled navigation) still settles the history — resync so the
       // buttons can't be left stale.
       syncHistory()
+      notePage()
     }
 
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
@@ -885,6 +954,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
     webview.addEventListener('did-stop-loading', onStop)
+    // SPAs title themselves long after the load settles, and a route change
+    // renames the page without navigating at all.
+    webview.addEventListener('page-title-updated', notePage)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -898,9 +970,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
+      webview.removeEventListener('page-title-updated', notePage)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
 
   return (
     <aside
@@ -958,7 +1031,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onBack={goBack}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={() => void window.hermesDesktop?.openExternal(currentUrl)}
+            onOpenExternal={
+              !isBrowserWindow() && !canOpenBrowserWindow()
+                ? () => void window.hermesDesktop?.openExternal(currentUrl)
+                : undefined
+            }
+            onPopIn={isBrowserWindow() ? () => window.close() : undefined}
+            onPopOut={
+              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+            }
             onReload={reloadPreview}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}

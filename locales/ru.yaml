@@ -280,6 +280,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Недействительный номер контрольной точки. Используйте 1-{max}."
     restored:              "✅ Восстановлено до контрольной точки {hash}: {reason}\nСнимок перед откатом сохранён автоматически."
     kept_user_edits:       "↷ Ваши ручные правки сохранены: {files}\nИспользуйте /rollback <N> --all, чтобы восстановить и их."
+    kept_oversize:         "↷ Сохранено (слишком большой для контрольных точек, нет сохранённой копии для отката): {files}"
+    failed_deletes:        "⚠️ Не удалось удалить (файл оставлен на месте): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

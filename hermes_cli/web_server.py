@@ -38,6 +38,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -271,16 +272,45 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     scheduler provider here (no live adapters; delivery falls back to the
     per-platform send path).
 
+    Every local profile's store is ticked, not just this backend's own
+    (#69377's desktop sibling): the desktop pools per-profile backends and
+    reaps them after ~10 idle minutes, so a secondary profile's ticker dies
+    with its backend and that profile's jobs silently stop firing until the
+    user next opens it ("tasks on the sleeping profile could be idle" —
+    community report, Aug 2026). The primary backend outlives the pool, so it
+    owns every profile's tick, exactly like a multiplex gateway. External
+    providers keep the single-store behavior — their registries are not
+    profile-scoped (see _notify_cron_provider_for_profile).
+
     Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
+    the per-store ``cron/.tick.lock`` file lock, so this never double-fires
+    alongside a real gateway or a live pool backend on the same profile home —
+    whichever process grabs the lock first wins the tick.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
+
+    start_kwargs: dict = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            profile_homes = list(profiles_to_serve(multiplex=True))
+            if len(profile_homes) > 1:
+                start_kwargs["profile_homes"] = profile_homes
+                _log.info(
+                    "Desktop cron scheduler will tick %d profile(s): %s",
+                    len(profile_homes),
+                    [name for name, _home in profile_homes],
+                )
+        except Exception:
+            # Fail open to the single-store ticker — the active profile's
+            # jobs must keep firing even if profile enumeration breaks.
+            _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:
@@ -385,6 +415,17 @@ async def _lifespan(app: "FastAPI"):
     # run_in_executor still froze the event loop for 15-22 s, causing the
     # Desktop's 10-second WebSocket ready-probe to time out (GH-73083).
     _warm_gateway_module()
+
+    # Snapshot the checkout revision at boot so risky lazy-import paths (the
+    # model picker) can detect when `hermes update` replaced the code
+    # underneath this long-lived process and refuse with a clear "restart
+    # required" message instead of a stale-module ImportError (#86207).  This
+    # mirrors the gateway's record_boot_fingerprint in gateway/run.py; the
+    # dashboard is a separate process/unit that the update flow does not
+    # reliably restart, so it must detect the drift itself.
+    from gateway.code_skew import record_boot_fingerprint
+
+    record_boot_fingerprint()
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -503,6 +544,8 @@ def _resolve_session_token() -> str:
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
+_SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
+_SSH_RUNTIME_MARKER: Optional[str] = None
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -512,8 +555,52 @@ def _apply_ssh_session_token(token: str) -> None:
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
-    global _SSH_OWNER_NONCE
+    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
     _SSH_OWNER_NONCE = nonce
+    _SSH_RUNTIME_PURELIB = None
+    _SSH_RUNTIME_MARKER = None
+    if nonce:
+        try:
+            purelib = sysconfig.get_paths()["purelib"]
+        except (KeyError, OSError):
+            return
+        # Primary identity: a marker FILE written into site-packages now.
+        # A replaced venv (rm -rf && recreate — same OR different Python
+        # version) loses the marker deterministically, while pip installs
+        # into the live venv leave it untouched (no false stales). A bare
+        # (dev, ino) snapshot of the directory is NOT sufficient on its
+        # own: ext4 reuses directory inodes immediately, so the exact
+        # reported repro (`rm -rf venv && uv venv`) can land on the same
+        # inode and pass undetected (proven live during salvage).
+        try:
+            marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(f"pid={os.getpid()}\n")
+            _SSH_RUNTIME_MARKER = marker
+        except OSError:
+            pass  # read-only site-packages — fall back to the stat snapshot
+        try:
+            st = os.stat(purelib)
+            _SSH_RUNTIME_PURELIB = (purelib, st.st_dev, st.st_ino)
+        except OSError:
+            pass
+
+
+def _ssh_runtime_intact() -> bool:
+    # Marker file is the deterministic signal when we managed to write one.
+    if _SSH_RUNTIME_MARKER is not None:
+        return os.path.isfile(_SSH_RUNTIME_MARKER)
+    # Fallback (read-only site-packages): directory identity snapshot.
+    # Weaker — inode reuse can mask a same-filesystem recreate — but still
+    # catches cross-device moves and version-bump path changes.
+    if _SSH_RUNTIME_PURELIB is None:
+        return True
+    purelib, device, inode = _SSH_RUNTIME_PURELIB
+    try:
+        st = os.stat(purelib)
+    except OSError:
+        return False
+    return (st.st_dev, st.st_ino) == (device, inode)
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -638,6 +725,28 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _dashboard_public_hosts() -> frozenset[str]:
+    """Return the exact hostname declared by ``dashboard.public_url``.
+
+    ``public_url`` is already Hermes' canonical browser-facing URL behind a
+    reverse proxy. Reusing its validated hostname here keeps OAuth redirects,
+    HTTP Host validation, and WebSocket Origin validation on one source of
+    truth. Malformed or unset values fail closed as an empty set.
+    """
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    public_url = resolve_public_url()
+    if not public_url:
+        return frozenset()
+    try:
+        hostname = urllib.parse.urlparse(public_url).hostname
+    except ValueError:
+        return frozenset()
+    if not hostname:
+        return frozenset()
+    return frozenset({hostname.lower()})
+
+
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
@@ -660,34 +769,83 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def should_require_dashboard_auth(
+    host: str,
+    trusted_public_hosts: Optional[frozenset[str]] = None,
+) -> bool:
+    """Return whether the dashboard auth gate must be active.
+
+    The browser-facing URL is part of the exposure boundary: a non-loopback
+    ``dashboard.public_url`` requires authentication even when a reverse proxy
+    reaches a backend bound to loopback. Callers may pass the already-resolved
+    host set so startup and request validation use the same snapshot.
+    """
+    if trusted_public_hosts is None:
+        trusted_public_hosts = _dashboard_public_hosts()
+    return should_require_auth(host) or any(
+        candidate not in _LOOPBACK_HOST_VALUES
+        for candidate in trusted_public_hosts
+    )
+
+
+def _host_header_hostname(host_header: str) -> str:
+    """Return a normalized hostname from a valid HTTP Host authority.
+
+    Host headers are authorities, not full URLs. Reject ambiguous ports,
+    malformed IPv6 brackets, and URL syntax so validation always fails closed.
+    """
+    value = (host_header or "").strip()
+    if not value:
+        return ""
+    if any(char in value for char in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        return ""
+    if "://" in value or any(char in value for char in ("/", "?", "#", "@")):
+        return ""
+
+    if value.startswith("["):
+        close = value.find("]")
+        if close == -1:
+            return ""
+        hostname = value[1:close]
+        # Bracket notation is reserved for IPv6 literals.
+        if ":" not in hostname:
+            return ""
+        suffix = value[close + 1:]
+        if suffix and not re.fullmatch(r":\d+", suffix):
+            return ""
+        return hostname.lower()
+
+    # Unbracketed IPv6 authorities are ambiguous with a port separator.
+    if value.count(":") > 1:
+        return ""
+    if ":" in value:
+        hostname, port = value.rsplit(":", 1)
+        if not hostname or not port.isdigit():
+            return ""
+        return hostname.lower()
+    return value.lower()
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    trusted_public_hosts: frozenset[str] = frozenset(),
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Exact operator-declared public hosts (with or without port suffix)
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
-    if not host_header:
+    host_only = _host_header_hostname(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+
+    if host_only in trusted_public_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -721,13 +879,18 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        trusted_public_hosts = getattr(
+            app.state, "trusted_public_hosts", frozenset()
+        )
+        if not _is_accepted_host(
+            host_header, bound_host, trusted_public_hosts
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
-                        "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "Invalid Host header. Dashboard requests must use the "
+                        "bound hostname or the configured public hostname."
                     ),
                 },
             )
@@ -1200,6 +1363,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
+    # bot_mode holds a couple of relay tuning knobs — keep it folded into the
+    # agent tab rather than spawning a tiny standalone category.
+    "bot_mode": "agent",
     "goals": "agent",
     "updates": "general",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
@@ -1487,6 +1653,18 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
+
+    tb_entry = CONFIG_SCHEMA.get("terminal.backend")
+    if isinstance(tb_entry, dict) and isinstance(tb_entry.get("options"), list):
+        try:
+            plugin_names = sorted(
+                {row["name"] for row in _plugin_terminal_backend_rows()}
+                - set(tb_entry["options"])
+            )
+        except Exception:
+            plugin_names = []
+        if plugin_names:
+            merge("terminal.backend", [*tb_entry["options"], *plugin_names])
 
     if not overlay:
         return CONFIG_SCHEMA
@@ -3447,7 +3625,12 @@ async def get_ssh_ownership(request: Request):
     _require_token(request)
     if not _SSH_OWNER_NONCE:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
+    return {
+        "ok": True,
+        "sshOwnerNonce": _SSH_OWNER_NONCE,
+        "protocolVersion": 1,
+        "runtimeIntact": _ssh_runtime_intact(),
+    }
 
 
 @app.get("/api/health")
@@ -4406,6 +4589,10 @@ GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
 # child exits is the bug this exists to fix.
 _LAST_GATEWAY_RESTART: Optional[Tuple[float, subprocess.Popen, Tuple[str, ...]]] = None
 
+_UPDATE_ACTION_COMPLETED_RE = re.compile(
+    r"^=== hermes-update completed ([0-9a-f]{32}) ===$"
+)
+
 # ``name`` → completed synthetic action result for actions the server handled
 # without spawning a subprocess (for example, unsupported Docker updates).
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
@@ -4445,13 +4632,48 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
 def _dashboard_spawn_executable() -> str:
     """Interpreter for detached dashboard actions.
 
-    Returns ``sys.executable`` on every platform.  On Windows the spawn
-    below carries ``windows_detach_flags()`` (CREATE_NO_WINDOW), so the
-    console python owns a single hidden console that its own subprocess
+    Prefers the install's own venv interpreter over ``sys.executable`` when
+    they differ. Under an SSH remote backend the web server is launched by
+    running the **uv base interpreter** with the venv's site-packages
+    injected into ``sys.path`` at startup (``-c "sys.path[:0]=[...];
+    runpy.run_module('hermes_cli.main', ...)"``) — so ``sys.executable`` is
+    the dependency-less base python and a detached action spawned from it
+    dies on the first third-party import (``ModuleNotFoundError: yaml``),
+    because the injected path is a startup artifact of the parent and is
+    not inherited (#90026). The venv launcher resolves the same dependency
+    set on its own.
+
+    Falls back to ``sys.executable`` when no venv interpreter exists next
+    to the install (in-process dev runs, exotic layouts). On Windows the
+    spawn below carries ``windows_detach_flags()`` (CREATE_NO_WINDOW), so
+    the console python owns a single hidden console that its own subprocess
     spawns inherit — the action stays invisible without resorting to
     console-less pythonw.exe, which would make every console-subsystem
     descendant flash its own conhost (#54220/#56747).
     """
+    exe = Path(sys.executable)
+    try:
+        for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
+            candidate = PROJECT_ROOT / rel
+            if candidate.is_file():
+                # Same interpreter → keep sys.executable (preserves the
+                # docstring's console-ownership behavior verbatim). Compare
+                # UNRESOLVED normalized paths: a venv's bin/python is
+                # typically a SYMLINK to the base interpreter, so resolving
+                # both sides makes the venv python and the dependency-less
+                # base compare equal — exactly the SSH-runtime case this
+                # function exists to fix. The unresolved path IS the venv's
+                # identity (pyvenv.cfg discovery keys off argv0's location).
+                if os.path.normcase(os.path.normpath(str(candidate))) == (
+                    os.path.normcase(os.path.normpath(str(exe)))
+                ):
+                    return sys.executable
+                # Return the candidate UNRESOLVED for the same reason:
+                # invoking the resolved target would bypass pyvenv.cfg and
+                # run the bare base interpreter again.
+                return str(candidate)
+    except OSError:
+        pass
     return sys.executable
 
 
@@ -4557,6 +4779,34 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if drop_partial_first_line and lines:
         lines = lines[1:]
     return lines[-n:]
+
+
+def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
+    """Recover the latest successful update identity from ``update.log``.
+
+    The dashboard action process can restart the dashboard that spawned it.
+    That loses the in-memory ``Popen``/result registries while the durable
+    update log survives.  Only accept a completion marker that occurs after
+    the latest update-start marker, so a stale success cannot mask a newer
+    failed attempt.
+    """
+    last_start = -1
+    last_completed = -1
+    completed_action_id: Optional[str] = None
+
+    for index, line in enumerate(lines):
+        if line.startswith("=== hermes update started "):
+            last_start = index
+
+        match = _UPDATE_ACTION_COMPLETED_RE.fullmatch(line.strip())
+        if match:
+            last_completed = index
+            completed_action_id = match.group(1)
+
+    if completed_action_id and last_completed > last_start:
+        return completed_action_id
+
+    return None
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -5115,6 +5365,42 @@ async def transcribe_audio_upload(
     }
 
 
+@app.get("/api/audio/voice-config")
+async def get_client_voice_config(profile: Optional[str] = None):
+    """The active profile's STT/TTS config for CLIENT-DIRECT voice.
+
+    Lets the desktop cut the audio relay hop: mic audio goes straight to the
+    profile's STT provider and reply text is synthesized on the client with
+    the profile's TTS provider — the desktop↔gateway link carries only text.
+    Providers that can only run on this host (local whisper, edge-tts,
+    command/plugin providers) resolve to ``{"mode": "relay"}`` and the
+    desktop keeps using the /api/audio/* relay endpoints.
+
+    Same trust boundary as every profile-scoped route: the caller is an
+    authenticated client that can already drive the agent. Keys in the
+    response are held in client memory only, never persisted client-side.
+    Gate: ``voice.client_direct`` in config.yaml (default true).
+    """
+    from tools.voice_client_config import resolve_client_voice_config
+
+    def _resolve_scoped():
+        # Home-only contextvar scope, same rationale as transcribe above:
+        # resolution reads config/.env only and must not hold the process-
+        # global skills lock across the (cheap, but still I/O) resolution.
+        with _config_profile_scope(profile):
+            return resolve_client_voice_config()
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _resolve_scoped)
+    except Exception:
+        _log.exception("Client voice-config resolution failed")
+        fallback = {"mode": "relay", "reason": "resolution error"}
+        return {"ok": True, "stt": fallback, "tts": dict(fallback)}
+
+    return {"ok": True, **result}
+
+
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()
@@ -5494,7 +5780,26 @@ async def get_action_status(name: str, lines: int = 200):
         raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
 
     log_path = _ACTION_LOG_DIR / log_file_name
-    tail = _tail_lines(log_path, min(max(lines, 1), 2000))
+    requested_lines = min(max(lines, 1), 2000)
+    tail = _tail_lines(log_path, requested_lines)
+
+    durable_update_action_id = None
+    update_receipt_summary = None
+    if name == "hermes-update":
+        durable_lines = _tail_lines(_ACTION_LOG_DIR / "update.log", 2000)
+        durable_update_action_id = _durable_completed_update_action_id(durable_lines)
+        if durable_update_action_id:
+            marker = f"=== hermes-update completed {durable_update_action_id} ==="
+            if marker not in tail:
+                tail = [*tail, marker][-requested_lines:]
+        # Phase-1 bullet 3 (#91277): the update receipt is the durable,
+        # structured truth about the last update — written by every run
+        # including refused/failed ones, and it survives the dashboard
+        # restarting itself mid-action. Surface its summary alongside the
+        # log-marker recovery so clients (Desktop, dashboard) READ the
+        # outcome instead of inferring it from liveness probes
+        # (#81193/#87359 class).
+        update_receipt_summary = _latest_update_receipt_summary()
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
@@ -5502,6 +5807,19 @@ async def get_action_status(name: str, lines: int = 200):
         running = False
         exit_code = result.get("exit_code") if result else None
         pid = result.get("pid") if result else None
+        if result is None and durable_update_action_id:
+            exit_code = 0
+        if (
+            result is None
+            and exit_code is None
+            and update_receipt_summary is not None
+            and update_receipt_summary.get("outcome") in ("success", "partial")
+        ):
+            # No in-memory result and no log marker (e.g. log rotated), but
+            # the receipt proves a completed run: report its outcome rather
+            # than a null that clients time out on. ``partial`` maps to
+            # exit 1 exactly like the CLI run itself did.
+            exit_code = 0 if update_receipt_summary["outcome"] == "success" else 1
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -5516,13 +5834,76 @@ async def get_action_status(name: str, lines: int = 200):
             _ACTION_COMMANDS.pop(name, None)
             _ACTION_IDS.pop(name, None)
 
-    return {
+    response = {
         "name": name,
         "running": running,
         "exit_code": exit_code,
         "pid": pid,
         "lines": tail,
     }
+    if durable_update_action_id:
+        response["action_id"] = durable_update_action_id
+    if update_receipt_summary is not None:
+        response["receipt"] = update_receipt_summary
+    return response
+
+
+def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
+    """Compact summary of the most recent update receipt, or None.
+
+    Phase-1 bullet 3 (#91277): the receipt (written by EVERY ``hermes
+    update`` run since #91283, including refused and failed ones, with a
+    ``latest.json`` pointer) is the durable success signal the Desktop and
+    dashboard should read instead of inferring outcomes from liveness
+    probes across the update's stop/start gap (#81193, #87359). Summary
+    only — steps and skips stay in the full receipt endpoint.
+    Never raises.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+        if not receipt:
+            return None
+        fleet = receipt.get("fleet") or []
+        return {
+            "outcome": receipt.get("outcome"),
+            "started_at": receipt.get("started_at"),
+            "finished_at": receipt.get("finished_at"),
+            "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
+            "post_sha": (receipt.get("post_update") or {}).get("sha"),
+            "post_version": (receipt.get("post_update") or {}).get("version"),
+            "fleet_states": sorted(
+                {str(e.get("state")) for e in fleet if isinstance(e, dict)}
+            ),
+        }
+    except Exception:
+        return None
+
+
+@app.get("/api/hermes/update/receipt")
+async def get_update_receipt():
+    """The most recent update receipt — the durable update-outcome record.
+
+    Phase-1 bullet 3 (#91277): dashboards and the Desktop read this instead
+    of inferring update success from backend liveness (the inference misread
+    the update's own restart gap as 'Backend update failed' / 'boot failed'
+    — #81193, #87359). Returns the FULL receipt (steps, skips, gateway
+    restart outcome, fleet matrix) plus a compact ``summary``; 404 when no
+    update has run since receipts landed.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+    except Exception:
+        receipt = None
+    if not receipt:
+        raise HTTPException(
+            status_code=404,
+            detail="No update receipt found (no `hermes update` run recorded).",
+        )
+    return {"receipt": receipt, "summary": _latest_update_receipt_summary()}
 
 
 # Per-row fields that no session LIST consumer reads but that dominate the
@@ -6982,17 +7363,48 @@ def get_model_info(profile: Optional[str] = None):
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
 _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
-    "web_extract",
     "compression",
     "skills_hub",
     "approval",
     "mcp",
     "title_generation",
+    "review",
     "triage_specifier",
     "kanban_decomposer",
     "profile_describer",
     "curator",
 )
+
+
+def _dashboard_code_skew_guard() -> Optional[str]:
+    """Return a clear \"restart required\" message when the dashboard runs stale code.
+
+    The dashboard is a long-lived process; its ``sys.modules`` is frozen at
+    boot.  When ``hermes update`` (or a manual ``git pull``) replaces the
+    checkout underneath it, a first-time lazy import on a new code path can
+    resolve a freshly-pulled consumer module against a stale cached dependency
+    -> ImportError — e.g. ``/api/model/options`` 500 after the update added
+    ``agent.model_metadata.is_grok_46_family`` while the running process kept
+    serving the pre-update module (#86207).  Mirror the gateway's
+    ``_model_switch_skew_guard``: refuse the risky call with an actionable
+    message instead of crashing with a cryptic import error.
+
+    Returns None when no drift is detectable (fresh process, or a non-git
+    install where the boot fingerprint could not be read — never a false
+    positive).
+    """
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    return (
+        f"This dashboard is running code from {boot_rev} but the checkout on "
+        f"disk is now {disk_rev}. The model picker would risk a stale-module "
+        f"crash — restart the dashboard to load the new code "
+        f"(systemctl --user restart hermes-dashboard, or hermes dashboard --port <port>)"
+    )
 
 
 @app.get("/api/model/options")
@@ -7018,6 +7430,13 @@ async def get_model_options(
     Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("GET /api/model/options refused: %s", skew_msg)
+            raise HTTPException(
+                status_code=503, detail=f"Restart required: {skew_msg}"
+            )
+
         from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
         def _build_payload_scoped() -> dict:
@@ -12089,7 +12508,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_db_error
+    from hermes_state import SessionDB, is_malformed_schema_error
 
     if not read_only:
         return SessionDB(db_path=db_path, read_only=False)
@@ -12126,7 +12545,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     except sqlite3.DatabaseError as exc:
         message = str(exc).lower()
         stale_schema = "no such table" in message or "no such column" in message
-        if not stale_schema and not is_malformed_db_error(exc):
+        if not stale_schema and not is_malformed_schema_error(exc):
             raise
         SessionDB(db_path=db_path, read_only=False).close()
         try:
@@ -15105,6 +15524,46 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
 _TERMINAL_BACKEND_NAMES = {row["name"] for row in _TERMINAL_BACKENDS}
 
 
+def _plugin_terminal_backend_rows() -> List[Dict[str, str]]:
+    """Picker rows for plugin-registered terminal backends (fail-soft)."""
+    rows: List[Dict[str, str]] = []
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # idempotent — plugin state may not be loaded yet
+    except Exception:
+        pass
+    try:
+        from agent.terminal_env_registry import list_providers
+
+        for provider in list_providers():
+            try:
+                rows.append({
+                    "name": provider.name.strip().lower(),
+                    "label": provider.display_name,
+                    "description": provider.description,
+                })
+            except Exception:
+                continue
+    except Exception:
+        return rows
+    return rows
+
+
+def _terminal_backend_rows() -> List[Dict[str, str]]:
+    """Built-in picker rows plus plugin-registered backends (request time).
+
+    Computed per request (mirrors ``_schema_with_dynamic_provider_options``)
+    so a plugin installed after server start still shows up.
+    """
+    return [*_TERMINAL_BACKENDS, *_plugin_terminal_backend_rows()]
+
+
+def _terminal_backend_names() -> set:
+    """Valid ``terminal.backend`` values, including plugin backends."""
+    return {row["name"] for row in _terminal_backend_rows()}
+
+
 def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
     """Read a terminal.* setting from config.yaml, falling back to its env var."""
     value = terminal_cfg.get(key)
@@ -15217,6 +15676,14 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        try:
+            from agent.terminal_env_registry import get_provider
+
+            provider = get_provider(name)
+            if provider is not None:
+                return provider.probe()
+        except Exception:
+            pass
         return ("unavailable", f"Unknown backend: {name}")
     except Exception as exc:  # pragma: no cover — belt-and-braces guard
         return ("unavailable", f"Probe failed: {exc}")
@@ -15906,8 +16373,14 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    trusted_public_hosts = getattr(
+        app.state, "trusted_public_hosts", frozenset()
+    )
+
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(
+        host_header, bound_host, trusted_public_hosts
+    ):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -15924,7 +16397,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(
+        parsed.netloc, bound_host, trusted_public_hosts
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -15959,6 +16434,26 @@ def _ws_auth_mode() -> str:
     if bound_host and bound_host not in _LOOPBACK_HOSTS:
         return "insecure"
     return "loopback"
+
+
+_GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
+_GATEWAY_WS_TICKET_PROTOCOL_PREFIX = "hermes-gateway-ticket."
+
+
+def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
+    """Return ``(ticket, reason)`` from an unambiguous gateway protocol set."""
+    raw = str(ws.headers.get("sec-websocket-protocol", "") or "")
+    protocols = [value.strip() for value in raw.split(",") if value.strip()]
+    ticket_protocols = [
+        value for value in protocols
+        if value.startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)
+    ]
+    if not ticket_protocols:
+        return "", "none"
+    if _GATEWAY_WS_PROTOCOL not in protocols or len(ticket_protocols) != 1:
+        return "", "invalid"
+    ticket = ticket_protocols[0][len(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX):]
+    return (ticket, "ok") if ticket else ("", "invalid")
 
 
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
@@ -16010,7 +16505,16 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                # Stamp the server-minted identity onto the WS object so the
+                # connection (and any transport built from it) can never be
+                # impersonated by RPC params. Internal peers are marked
+                # ``server-internal`` and are excluded from privileged
+                # controller registration downstream.
+                ws._hermes_auth_identity = {
+                    "user_id": info.get("user_id"),
+                    "provider": info.get("provider"),
+                }
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -16021,12 +16525,32 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 )
                 return "internal_invalid", "internal"
 
-        ticket = ws.query_params.get("ticket", "")
+        protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
+        if protocol_reason == "invalid":
+            return "ticket_invalid", "ticket-subprotocol"
+        ticket = protocol_ticket or ws.query_params.get("ticket", "")
         if not ticket:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            # The ticket binds a server-minted {user_id, provider}; stamp it
+            # onto the WS object so ``gateway_ws`` can hand it to the gateway
+            # transport, where it is the sole identity authority for
+            # browser-controller registration. A client can never supply or
+            # spoof this value through RPC params. Only the two identity
+            # fields are carried — bookkeeping (e.g. ``minted_at``) is not
+            # part of the identity contract.
+            ws._hermes_auth_identity = {
+                "user_id": info.get("user_id"),
+                "provider": info.get("provider"),
+            }
+            if protocol_ticket:
+                # Select only the stable public protocol during accept. The
+                # ticket-bearing protocol is a credential and must never be
+                # reflected back to the browser or retained after admission.
+                ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+                return None, "ticket-subprotocol"
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -16108,14 +16632,34 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     # Hermes TUI child: build via the single spawn-env factory (profile-home
     # contract applied; secrets kept — the spawned agent needs provider creds).
-    # An explicit profile scope below still overrides HERMES_HOME afterwards.
+    # An explicit profile scope still overrides HERMES_HOME before config is
+    # bridged into the child environment.
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    if profile_dir is not None:
+        env["HERMES_HOME"] = str(profile_dir)
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
-        apply_terminal_config_to_env(env=env)
+        from hermes_cli.config import (
+            apply_terminal_config_to_env,
+            read_raw_config,
+            terminal_config_owned_env_vars,
+        )
+
+        if profile_dir is not None:
+            # The dashboard process already bridged its own terminal config
+            # into os.environ at startup. Remove only keys explicitly owned by
+            # that launch profile before applying the selected profile. Values
+            # exported by the operator for keys omitted from the launch profile
+            # remain valid fallbacks, matching apply_terminal_config_to_env().
+            raw_launch_terminal = read_raw_config().get("terminal")
+            for env_var in terminal_config_owned_env_vars(raw_launch_terminal):
+                env.pop(env_var, None)
+            with _config_profile_scope(requested):
+                apply_terminal_config_to_env(env=env)
+        else:
+            apply_terminal_config_to_env(env=env)
     except Exception:
-        _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+        _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
@@ -16138,9 +16682,6 @@ def _resolve_chat_argv(
     # setdefault so an explicit operator value still wins.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
-
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
 
     if resume:
         _resume_db = _open_session_db_for_profile(
@@ -17014,6 +17555,12 @@ async def pty_ws(ws: WebSocket) -> None:
             _forget_active_session_file(active_session_file)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
+            if resume:
+                # The client only knows to pin the viewport to the bottom
+                # when it requested `?resume=`. Tell it a replay is coming
+                # anyway so the implicit active-session fallback gets the
+                # same follow-scroll treatment as an explicit resume (#93518).
+                await ws.send_json({"type": "resume", "id": resume})
 
     resolve_kwargs = {
         "resume": resume,
@@ -17147,7 +17694,15 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # The authenticated identity (ticket / internal credential) was stamped
+    # onto the WS object by _ws_auth_reason; carry it into the gateway
+    # transport where it becomes the identity authority for privileged RPCs
+    # (browser.controller.register). None on the legacy token path.
+    await handle_ws(
+        ws,
+        auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -17343,18 +17898,28 @@ def mount_spa(application: FastAPI):
     # SPA, even if a dist is lying around from a prior `dashboard`/build. Take
     # the no-frontend path so only the JSON-RPC/WS/API surface is reachable.
     _headless = os.environ.get("HERMES_SERVE_HEADLESS") == "1"
-    if _headless or not WEB_DIST.exists():
+    if _headless:
         _msg = (
             "Headless backend (hermes serve): web UI disabled — use "
             "`hermes dashboard` for the browser UI."
-            if _headless
-            else "Frontend not built. Run: cd web && npm run build"
         )
 
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
             return JSONResponse({"error": _msg}, status_code=404)
         return
+
+    # A missing WEB_DIST is deliberately NOT a mount-time terminal state
+    # (#82614): a long-lived `hermes dashboard --skip-build` process that
+    # survives a `git pull` (or starts before the first build) used to
+    # install a permanent no_frontend catch-all here and could never
+    # recover — every route answered 404 "Frontend not built" until the
+    # process was restarted, even after `npm run build` completed. The SPA
+    # routes below all cope with a missing dist per-request (`_serve_index`
+    # returns the same 404 JSON when index.html is unreadable; the asset
+    # mounts use check_dir=False and 404 on missing files), so mounting
+    # them unconditionally makes the dashboard recover the moment a build
+    # appears on disk — no restart needed.
 
     _index_path = WEB_DIST / "index.html"
 
@@ -17471,7 +18036,12 @@ def mount_spa(application: FastAPI):
             return response
 
     application.mount(
-        "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets"), name="assets"
+        "/assets",
+        # check_dir=False: the dist (and its assets/ dir) may not exist yet —
+        # the whole point of the dynamic recheck (#82614). StaticFiles then
+        # 404s per-request until a build appears instead of raising at mount.
+        _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False),
+        name="assets",
     )
 
     @application.get("/{full_path:path}")
@@ -18845,6 +19415,91 @@ def _demo() -> None:
     print("web_server parent-death watchdog self-check: OK")
 
 
+# ── Port-conflict sentinel (#93608) ─────────────────────────────────────────
+# When the requested port is already bound, uvicorn's ``bind_socket()``
+# catches the OSError itself and does ``logger.error(exc); sys.exit(1)`` — a
+# bare ERROR line plus the same exit 1 as any real backend crash. The desktop
+# spawn (and any script wrapping ``hermes serve``) cannot tell "port occupied"
+# from "backend broken". So we probe the exact bind before handing the socket
+# to uvicorn and, on conflict, emit ONE machine-readable stdout sentinel plus
+# a human hint, then exit with a distinct code.
+#
+# 75 == BSD ``EX_TEMPFAIL`` (sysexits.h) — the codebase's existing convention
+# for "transient environmental condition, not a code failure" (see
+# gateway/restart.py and kanban_db.py's quota-wall sentinel).
+PORT_IN_USE_EXIT_CODE = 75
+
+# One line, stable format, parsed by machines — mirrors the shape of the
+# HERMES_BACKEND_READY sentinel (which is NOT changed by any of this).
+_PORT_IN_USE_SENTINEL = "BACKEND_PORT_IN_USE port={port}"
+
+
+def _is_addr_in_use_error(exc: OSError) -> bool:
+    """True when ``exc`` is the platform's address-in-use bind failure."""
+    import errno
+
+    codes = {errno.EADDRINUSE, 98, 48, 10048}  # POSIX, Linux, macOS, WinSock
+    if exc.errno in codes:
+        return True
+    return getattr(exc, "winerror", None) == 10048  # WSAEADDRINUSE
+
+
+def _port_bind_conflict(host: str, port: int) -> bool:
+    """Probe whether binding ``host:port`` would fail with EADDRINUSE.
+
+    ``port == 0`` (ephemeral) can never conflict — the kernel picks a free
+    port — so the probe is skipped and ``--port 0`` behaves exactly as
+    before. Any probe error other than address-in-use returns ``False`` so
+    uvicorn surfaces it with its normal diagnostics (bad host, EACCES, …).
+    """
+    if not port:
+        return False
+    import socket as _socket
+
+    family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
+    try:
+        probe = _socket.socket(family, _socket.SOCK_STREAM)
+    except OSError:
+        return False
+    try:
+        import sys as _sys_mod
+
+        _exclusive = getattr(_socket, "SO_EXCLUSIVEADDRUSE", None)
+        if _sys_mod.platform == "win32" and _exclusive is not None:
+            # Windows: SO_REUSEADDR means "bind over anyone" — a probe (or
+            # uvicorn bind) with it SUCCEEDS on top of a live LISTEN socket,
+            # so it can never detect a conflict. SO_EXCLUSIVEADDRUSE makes
+            # the probe fail with WSAEADDRINUSE exactly when another socket
+            # holds the port (the reporter's 10048 shape in #93608).
+            probe.setsockopt(_socket.SOL_SOCKET, _exclusive, 1)
+        else:
+            # POSIX: match uvicorn's bind flags (uvicorn/config.py
+            # bind_socket) so the probe conflicts exactly when uvicorn's own
+            # bind would: SO_REUSEADDR lets TIME_WAIT remnants pass while a
+            # live LISTEN socket still fails.
+            probe.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+    except OSError as exc:
+        return _is_addr_in_use_error(exc)
+    except Exception:
+        return False
+    finally:
+        probe.close()
+    return False
+
+
+def _report_port_in_use(host: str, port: int) -> None:
+    """Print the machine sentinel + a human hint naming likely holders."""
+    print(_PORT_IN_USE_SENTINEL.format(port=port), flush=True)
+    print(
+        f"  Port {port} on {host} is already in use — likely another "
+        "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
+        "Stop the other process, or pass --port <other> "
+        "(--port 0 picks a free ephemeral port).",
+        flush=True,
+    )
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -18889,11 +19544,18 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
-    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
-    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
-    # uses this to decide whether to refuse the bind, log the gate-on
-    # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    # A configured browser-facing URL is also the exact Host/Origin trust
+    # declaration for reverse-proxy deployments. Resolve it once at startup so
+    # request middleware never reloads config. Any non-loopback public hostname
+    # engages the auth gate even when the backend itself remains on loopback;
+    # otherwise the SPA's local session token would become remotely reachable.
+    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    # Stash the auth-gate flag on app.state so middleware / SPA-token injection /
+    # WS-auth paths can branch on it consistently. It also decides whether to
+    # refuse startup, log the gate-on banner, and enable uvicorn proxy_headers.
+    app.state.auth_required = should_require_dashboard_auth(
+        host, app.state.trusted_public_hosts
+    )
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
@@ -18931,8 +19593,42 @@ def start_server(
             except Exception:
                 pass
 
+            # Name the exact reason the gate engaged. When the bind itself is
+            # loopback the ONLY trigger is dashboard.public_url — an operator
+            # (or a stale config.yaml entry) declared external exposure. Say
+            # so explicitly, print the offending URL, and give the two exits:
+            # configure auth, or remove public_url to restore local-only mode.
+            if host in _LOOPBACK_HOST_VALUES:
+                _public_url_for_msg = ""
+                try:
+                    from hermes_cli.dashboard_auth.prefix import (
+                        resolve_public_url as _rpu,
+                    )
+
+                    _public_url_for_msg = _rpu()
+                except Exception:
+                    pass
+                _gate_reason = (
+                    f"dashboard.public_url is set to "
+                    f"{_public_url_for_msg or '<a non-loopback URL>'} — an "
+                    f"operator-declared external URL engages the auth gate "
+                    f"even on a loopback bind"
+                )
+                _local_only_hint = (
+                    "If this dashboard should be LOCAL-ONLY (no reverse "
+                    "proxy), remove dashboard.public_url from config.yaml "
+                    "(and unset HERMES_DASHBOARD_PUBLIC_URL) to restore the "
+                    "unauthenticated loopback mode.\n"
+                )
+            else:
+                _gate_reason = (
+                    f"the auth gate engages on non-loopback binds ({host})"
+                )
+                _local_only_hint = ""
+
             _fix_hint = (
-                "Configure an auth provider before exposing the dashboard:\n"
+                _local_only_hint
+                + "Configure an auth provider before exposing the dashboard:\n"
                 "  • Password: set dashboard.basic_auth.username + "
                 "password_hash in config.yaml\n"
                 "    (hash with: python -c \"from "
@@ -18940,8 +19636,10 @@ def start_server(
                 "print(hash_password('your-password'))\")\n"
                 "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
                 "install a DashboardAuthProvider plugin.\n"
-                "There is no unauthenticated public-bind option — to keep it "
-                "local, bind 127.0.0.1 and tunnel in (SSH / Tailscale)."
+                "There is no unauthenticated public-dashboard option. For "
+                "local-only use, bind 127.0.0.1 and leave dashboard.public_url "
+                "unset; a configured external public URL requires auth even "
+                "when a local reverse proxy reaches a loopback backend."
             )
             # Hint when credentials exist but the bundled provider is blocked
             # (#54489).
@@ -18971,18 +19669,16 @@ def start_server(
                 pass
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the auth gate "
-                    f"engages on non-loopback binds, but no auth providers "
-                    f"are registered.\n\n"
+                    f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                    f"but no auth providers are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n\n"
                     + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the auth gate "
-                f"engages on non-loopback binds, but no auth providers are "
-                f"registered.\n\n" + _fix_hint
+                f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                f"but no auth providers are registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
@@ -19004,9 +19700,9 @@ def start_server(
     # (bind port 0 → close → uvicorn rebind): the socket is held by
     # uvicorn the entire time, so no other process can steal the port.
     #
-    # For explicit non-zero ports, if the port is taken uvicorn catches
-    # OSError inside create_server() and exits with a clear error — no
-    # separate preflight probe needed.
+    # For explicit non-zero ports, a taken port is detected by the #93608
+    # preflight probe below (BACKEND_PORT_IN_USE sentinel + distinct exit
+    # code); uvicorn's own bind error remains the fallback for races.
     # Loopback binds are the Desktop case: a single local client, no reverse
     # proxy in front. uvicorn's ws keepalive ping runs ON the same event loop
     # as agent turns, and a single synchronous GIL-holding call on a worker
@@ -19027,6 +19723,20 @@ def start_server(
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    # Non-loopback ping cadence is config-driven (dashboard.ws_ping_interval /
+    # dashboard.ws_ping_timeout, #79635); the 20/20 defaults keep the
+    # Cloudflare-Tunnel-friendly behaviour when unset or invalid.
+    try:
+        _dash_cfg = load_config().get("dashboard") or {}
+    except Exception:
+        _dash_cfg = {}
+
+    def _ws_ping_setting(key: str, default: float = 20.0) -> float:
+        try:
+            return float(_dash_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -19041,11 +19751,21 @@ def start_server(
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still
         # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
+        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)
+
+    # ── #93608: machine-readable port-conflict detection ──────────────
+    # uvicorn's own bind_socket() would catch the EADDRINUSE and exit 1
+    # with a bare ERROR line — indistinguishable from "backend broken".
+    # Probe the exact bind first so a conflict surfaces as the stable
+    # BACKEND_PORT_IN_USE sentinel + a distinct exit code instead.
+    # ``--port 0`` (ephemeral) is skipped by the probe and unaffected.
+    if _port_bind_conflict(host, port):
+        _report_port_in_use(host, port)
+        raise SystemExit(PORT_IN_USE_EXIT_CODE)
 
     async def _serve():
         # Split startup from main_loop so we can read the bound port
@@ -19081,23 +19801,34 @@ def start_server(
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
 
+            actual_port = _read_bound_port(server, fallback=port)
+            app.state.bound_port = actual_port
+
             # Positive process identity: record (pid, create_time, purpose,
             # spawner) in the machine spawn ledger and — on Windows — attach
             # to a kill-on-close job so this backend's whole child tree dies
             # with it. Both best-effort; failures degrade to legacy behavior.
+            # Registered AFTER the bind so the entry carries the ACTUAL port
+            # (ephemeral binds included) — the structured host/port/profile
+            # is what lets `hermes update` relaunch a manually-started serve
+            # on its real endpoint instead of dropping it (#63206).
             try:
                 from hermes_cli.process_identity import (
                     attach_self_to_kill_on_close_job,
                     register_self,
                 )
 
-                register_self("serve" if headless else "dashboard")
+                register_self(
+                    "serve" if headless else "dashboard",
+                    detail={
+                        "host": host,
+                        "port": actual_port,
+                        "profile": initial_profile or "",
+                    },
+                )
                 attach_self_to_kill_on_close_job()
             except Exception as exc:
                 _log.debug("process-identity registration skipped: %s", exc)
-
-            actual_port = _read_bound_port(server, fallback=port)
-            app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
@@ -19186,6 +19917,15 @@ def start_server(
             asyncio.run(_serve())
         except KeyboardInterrupt:
             return
+        except SystemExit as exc:
+            # Probe-to-bind race (#93608): another process grabbed the port
+            # between our preflight probe and uvicorn's real bind. uvicorn's
+            # bind_socket() exits 1 — re-check the bind and translate a
+            # confirmed conflict into the sentinel + distinct exit code.
+            if exc.code == 1 and _port_bind_conflict(host, port):
+                _report_port_in_use(host, port)
+                raise SystemExit(PORT_IN_USE_EXIT_CODE) from None
+            raise
         return
 
     # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
@@ -19220,3 +19960,9 @@ def start_server(
             asyncio.run(_serve())
     except KeyboardInterrupt:
         return
+    except SystemExit as exc:
+        # Same probe-to-bind race translation as the POSIX branch (#93608).
+        if exc.code == 1 and _port_bind_conflict(host, port):
+            _report_port_in_use(host, port)
+            raise SystemExit(PORT_IN_USE_EXIT_CODE) from None
+        raise

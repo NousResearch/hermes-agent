@@ -174,6 +174,20 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
+
+
+def _is_remote_env_backend(backend: str) -> bool:
+    """Built-in remote backends plus plugin backends declaring is_remote."""
+    if backend in _REMOTE_ENV_BACKENDS:
+        return True
+    if not backend or backend == "local":
+        return False
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(backend, "is_remote", False))
+    except Exception:
+        return False
 _secret_capture_callback = None
 
 
@@ -1900,7 +1914,7 @@ def skill_view(
                 missing_items,
                 setup_help,
             )
-            if backend in _REMOTE_ENV_BACKENDS and setup_note:
+            if _is_remote_env_backend(backend) and setup_note:
                 setup_note = f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."
             if setup_note:
                 result["setup_note"] = setup_note

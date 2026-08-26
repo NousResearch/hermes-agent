@@ -174,10 +174,16 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     stopped = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
-    with patch.object(
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
         cua_backend,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        # This test pins the socket/ack contract, not overlay policy. Pin the
+        # policy off so the environment-dependent auto-detect (headless CI vs
+        # Wayland dev box) can't add a `--help` capability-probe subprocess.run
+        # call that the fixed two-entry side_effect below doesn't budget for.
+        cua_backend, "_cua_no_overlay", return_value=False,
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
     ):

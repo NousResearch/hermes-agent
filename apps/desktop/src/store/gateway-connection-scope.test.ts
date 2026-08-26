@@ -40,13 +40,18 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  activeGatewayConnectionId,
+  closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
   openGatewayForAgent,
   pruneSecondaryGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  setPrimaryGatewayConnectionId
 } = await import('./gateway')
+
+const { setApiRequestConnection } = await import('@/hermes')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -84,6 +89,25 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
+describe('primary gateway registry scope', () => {
+  it('publishes a registered primary connection id for ambient API/WebSocket helpers', () => {
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+    setPrimaryGatewayConnectionId(' homelab-ssh ')
+
+    expect(activeGatewayConnectionId()).toBe('homelab-ssh')
+    expect(setApiRequestConnection).toHaveBeenLastCalledWith('homelab-ssh')
+  })
+
+  it('clears primary connection scope when the primary becomes legacy/local again', () => {
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+    setPrimaryGatewayConnectionId('homelab-ssh')
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+    expect(activeGatewayConnectionId()).toBeNull()
+    expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
+  })
+})
+
 describe('pruneSecondaryGateways with registry-scoped entries', () => {
   it('keeps the previous source socket open when Sessions switches backends', async () => {
     await ensureGatewayForAgent('work', 'default')
@@ -105,6 +129,18 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=default'])
   })
 
+  it('a switch-phase dial (activationLease) survives a live-work recompute until its activation lands', async () => {
+    // Phase one of the Sessions-switcher source switch: the target is opened
+    // but not yet active and has no live work of its own. Another source's
+    // streaming turn recomputes the keep-set mid-dial — that must not dispose
+    // the socket the switch is about to activate (#89622 via #93937).
+    await openGatewayForAgent('homelab', 'default', { activationLease: true })
+
+    pruneSecondaryGateways(new Set(['default']))
+
+    expect(gatewayMocks.closed).toEqual([])
+  })
+
   it('keeps a registry socket whose composite scope has live work', async () => {
     await openGatewayForAgent('homelab', 'default')
 
@@ -123,5 +159,32 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     pruneSecondaryGateways(new Set())
 
     expect(gatewayMocks.closed).toHaveLength(1)
+  })
+
+  it('does not let a remote tile keep-set pin a local same-named secondary', async () => {
+    // Chrome is on another profile so 'default' is a real secondary, not the
+    // spared active key. A homelab bot tile keep-set must keep only the
+    // composite scope — the local 'default' socket still idles out.
+    setPrimaryGateway({ connectionState: 'open' } as never, 'research')
+    await openGatewayForAgent(null, 'default')
+    await openGatewayForAgent('homelab', 'default')
+
+    pruneSecondaryGateways(new Set(['conn:homelab::default']))
+
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
+  })
+
+  it('does not classify an explicit local registry source as legacy', async () => {
+    await openGatewayForAgent(null, 'writer')
+    await openGatewayForAgent('local', 'writer')
+
+    expect(gatewayMocks.closed).toEqual([])
+
+    closeLegacySecondaryGateways()
+
+    // The bare profile socket follows the v1 mode configuration and is
+    // retired. The explicit `local` registry socket is a v2 source and must
+    // survive the mode apply just like a registered remote source.
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
   })
 })

@@ -300,6 +300,8 @@ gateway:
     invalid_number:        "رقم نقطة تحقّق غير صالح. استخدم 1-{max}."
     restored:              "✅ استُعيد إلى نقطة التحقّق {hash}: {reason}\nحُفظت لقطة ما قبل التراجع تلقائيًا."
     kept_user_edits:       "↷ احتُفظ بتعديلاتك اليدوية: {files}\nاستخدم ‎/rollback <N> --all لاستعادتها أيضًا."
+    kept_oversize:         "↷ احتُفظ به (أكبر من أن يُحفظ في نقاط التفتيش، لا توجد نسخة مخزنة للرجوع إليها): {files}"
+    failed_deletes:        "⚠️ تعذّرت الإزالة (تُرك الملف في مكانه): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

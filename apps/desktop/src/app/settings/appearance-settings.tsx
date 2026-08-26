@@ -21,6 +21,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
@@ -43,6 +44,7 @@ import {
   TRANSLUCENCY_STEP,
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
+import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -345,6 +347,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -352,6 +355,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
+  const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -422,6 +426,12 @@ export function AppearanceSettings() {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const tabStripOptions = [
+    { id: 'auto', label: a.tabStripAuto },
+    { id: 'always', label: a.tabStripAlways },
+    { id: 'never', label: a.tabStripNever }
+  ] as const satisfies readonly { id: TabStripDefault; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -583,6 +593,21 @@ export function AppearanceSettings() {
             title={a.sessionDensityTitle}
           />
 
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTabStripDefault(id)
+                }}
+                options={tabStripOptions}
+                value={tabStripDefault}
+              />
+            }
+            description={a.tabStripDesc}
+            title={a.tabStripTitle}
+          />
+
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}
           {TRANSLUCENCY_SUPPORTED && (
@@ -728,6 +753,24 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setVibeHeartsEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={vibeHeartsEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.vibeHeartsDesc}
+            title={a.vibeHeartsTitle}
           />
 
           <ListRow

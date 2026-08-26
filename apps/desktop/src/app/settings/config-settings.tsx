@@ -24,7 +24,7 @@ import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsScopeOverride } from '@/store/settings-scope'
+import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -58,7 +58,7 @@ export function ConfigSettings({
   // inner page per scope so every draft/seed/autosave ref resets wholesale
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
-  const scopeProfile = useStore($settingsScopeOverride)
+  const scopeProfile = useStore($settingsRequestProfile)
 
   return (
     <ConfigSettingsInner
@@ -85,7 +85,7 @@ function ConfigSettingsInner({
   onMainModelChanged,
   importInputRef,
   scopeProfile
-}: ConfigSettingsProps & { scopeProfile: null | string }) {
+}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
@@ -108,7 +108,7 @@ function ConfigSettingsInner({
     // consumer); suffixed only for an explicit scope override.
     queryKey:
       scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
-    queryFn: () => getHermesConfigSchema(scopeProfile ?? undefined),
+    queryFn: () => getHermesConfigSchema(scopeProfile),
     staleTime: 5 * 60 * 1000
   })
 
@@ -147,7 +147,7 @@ function ConfigSettingsInner({
   useEffect(() => {
     let cancelled = false
 
-    getElevenLabsVoices(scopeProfile ?? undefined)
+    getElevenLabsVoices(scopeProfile)
       .then(result => {
         if (cancelled || !result.available) {
           return
@@ -178,7 +178,7 @@ function ConfigSettingsInner({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          const result = await saveHermesConfig(config, scopeProfile ?? undefined)
+          const result = await saveHermesConfig(config, scopeProfile)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)

@@ -22,6 +22,7 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
+    sanitize_task_id_for_path,
 )
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -130,6 +131,13 @@ def _sanitize_label_value(value: str) -> str:
     return cleaned
 
 
+# The task_id -> host-directory-name mapping is shared with every backend
+# that persists per-task state on the host filesystem (Singularity overlays
+# use the same helper), so the whole bug class is fixed in one place:
+# tools.environments.base.sanitize_task_id_for_path.
+_sandbox_dir_name = sanitize_task_id_for_path
+
+
 def _get_active_profile_name() -> str:
     """Return the active Hermes profile name, or ``"default"`` on any error.
 
@@ -143,6 +151,29 @@ def _get_active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
+
+
+def _container_identity(shared_key: str = "") -> str:
+    """Return the profile label used for reuse and orphan reaping.
+
+    Profiles remain isolated by default. An explicit shared key lets trusted
+    profiles that intentionally share a workspace use one Docker identity.
+
+    Shared keys are made collision-resistant the same way
+    :func:`sanitize_task_id_for_path` is: label sanitization is lossy
+    (``team/workspace`` and ``team_workspace`` both sanitize to
+    ``team_workspace``, and >63-char keys truncate), and since container
+    reuse is label-keyed, two DIFFERENT keys colliding after sanitization
+    would silently attach to the same running container. A digest of the
+    raw key disambiguates; identical raw keys still map to identical
+    labels across processes. Plain profile names keep their historical
+    un-suffixed labels for backward compatibility with existing containers.
+    """
+    if not shared_key:
+        return _sanitize_label_value(_get_active_profile_name())
+    digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
+    stem = _sanitize_label_value(shared_key)[:50]
+    return f"{stem}-{digest}"
 
 
 def reap_orphan_containers(
@@ -887,6 +918,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        shared_container_key: str = "",
     ):
         if cwd == "~":
             cwd = "/root"
@@ -980,7 +1012,9 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
@@ -1366,9 +1400,9 @@ class DockerEnvironment(BaseEnvironment):
         #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
-        # _sanitize_label_value(); the active Hermes profile is captured at
+        # _sanitize_label_value(); the configured reuse identity is captured at
         # container-start time and never changes for the container's lifetime.
-        profile_name = _sanitize_label_value(_get_active_profile_name())
+        profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
         label_args = [
             "--label", "hermes-agent=1",

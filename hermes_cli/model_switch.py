@@ -2164,7 +2164,8 @@ def switch_model(
     # page — and without the re-append, a stripped URL persisted to
     # model.base_url broke every later chat_completions model (glm, deepseek,
     # kimi) the same way.
-    if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
+    from hermes_cli.models import opencode_provider_family as _oc_family_fn
+    if _oc_family_fn(target_provider) is not None and isinstance(base_url, str):
         from hermes_cli.models import normalize_opencode_base_url
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
@@ -2947,7 +2948,11 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.auth_type == "aws_sdk":
+        if getattr(overlay, "keyless", False):
+            # Keyless providers (opencode-free) are served anonymously —
+            # there is no credential to check, so everyone is authenticated.
+            has_creds = True
+        elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.auth_type == "vertex":
             # Vertex authenticates via OAuth2 (service-account JSON / ADC),

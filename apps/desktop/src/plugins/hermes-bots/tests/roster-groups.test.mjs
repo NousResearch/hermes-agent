@@ -125,17 +125,53 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
   assert.equal(members[2], roster[2])
 })
 
+test('groupChatMemberBots: stored descriptors beat presentation-only ghosts', () => {
+  const { groupChatMemberBots, $groupChats } = load()
+  const ghost = {
+    name: 'spark',
+    remoteSource: true,
+    sourceScoped: true,
+    ghost: true,
+    connectionId: 'c1',
+    connectionLabel: 'Workshop'
+  }
+  const stored = {
+    name: 'spark',
+    handle: 'spark-work',
+    title: 'Spark',
+    remoteSource: true,
+    sourceScoped: true,
+    connectionId: 'c1',
+    connectionLabel: 'Workshop'
+  }
+  $groupChats.set({ Research: { log: [], members: [stored] } })
+
+  const members = groupChatMemberBots('Research', [ghost], {})
+
+  assert.equal(members.length, 1)
+  assert.equal(members[0], stored)
+  assert.equal(members[0].handle, 'spark-work')
+})
+
 test('durableGroupChatMembers: retains active and remote source identities', () => {
   const { durableGroupChatMembers } = load()
   const members = durableGroupChatMembers([
-    { name: 'default', handle: 'noah', connectionId: 'noah', connectionKind: 'remote', connectionLabel: 'Noah' },
+    {
+      name: 'default',
+      handle: 'noah',
+      connectionId: 'noah',
+      connectionKind: 'remote',
+      connectionLabel: 'Noah',
+      sourceScoped: true
+    },
     {
       name: 'default',
       handle: 'maya',
       connectionId: 'maya',
       connectionKind: 'remote',
       connectionLabel: 'Maya',
-      remoteSource: true
+      remoteSource: true,
+      sourceScoped: true
     }
   ])
 
@@ -149,6 +185,8 @@ test('durableGroupChatMembers: retains active and remote source identities', () 
         connectionId: 'noah',
         connectionKind: 'remote',
         connectionLabel: 'Noah',
+        route: { connectionId: 'noah', mode: 'remote', profile: 'default', targetProfile: 'default' },
+        targetProfile: 'default',
         remoteSource: true,
         sourceScoped: true
       },
@@ -158,6 +196,8 @@ test('durableGroupChatMembers: retains active and remote source identities', () 
         connectionId: 'maya',
         connectionKind: 'remote',
         connectionLabel: 'Maya',
+        route: { connectionId: 'maya', mode: 'remote', profile: 'default', targetProfile: 'default' },
+        targetProfile: 'default',
         remoteSource: true,
         sourceScoped: true
       }
@@ -189,10 +229,11 @@ test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previe
   assert.equal(stripPreviewMarkdown(''), '')
 })
 
-test('source contract: the roster stays a flat list of bot and group rows', () => {
-  // Ordering is deliberately unchanged in this PR; sectioned ordering follows separately.
-  assert.doesNotMatch(pluginSource, /function groupRoster\(/)
-  assert.match(pluginSource, /rosterRows\.map\(row =>/)
+test('source contract: the roster progressively groups multiple gateways and keeps group chats distinct', () => {
+  assert.match(pluginSource, /function rosterGatewaySections\(/)
+  assert.match(pluginSource, /options\.length <= 1/)
+  assert.match(pluginSource, /gatewayFilter !== 'all'/)
+  assert.match(pluginSource, /label: 'Group chats'/)
   assert.match(pluginSource, /function GroupRow\(/)
   assert.match(pluginSource, /onGroup: setGrouping/)
 })

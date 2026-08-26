@@ -7,6 +7,7 @@ or a temp file (local).
 """
 
 import codecs
+import hashlib
 import json
 import logging
 import os
@@ -294,6 +295,58 @@ def get_sandbox_dir() -> Path:
     return p
 
 
+# A persistent sandbox's host directory is named after task_id, and that name
+# then becomes the source half of a `-v <source>:<target>` spec (Docker) or a
+# writable-overlay directory (Singularity). Docker splits the spec on ':', so
+# a colon-bearing name arrives as extra mount fields and the run is refused
+# outright ("invalid spec ... too many colons" / "invalid mode", exit 125).
+# Path separators would additionally escape the sandbox root, and Windows
+# forbids ':' in path segments entirely.
+_SANDBOX_DIR_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_SANDBOX_DIR_MAX_LEN = 128
+_SANDBOX_DIR_HASH_LEN = 12
+
+
+def sanitize_task_id_for_path(task_id: str) -> str:
+    """Return a bind-mountable directory name for *task_id*'s sandbox.
+
+    Shared by every environment backend that turns a task id into a host
+    filesystem path component (Docker persistent sandboxes, Singularity
+    persistent overlays). Names that are already safe are returned verbatim,
+    so the shared ``default`` sandbox and RL/benchmark task ids keep resolving
+    to the directory they have always used — no installed package or ``/root``
+    state moves. Only ids that could never have produced a working bind mount
+    are rewritten.
+
+    A rewrite also appends a digest of the original id, because the character
+    substitution alone is not injective: ``a:b`` and ``a_b`` would otherwise
+    share one persistent sandbox and leak one session's ``/root`` into
+    another's container. The digest is a pure function of the id, so the same
+    session resolves to the same directory in every process — cross-process
+    container reuse depends on that.
+    """
+    value = task_id if isinstance(task_id, str) else ""
+    if not value:
+        # An empty component collapses the path onto the sandbox root, which
+        # would bind-mount every task's state at once.
+        return "default"
+
+    cleaned = _SANDBOX_DIR_UNSAFE_RE.sub("_", value)
+    if (
+        cleaned == value
+        and len(value) <= _SANDBOX_DIR_MAX_LEN
+        and value not in {".", ".."}
+        # Windows silently strips trailing dots/spaces, aliasing two ids onto
+        # one directory.
+        and not value.endswith((".", " "))
+    ):
+        return value
+
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_SANDBOX_DIR_HASH_LEN]
+    stem = cleaned[: _SANDBOX_DIR_MAX_LEN - _SANDBOX_DIR_HASH_LEN - 1].strip("._")
+    return f"{stem or 'task'}-{digest}"
+
+
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------
@@ -529,7 +582,8 @@ def _cwd_marker(session_id: str) -> str:
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -573,6 +627,7 @@ def _export_dump_excluding_session_vars(
     return (
         "{ ( "
         "unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "${!HERMES_BROWSER_CONTROL_*} "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers
         # (re-exported by every _wrap_command with outer-harness-preserving
         # ${VAR:-default} semantics).  Persisting them into the snapshot
@@ -602,6 +657,13 @@ class BaseEnvironment(ABC):
 
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
+
+    # True only when commands execute on the SAME host as the Hermes process
+    # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
+    # only describe the execution target when this is True — remote/container
+    # backends must not inherit controller-side platform behavior (e.g. the
+    # macOS TCC search pruning in tools/file_operations.py).
+    is_local: bool = False
 
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30

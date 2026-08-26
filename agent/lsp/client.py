@@ -207,6 +207,7 @@ class LSPClient:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
+        self._cleanup_lock = asyncio.Lock()
 
         # Request/response correlation
         self._next_id: int = 0
@@ -255,7 +256,20 @@ class LSPClient:
 
     @property
     def is_running(self) -> bool:
-        return self._state == "running" and self._proc is not None and self._proc.returncode is None
+        return self._state == "running" and self._connection_is_open()
+
+    def _connection_is_open(self) -> bool:
+        proc = self._proc
+        reader = self._reader_task
+        return (
+            self._state in {"starting", "running"}
+            and proc is not None
+            and proc.returncode is None
+            and proc.stdin is not None
+            and not proc.stdin.is_closing()
+            and reader is not None
+            and not reader.done()
+        )
 
     @property
     def state(self) -> str:
@@ -274,6 +288,8 @@ class LSPClient:
         try:
             await self._spawn()
             await self._initialize()
+            if not self._connection_is_open():
+                raise LSPProtocolError("server connection closed during initialization")
             self._state = "running"
         except Exception:
             self._state = "error"
@@ -370,11 +386,16 @@ class LSPClient:
         except (asyncio.CancelledError, OSError):
             pass
         finally:
+            unexpected_close = not self._stopping and self._state in {"starting", "running"}
+            if unexpected_close:
+                self._state = "error"
             # Wake up any pending requests so they can fail fast.
             for fut in list(self._pending.values()):
                 if not fut.done():
                     fut.set_exception(LSPProtocolError("server connection closed"))
             self._pending.clear()
+            if unexpected_close:
+                await self._cleanup_process()
 
     async def _initialize(self) -> None:
         params = {
@@ -474,43 +495,54 @@ class LSPClient:
             await self._cleanup_process()
 
     async def _cleanup_process(self) -> None:
-        if self._reader_task is not None and not self._reader_task.done():
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        if self._stderr_task is not None and not self._stderr_task.done():
-            self._stderr_task.cancel()
-            try:
-                await self._stderr_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        proc = self._proc
-        self._proc = None
-        if proc is None:
-            return
-        if proc.returncode is None:
-            try:
-                proc.terminate()
+        async with self._cleanup_lock:
+            current_task = asyncio.current_task()
+            reader_task = self._reader_task
+            self._reader_task = None
+            if (
+                reader_task is not None
+                and reader_task is not current_task
+                and not reader_task.done()
+            ):
+                reader_task.cancel()
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
+                    await reader_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            stderr_task = self._stderr_task
+            self._stderr_task = None
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            proc = self._proc
+            self._proc = None
+            if proc is None:
+                return
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
                     try:
-                        proc.kill()
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-            except ProcessLookupError:
-                pass
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except ProcessLookupError:
+                            pass
+                except ProcessLookupError:
+                    pass
 
     # ------------------------------------------------------------------
     # request / notification plumbing
     # ------------------------------------------------------------------
 
     async def _send_request(self, method: str, params: Any) -> Any:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
-            raise LSPProtocolError(f"cannot send {method!r}: stdin closed")
+        if not self._connection_is_open():
+            raise LSPProtocolError(f"cannot send {method!r}: server connection closed")
+        assert self._proc is not None and self._proc.stdin is not None
         loop = asyncio.get_running_loop()
         req_id = self._next_id
         self._next_id += 1
@@ -544,8 +576,9 @@ class LSPClient:
                 raise
 
     async def _send_notification(self, method: str, params: Any) -> None:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
-            return
+        if not self._connection_is_open():
+            raise LSPProtocolError(f"cannot send {method!r}: server connection closed")
+        assert self._proc is not None and self._proc.stdin is not None
         try:
             self._proc.stdin.write(encode_message(make_notification(method, params)))
             await self._proc.stdin.drain()
@@ -886,6 +919,10 @@ class LSPClient:
         abs_path = os.path.abspath(path)
 
         while True:
+            if not self._connection_is_open():
+                raise LSPProtocolError(
+                    "server connection closed while waiting for diagnostics"
+                )
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return False

@@ -277,6 +277,8 @@ gateway:
     invalid_number:        "Número de checkpoint inválido. Usa 1-{max}."
     restored:              "✅ Restaurado al checkpoint {hash}: {reason}\nSe guardó automáticamente un snapshot previo al rollback."
     kept_user_edits:       "↷ Se conservaron tus ediciones manuales: {files}\nUsa /rollback <N> --all para restaurarlas también."
+    kept_oversize:         "↷ Conservado (demasiado grande para los checkpoints, no hay copia guardada a la que revertir): {files}"
+    failed_deletes:        "⚠️ No se pudo eliminar (se dejó en su lugar): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

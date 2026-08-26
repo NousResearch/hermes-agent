@@ -514,6 +514,18 @@ def _run_agent(
         # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
         # close the agent explicitly because the hard-exit path skips finalizers.
         if agent is not None:
+            # Linger (bounded) for background processes this turn spawned with
+            # notify_on_complete=true BEFORE agent.close(): close() calls
+            # process_registry.kill_all(task_id) and the dying parent owns the
+            # children's stdout pipes, so exiting now destroys in-flight
+            # deliveries — including Bot Mode handoff replies dispatched from
+            # a short-lived recipient (#90879).
+            try:
+                from tools.process_registry import process_registry
+
+                process_registry.wait_for_pending_completions(None)
+            except Exception:
+                logging.debug("oneshot background completion wait failed", exc_info=True)
             try:
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):

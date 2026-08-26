@@ -19,6 +19,7 @@ Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video 
     seedance-2.0       bytedance/seedance-2.0/text-to-video       /  bytedance/seedance-2.0/image-to-video
     seedance-2.5       bytedance/seedance-2.5/text-to-video       /  bytedance/seedance-2.5/image-to-video
     minimax-h3         minimax/h3/text-to-video                   /  minimax/h3/image-to-video
+    minimax-h3-max     minimax/h3-max/text-to-video               /  minimax/h3-max/image-to-video
     flux-3             blackforestlabs/flux-3/text-to-video       /  blackforestlabs/flux-3/image-to-video
     grok-imagine-1.5   xai/grok-imagine-video/v1.5/text-to-video  /  xai/grok-imagine-video/v1.5/image-to-video
     kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video     /  fal-ai/kling-video/v3/4k/image-to-video
@@ -203,6 +204,36 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "audio": False,  # audio is native/always-on; no generate_audio key
         "negative": False,
         "seed": False,
+    },
+    "minimax-h3-max": {
+        "display": "MiniMax H3 Max (fal post-train)",
+        "speed": "~5-30s",
+        "price": "premium",
+        "strengths": "fal's post-trained MiniMax H3. Top-ranked quality/prompt adherence/aesthetics, 768p in seconds, 5-15s.",
+        "tier": "premium",
+        "text_endpoint": "minimax/h3-max/text-to-video",
+        "image_endpoint": "minimax/h3-max/image-to-video",
+        # Same wire quirks as base H3: integer duration, i2v derives the
+        # aspect ratio from the input image (t2v-only key on Max: the i2v
+        # schema doesn't declare aspect_ratio at all).
+        "duration_int": True,
+        "image_drop_keys": ("aspect_ratio",),
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        # Max tops out at 768P (no 2K/4K tiers like base H3); map the
+        # tool's usual values onto the two capitalized enums.
+        "resolutions": ("480P", "768P"),
+        "resolution_aliases": {
+            "480p": "480P", "540p": "480P",
+            "720p": "768P", "768p": "768P", "1080p": "768P",
+            "2k": "768P", "4k": "768P", "2160p": "768P",
+        },
+        "durations": (5, 15),
+        # `prompt_expansion_mode` is in the schema's required array (with a
+        # "balanced" default) — always send it.
+        "static_payload": {"prompt_expansion_mode": "balanced"},
+        "audio": False,  # audio is native/always-on; no generate_audio key
+        "negative": False,
+        # Unlike base H3, Max declares `seed` on both endpoints.
     },
     "flux-3": {
         "display": "FLUX 3 (via FAL)",
@@ -488,6 +519,11 @@ def _build_payload(
     if image_url:
         for key in family.get("image_drop_keys", ()):  # type: ignore[assignment]
             payload.pop(key, None)
+
+    # Constant keys the endpoint requires on every request (e.g. MiniMax
+    # H3 Max lists `prompt_expansion_mode` in its required array).
+    for key, value in (family.get("static_payload") or {}).items():
+        payload.setdefault(key, value)
 
     return payload
 

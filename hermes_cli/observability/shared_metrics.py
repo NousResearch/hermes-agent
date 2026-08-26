@@ -337,6 +337,7 @@ class SharedMetricsStore:
             )
             """
         )
+        SharedMetricsStore._add_send_columns(connection)
         connection.execute(
             """
             INSERT INTO telemetry_state(key, value)
@@ -345,6 +346,42 @@ class SharedMetricsStore:
             """,
             (_STORE_SCHEMA_VERSION,),
         )
+
+    @staticmethod
+    def _add_send_columns(connection: sqlite3.Connection) -> None:
+        """Add transmission bookkeeping to ``package_outbox``, idempotently.
+
+        These columns are ADDITIVE and nullable, and the store schema version
+        is deliberately NOT bumped. ``_ensure_schema_in_transaction`` raises on
+        any version it does not recognise and has no forward-compatibility
+        branch, so bumping would make an older Hermes — a second profile on an
+        older build, or a rollback — hard-fail against the same database file.
+        Old readers select named columns and never ``SELECT *``, so extra
+        columns are invisible to them.
+        """
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(package_outbox)")
+        }
+        for column, declaration in (
+            # When the 202 was received. NULL = never acknowledged.
+            ("sent_at", "TEXT"),
+            # NULL/'pending' = eligible, 'sent' = done, 'rejected' = permanent 400.
+            ("send_state", "TEXT"),
+            ("send_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            # Earliest next attempt; enforces backoff across process restarts.
+            ("next_attempt_at", "TEXT"),
+            ("last_error", "TEXT"),
+            # The derived identifier actually transmitted, frozen on the first
+            # attempt so retries stay byte-identical across a salt rotation.
+            # Only the ~36-byte id is stored: the body is recomputed from
+            # payload_json, whose serialisation is deterministic.
+            ("sent_install_id", "TEXT"),
+        ):
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE package_outbox ADD COLUMN {column} {declaration}"
+                )
 
     @staticmethod
     def _create_counter_aggregates_table(connection: sqlite3.Connection) -> None:

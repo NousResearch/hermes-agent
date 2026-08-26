@@ -2428,10 +2428,10 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 def setup_telemetry(config: dict):
-    """Configure the local, privacy-safe shared-metrics subscriber."""
+    """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
     print_info("Shared metrics contain only bounded counters and histograms.")
-    print_info("Packages stay under this Hermes profile and are not uploaded.")
+    print_info("Collection is local. Sending them to Nous is a separate opt-in.")
 
     telemetry = config.get("telemetry")
     if not isinstance(telemetry, dict):
@@ -2447,10 +2447,30 @@ def setup_telemetry(config: dict):
         "Enable local shared metrics?",
         default=current,
     )
-    if shared_metrics["enabled"]:
-        print_success("Local shared metrics enabled.")
-    else:
+    if not shared_metrics["enabled"]:
         print_info("Local shared metrics disabled.")
+        # Sending cannot outlive collection: leaving send=true here would be a
+        # configuration that logs an error on every run and never transmits.
+        if shared_metrics.get("send") is True:
+            shared_metrics["send"] = False
+            print_info("Sending shared metrics disabled as well.")
+        return
+
+    print_success("Local shared metrics enabled.")
+    print_info("")
+    print_info("Sending uploads each daily package to the Nous telemetry")
+    print_info("service. Your profile-scoped install ID is NOT sent: packages")
+    print_info("carry a rotating HMAC of it instead. Only packages from the")
+    print_info("day you opt in onwards are ever sent, and sending can be")
+    print_info("turned off again at any time.")
+    shared_metrics["send"] = prompt_yes_no(
+        "Send shared metrics to Nous?",
+        default=shared_metrics.get("send") is True,
+    )
+    if shared_metrics["send"]:
+        print_success("Sending shared metrics enabled.")
+    else:
+        print_info("Sending shared metrics disabled (collection stays local).")
 
 
 # =============================================================================

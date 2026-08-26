@@ -645,6 +645,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+-- Recent-session browsing must never derive recency by scanning messages.
+-- This expression is the durable, indexable approximation used to preselect
+-- a small candidate set before compression-chain and preview hydration.
+CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
+    ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
 """
 
 

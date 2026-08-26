@@ -110,6 +110,11 @@ def _is_termux_env(env: dict | None = None) -> bool:
 
     Matches ``hermes_cli.main._is_termux_startup_environment`` without
     importing main (this module stays stdlib-only).
+
+    Intentionally tighter than the old ``_install_repair`` probe (any
+    PREFIX containing ``com.termux``): require ``com.termux/files/usr`` in
+    PREFIX, a ``/data/data/com.termux/`` prefix, or ``TERMUX_VERSION``.
+    Relocated / exotic PREFIX layouts without those markers are untreated.
     """
     check = env if env is not None else os.environ
     try:
@@ -131,6 +136,9 @@ def termux_uv_python_platform(env: dict | None = None) -> str:
     ``No module named 'pydantic_core._pydantic_core'``). Use an arch-specific
     GNU/Linux tag so locally built ``linux_aarch64`` wheels are accepted.
 
+    Unknown architectures return ``""`` so callers skip injection and keep
+    today's uv default instead of forcing the broken bare ``linux`` tag.
+
     Override with ``HERMES_UV_PYTHON_PLATFORM`` when needed.
     """
     base = env if env is not None else os.environ
@@ -143,7 +151,7 @@ def termux_uv_python_platform(env: dict | None = None) -> str:
         return "aarch64-unknown-linux-gnu"
     if machine in ("x86_64", "amd64"):
         return "x86_64-unknown-linux-gnu"
-    return "linux"
+    return ""
 
 
 def with_uv_termux_python_platform(
@@ -155,8 +163,9 @@ def with_uv_termux_python_platform(
     as incompatible with "Python on Android aarch64". Passing an arch-specific
     ``--python-platform`` (see :func:`termux_uv_python_platform`) makes uv
     accept those local builds so ``hermes update`` / interrupted-install
-    recovery can finish. No-op when not Termux, not an ``uv pip install``, or
-    when the flag is already present.
+    recovery can finish. No-op when not Termux, not an ``uv pip install``,
+    when the flag is already present, or when the arch is unknown (empty
+    platform — avoid injecting bare ``linux``).
     """
     if not _is_termux_env(env):
         return cmd
@@ -167,6 +176,9 @@ def with_uv_termux_python_platform(
         return cmd
     if "--python-platform" in cmd:
         return cmd
+    py_platform = termux_uv_python_platform(env)
+    if not py_platform:
+        return cmd
     try:
         install_idx = cmd.index("install")
     except ValueError:
@@ -174,7 +186,7 @@ def with_uv_termux_python_platform(
     out = list(cmd)
     out[install_idx + 1 : install_idx + 1] = [
         "--python-platform",
-        termux_uv_python_platform(env),
+        py_platform,
     ]
     return out
 
@@ -221,11 +233,19 @@ def fix_termux_node_shebangs(project_root: Path) -> None:
     node_modules = Path(project_root) / "node_modules"
     if not node_modules.is_dir():
         return
+    # npm CLI wrappers live under ``*/bin/`` / ``.bin/``. Scoping there (and
+    # skipping files >4 KiB) avoids reading every package asset on large trees.
+    _shebang_max_bytes = 4096
     targets: list[str] = []
     for path in node_modules.rglob("*"):
         if not path.is_file():
             continue
+        parts = path.parts
+        if "bin" not in parts and ".bin" not in parts:
+            continue
         try:
+            if path.stat().st_size > _shebang_max_bytes:
+                continue
             with path.open("rb") as handle:
                 head = handle.read(24)
         except OSError:

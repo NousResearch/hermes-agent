@@ -267,6 +267,8 @@ Python … on Android aarch64
 ```
 
 use the same arch-specific flag (or set `HERMES_UV_PYTHON_PLATFORM`).
+On rare non-aarch64/x86_64 Termux hosts Hermes leaves `--python-platform`
+unset rather than injecting bare `linux`.
 
 Or use the Termux path with the stdlib venv + `pip` instead:
 

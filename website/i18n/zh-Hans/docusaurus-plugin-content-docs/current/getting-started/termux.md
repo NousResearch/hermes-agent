@@ -193,7 +193,8 @@ uv pip install -e '.[termux-all]' --python-platform aarch64-unknown-linux-gnu
 ```
 
 若手动使用 uv 并看到兼容性拒绝，请使用同一架构参数（或设置
-`HERMES_UV_PYTHON_PLATFORM`）。
+`HERMES_UV_PYTHON_PLATFORM`）。在少见的非 aarch64/x86_64 Termux 主机上，
+Hermes 会跳过注入 `--python-platform`，而不是写入裸的 `linux`。
 
 或改用标准库 venv + `pip` 的 Termux 路径：
 

@@ -48,17 +48,33 @@ logger = logging.getLogger(__name__)
 # file the anchor copy was taken from.  Used to detect patch-bump staleness.
 _MARKER_NAME = ".tcc-anchor-source"
 
-# Alias symlinks uv creates inside the venv bin dir.  They resolve into the
-# versioned store today; re-pointed at the stable anchor when it is installed.
-_SIBLING_NAMES = ("python3", "python3.11", "python3.12", "python3.13")
+
+def _sibling_names() -> tuple[str, ...]:
+    """Alias symlinks uv creates inside the venv bin dir.
+
+    Derived from the RUNNING interpreter's version rather than a hardcoded
+    minor-version list, so a future Python bump can't silently leave an alias
+    resolving back into the versioned store.
+    """
+    import sys as _sys
+
+    return ("python3", f"python3.{_sys.version_info.minor}")
+
+
+def _store_bin_names() -> tuple[str, ...]:
+    """Preferred interpreter file names inside a store ``bin`` dir.
+
+    Versioned name first (from the running interpreter) so the real binary is
+    picked over the ``python3`` alias; generic fallbacks after.
+    """
+    import sys as _sys
+
+    return (f"python3.{_sys.version_info.minor}", "python3", "python")
+
 
 # Path fragments that identify a uv-managed macOS CPython store layout:
 # ``.../uv/python/cpython-<version>-macos-<arch>/bin/python*``.
 _UV_STORE_MARKERS = ("/uv/python/", "cpython-", "-macos-")
-
-# Preferred interpreter file names inside a store ``bin`` dir (versioned
-# names first so the real binary is picked over the ``python3`` alias).
-_STORE_BIN_NAMES = ("python3.11", "python3.12", "python3.13", "python3", "python")
 
 
 def is_macos() -> bool:
@@ -103,13 +119,23 @@ def _interpreter_file(src: str | Path) -> Path | None:
         return p
     if not p.is_dir():
         return None
-    for name in _STORE_BIN_NAMES:
+    for name in _store_bin_names():
         candidate = p / name
         try:
             if candidate.is_file():
                 return candidate
         except OSError:
             continue
+    # Any other versioned binary on disk (store built by a different Python
+    # minor than the one running this code — e.g. after a major bump, or in
+    # fixtures). Sorted for determinism; versioned names only, so the
+    # ``python3`` alias never shadows the real binary here.
+    try:
+        for candidate in sorted(p.glob("python3.*")):
+            if candidate.is_file() and not candidate.name.endswith((".dSYM", ".txt")):
+                return candidate
+    except OSError:
+        pass
     return None
 
 
@@ -155,7 +181,15 @@ def _repoint_aliases(venv_bin: Path, anchor: Path) -> None:
     the versioned store; anything spawned through them would still churn TCC.
     Only symlinks that resolve into the uv store are touched.
     """
-    for name in _SIBLING_NAMES:
+    # Union of the running interpreter's expected aliases and every versioned
+    # alias actually on disk — a store built by a different Python minor than
+    # the one running this code must still get its aliases repointed.
+    names = set(_sibling_names())
+    try:
+        names.update(p.name for p in venv_bin.glob("python3.*") if p.is_symlink())
+    except OSError:
+        pass
+    for name in sorted(names):
         alias = venv_bin / name
         try:
             if not alias.is_symlink():

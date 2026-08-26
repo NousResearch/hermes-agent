@@ -191,6 +191,21 @@ def _failure_streak_nudge(job: dict) -> str:
     )
 
 
+def _detect_gateway_code_skew() -> tuple[str, str] | None:
+    """Boot-vs-disk revision skew for THIS process, or None.
+
+    Thin wrapper over ``gateway.code_skew.detect_code_skew`` so the failure
+    summarizer stays a pure function under test (monkeypatch this seam) and
+    a broken import can never take the delivery path down with it.
+    """
+    try:
+        from gateway.code_skew import detect_code_skew
+
+        return detect_code_skew()
+    except Exception:
+        return None
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -339,7 +354,43 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) > 180:
         cleaned = cleaned[:177].rstrip() + "..."
-    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
+    message = f"⚠️ Cron '{job_name}' failed: {cleaned}"
+
+    # Import-class failures (#95294 part 3): a long-lived gateway whose
+    # checkout was updated underneath it (interrupted `hermes update`, manual
+    # git pull) serves MIXED modules — old entries frozen in sys.modules,
+    # new files loaded by lazy imports — and every agent cron job then dies
+    # with `cannot import name X` / ModuleNotFoundError. The error itself
+    # reads like a code bug, so operators debug the wrong thing (2 days on
+    # the reporting incident, 15 missed jobs). This process knows its own
+    # boot fingerprint: when boot SHA differs from disk HEAD, APPEND the
+    # cause and the one-command fix — never replacing the raw error text,
+    # which carries the failing symbol name.
+    #
+    # Fail-safe by construction: skew detection returns None on non-git
+    # installs and in processes without a boot fingerprint (no false
+    # accusations — message delivered unchanged), the probe seam swallows
+    # every exception, and no_agent script jobs are excluded via the same
+    # mode-gate as the provider branches (a fresh subprocess resolves
+    # imports consistently against disk; its ImportError is the script's
+    # own problem, and blaming gateway skew would send the reader to the
+    # wrong place).
+    if provider_reachable and re.search(
+        r"cannot import name|modulenotfounderror|importerror", lower
+    ):
+        try:
+            skew = _detect_gateway_code_skew()
+        except Exception:
+            skew = None  # delivery must never die on a diagnostics probe
+        if skew is not None:
+            boot_rev, disk_rev = skew
+            message += (
+                f" Likely cause: the gateway is running stale code (booted "
+                f"on {boot_rev}, disk is at {disk_rev}) — run "
+                "`hermes gateway restart` to fix it."
+            )
+
+    return message
 
 
 def _upsert_incident_for_failure(

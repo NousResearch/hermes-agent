@@ -715,8 +715,15 @@ export function useGatewayBoot({
       },
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
-        void desktop
-          .getConnection(fallbackProfile)
+        // Bounded like every other getConnection() call in this file (#93454):
+        // an eviction fallback (idle reap, connection removal, profile delete)
+        // must not latch the profile atom to a connection that never resolves
+        // if the main-process IPC round-trip wedges.
+        void withTimeout(
+          desktop.getConnection(fallbackProfile),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out resolving the fallback gateway connection'
+        )
           .then(connection => {
             if (!cancelled && gatewayActivationEpoch() === invalidationEpoch) {
               publish(connection)

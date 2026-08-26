@@ -12,6 +12,7 @@ import {
 import {
   activeGateway,
   closeSecondaryGateways,
+  disposeSecondariesForConnection,
   ensureGatewayForAgent,
   isActivePrimary,
   requestGatewayForAgent
@@ -1142,6 +1143,65 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(callsBeforeDrop)
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('onActiveConnectionInvalidated: a fallback getConnection() that hangs rejects on its own instead of latching $connection forever (#93454 sibling)', async () => {
+    // Repro: the active connection is a registered secondary (e.g. a Bots-pane
+    // source). It gets removed/invalidated (disposeSecondariesForConnection),
+    // which falls back to redialing the primary profile via
+    // desktop.getConnection(fallbackProfile) — the one getConnection() await
+    // in this file the #93454 bound-every-IPC-round-trip sweep never reached.
+    // A wedged main-process round-trip here must reject instead of leaving
+    // $connection pointed at a promise that never settles.
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      getConnectionFor: ReturnType<typeof vi.fn>
+    }
+
+    desktop.getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...coderConn,
+      connectionId,
+      profile
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($connection.get()).not.toBeNull()
+
+    let opening!: Promise<boolean>
+
+    act(() => {
+      opening = ensureGatewayForAgent('cloud', 'default')
+    })
+    await flushAsync()
+    await opening
+    expect(isActivePrimary()).toBe(false)
+
+    // The active secondary is about to be evicted; the fallback re-dial for
+    // the primary profile hangs indefinitely.
+    desktop.getConnection.mockImplementation(() => new Promise(() => undefined))
+
+    act(() => {
+      disposeSecondariesForConnection('cloud')
+    })
+    await flushAsync()
+
+    expect(isActivePrimary()).toBe(true)
+    expect(desktop.getConnection).toHaveBeenCalledWith('default')
+    // Still stuck behind the hung fallback dial — the invalidation handler's
+    // .then()/.catch() has not run yet.
+    expect($connection.get()).not.toBeNull()
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // fallback getConnection() must reject so the handler's catch publishes
+    // null, instead of latching $connection on a connection that will never
+    // resolve.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect($connection.get()).toBeNull()
   })
 
   it('a getConnection() that hangs on INITIAL boot rejects on its own after the reconnect-attempt timeout, not only when main eventually gives up (#93454)', async () => {

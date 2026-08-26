@@ -1,4 +1,4 @@
-"""Regression: the Windows Desktop update hand-off must not meter its step pipes.
+"""Regression: Windows Desktop update steps must drain and terminate reliably.
 
 ``scripts/desktop-update/windows.ps1`` runs each update step through
 ``Invoke-HermesStep``, which starts the step with ``RedirectStandardOutput`` /
@@ -31,8 +31,14 @@ this fixture's own flood arm: 4 MiB took 39.1s metered vs 0.09s unmetered, and a
 step writing to both pipes took 18.3s vs 0.29s. ``hermes update`` is exactly this
 shape; the Electron/vite build alone is megabytes.
 
-So the contract is: bounded when a descendant holds the pipe open, and never
-slower than the step can write. Both arms live in the script's own
+**Live child stall (#95589).** A step can also finish its visible update work
+but remain alive and silent in finalization. A post-exit pipe bound cannot help
+that case. The hand-off must terminate the silent child so its existing retry
+and finally paths can write the result, remove the marker, and relaunch Desktop.
+
+So the contract is: bounded when a descendant holds the pipe open, never slower
+than the step can write, and bounded when the step itself remains alive without
+observable progress. All arms live in the script's own
 ``-SelfTestPipeDrain`` fixture, which is ``windows_only`` because Linux CI
 cannot execute the PowerShell hand-off.
 """
@@ -51,12 +57,12 @@ WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
 @pytest.mark.windows_only
-def test_pipe_drain_survives_a_leak_without_metering_a_chatty_step(
+def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     tmp_path: Path,
 ) -> None:
-    """Execute the real drain against both shapes of step.
+    """Execute the real hand-off runner against all three step shapes.
 
-    ``-SelfTestPipeDrain`` runs two steps through the real
+    ``-SelfTestPipeDrain`` runs three steps through the real
     ``Invoke-HermesStep``:
 
     *leak* -- a step that spawns a grandchild with ``UseShellExecute = $false``
@@ -70,8 +76,12 @@ def test_pipe_drain_survives_a_leak_without_metering_a_chatty_step(
     must complete in wall-clock far under what a sleep-per-chunk drain would
     take, and every byte must arrive.
 
-    Measured on Windows 11 / PowerShell 5.1: leak 4.3s (vs 47.4s waiting out the
-    grandchild), flood 8 MiB in ~1s (vs ~76s metered).
+    *stall* -- a step that emits one progress line and then remains alive and
+    silent. It must be terminated with the timeout sentinel (124), preserve its
+    output, and leave no child process behind.
+
+    The existing leak/flood arms retain their measured Windows 11 / PowerShell
+    5.1 budgets; the stall arm uses the same real runner and process table.
     """
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     powershell = (
@@ -90,6 +100,7 @@ def test_pipe_drain_survives_a_leak_without_metering_a_chatty_step(
         # how long the leaking grandchild lives. hold >> grace is what makes a
         # regression measurable rather than lucky.
         "HERMES_UPDATE_PIPE_DRAIN_SECONDS": "3",
+        "HERMES_UPDATE_STEP_IDLE_SECONDS": "3",
         "HERMES_SELFTEST_HOLD_SECONDS": "45",
     }
 

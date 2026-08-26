@@ -707,6 +707,21 @@ if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
     }
 }
 
+# A live step also needs a ceiling. The pipe-drain bound above only starts
+# after the child exits, so it cannot recover a child that completed its visible
+# work and then parks forever inside finalization (#95589). Treat a prolonged
+# absence of stdout/stderr as a stalled step, terminate the direct child, and
+# let the existing retry + finally path restore the Desktop. The retry is
+# load-bearing at an update boundary: newly-pulled updater code is only loaded
+# by the second process.
+$script:StepIdleTimeoutSeconds = 300
+if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
+    $parsedIdle = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_STEP_IDLE_SECONDS, [ref]$parsedIdle) -and $parsedIdle -gt 0) {
+        $script:StepIdleTimeoutSeconds = $parsedIdle
+    }
+}
+
 function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     # Advance one redirected pipe by whatever has already arrived, without
     # ever blocking. Returns $true once the pipe has reached EOF (or its read
@@ -770,6 +785,10 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # encoding from the console codepage when attached to one.
     $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
+    # The idle watchdog below is only sound when Python progress is observable
+    # promptly. A redirected Python stdout is block-buffered by default, which
+    # otherwise makes an active update look silent until the buffer fills.
+    $psi.EnvironmentVariables["PYTHONUNBUFFERED"] = "1"
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
     $outSink = New-Object System.Text.StringBuilder
@@ -780,10 +799,13 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $errTask = $proc.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
     $abandonAt = $null
     $abandoned = $false
+    $lastProgressAt = Get-Date
+    $stalled = $false
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $proc.StandardOutput ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $proc.StandardError ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
+        if ($moved) { $lastProgressAt = Get-Date }
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -794,6 +816,15 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 $abandoned = $true
                 break
             }
+        } elseif (-not $stalled -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
+            # The child is alive but has produced no observable progress for
+            # the whole bound. Kill only the direct update/rebuild process; a
+            # surviving descendant is handled by the post-exit pipe-drain
+            # grace above. Returning 124 enters the existing one-retry path,
+            # while the outer finally still restores Desktop if both runs stall.
+            $stalled = $true
+            Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s while pid {2} remained alive; terminating it so the hand-off can recover." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
+            try { $proc.Kill() } catch {}
         }
         # Only idle when both pipes came up empty this pass, and idle on the
         # reads themselves rather than on the clock.
@@ -838,7 +869,8 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     }
     $all = $outText
     if ($errText) { $all += "`n" + $errText }
-    return @{ Code = $proc.ExitCode; Output = $all }
+    $code = if ($stalled) { 124 } else { $proc.ExitCode }
+    return @{ Code = $code; Output = $all }
 }
 
 $finalCode = 1
@@ -883,7 +915,7 @@ if ($SelfTestUi) {
 # before any marker/desktop machinery, same as -SelfTestUi; touches nothing
 # but its own temp files.
 #
-# Two arms, because the bound and the drain rate fail in opposite directions:
+# Three arms cover the independent wait modes:
 #
 #   leak  -- a step whose grandchild outlives it. Guards the #90455 deadlock:
 #            the drain must abandon rather than wait out the descendant.
@@ -891,6 +923,9 @@ if ($SelfTestUi) {
 #            that idles after every chunk it reads is metered at one buffer per
 #            tick, which backpressures the running step. Waiting for EOF and
 #            trickling toward it are both ways to make a fast step slow.
+#   stall -- a step that remains alive after its visible work and emits no more
+#            output. Guards #95589: the hand-off must terminate it and reach its
+#            retry/finally recovery rather than strand the Desktop.
 if ($SelfTestPipeDrain) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     $hold = 60
@@ -903,6 +938,8 @@ if ($SelfTestPipeDrain) {
     $childPs1 = Join-Path $TempDir "hermes-pipe-drain-$stamp.ps1"
     $floodPs1 = Join-Path $TempDir "hermes-pipe-flood-$stamp.ps1"
     $pidFile = Join-Path $TempDir "hermes-pipe-drain-$stamp.pid"
+    $stallPs1 = Join-Path $TempDir "hermes-step-stall-$stamp.ps1"
+    $stallPidFile = Join-Path $TempDir "hermes-step-stall-$stamp.pid"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -933,8 +970,17 @@ for ($i = 0; $i -lt [Math]::Ceiling($Kb / 128); $i++) { [Console]::Out.Write($ch
 [Console]::Out.Flush()
 exit 5
 '@
+    $stallSource = @'
+param([int]$Hold, [string]$PidFile)
+[System.IO.File]::WriteAllText($PidFile, [string]$PID)
+Write-Output "step entered silent finalization"
+[Console]::Out.Flush()
+Start-Sleep -Seconds $Hold
+exit 0
+'@
     [System.IO.File]::WriteAllText($childPs1, $childSource)
     [System.IO.File]::WriteAllText($floodPs1, $floodSource)
+    [System.IO.File]::WriteAllText($stallPs1, $stallSource)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $res = Invoke-HermesStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
@@ -962,7 +1008,21 @@ exit 5
     $floodElapsed = [Math]::Round($floodSw.Elapsed.TotalSeconds, 2)
     $floodBytes = $flood.Output.Length
 
-    Remove-Item -LiteralPath $childPs1, $floodPs1, $pidFile -Force -ErrorAction SilentlyContinue
+    $stallSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $stall = Invoke-HermesStep $powershell @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stallPs1,
+        "-Hold", [string]$hold, "-PidFile", $stallPidFile
+    ) "stepstall"
+    $stallSw.Stop()
+    $stallElapsed = [Math]::Round($stallSw.Elapsed.TotalSeconds, 2)
+    $stallPid = 0
+    if (Test-Path -LiteralPath $stallPidFile) {
+        [void][int]::TryParse((Get-Content -LiteralPath $stallPidFile -Raw).Trim(), [ref]$stallPid)
+    }
+    $stallAlive = $stallPid -gt 0 -and [bool](Get-Process -Id $stallPid -ErrorAction SilentlyContinue)
+    if ($stallAlive) { Stop-Process -Id $stallPid -Force -ErrorAction SilentlyContinue }
+
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $pidFile, $stallPidFile -Force -ErrorAction SilentlyContinue
 
     # The grandchild still being alive at return is what makes this a proof
     # rather than a timing coincidence: the pipe was demonstrably still open.
@@ -978,8 +1038,13 @@ exit 5
     if ($floodElapsed -ge $floodBudget) { $problems += "flood arm returned in ${floodElapsed}s, over the ${floodBudget}s budget -- the drain is metering itself, which backpressures the step" }
     if ($flood.Code -ne 5) { $problems += "flood arm exit code $($flood.Code), expected 5" }
     if ($floodBytes -lt ($floodKb * 1024)) { $problems += "flood arm captured $floodBytes bytes of $($floodKb * 1024)" }
+    $stallBudget = $script:StepIdleTimeoutSeconds + 30
+    if ($stallElapsed -ge $stallBudget) { $problems += "stall arm returned in ${stallElapsed}s, over the ${stallBudget}s budget" }
+    if ($stall.Code -ne 124) { $problems += "stall arm exit code $($stall.Code), expected 124" }
+    if ($stall.Output -notmatch "step entered silent finalization") { $problems += "stall arm step output was lost" }
+    if ($stallAlive) { $problems += "stalled child pid $stallPid remained alive after Invoke-HermesStep returned" }
 
-    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code)"
+    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive"
     if ($problems.Count -gt 0) {
         Write-Host "PIPE-DRAIN SELF-TEST: FAIL $detail -- $($problems -join '; ')"
         exit 1

@@ -78,6 +78,14 @@ class TestFileReadonlyToolset:
         tools = resolve_toolset("file")
         assert {"read_file", "write_file", "patch", "search_files"} <= set(tools)
 
+    def test_registered_in_configurable_picker(self):
+        # Without a CONFIGURABLE_TOOLSETS entry the toolset can't be toggled in
+        # the `hermes tools` TUI and users would have to hand-edit config.yaml.
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+        keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        assert "file_readonly" in keys
+
 
 class TestResolveToolset:
     def test_leaf_toolset(self):

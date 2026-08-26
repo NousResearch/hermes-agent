@@ -252,6 +252,15 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
     provider_call.assert_not_called()
 
 
+def test_turn_prologue_applies_reasoning_escalation_to_clean_prompt():
+    agent = _FakeAgent()
+
+    with patch("agent.reasoning_escalation.apply_turn_reasoning_escalation") as apply:
+        _build(agent, user_message="api-prefixed", persist_user_message="clean")
+
+    apply.assert_called_once_with(agent, "clean")
+
+
 def test_user_message_preserves_platform_event_timestamp():
     agent = _FakeAgent()
 

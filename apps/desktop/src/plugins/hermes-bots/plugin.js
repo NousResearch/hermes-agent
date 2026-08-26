@@ -8104,8 +8104,14 @@ async function runGroupChatRounds(group, members, thread) {
             clearBotAttention(groupMemberKey(member))
           }
         } catch (error) {
-          recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
-          noteBotAttention(groupMemberKey(member), error?.message || error)
+          const reason = String(error?.data?.reason || '').trim()
+          recordGroupActivity(group, {
+            kind: 'failed',
+            member: member.name,
+            thread,
+            ...(reason ? { reason } : {})
+          })
+          noteBotAttention(groupMemberKey(member), reason || error?.message || error)
           reply = null // a failed turn is a pass, never a room error
         }
 

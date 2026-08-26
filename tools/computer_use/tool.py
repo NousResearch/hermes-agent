@@ -708,7 +708,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 "window_id": args.get("window_id"),
             })
         cap = backend.capture(**capture_kwargs)
-        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
+        return _capture_response(cap)
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -988,14 +988,35 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
     if res.effect == "unverifiable":
-        return {"decision": "verify_fresh_state"}
+        return {
+            "decision": "verify_fresh_state",
+            "hint": (
+                "Input was delivered but not confirmed. Re-capture and check "
+                "the result BEFORE any retry — do not repeat the input on an "
+                "escalation recommendation alone."
+            ),
+        }
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
         decision: Dict[str, Any] = {"decision": "escalate"}
         if isinstance(res.escalation, dict):
             decision["recommended"] = res.escalation.get("recommended")
+        decision["hint"] = (
+            "The input likely did not land. Climb one rung following "
+            "`recommended`: 'px' → re-issue by coordinate; 'page' → the typed "
+            "cua_browser_* route; 'foreground' (or a failed pixel click) → "
+            "re-issue with delivery_mode='foreground' (separate approval). Do "
+            "not predict the rung from the app being Electron/Chromium — react "
+            "to this signal."
+        )
         return decision
     # Transport success without semantic proof is not proof of effect.
-    return {"decision": "verify_fresh_state"}
+    return {
+        "decision": "verify_fresh_state",
+        "hint": (
+            "Transport succeeded but the effect is unproven. Re-capture and "
+            "confirm before continuing."
+        ),
+    }
 
 
 def _action_payload(res: ActionResult) -> Dict[str, Any]:
@@ -1078,15 +1099,13 @@ def _enrich_escalation(res: ActionResult) -> Optional[Dict[str, Any]]:
     return enriched
 
 
-# Default cap for the AX `elements` array returned by capture. Dense UIs
-# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
-# can exhaust session context after a single capture. The model-facing
-# `max_elements` argument lets callers raise this when they need the full tree.
+# Fixed cap for the AX `elements` array surfaced in a capture response. Dense
+# UIs (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes,
+# which would exhaust session context after a single capture. The full,
+# untruncated tree is always written to an `elements_file` spill (see
+# _capture_lost_detail) so nothing is lost — read_file/search_files it when the
+# target isn't in the surfaced window.
 _DEFAULT_MAX_ELEMENTS = 100
-# Hard upper bound on caller-supplied `max_elements`. Without this, a tool
-# call passing a very large integer would silently disable the safeguard and
-# reintroduce the original unbounded behavior.
-_MAX_ALLOWED_MAX_ELEMENTS = 1000
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 
 
@@ -1144,28 +1163,6 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _coerce_max_elements(value: Any) -> int:
-    """Validate the caller-supplied ``max_elements``.
-
-    Falls back to :data:`_DEFAULT_MAX_ELEMENTS` for missing / non-integer /
-    sub-1 inputs so the cap can never be silently disabled by a malformed
-    tool-call argument. Clamps oversized values to
-    :data:`_MAX_ALLOWED_MAX_ELEMENTS` so a caller cannot bypass the
-    safeguard by passing a very large integer.
-    """
-    if value is None:
-        return _DEFAULT_MAX_ELEMENTS
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return _DEFAULT_MAX_ELEMENTS
-    if n < 1:
-        return _DEFAULT_MAX_ELEMENTS
-    if n > _MAX_ALLOWED_MAX_ELEMENTS:
-        return _MAX_ALLOWED_MAX_ELEMENTS
-    return n
-
-
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
@@ -1203,8 +1200,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 
     # Index only what's actually surfaced in the response — otherwise the
     # human-readable summary references element indices the model cannot
-    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
-    # 40-line index window).
+    # find in the JSON `elements` array (the surfaced window is capped at
+    # _DEFAULT_MAX_ELEMENTS; the full tree spills to elements_file).
     element_index = _format_elements(visible_elements)
     summary_lines = [
         f"capture mode={cap.mode} {response_width}x{response_height}"
@@ -1272,8 +1269,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             if truncated_elements:
                 summary_lines.append(
                     f"  (response truncated to {len(visible_elements)} of "
-                    f"{total_elements} elements; raise max_elements or pass "
-                    "app= to narrow)"
+                    f"{total_elements} elements; the full tree is in "
+                    "elements_file — read_file/search_files it, or pass app= "
+                    "to narrow scope)"
                 )
             payload = {
                 "mode": cap.mode,
@@ -1327,7 +1325,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     if truncated_elements:
         summary_lines.append(
             f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
-            f"raise max_elements or pass app= to narrow)"
+            "the full tree is in elements_file — read_file/search_files it, or pass app= to narrow scope)"
         )
     summary = "\n".join(summary_lines)
     payload: Dict[str, Any] = {

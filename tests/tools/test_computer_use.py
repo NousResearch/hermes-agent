@@ -50,19 +50,13 @@ class TestSchema:
             "focus_app",
         }
 
-    def test_schema_max_elements_documents_default_and_upper_bound(self):
-        """Schema description must agree with the runtime. The original PR
-        text said "Default 100" without a corresponding `default` field, and
-        had no upper bound — both Copilot findings.
+    def test_schema_no_longer_advertises_max_elements(self):
+        """max_elements was removed: captures always cap the surfaced element
+        window at the fixed default and spill the full tree to elements_file,
+        so there is no caller-tunable cap to document.
         """
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        from tools.computer_use.tool import (
-            _DEFAULT_MAX_ELEMENTS,
-            _MAX_ALLOWED_MAX_ELEMENTS,
-        )
-        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
-        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
-        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+        assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
 
 class TestRegistration:
@@ -362,10 +356,10 @@ class TestCaptureResponse:
         # the JSON view is partial and can re-issue with a tighter scope.
         assert "truncated to" in parsed["summary"]
 
-    def test_capture_ax_clamps_oversized_max_elements_to_hard_cap(self):
-        """A caller passing a very large `max_elements` must not be able to
-        disable the safeguard. The cap is clamped to a hard upper bound so
-        the context-blow-up protection cannot be bypassed by argument.
+    def test_capture_ax_ignores_stale_max_elements_argument(self):
+        """`max_elements` was removed from the schema; the surfaced window is a
+        fixed cap with the full tree spilled to elements_file. A stale caller
+        still passing max_elements must not be able to raise the cap.
         """
         from tools.computer_use import tool as cu_tool
 
@@ -376,9 +370,12 @@ class TestCaptureResponse:
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
             )
         parsed = json.loads(out)
-        assert len(parsed["elements"]) == cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        # Ignored: cap stays at the fixed default regardless of the argument.
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
         assert parsed["total_elements"] == 5000
-        assert parsed["truncated_elements"] == 5000 - cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        assert parsed["truncated_elements"] == 5000 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # The full tree is spilled so nothing is lost.
+        assert parsed.get("elements_file")
 
 class TestCuaCaptureImageDimensions:
     def test_png_dimensions_are_sniffed_from_image_bytes(self):

@@ -461,14 +461,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.valid_tool_names:
         stable_parts.append(STEER_CHANNEL_NOTE)
 
-    # Computer-use — goes in as its own block rather than being merged into
-    # tool_guidance because the content is multi-paragraph. The guidance is
-    # rendered for the host platform so Windows/Linux hosts don't see
-    # macOS-only wording (Mac, Space, cmd+s).
-    if "computer_use" in agent.valid_tool_names:
-        from agent.prompt_builder import computer_use_guidance
-        stable_parts.append(computer_use_guidance())
-
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

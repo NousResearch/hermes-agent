@@ -8196,6 +8196,17 @@ class AIAgent:
                         "check SessionDB health (disk / lock contention)."
                     )
 
+            def _publish_new_fence():
+                # The stall-fallback retry (#78981) needs a fence the aborted
+                # attempt cannot veto. Publish it on the same serialized slot
+                # hard_interrupt() reads, so a /stop during the retry admits
+                # against the attempt that is actually running. The finally
+                # below restores whatever the caller had either way.
+                retry_fence = CompressionCommitFence()
+                with fence_registration_lock:
+                    self._active_compression_commit_fence = retry_fence
+                return retry_fence
+
             result = run_compress_context_with_progress_timeout(
                 worker=_snapshot_worker,
                 messages=messages,
@@ -8206,6 +8217,7 @@ class AIAgent:
                 on_commit_overrun=_on_commit_overrun,
                 fence=active_fence,
                 telemetry_agent=self,
+                new_fence=_publish_new_fence,
             )
             # compress_context ran on a daemon pool worker thread; the session
             # id rotation updated hermes_logging._session_context (a

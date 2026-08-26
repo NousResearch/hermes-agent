@@ -8,13 +8,15 @@ verifiably live before the update.
 
 The first guard (PR #93410) keyed on ``(restarted_services or killed_pids)``,
 which never fires on Windows: ``_pause_windows_gateways_for_update`` /
-``_resume_windows_gateways_after_update`` populate neither list, so a healthy
-resumed Windows gateway still yielded zero rows and exit 0.  The fix hoists
-the "should the probe have produced rows?" decision into
-``_fleet_probe_expected_runtimes`` and keys it on every pre-update liveness
-signal: restart-phase bookkeeping, the pre-restart PID snapshot, the
-pre-update plan inventory, and the Windows pause/resume token.  The same
-condition gates the 2.0s settle sleep.
+``_resume_windows_gateways_after_update`` populate neither list.  The fix
+hoists the "should the probe have produced rows?" decision into
+``_fleet_probe_expected_runtimes`` and keys it on the ROW-CAPABLE pre-update
+liveness signals: restart-phase bookkeeping, the pre-restart PID snapshot,
+and the pre-update plan inventory.  The Windows pause/resume token is
+deliberately NOT a signal — it is bookkeeping, not a runtime inventory, and
+its entries have no corresponding ``collect_fleet_versions()`` rows (see
+``test_update_fleet_probe_resume_token.py``).  The same condition gates the
+2.0s settle sleep.
 """
 
 from __future__ import annotations
@@ -47,21 +49,22 @@ class TestEmptySnapshotFailClosed:
             is True
         )
 
-    def test_incomplete_when_windows_resume_token_has_profiles(self):
-        # (c) The Windows pause/resume path: restarted_services and
-        # killed_pids stay empty by construction, so the resume token is the
-        # ONLY signal that a gateway was live. This is exactly the case the
-        # original (restarted_services or killed_pids) guard missed.
+    def test_windows_resume_token_alone_is_not_expected(self):
+        # (c) The Windows pause/resume token is EXCLUDED from the expectation
+        # (#93406 residual): it is pause/resume bookkeeping, not a runtime
+        # inventory, and collect_fleet_versions() cannot return rows for its
+        # entries (unmapped Scheduled-Task gateways never publish
+        # gateway_state.json; a resumed profile gateway relaunches detached).
+        # Counting it made a healthy Windows update wait out the probe window
+        # and exit 1 on zero rows. Full coverage lives in
+        # test_update_fleet_probe_resume_token.py.
         token = {"resume_needed": False, "profiles": {"default": 4321}}
         assert (
-            _fleet_probe_expected_runtimes(None, [], token, [], set()) is True
+            _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
         )
-
-    def test_incomplete_when_windows_resume_token_has_unmapped(self):
-        # Scheduled-Task gateways land in token["unmapped"], not profiles.
         token = {"resume_needed": False, "unmapped": [{"pid": 99, "argv": ["x"]}]}
         assert (
-            _fleet_probe_expected_runtimes(None, [], token, [], set()) is True
+            _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
         )
 
     def test_incomplete_when_windows_resume_token_has_services(self):

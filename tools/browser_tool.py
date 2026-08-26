@@ -1573,10 +1573,14 @@ def _navigation_session_key(task_id: str, url: str, local_browser: bool = False)
     continues to serve public URLs.
 
     ``local_browser=True`` (the model-facing arg) forces the ``::local`` sidecar
-    regardless of the URL — but ONLY when the user consented to real-profile
+    for the backend choice — but ONLY when the user consented to real-profile
     browsing (``browser.use_real_profile``). Without consent the flag is ignored
     (the caller surfaces a note); it never silently routes to the real profile.
-    A CDP override or Camofox mode still owns the session and is not overridden.
+    It does not override the private-URL policy: a private URL is still routed
+    exactly as ``browser.auto_local_for_private_urls`` says. Without a cloud
+    provider the bare session is already local (and already carries the real
+    profile when consented), so the flag adds nothing there. A CDP override or
+    Camofox mode still owns the session and is not overridden.
     """
     if task_id is None:
         task_id = "default"
@@ -1584,10 +1588,18 @@ def _navigation_session_key(task_id: str, url: str, local_browser: bool = False)
         return task_id
     if _is_camofox_mode():
         return task_id
-    if local_browser and _use_real_profile():
-        return f"{task_id}{_LOCAL_SUFFIX}"
     if _get_cloud_provider() is None:
+        # Already local. A second ``::local`` session for the same task would
+        # contend with the bare one for the same user-data-dir.
         return task_id
+    if local_browser and _use_real_profile():
+        # Every private-URL gate in browser_navigate keys off the sidecar
+        # key, so honouring the flag for a private URL while the user opted
+        # out of auto-local routing would turn a model-supplied argument
+        # into a LAN policy override.
+        if _url_is_private(url) and not _auto_local_for_private_urls():
+            return task_id
+        return f"{task_id}{_LOCAL_SUFFIX}"
     if not _auto_local_for_private_urls():
         return task_id
     if not _url_is_private(url):

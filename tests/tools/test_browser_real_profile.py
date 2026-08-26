@@ -1,7 +1,7 @@
 """Tests for real-profile local browser resolution + routing."""
 import os
 import ntpath
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -99,8 +99,49 @@ class TestLocalBrowserRouting:
         self._reset()
         with patch.object(bt, "_get_cdp_override_raw", return_value=""), \
              patch.object(bt, "_is_camofox_mode", return_value=False), \
+             patch.object(bt, "_get_cloud_provider", return_value=Mock()), \
+             patch.object(bt, "_url_is_private", return_value=False), \
              patch.object(bt, "_use_real_profile", return_value=True):
             key = bt._navigation_session_key("t1", "https://example.com", local_browser=True)
+        assert key == "t1::local"
+
+    def test_local_browser_without_cloud_provider_keeps_bare_session(self):
+        """Pure local backend: the bare session already is the (real-profile)
+        local Chromium; a second ``::local`` session would fight it for the
+        same user-data-dir."""
+        import tools.browser_tool as bt
+        self._reset()
+        with patch.object(bt, "_get_cdp_override_raw", return_value=""), \
+             patch.object(bt, "_is_camofox_mode", return_value=False), \
+             patch.object(bt, "_get_cloud_provider", return_value=None), \
+             patch.object(bt, "_use_real_profile", return_value=True):
+            key = bt._navigation_session_key("t1", "https://example.com", local_browser=True)
+        assert key == "t1"
+
+    def test_local_browser_respects_private_url_opt_out(self):
+        """auto_local_for_private_urls: false is the user's LAN routing
+        decision; a model-supplied flag must not override it."""
+        import tools.browser_tool as bt
+        self._reset()
+        with patch.object(bt, "_get_cdp_override_raw", return_value=""), \
+             patch.object(bt, "_is_camofox_mode", return_value=False), \
+             patch.object(bt, "_get_cloud_provider", return_value=Mock()), \
+             patch.object(bt, "_url_is_private", return_value=True), \
+             patch.object(bt, "_auto_local_for_private_urls", return_value=False), \
+             patch.object(bt, "_use_real_profile", return_value=True):
+            key = bt._navigation_session_key("t1", "http://192.168.1.1/admin", local_browser=True)
+        assert key == "t1"
+
+    def test_local_browser_private_url_follows_auto_local_when_allowed(self):
+        import tools.browser_tool as bt
+        self._reset()
+        with patch.object(bt, "_get_cdp_override_raw", return_value=""), \
+             patch.object(bt, "_is_camofox_mode", return_value=False), \
+             patch.object(bt, "_get_cloud_provider", return_value=Mock()), \
+             patch.object(bt, "_url_is_private", return_value=True), \
+             patch.object(bt, "_auto_local_for_private_urls", return_value=True), \
+             patch.object(bt, "_use_real_profile", return_value=True):
+            key = bt._navigation_session_key("t1", "http://192.168.1.1/admin", local_browser=True)
         assert key == "t1::local"
 
     def test_local_browser_ignored_without_consent(self):

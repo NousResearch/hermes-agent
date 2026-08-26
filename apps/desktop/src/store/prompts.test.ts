@@ -17,7 +17,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from './prompts'
-import { $activeSessionId } from './session'
+import { $activeSessionId, setActiveSessionId } from './session'
 import { isSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 
 // Prompts are parked per-session; the exported $*Request views are scoped to the
@@ -168,6 +168,21 @@ describe('approval prompt store', () => {
 
     expect(isSessionGone('dead-runtime')).toBe(true)
     expect($approvalRequest.get()?.requestId).toBe('r1')
+  })
+
+  it('propagates transient approval receipt failures without latching the runtime', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('gateway timed out')
+    })
+
+    setActiveSessionId('transient-runtime')
+
+    await expect(
+      receiveApprovalRequest({ request }, { command: 'x', description: 'd', requestId: 'r2', sessionId: 'transient-runtime' })
+    ).rejects.toThrow('gateway timed out')
+
+    expect(isSessionGone('transient-runtime')).toBe(false)
+    expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 })
 

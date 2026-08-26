@@ -202,12 +202,21 @@ def cron_list(show_all: bool = False, json_output: bool = False):
             deliver = job.get("deliver") or ["local"]
             if isinstance(deliver, str):
                 deliver = [deliver]
-            skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
+            # An explicitly empty skills list is honored (not swapped for the
+            # legacy singular fallback); None falls back to legacy `skill`.
+            raw_skills = job.get("skills")
+            if raw_skills is not None:
+                skills = raw_skills
+            else:
+                skills = [job["skill"]] if job.get("skill") else []
+            sched = job.get("schedule")
+            schedule_display = job.get("schedule_display") or (
+                sched.get("value") if isinstance(sched, dict) else None
+            )
             payload.append({
                 "id": job.get("id"),
                 "name": job.get("name") or "",
-                "schedule": job.get("schedule_display")
-                or job.get("schedule", {}).get("value", "?"),
+                "schedule": schedule_display,
                 "state": effective_job_state(job),
                 "enabled": bool(job.get("enabled", True)),
                 "repeat_times": repeat_info.get("times"),

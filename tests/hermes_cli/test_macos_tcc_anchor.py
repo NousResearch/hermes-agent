@@ -297,6 +297,60 @@ class TestEnsureTccAnchor:
         assert not (venv_py.parent / ".tcc-anchor-source").exists()
 
 
+class TestBootGate:
+    """Direct branch coverage for _passes_boot_gate.
+
+    The gate is the never-brick guarantee, so each refusal direction gets its
+    own test rather than only being exercised through the install rollback.
+    """
+
+    @staticmethod
+    def _proc(argv, returncode, stdout="", stderr=""):
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    def test_refuses_nonzero_exit(self, tmp_path, monkeypatch):
+        # dyld / encodings crash in the staged copy → refuse install.
+        monkeypatch.setattr(
+            tcc.subprocess, "run",
+            lambda *a, **k: self._proc(a[0], 1, "", "ModuleNotFoundError: encodings"),
+        )
+        assert not tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_refuses_wrong_prefix(self, tmp_path, monkeypatch):
+        # Boots but resolves the build-time prefix (the /install signature).
+        monkeypatch.setattr(
+            tcc.subprocess, "run",
+            lambda *a, **k: self._proc(a[0], 0, "/install\n", ""),
+        )
+        assert not tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_refuses_timeout(self, tmp_path, monkeypatch):
+        def hang(*a, **k):
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=30)
+
+        monkeypatch.setattr(tcc.subprocess, "run", hang)
+        assert not tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_skips_unexecutable_staging(self, tmp_path, monkeypatch):
+        # OSError (fixture binaries, exec-format on a foreign arch) means the
+        # binary cannot run here at all — the symlinked venv was equally dead,
+        # so installing cannot make things worse. Skip, don't refuse.
+        def noexec(*a, **k):
+            raise OSError("cannot execute")
+
+        monkeypatch.setattr(tcc.subprocess, "run", noexec)
+        assert tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_accepts_matching_prefix(self, tmp_path, monkeypatch):
+        venv = tmp_path / "venv"
+        venv.mkdir()
+        monkeypatch.setattr(
+            tcc.subprocess, "run",
+            lambda *a, **k: self._proc(a[0], 0, f"{venv}\n", ""),
+        )
+        assert tcc._passes_boot_gate(tmp_path / "staged", venv)
+
+
 class TestTccAnchorState:
     def test_state_missing_then_active(self, tmp_path, monkeypatch):
         _darwin(monkeypatch)

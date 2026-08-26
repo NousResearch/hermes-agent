@@ -55,6 +55,17 @@ When you switch models **inside an active session** (Herm TUI model picker, `her
 Prompt caches are keyed to the model serving the request, so any mid-conversation model change — an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation onto a different account — means the next message re-reads the entire conversation at full input-token price instead of the cached (~75–90% discounted) rate. On a long session this one-time re-read can dwarf the per-token difference between the two models. Switch when you need to, but prefer doing it early in a conversation or right after starting a fresh session.
 :::
 
+Because of that one-time re-read cost, Hermes asks for **explicit confirmation** before applying a mid-session switch when the live session already holds a large context (default: **100,000 tokens**, measured from the latest provider-billed prompt size). The confirmation renders through the same selection-guard prompt as the expensive-model and data-training warnings on every surface (CLI/TUI picker, gateway `/model`, Telegram/Discord pickers, dashboard). Tune or disable it in `config.yaml`:
+
+```yaml
+model:
+  # Ask before mid-session switches when the session exceeds this many
+  # context tokens (the next reply re-reads them uncached). 0 disables.
+  switch_context_confirm_tokens: 100000
+```
+
+Re-selecting the model you're already on never prompts (the cache stays warm), and sessions with no measured context (fresh sessions, non-live surfaces) are exempt.
+
 ### Unattended data-training tiers
 
 Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.

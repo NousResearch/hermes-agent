@@ -178,6 +178,7 @@ def _secondary_recovery_runner(*, running=True):
     runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
     runner._adapter_disconnect_timeout_secs = lambda: 0
     runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+    runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
     return runner
 
 
@@ -228,6 +229,15 @@ class TestSecondaryProfileFatalRecovery:
             return True
 
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        redelivery_homes = []
+
+        async def redeliver(platform, *, profile=None):
+            from hermes_constants import get_hermes_home
+
+            redelivery_homes.append(Path(get_hermes_home()))
+            return 0
+
+        runner._redeliver_failed_obligations_for_platform.side_effect = redeliver
         await runner._handle_profile_adapter_fatal_error(
             "reviewer", Platform.DISCORD, stale
         )
@@ -238,8 +248,13 @@ class TestSecondaryProfileFatalRecovery:
         assert len(tasks) == 1
         await tasks[0]
         assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.DISCORD, profile="reviewer"
+        )
         assert scoped_homes
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
+        assert redelivery_homes
+        assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
 
 
     @pytest.mark.asyncio

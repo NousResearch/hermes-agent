@@ -17,7 +17,10 @@ import type { SessionInfo } from '@/types/hermes'
  * row already routes correctly and a `local` tag would only pin it against
  * the fail-closed owner resolution for no benefit.
  */
-export function stampRowsWithOwningConnection(sessions: SessionInfo[], connectionId: null | string | undefined): SessionInfo[] {
+export function stampRowsWithOwningConnection(
+  sessions: SessionInfo[],
+  connectionId: null | string | undefined
+): SessionInfo[] {
   const owner = String(connectionId ?? '').trim()
 
   if (!owner || owner === 'local') {

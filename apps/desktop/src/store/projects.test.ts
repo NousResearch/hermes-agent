@@ -737,6 +737,7 @@ describe('project tree profile isolation', () => {
         projects: [{ id: 'remote-tree', label: 'Remote tree', path: null, repos: [], sessionCount: 0 }],
         scoped_session_ids: []
       })
+
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)

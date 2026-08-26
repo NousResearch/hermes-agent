@@ -27,6 +27,7 @@ before ``initialize()`` reaches its import.
 
 import importlib
 import os
+import sys
 import types
 
 import pytest
@@ -152,3 +153,46 @@ class TestEveryImportSiteIsGuarded:
     def test_import_hindsight_embedded(self, clobbering_import, profile_env):
         assert hindsight._import_hindsight_embedded().__name__ == "HindsightEmbedded"
         _assert_profile_env_intact()
+
+
+class TestDependencyProbesAreGuarded:
+    """The installed-dependency probes import candidate modules for real, so
+    they hit the same import-time ``load_dotenv(override=True)`` hazard as the
+    plugin's own imports. Each probe must leave ``os.environ`` as it found it."""
+
+    @pytest.fixture()
+    def _mutating_dep(self, tmp_path, monkeypatch):
+        mod = tmp_path / "fake_env_mutating_dep.py"
+        mod.write_text(
+            "import os\nos.environ['HERMES_PROBE_CANARY'] = 'clobbered'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setenv("HERMES_PROBE_CANARY", "original")
+        yield
+        sys.modules.pop("fake_env_mutating_dep", None)
+
+    def test_web_server_dependency_probe_restores_env(self, _mutating_dep):
+        from hermes_cli import web_server
+
+        assert web_server._dependency_importable("fake-env-mutating-dep") is True
+        assert os.environ["HERMES_PROBE_CANARY"] == "original"
+
+    def test_memory_setup_missing_dep_probe_restores_env(
+        self, _mutating_dep, tmp_path, monkeypatch
+    ):
+        plugin_dir = tmp_path / "provider"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - fake-env-mutating-dep\n", encoding="utf-8"
+        )
+        import plugins.memory
+
+        monkeypatch.setattr(
+            plugins.memory, "find_provider_dir", lambda name: plugin_dir
+        )
+        from hermes_cli import memory_setup
+
+        memory_setup._install_dependencies("provider")
+
+        assert os.environ["HERMES_PROBE_CANARY"] == "original"

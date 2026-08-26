@@ -725,10 +725,57 @@ if (-not ("HermesUpdateJob" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 public static class HermesUpdateJob {
+    public sealed class StartedProcess {
+        public Process Process;
+        public StreamReader StandardOutput;
+        public StreamReader StandardError;
+        public IntPtr Job;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        public bool InheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo {
+        public int Size;
+        public string Reserved;
+        public string Desktop;
+        public string Title;
+        public int X;
+        public int Y;
+        public int XSize;
+        public int YSize;
+        public int XCountChars;
+        public int YCountChars;
+        public int FillAttribute;
+        public int Flags;
+        public short ShowWindow;
+        public short Reserved2;
+        public IntPtr Reserved2Ptr;
+        public IntPtr StdInput;
+        public IntPtr StdOutput;
+        public IntPtr StdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation {
+        public IntPtr Process;
+        public IntPtr Thread;
+        public int ProcessId;
+        public int ThreadId;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicAccountingInformation {
         public long TotalUserTime;
@@ -748,6 +795,29 @@ public static class HermesUpdateJob {
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecurityAttributes attributes, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
+        int creationFlags, IntPtr environment, string currentDirectory,
+        ref StartupInfo startupInfo, out ProcessInformation processInformation
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -762,12 +832,66 @@ public static class HermesUpdateJob {
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
 
-    public static IntPtr CreateAndAssign(IntPtr process) {
-        IntPtr job = CreateJobObject(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) return IntPtr.Zero;
-        if (AssignProcessToJobObject(job, process)) return job;
-        CloseHandle(job);
-        return IntPtr.Zero;
+    public static StartedProcess StartAssigned(string executable, string arguments) {
+        IntPtr job = IntPtr.Zero;
+        IntPtr outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
+        IntPtr errRead = IntPtr.Zero, errWrite = IntPtr.Zero;
+        ProcessInformation pi = new ProcessInformation();
+        try {
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed");
+            SecurityAttributes sa = new SecurityAttributes();
+            sa.Length = Marshal.SizeOf(typeof(SecurityAttributes));
+            sa.InheritHandle = true;
+            if (!CreatePipe(out outRead, out outWrite, ref sa, 0) ||
+                !CreatePipe(out errRead, out errWrite, ref sa, 0))
+                throw new InvalidOperationException("CreatePipe failed");
+            if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
+                throw new InvalidOperationException("SetHandleInformation failed");
+
+            StartupInfo si = new StartupInfo();
+            si.Size = Marshal.SizeOf(typeof(StartupInfo));
+            si.Flags = 0x00000100; // STARTF_USESTDHANDLES
+            si.StdInput = GetStdHandle(-10);
+            si.StdOutput = outWrite;
+            si.StdError = errWrite;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
+                    0x00000004 | 0x08000000, IntPtr.Zero, null, ref si, out pi))
+                throw new InvalidOperationException("CreateProcess failed");
+            if (!AssignProcessToJobObject(job, pi.Process)) {
+                TerminateProcess(pi.Process, 1);
+                throw new InvalidOperationException("AssignProcessToJobObject failed");
+            }
+
+            Process process = Process.GetProcessById(pi.ProcessId);
+            // Force Process to open its own stable query handle before the raw
+            // CreateProcess handle is closed; PS 5.1 otherwise reports a null
+            // ExitCode after fast children have already disappeared.
+            IntPtr stableProcessHandle = process.Handle;
+            StreamReader stdout = new StreamReader(new FileStream(
+                new SafeFileHandle(outRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
+            StreamReader stderr = new StreamReader(new FileStream(
+                new SafeFileHandle(errRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
+            outRead = IntPtr.Zero;
+            errRead = IntPtr.Zero;
+            CloseHandle(outWrite); outWrite = IntPtr.Zero;
+            CloseHandle(errWrite); errWrite = IntPtr.Zero;
+            if (ResumeThread(pi.Thread) == 0xffffffff)
+                throw new InvalidOperationException("ResumeThread failed");
+            return new StartedProcess { Process = process, StandardOutput = stdout, StandardError = stderr, Job = job };
+        } catch {
+            if (pi.Process != IntPtr.Zero) TerminateProcess(pi.Process, 1);
+            if (job != IntPtr.Zero) CloseHandle(job);
+            throw;
+        } finally {
+            if (pi.Thread != IntPtr.Zero) CloseHandle(pi.Thread);
+            if (pi.Process != IntPtr.Zero) CloseHandle(pi.Process);
+            if (outRead != IntPtr.Zero) CloseHandle(outRead);
+            if (outWrite != IntPtr.Zero) CloseHandle(outWrite);
+            if (errRead != IntPtr.Zero) CloseHandle(errRead);
+            if (errWrite != IntPtr.Zero) CloseHandle(errWrite);
+        }
     }
 
     public static bool TerminateAndWait(IntPtr job, uint exitCode, int timeoutMs) {
@@ -838,52 +962,48 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     # log is the strictly better failure.
     # System.Diagnostics.Process directly: Start-Process's .ExitCode is
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $Exe
-    # .Arguments string (PS 5.1 / .NET Framework has no ArgumentList).
-    # Args here are fixed flags + a branch ref; quote each defensively.
-    $psi.Arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    # hermes update prints UTF-8 (checkmarks, arrows, box glyphs). PS 5.1
-    # defaults these readers to the OEM codepage, which mangles every
-    # multi-byte glyph into mojibake in the log.
-    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-    # And ask the child to actually EMIT UTF-8: Python decides its stdio
-    # encoding from the console codepage when attached to one.
-    $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
-    $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
-    # The idle watchdog below is only sound when Python progress is observable
-    # promptly. A redirected Python stdout is block-buffered by default, which
-    # otherwise makes an active update look silent until the buffer fills.
-    $psi.EnvironmentVariables["PYTHONUNBUFFERED"] = "1"
-    $psi.CreateNoWindow = $true
-    $proc = [System.Diagnostics.Process]::Start($psi)
+    # CREATE_SUSPENDED closes the startup race: no updater instruction can run
+    # before the process is assigned to its private job and resumed.
+    $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    # CreateProcess inherits this process's environment. Set Python's encoding
+    # and buffering only for the atomic launch, then restore the hand-off host.
+    $savedPythonIoEncoding = $env:PYTHONIOENCODING
+    $savedPythonUtf8 = $env:PYTHONUTF8
+    $savedPythonUnbuffered = $env:PYTHONUNBUFFERED
+    try {
+        $env:PYTHONIOENCODING = "utf-8"
+        $env:PYTHONUTF8 = "1"
+        $env:PYTHONUNBUFFERED = "1"
+        $started = [HermesUpdateJob]::StartAssigned($Exe, $arguments)
+    } finally {
+        if ($null -eq $savedPythonIoEncoding) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $savedPythonIoEncoding }
+        if ($null -eq $savedPythonUtf8) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $savedPythonUtf8 }
+        if ($null -eq $savedPythonUnbuffered) { Remove-Item Env:PYTHONUNBUFFERED -ErrorAction SilentlyContinue } else { $env:PYTHONUNBUFFERED = $savedPythonUnbuffered }
+    }
+    $proc = $started.Process
+    $stdoutReader = $started.StandardOutput
+    $stderrReader = $started.StandardError
+    $job = $started.Job
     # A job gives cancellation a kernel-enforced tree boundary. We deliberately
     # do NOT set KILL_ON_JOB_CLOSE: successful updates may start detached
     # services that are meant to outlive this pipe reader. Descendants cannot
     # break away from a default job, but survive when its handle is closed after
     # a normal step.
-    $job = [HermesUpdateJob]::CreateAndAssign($proc.Handle)
-    if ($job -eq [IntPtr]::Zero) {
-        Write-HandoffLog ("{0}!| could not assign pid {1} to a cancellation job; live-step timeout is disabled to prevent an unsafe partial-tree retry." -f $Tag, $proc.Id)
-    }
+
     $outSink = New-Object System.Text.StringBuilder
     $errSink = New-Object System.Text.StringBuilder
     $outBuffer = New-Object char[] 16384
     $errBuffer = New-Object char[] 16384
-    $outTask = $proc.StandardOutput.ReadAsync($outBuffer, 0, $outBuffer.Length)
-    $errTask = $proc.StandardError.ReadAsync($errBuffer, 0, $errBuffer.Length)
+    $outTask = $stdoutReader.ReadAsync($outBuffer, 0, $outBuffer.Length)
+    $errTask = $stderrReader.ReadAsync($errBuffer, 0, $errBuffer.Length)
     $abandonAt = $null
     $abandoned = $false
     $lastProgressAt = Get-Date
     $stalled = $false
     while ($true) {
         $moved = $false
-        $outDone = Step-PipeDrain $proc.StandardOutput ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
-        $errDone = Step-PipeDrain $proc.StandardError ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
+        $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
+        $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
         if ($moved) { $lastProgressAt = Get-Date }
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
@@ -954,7 +1074,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     if ($errText) { $all += "`n" + $errText }
     $code = if ($stalled) { 124 } else { $proc.ExitCode }
     [HermesUpdateJob]::Close($job)
-    return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited) }
+    return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
 $finalCode = 1
@@ -1145,6 +1265,7 @@ exit 0
     if ($stallAlive) { $problems += "stalled child pid $stallPid remained alive after Invoke-HermesStep returned" }
     if ($stallGrandchildAlive) { $problems += "stalled descendant pid $stallGrandchildPid remained alive after Invoke-HermesStep returned" }
     if (-not $stall.TreeQuiesced) { $problems += "stall arm returned without proving its process tree quiescent" }
+    if (-not $stall.StartedAfterJobAssignment) { $problems += "stall arm started before cancellation-job assignment" }
 
     $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced)"
     if ($problems.Count -gt 0) {

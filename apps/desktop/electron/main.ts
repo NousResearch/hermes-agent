@@ -150,6 +150,7 @@ import {
   upsertConnection
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
+import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
@@ -1316,7 +1317,7 @@ function registerMediaProtocol() {
         method
       }),
     fetchRemoteWithCookies: (url, headers, method) => {
-      const oauthSession = getOauthSession()
+      const oauthSession = getOauthSessionForUrl(url)
 
       if (!oauthSession) {
         throw new Error('OAuth session partition is unavailable.')
@@ -6913,7 +6914,7 @@ function installMediaPermissions() {
 //     "is the user signed in at all?" gate / display signal.
 // ---------------------------------------------------------------------------
 
-const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
+const OAUTH_SESSION_PARTITION = LEGACY_OAUTH_PARTITION
 
 function getOauthSession() {
   if (oauthSession || !app.isReady()) {
@@ -6923,6 +6924,47 @@ function getOauthSession() {
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
   return oauthSession
+}
+
+// Per-connection cookie jars (#92183). A NON-primary v2 registry remote with
+// cookie auth rides its own partition so two registered gateways can never
+// evict — or be handed — each other's session cookies (Chromium jars ignore
+// the port, so two dashboards on one VPN host used to collide in the shared
+// jar above). The primary / v1 remote / cloud / portal flows keep the legacy
+// shared partition; see oauth-partition.ts for the full rules.
+const oauthSessionsByPartition = new Map()
+
+function resolveOauthPartitionForUrl(url) {
+  try {
+    return resolveOauthPartition(url, {
+      registry: readDesktopConnectionsRegistry(),
+      v1RemoteUrl: readDesktopConnectionConfig()?.remote?.url
+    })
+  } catch {
+    // A broken registry read must never take cookie auth down with it.
+    return OAUTH_SESSION_PARTITION
+  }
+}
+
+function getOauthSessionForUrl(url) {
+  const partition = resolveOauthPartitionForUrl(url)
+
+  if (partition === OAUTH_SESSION_PARTITION) {
+    return getOauthSession()
+  }
+
+  if (!app.isReady()) {
+    return null
+  }
+
+  let sess = oauthSessionsByPartition.get(partition)
+
+  if (!sess) {
+    sess = session.fromPartition(partition)
+    oauthSessionsByPartition.set(partition, sess)
+  }
+
+  return sess
 }
 
 // Cold-start cookie-jar warm-up. A `persist:` partition materialized via
@@ -6938,19 +6980,23 @@ function getOauthSession() {
 // throwaway cookies.get(). The promise is memoized so every caller awaits the
 // same single warm-up. Best-effort — any error resolves so we fall back to the
 // live read (which then does its own bounded re-check).
-let oauthCookieWarmup: Promise<void> | null = null
+// Memoized per PARTITION: per-connection jars (#92183) hydrate independently.
+const oauthCookieWarmups = new Map()
 
-function warmOauthCookieStore() {
-  if (oauthCookieWarmup) {
-    return oauthCookieWarmup
+function warmOauthCookieStore(url?) {
+  const partition = resolveOauthPartitionForUrl(url)
+  const pending = oauthCookieWarmups.get(partition)
+
+  if (pending) {
+    return pending
   }
 
-  oauthCookieWarmup = (async () => {
-    const sess = getOauthSession()
+  const warmup = (async () => {
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       // App not ready yet — don't memoize a no-op; let a later call retry.
-      oauthCookieWarmup = null
+      oauthCookieWarmups.delete(partition)
 
       return
     }
@@ -6966,7 +7012,9 @@ function warmOauthCookieStore() {
     }
   })()
 
-  return oauthCookieWarmup
+  oauthCookieWarmups.set(partition, warmup)
+
+  return warmup
 }
 
 // Bare + prefixed variants of the session cookies live in
@@ -6974,7 +7022,7 @@ function warmOauthCookieStore() {
 // that module for details.
 
 async function hasOauthSessionCookie(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return false
@@ -7007,7 +7055,7 @@ async function hasOauthSessionCookie(baseUrl) {
 // re-login every ~15 min. Used for the Settings "connected" indicator and as a
 // cheap early-out before attempting a network round-trip in resolveRemoteBackend.
 async function hasLiveOauthSession(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return false
@@ -7043,7 +7091,7 @@ async function hasLiveOauthSession(baseUrl) {
   // trusting a negative, force the store to hydrate and re-read a couple of
   // times with a short backoff. A genuinely signed-out user still resolves
   // false quickly (≤ ~180ms); a signed-in user racing the load now wins.
-  await warmOauthCookieStore()
+  await warmOauthCookieStore(baseUrl)
 
   for (const delayMs of [30, 60, 90]) {
     if (await readLive()) {
@@ -7057,7 +7105,7 @@ async function hasLiveOauthSession(baseUrl) {
 }
 
 async function clearOauthSession(baseUrl) {
-  const sess = getOauthSession()
+  const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
     return
@@ -7104,7 +7152,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       return
     }
 
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(baseUrl)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7237,7 +7285,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 // authed REST against a gated gateway, including minting WS tickets.
 function fetchJsonViaOauthSession(url, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))
@@ -7488,7 +7536,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
 // is cleared once the response headers arrive.
 function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const sess = getOauthSession()
+    const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
       reject(new Error('OAuth session partition is unavailable.'))

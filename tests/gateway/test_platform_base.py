@@ -146,6 +146,18 @@ class TestMessageEventGetCommandArgs:
         event = MessageEvent(text="/status check @url:https://example.com")
         assert event.get_command_args() == "check @url:https://example.com"
 
+    def test_normalizes_smart_dashes_for_user_commands(self):
+        event = MessageEvent(text="/new —flag –value")
+        assert event.get_command_args() == "--flag -value"
+
+    def test_preserves_verbatim_args_for_trusted_adapter_command(self):
+        event = MessageEvent(
+            text="/telegram-chip 04/20 — canary",
+            metadata={"preserve_command_args": True},
+        )
+        assert event.get_command_args() == "04/20 — canary"
+
+
 
 # ---------------------------------------------------------------------------
 # extract_images

@@ -120,11 +120,6 @@ def get_archive_after_days() -> int:
     return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
 
 
-def get_prune_builtins() -> bool:
-    """Bundled built-ins are curation candidates (ON by default); a suppression list keeps them archived across `hermes update` re-seeds. Hub skills are never pruned."""
-    return bool(_load_config().get("prune_builtins", True))
-
-
 def get_consolidate() -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
     return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
@@ -438,17 +433,6 @@ CURATOR_REVIEW_PROMPT = (
     "summary of clusters processed, patches made, and decisions left alone."
 )
 
-
-CURATOR_PRUNE_BUILTINS_NOTE = (
-    "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
-    "ARE included in the candidate list below and MAY be "
-    "archived for staleness/irrelevance, overriding hard "
-    "rule #1 for bundled skills ONLY. Hub-installed skills "
-    "remain strictly off-limits. Treat a stale built-in the "
-    "same as a stale agent-created skill: archive it (never "
-    "delete). It will be restored on `hermes update` only if "
-    "the user explicitly restores it."
-)
 
 # --- Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/ ---
 
@@ -812,12 +796,23 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # --- Orchestrator — spawn a forked AIAgent for the LLM review pass ---
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of curator-managed skills with usage stats."""
-    rows = skill_usage.curated_report()
+    """Human/agent-readable list of LLM consolidation candidates.
+
+    Bundled built-ins are excluded even when ``curator.prune_builtins`` is
+    on. That flag makes them eligible for *deterministic archival*
+    (``apply_automatic_transitions`` → ``archive_skill``), not for the
+    rewrite/umbrella pass. Listing them here invites ``skill_manage``
+    writes that ``_background_review_write_guard`` unconditionally
+    refuses, burning tool calls until the loop guard aborts the run.
+    """
+    rows = [
+        r for r in skill_usage.curated_report()
+        if not skill_usage.is_bundled(r["name"])
+    ]
     if not rows:
-        return "No curator-managed skills to review."
+        return "No agent-created skills to review."
     cron_referenced = _cron_referenced_skills()
-    return "\n".join([f"Curator-managed skills ({len(rows)}):\n"] + [
+    return "\n".join([f"Agent-created skills ({len(rows)}):\n"] + [
         f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
         f"pinned={'yes' if r.get('pinned') else 'no'}  cron={'yes' if r['name'] in cron_referenced else 'no'}  "
         f"activity={r.get('activity_count', 0)}  use={r.get('use_count', 0)}  view={r.get('view_count', 0)}  "
@@ -852,8 +847,11 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
             llm_meta = _llm_meta("skipped (no candidates)")
         else:
-            # With prune-builtins on, bundled skills are candidates too: relax hard rule #1 for them (archive only; hub stays off-limits).
-            prompt = f"{CURATOR_REVIEW_PROMPT}{CURATOR_PRUNE_BUILTINS_NOTE if get_prune_builtins() else ''}\n\n{candidate_list}"
+            # Bundled built-ins are not in the candidate list, even under
+            # prune_builtins: archival is the deterministic pass's job, and
+            # the bundled policy is archive-only. Hard rule #1 therefore
+            # stands unqualified.
+            prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)

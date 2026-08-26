@@ -19,6 +19,12 @@ _INERT_HEREDOC_CONSUMER_RE = re.compile(
     re.IGNORECASE)
 
 
+# Unlike interpreters, cat only consumes stdin as data during this command.
+_INERT_DATA_SINK_HEREDOC_CONSUMER_RE = re.compile(
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"cat(?=\s|$)", re.IGNORECASE)
+
+
 def _span_end(command: str, cursor: int, closer: str) -> int:
     """Index just past the backslash-aware span opened at ``cursor``."""
     end = cursor + 1
@@ -159,11 +165,15 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def strip_inert_heredoc_bodies(command: str, *, data_sinks_only: bool = False) -> str:
+    """Mask inert outer-shell data; ``data_sinks_only`` keeps interpreter source visible."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
+    consumer_re = (
+        _INERT_DATA_SINK_HEREDOC_CONSUMER_RE
+        if data_sinks_only else _INERT_HEREDOC_CONSUMER_RE
+    )
     last_opener_index = command.rfind("<<")
     ranges: list[tuple[int, int]] = []
     command_start = 0
@@ -190,7 +200,7 @@ def strip_inert_heredoc_bodies(command: str) -> str:
         if all(quoted for _delimiter, _strip_tabs, quoted in specs) and not has_list_operator:
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
             if (not any(m in masked_opener for m in ("$(", "`", "<(", ">("))
-                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)):
+                    and consumer_re.search(masked_opener)):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

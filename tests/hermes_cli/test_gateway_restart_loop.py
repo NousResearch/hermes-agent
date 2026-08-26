@@ -259,6 +259,22 @@ class TestGatewayLifecyclePattern:
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [
+        (
+            "python3 - <<'PY'\n"
+            'import os; os.system("hermes gateway restart")\n'
+            "PY"
+        ),
+        (
+            "osascript <<'APPLESCRIPT'\n"
+            'do shell script "hermes gateway restart"\n'
+            "APPLESCRIPT"
+        ),
+    ])
+    def test_executable_interpreter_heredoc_body_still_scanned(self, text):
+        """Quoted source is inert to the shell, not to its interpreter."""
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
         # Executable heredoc (shell consumer) must stay blocked.
         "bash <<EOF\nhermes gateway restart\nEOF",
         # Unquoted delimiter = expansion-capable = fail open to scanning.

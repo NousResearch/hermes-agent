@@ -265,3 +265,73 @@ class TestSendUpdate:
             and "_session_update" in str(w.message)
         ]
         assert runtime_warnings == []
+
+
+class TestAssistantMessageIds:
+    """Assistant messageId grouping — ported from prime-agent#1781."""
+
+    def _sent_updates(self, mock_rcts):
+        return [call.args[0] for call in mock_rcts.call_args_list]
+
+    def test_deltas_share_one_id_until_flush(self, mock_conn, event_loop_fixture):
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        cb = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            cb("Hello ")
+            cb("world")
+            cb(None)  # flush sentinel — closes the message
+            cb("next turn")
+        assert sent[0].message_id == sent[1].message_id == "hermes-assistant-1"
+        assert sent[2].message_id == "hermes-assistant-2"
+
+    def test_thought_chunks_carry_id(self, mock_conn, event_loop_fixture):
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        think = make_thinking_cb(mock_conn, "s", event_loop_fixture, ids)
+        msg = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            think("pondering")
+            msg("answer")
+        # Reasoning and answer of the same reply share one message id.
+        assert sent[0].message_id == sent[1].message_id
+
+    def test_no_allocator_keeps_legacy_shape(self, mock_conn, event_loop_fixture):
+        cb = make_message_cb(mock_conn, "s", event_loop_fixture)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            cb("text")
+        assert sent[0].message_id is None
+
+    def test_ids_monotonic_never_reused(self):
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        seen = set()
+        for _ in range(5):
+            i = ids.current()
+            assert i not in seen
+            seen.add(i)
+            ids.close()
+        assert ids.last() == "hermes-assistant-5"
+
+    def test_empty_string_does_not_close_message(self, mock_conn, event_loop_fixture):
+        """Only the None sentinel ends a message; '' deltas are ignored."""
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        cb = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            cb("a")
+            cb("")
+            cb("b")
+        assert sent[0].message_id == sent[1].message_id

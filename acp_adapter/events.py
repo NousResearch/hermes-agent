@@ -121,22 +121,83 @@ def make_tool_progress_cb(
     return _tool_progress
 
 
-def _make_text_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, wrap: Callable[[str], Any]) -> Callable:
-    def _cb(text: str) -> None:
+# ------------------------------------------------------------------
+# Assistant message identity
+# ------------------------------------------------------------------
+
+
+class AssistantMessageIdAllocator:
+    """Allocates stable per-message ids for streamed assistant chunks.
+
+    ACP clients group streamed ``agent_message_chunk`` / ``agent_thought_chunk``
+    deltas into one assistant reply by ``messageId`` and use a NEW id to start
+    the next reply (root-reply replacement semantics). Without ids, a client
+    that replaces "the current assistant message" on each chunk collapses
+    separate autonomous turns into one bubble.
+
+    One allocator lives per ACP session so the sequence is monotonic across
+    turns — two different turns must never reuse an id. A contiguous run of
+    deltas shares ``current()``; ``close()`` marks the message finished so the
+    next delta allocates a fresh id. Ported from
+    PrimeIntellect-ai/prime-agent#1781 (``prime-agent-assistant-N``).
+    """
+
+    def __init__(self, prefix: str = "hermes-assistant") -> None:
+        self._prefix = prefix
+        self._sequence = 0
+        self._active: str | None = None
+        self._last: str | None = None
+
+    def current(self) -> str:
+        """Return the active message id, allocating one if none is open."""
+        if self._active is None:
+            self._sequence += 1
+            self._active = f"{self._prefix}-{self._sequence}"
+            self._last = self._active
+        return self._active
+
+    def last(self) -> str | None:
+        """Return the most recently allocated id (open or closed)."""
+        return self._last
+
+    def close(self) -> None:
+        """End the active message; the next chunk starts a new id."""
+        self._active = None
+
+
+def _make_text_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, wrap: Callable[[str], Any],
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
+    # ``None`` is the flush sentinel Hermes core sends between assistant messages
+    # (before tool execution / at end of stream): it closes the active messageId so
+    # the next delta opens a new bubble instead of merging into the previous one.
+    def _cb(text: str | None) -> None:
         if text:
-            _send_update(conn, session_id, loop, wrap(text))
+            update = wrap(text)
+            if message_ids is not None:
+                update.message_id = message_ids.current()
+            _send_update(conn, session_id, loop, update)
+        elif text is None and message_ids is not None:
+            message_ids.close()
 
     return _cb
 
 
-def make_thinking_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop) -> Callable:
+def make_thinking_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop,
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
     """Create a ``thinking_callback`` for AIAgent."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_thought_text)
+    return _make_text_cb(conn, session_id, loop, acp.update_agent_thought_text, message_ids)
 
 
-def make_message_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop) -> Callable:
+def make_message_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop,
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
     """Create a callback that streams agent response text to the editor."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_message_text)
+    return _make_text_cb(conn, session_id, loop, acp.update_agent_message_text, message_ids)
 
 
 def make_step_cb(

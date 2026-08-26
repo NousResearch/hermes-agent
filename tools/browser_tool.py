@@ -1552,6 +1552,17 @@ def _real_profile_cdp() -> tuple:
     ``(None, None)`` when consent is off.
     """
     if not _use_real_profile():
+        # Consent is off. If a snapshot store from a previous consented run is
+        # still on disk, it holds copies of the user's cookies/logins — delete
+        # it so revoking consent actually removes the credential copies. Cheap
+        # (one isdir check) and idempotent.
+        try:
+            from hermes_cli.browser_connect import cleanup_real_profile_snapshots
+
+            cleanup_real_profile_snapshots()
+        except Exception as e:
+            logger.debug("real-profile cleanup-on-consent-off failed: %s", e)
+        _real_profile_cdp_cache.pop("cdp", None)
         return None, None
 
     # Lightpanda cannot load a Chromium profile — agent-browser rejects
@@ -1570,6 +1581,7 @@ def _real_profile_cdp() -> tuple:
     from hermes_cli.browser_connect import (
         UNSUPPORTED_CHANNEL,
         detect_default_chromium,
+        real_profile_copy_dir,
         snapshot_real_profile,
     )
 
@@ -1600,21 +1612,31 @@ def _real_profile_cdp() -> tuple:
                 "real-profile browsing does not support. Set your default to a "
                 "stable Chrome / Edge / Brave / Chromium, or turn the toggle off."
             )
-        copy_dir, err = snapshot_real_profile(browser)
-        if err or not copy_dir:
-            return None, f"browser.use_real_profile is on, but {err}"
 
-        # A shared session may already be up from a previous hermes process,
-        # but ONLY reuse it when it is actually driving our copy dir — a stale
-        # session from an earlier/failed launch can be attached to a throwaway
-        # temp profile (agent-browser falls back to one when a launch races),
-        # which would serve zero real cookies. Verify, else close and relaunch.
+        # Reuse BEFORE writing anything. A shared copy-browser may already be up
+        # from a previous hermes process; if it is driving OUR copy dir, hand it
+        # back untouched. CRITICAL: the snapshot overlay (which truncates and
+        # rewrites Cookies / Login Data) must NOT run while that browser holds
+        # the user-data-dir open — doing so corrupts the live databases (torn
+        # reads, locked transactions, phantom logouts). So resolve the copy dir
+        # as a PATH only (no copy), probe reuse, and return early on a hit. The
+        # snapshot/overlay happens solely on the relaunch path below, when no
+        # live browser owns the dir.
+        copy_dir = real_profile_copy_dir(browser)
         existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _real_profile_cdp_cache["cdp"] = existing
             return existing, None
         if existing:
+            # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
+            # close it so nothing holds the dir open before we overlay + relaunch.
             _agent_browser_close_session(_REAL_PROFILE_SESSION)
+
+        # No live browser owns the dir now — safe to (re)snapshot + overlay.
+        snap_dir, err = snapshot_real_profile(browser)
+        if err or not snap_dir:
+            return None, f"browser.use_real_profile is on, but {err}"
+        copy_dir = snap_dir
 
         # Launch agent-browser's packaged Chromium on the profile COPY. This is
         # the same launch path Hermes' built-in local browsing already uses,

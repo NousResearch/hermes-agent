@@ -575,14 +575,25 @@ def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> None:
             logger.debug("real-profile auth mirror: skipped %s: %s", rel, e)
 
 
-def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
-    """Snapshot ``browser``'s real profile into the hermes copy dir.
+_SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
 
-    Full copy (minus caches) when the copy doesn't exist; otherwise only the
-    auth-bearing files (cookies, login data, preferences) are re-synced so
-    fresh logins from the user's own browsing show up in the agent session.
-    Locked-file copy errors are tolerated best-effort: SQLite journals make a
-    mid-write copy readable, and a stale cookie jar beats a failed launch.
+
+def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
+    """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir.
+
+    Copies only what the launched browser needs: the user-data-dir's
+    ``Local State`` plus the auth-bearing files of the profile the user
+    actually browses (``Local State → profile.last_used``, e.g. ``Profile 6``),
+    mirrored into the copy's ``Default`` — which is what agent-browser opens.
+    We deliberately do NOT copy every profile dir: non-active profiles are
+    unused here and would just be stale credential copies sitting on disk.
+
+    A ``.hermes-snapshot-complete`` marker is written only after a copy fully
+    succeeds; a torn/interrupted first copy (disk full, Ctrl+C) therefore never
+    looks "already populated" on the next run — it is redone from scratch.
+
+    Auth files are re-synced on every call so fresh logins from the user's own
+    browsing show up. Locked-file copy errors are tolerated best-effort.
 
     Returns ``(copy_dir, None)`` on success, ``(None, error)`` on failure.
     """
@@ -594,22 +605,41 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         )
     dst = real_profile_copy_dir(browser)
     source_profile = _last_used_profile(src)
-    fresh = not os.path.isdir(os.path.join(dst, "Default"))
+    marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
+    # Only a copy that previously COMPLETED counts as populated. A half-written
+    # tree (no marker) is treated as absent and rebuilt — otherwise a torn first
+    # copy poisons freshness forever and only ever gets auth overlays.
+    populated = os.path.isfile(marker)
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY
-        # launch (not only first-create): a failed first attempt or an
-        # older-build dir must still converge to owner-only perms, and the
-        # parent enumerates every browser we hold cookies for.
+        # launch: a failed first attempt or an older-build dir must still
+        # converge to owner-only perms; the parent enumerates every browser we
+        # hold cookies for.
         parent = os.path.dirname(dst)
         if parent:
             _secure_snapshot_root(parent)
         _secure_snapshot_root(dst)
-        if fresh:
+
+        # Base user-data-dir file the browser reads at startup. Cheap; always
+        # re-synced so last_used etc. stay current.
+        ls_src = os.path.join(src, "Local State")
+        if os.path.isfile(ls_src):
             try:
+                shutil.copy2(ls_src, os.path.join(dst, "Local State"))
+            except OSError as e:
+                logger.debug("real-profile snapshot: skipped Local State: %s", e)
+
+        if not populated:
+            # Fresh (or torn-and-rebuilding): drop any partial Default and copy
+            # the ACTIVE profile's full dir (minus caches) into the copy's
+            # Default. Only the active profile is copied — never the others.
+            dst_default = os.path.join(dst, "Default")
+            try:
+                shutil.rmtree(dst_default, ignore_errors=True)
                 shutil.copytree(
-                    src,
-                    dst,
+                    os.path.join(src, source_profile),
+                    dst_default,
                     dirs_exist_ok=True,
                     symlinks=False,
                     ignore=shutil.ignore_patterns(*_SNAPSHOT_IGNORES),
@@ -618,31 +648,44 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             except shutil.Error as multi:
                 # Per-file failures (browser mid-write) are non-fatal.
                 logger.info(
-                    "real-profile snapshot: %d file(s) skipped while copying %s",
-                    len(multi.args[0]) if multi.args else 0, src,
+                    "real-profile snapshot: %d file(s) skipped copying %s/%s",
+                    len(multi.args[0]) if multi.args else 0, src, source_profile,
                 )
         else:
-            # Refresh: re-sync Local State so last_used stays current.
-            ls_src = os.path.join(src, "Local State")
-            if os.path.isfile(ls_src):
-                try:
-                    shutil.copy2(ls_src, os.path.join(dst, "Local State"))
-                except OSError as e:
-                    logger.debug("real-profile refresh: skipped Local State: %s", e)
-        # Both paths: mirror the ACTIVE source profile's auth into the copy's
-        # Default so the launched browser (which opens Default) is signed in.
-        # On a fresh full copy this overwrites Default's auth with the
-        # last_used profile's; on refresh it re-syncs fresh logins.
-        _mirror_profile_auth(src, dst, source_profile)
+            # Already populated: re-sync just the active profile's auth files
+            # into Default so fresh logins show up (no full recopy).
+            _mirror_profile_auth(src, dst, source_profile)
+
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             try:
                 os.unlink(os.path.join(dst, leftover))
             except OSError:
                 pass
+        # Mark complete only after everything above succeeded.
+        try:
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(source_profile)
+        except OSError as e:
+            logger.debug("real-profile snapshot: could not write done marker: %s", e)
     except OSError as e:
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     return dst, None
+
+
+def cleanup_real_profile_snapshots() -> None:
+    """Delete the whole real-profile snapshot store (all copied credentials).
+
+    Called when consent is OFF: the copied Cookies / Login Data must not
+    outlive the toggle. Best-effort and idempotent — missing dir is fine.
+    """
+    root = str(get_hermes_home() / "browser-profile")
+    try:
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)
+            logger.info("real-profile: removed snapshot store %s (consent off)", root)
+    except OSError as e:
+        logger.debug("real-profile cleanup failed for %s: %s", root, e)
 
 
 def get_chrome_debug_candidates(system: str) -> list[str]:

@@ -637,3 +637,125 @@ class TestReviewBugFixes:
         assert err and "lightpanda" in err.lower() and "browser.engine" in err.lower()
         det.assert_not_called()  # guard fires before detection
         bt._real_profile_cdp_cache.clear()
+
+
+class TestReviewRound3:
+    """Regressions for the round-3 review findings (Adolanium + kshitij)."""
+
+    def _multi(self, root):
+        for prof in ("Default", "Profile 6"):
+            (root / prof / "Network").mkdir(parents=True)
+        (root / "Local State").write_text('{"profile": {"last_used": "Profile 6"}}')
+        (root / "Default" / "Cookies").write_text("default-signed-out")
+        (root / "Profile 6" / "Cookies").write_text("PROFILE6-SESSION")
+        (root / "Profile 6" / "Preferences").write_text("{}")
+        return root
+
+    # ── ② torn first copy must not poison freshness ──
+    def test_done_marker_gates_fresh(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        assert os.path.isfile(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
+
+    def test_torn_copy_is_redone_not_overlaid(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        dst = bc.real_profile_copy_dir("chrome")
+        # Simulate a torn first copy: Default exists but NO done marker.
+        os.makedirs(os.path.join(dst, "Default"))
+        open(os.path.join(dst, "Default", "Cookies"), "w").write("HALF-COPY-GARBAGE")
+        d, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        # Rebuilt from the active profile, not treated as populated.
+        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
+        assert os.path.isfile(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
+
+    # ── ④ only the active profile is copied, never the others ──
+    def test_only_active_profile_copied(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        # Add a non-active profile with its own cookies — must NOT be copied.
+        (src / "Profile 3").mkdir()
+        (src / "Profile 3" / "Cookies").write_text("PROFILE3-SHOULD-NOT-COPY")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        copy = home / "browser-profile" / "chrome"
+        # Active profile (Profile 6) landed in Default; other profiles absent.
+        assert (copy / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
+        assert not (copy / "Profile 3").exists()
+        assert not (copy / "Profile 6").exists()
+
+    # ── ③ consent-off deletes the snapshot store ──
+    def test_cleanup_removes_store(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        store = home / "browser-profile" / "chrome" / "Default"
+        store.mkdir(parents=True)
+        (store / "Cookies").write_text("secret")
+        bc.cleanup_real_profile_snapshots()
+        assert not (home / "browser-profile").exists()
+
+    def test_cleanup_idempotent_when_absent(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        bc.cleanup_real_profile_snapshots()  # no raise
+
+    def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
+        import tools.browser_tool as bt
+        called = {"n": 0}
+        with patch.object(bt, "_use_real_profile", return_value=False), \
+             patch("hermes_cli.browser_connect.cleanup_real_profile_snapshots",
+                   side_effect=lambda: called.__setitem__("n", called["n"] + 1)):
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None and err is None
+        assert called["n"] == 1
+
+    # ── ① overlay must not run before the reuse check (live-browser safety) ──
+    def test_reuse_skips_snapshot_overlay(self, tmp_path):
+        """When a live session on our copy dir is reused, snapshot_real_profile
+        must NOT be called — otherwise it rewrites cookie DBs under a live
+        browser."""
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.clear()
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch.object(bt, "_using_lightpanda_engine", return_value=False), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=True), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp == "http://127.0.0.1:9251" and err is None
+        snap.assert_not_called()  # ← the fix: no overlay while a live browser owns the dir
+        bt._real_profile_cdp_cache.clear()
+
+    def test_relaunch_path_does_snapshot(self, tmp_path):
+        """When there's no reusable session, the overlay DOES run (relaunch)."""
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.clear()
+        proc = Mock(returncode=0, stdout="", stderr="")
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch.object(bt, "_using_lightpanda_engine", return_value=False), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(str(tmp_path), None)) as snap, \
+             patch.object(bt, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:9251"]), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            cdp, err = bt._real_profile_cdp()
+        assert err is None
+        snap.assert_called_once()
+        bt._real_profile_cdp_cache.clear()

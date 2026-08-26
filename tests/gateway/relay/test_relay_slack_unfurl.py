@@ -143,6 +143,16 @@ class TestSendStampsUnfurl:
         await a.send("chan-1", "see https://example.com")
         assert "unfurl_links" not in a._transport.sent["metadata"]
 
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_descriptor_platform(self):
+        """No inbound frame yet (e.g. gateway restart): _platform_by_chat is
+        empty, so the platform must resolve from the negotiated descriptor —
+        the same fallback the streaming gate and delivery resolver use."""
+        a = _slack_adapter({"slack": {"unfurl_links": False}})
+        assert not a._platform_by_chat
+        await a.send("chan-1", "see https://example.com")
+        assert a._transport.sent["metadata"]["unfurl_links"] is False
+
 
 class TestSendForPlatformStampsUnfurl:
     @pytest.mark.asyncio

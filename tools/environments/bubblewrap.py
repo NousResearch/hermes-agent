@@ -10,7 +10,8 @@ Layout of the argv (later mounts overlay earlier ones):
 
 1. namespace and process-safety flags
 2. read-only root, fresh /dev, /proc and a tmpfs /tmp
-3. the initial cwd read-write (workspace and network profiles)
+3. the initial cwd, read-write for workspace and network, read-only for
+   restricted
 4. operator binds from terminal.bubblewrap_binds, minus sensitive sources
 5. the per-environment state dir read-write at the same path
 6. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
@@ -233,8 +234,10 @@ def build_bwrap_args(
         "--proc", "/proc",
         "--tmpfs", "/tmp",
     ]
-    if profile.writable_cwd:
-        argv += ["--bind", initial_cwd, initial_cwd]
+    # The cwd is always bound at its own path so --chdir resolves even when
+    # it sits under the masked /tmp; the profile decides whether it is
+    # writable.
+    argv += ["--bind" if profile.writable_cwd else "--ro-bind", initial_cwd, initial_cwd]
 
     for bind in filter_binds(config.binds, home, hermes_home):
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]

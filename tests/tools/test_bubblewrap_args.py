@@ -112,9 +112,9 @@ class TestProfiles:
         argv = build(BubblewrapConfig(profile=profile), paths=paths)
         cwd = paths["initial_cwd"]
         assert ((cwd, cwd) in triples(argv, "--bind")) is expect_bind
-        # The cwd is never mounted read-only on its own; restricted relies on
-        # the read-only root bind.
-        assert (cwd, cwd) not in triples(argv, "--ro-bind")
+        # Restricted still binds the cwd, read-only, so --chdir resolves when
+        # the cwd lives under the masked /tmp.
+        assert ((cwd, cwd) in triples(argv, "--ro-bind")) is not expect_bind
 
     def test_unknown_profile_raises_listing_valid_names(self, paths):
         with pytest.raises(ValueError) as excinfo:

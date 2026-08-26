@@ -1023,4 +1023,3 @@ class TestConflictMarkerFlag:
         prose = tmp_path / "p.py"
         prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
         assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))
-

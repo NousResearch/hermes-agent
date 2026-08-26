@@ -178,3 +178,59 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
   })
 })
+
+describe('profile switch mid-WS-handshake (#92434 close-candidate pin)', () => {
+  // Reported shape: Bot ↔ Default switching killed the socket until an app
+  // restart. The activation-epoch guard (applyActive) + open-socket-publish
+  // rule mean a switch-back that lands while the outgoing switch's handshake
+  // is still pending must win the route, and the late-completing dial must
+  // neither steal the foreground nor leave its socket permanently broken.
+  it('a switch-back during a pending handshake wins; the late dial neither steals the route nor breaks the socket', async () => {
+    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
+      authMode: 'token',
+      baseUrl: `https://${profile}.invalid`,
+      mode: 'local',
+      profile,
+      token: 'fake-test-token',
+      wsUrl: `wss://${profile}.invalid/ws`
+    }))
+
+    installDesktop({ getConnection })
+
+    let releaseDial: () => void = () => undefined
+
+    gatewayMocks.connect.mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          releaseDial = resolve
+        })
+    )
+
+    // 1. Default → Bot: the secondary's WS handshake starts and stays pending.
+    const botActivation = ensureGatewayForProfile('bot')
+
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(1))
+
+    // 2. The user switches back to Default while that handshake is mid-flight.
+    await ensureGatewayForProfile('default')
+
+    const primary = activeGateway()
+
+    expect(primary).toBeTruthy()
+
+    // 3. The Bot handshake completes AFTER the switch-back.
+    releaseDial()
+    await botActivation
+
+    // The stale activation must not steal the foreground route (epoch guard).
+    expect(activeGateway()).toBe(primary)
+
+    // 4. No permanent break: switching to Bot again activates the (already
+    // open) socket — no app restart, no duplicate socket/serve.
+    await ensureGatewayForProfile('bot')
+
+    expect(activeGateway()).toBe(gatewayMocks.instances[0])
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    expect(gatewayMocks.instances).toHaveLength(1)
+  })
+})

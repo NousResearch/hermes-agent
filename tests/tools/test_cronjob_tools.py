@@ -553,6 +553,12 @@ class TestRegisteredHandlerForwardsAttachToSession:
         stored = get_job(created["job_id"])
         assert stored is not None
         assert "attach_to_session" not in stored
+        # And the formatted list output must not invent the field either.
+        listed = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        formatted = next(
+            j for j in listed["jobs"] if j["job_id"] == created["job_id"]
+        )
+        assert "attach_to_session" not in formatted
 
 
 class TestLocalDeliveryNotice:

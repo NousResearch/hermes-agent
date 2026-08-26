@@ -45,6 +45,22 @@ test('error page escapes HTML in failure details', () => {
   assert.match(html, /&lt;script&gt;alert/)
 })
 
+test('reloadUrl cannot break out of the inline script block', () => {
+  // JSON.stringify alone does not escape '<' — a reloadUrl containing a
+  // script-tag sequence would otherwise terminate the inline <script>
+  // element and inject markup/script into the error page.
+  const html = buildRendererLoadErrorPage({
+    errorDescription: 'load failed',
+    reloadUrl: 'file:///C:/x/index.html</script><script>alert("pwned")</script>'
+  })
+
+  assert.doesNotMatch(html, /<\/script><script>/)
+  assert.doesNotMatch(html, /alert\("pwned"\)/)
+  // The payload is preserved as inert \u003c escapes inside the JS string.
+  assert.match(html, /\\u003c\/script/)
+  assert.match(html, /\\u003cscript\\u003ealert/)
+})
+
 test('error page renders without any details', () => {
   const html = buildRendererLoadErrorPage()
 

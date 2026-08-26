@@ -42,8 +42,26 @@ export interface RendererLoadErrorDetails {
   reloadUrl?: string
 }
 
+/**
+ * Escape a ``JSON.stringify`` result for embedding inside an inline
+ * ``<script>`` element.  JSON does not escape ``<``, ``>``, ``&`` (nor
+ * U+2028/U+2029), so a reloadUrl containing ``</script><script>…`` would
+ * terminate the script block and let an attacker-controlled URL inject
+ * markup/script into the error page.
+ */
+function escapeInlineScriptJson(value: string): string {
+  return value
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 function reloadButtonJs(details: RendererLoadErrorDetails): string {
-  const target = details.reloadUrl ? `location.replace(${JSON.stringify(details.reloadUrl)})` : 'location.reload()'
+  const target = details.reloadUrl
+    ? `location.replace(${escapeInlineScriptJson(JSON.stringify(details.reloadUrl))})`
+    : 'location.reload()'
 
   return (
     '<button id="reload" type="button">Reload</button>\n' +

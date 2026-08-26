@@ -533,7 +533,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
       // reconnectSecondary classifies failures by message ("No connection
       // with id", "no longer exists") to fail-stop permanent conditions, and
       // wrapping here would break that. Callers decide surfacing (#81094).
-      console.error(`[gateway] dial for profile "${entry.profile}" failed:`, error)
+      console.error(`[gateway] dial failed for scope="${entry.scope}" profile="${entry.profile}":`, error)
       throw error
     }
 

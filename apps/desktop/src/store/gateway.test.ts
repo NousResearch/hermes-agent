@@ -50,6 +50,7 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway
 } = await import('./gateway')
@@ -176,6 +177,48 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     await ensureGatewayForProfile('work')
 
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
+  })
+})
+
+describe('connection-scoped dial failure identity (#95421)', () => {
+  it('logs the route scope while preserving the original dial error', async () => {
+    const dialError = new Error('backend unreachable')
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      authMode: 'token',
+      connectionId,
+      profile,
+      wsUrl: `wss://${connectionId}.invalid/ws`
+    }))
+
+    installDesktop({ getConnectionFor })
+    gatewayMocks.connect.mockRejectedValue(dialError)
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      await expect(openGatewayForAgent('work', 'default')).rejects.toBe(dialError)
+      await expect(openGatewayForAgent('homelab', 'default')).rejects.toBe(dialError)
+
+      const messages = errorSpy.mock.calls.map(([message]) => String(message))
+
+      expect(messages).toHaveLength(2)
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('scope="conn:work::default"'),
+          expect.stringContaining('scope="conn:homelab::default"')
+        ])
+      )
+      expect(messages.every(message => message.includes('profile="default"'))).toBe(true)
+      expect(new Set(messages).size).toBe(2)
+      expect(messages.join(' ')).not.toContain('wss://')
+
+      for (const [, error] of errorSpy.mock.calls) {
+        expect(error).toBe(dialError)
+      }
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 })
 

@@ -117,6 +117,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("minimax/minimax-m3",                     ""),
     # Z-AI
     ("z-ai/glm-5.3",                           ""),
+    ("z-ai/glm-5.3-flash",                     ""),
     ("z-ai/glm-5.2",                           "default"),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
@@ -294,6 +295,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax/minimax-m3",
         # Z-AI
         "z-ai/glm-5.3",
+        "z-ai/glm-5.3-flash",
         "z-ai/glm-5.2",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",

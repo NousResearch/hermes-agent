@@ -6463,7 +6463,17 @@ function groupChatMemberBots(group, roster, metaByName) {
   const remote = []
 
   for (const descriptor of stored) {
-    const key = botRosterKey(descriptor)
+    // Legacy descriptors can carry a FRIENDLY name as `name` (older builds
+    // persisted display names — #92794: `name: '大司命'` for slug `taiyi`).
+    // Key-matching alone then seats the descriptor as a ghost NEXT TO its own
+    // live row ("4 bots" in a 2-bot room), and anything that passes ghost
+    // identity onward targets a profile that does not exist on disk.
+    // Normalize first: a same-connection roster row whose friendly names
+    // include the descriptor's name IS this member. The next persistence
+    // pass (durableGroupChatMembers writes from the seated roster) rewrites
+    // the stored descriptor to the slug, so the repair is self-healing.
+    const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+    const key = botRosterKey(resolved)
 
     if (seated.has(key)) {
       continue
@@ -6473,10 +6483,55 @@ function groupChatMemberBots(group, roster, metaByName) {
     // A selected-but-offline ghost intentionally carries only enough identity
     // to paint the roster. Never let it replace the room's durable descriptor,
     // which owns the full handle/title used by mentions and remote sync.
-    remote.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || descriptor)
+    remote.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || resolved)
   }
 
   return [...local, ...remote]
+}
+
+/** A stored member descriptor, resolved against the live roster when its
+ *  `name` is not a real slug (#92794). Exact key matches pass through
+ *  untouched; only a descriptor whose key matches NO roster row is re-tried
+ *  by friendly name against rows on the same connection. Unresolvable
+ *  descriptors return as-is — they stay visible-but-degraded ghosts and must
+ *  never be used as a `profile:` target. */
+function resolveLegacyMemberDescriptor(descriptor, roster) {
+  const rows = roster || []
+
+  if (rows.some(bot => botRosterKey(bot) === botRosterKey(descriptor))) {
+    return descriptor
+  }
+
+  const wanted = String(descriptor?.name || '').trim().toLowerCase()
+
+  if (!wanted) {
+    return descriptor
+  }
+
+  // Connection scope: a descriptor WITH a connectionId only matches rows on
+  // that connection (two `default`s on different machines must never merge).
+  // A descriptor WITHOUT one predates connection scoping entirely — those
+  // rooms only ever contained this machine's bots, so local (non-remote)
+  // rows are the legal candidate set.
+  const descriptorConnection = String(descriptor?.connectionId || '')
+  const candidates = rows.filter(bot => {
+    if (bot?.ghost) {
+      return false
+    }
+
+    return descriptorConnection
+      ? String(bot?.connectionId || '') === descriptorConnection
+      : !bot?.remoteSource
+  })
+  const match = candidates.find(
+    bot =>
+      // Case-drifted slug ('Testbot' persisted for profile 'testbot') …
+      String(bot?.name || '').trim().toLowerCase() === wanted ||
+      // … or a friendly name persisted as `name` ('大司命' for 'taiyi').
+      botFriendlyNames(bot).some(name => String(name || '').trim().toLowerCase() === wanted)
+  )
+
+  return match || descriptor
 }
 
 /** Persist source-qualified identities for every selected member. The active

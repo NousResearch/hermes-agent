@@ -3227,23 +3227,32 @@ def switch_model(
     except Exception:
         _destination_context_intent = None
     agent._config_context_length = _destination_context_intent
-    try:
-        _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-            _destination_context_intent
-        )
-    except Exception:
-        _restore_snapshot()
-        raise
-    if agent._lmstudio_load_was_unverified(_runtime_context_length):
+    if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
+        try:
+            _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+                _destination_context_intent
+            )
+        except Exception:
+            _restore_snapshot()
+            raise
+    else:
+        _runtime_context_length = None
+    if (
+        hasattr(agent, "_lmstudio_load_was_unverified")
+        and agent._lmstudio_load_was_unverified(_runtime_context_length)
+    ):
         logger.warning(
             "LM Studio model activation was rejected or completed without a "
             "verifiable active context length during model switch; continuing "
             "with configured context"
         )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _destination_context_intent,
-        _runtime_context_length,
-    )
+    if hasattr(agent, "_effective_lmstudio_context_length"):
+        _effective_context_length = agent._effective_lmstudio_context_length(
+            _destination_context_intent,
+            _runtime_context_length,
+        )
+    else:
+        _effective_context_length = _destination_context_intent
 
     # ── Re-evaluate prompt caching ──
     # Refresh the custom-provider snapshot from the config just loaded above

@@ -7080,20 +7080,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "fully quit & relaunch once."
             )
 
-        # ── macOS TCC anchor (issue #85345) ────────────────────────────
-        # uv-managed interpreters move on every patch bump, orphaning macOS
-        # TCC grants and re-triggering the permission-prompt storm.  Pin a
-        # real-file copy of the interpreter inside the venv so the TCC client
-        # path stays stable across updates.  Best-effort only; the doctor
-        # check re-applies it if this runs from pre-fix code.
-        try:
-            from hermes_cli.macos_tcc_anchor import ensure_tcc_anchor
-
-            tcc_anchored = ensure_tcc_anchor(_m().PROJECT_ROOT)
-            if tcc_anchored is not None:
-                print(f"  ✓ macOS TCC anchor: interpreter pinned at {tcc_anchored}")
-        except Exception as _tcc_exc:
-            logger.debug("macOS TCC anchor refresh failed: %s", _tcc_exc)
+        # NOTE: the macOS TCC interpreter anchor that used to refresh here
+        # (#95131/#95478) is REVERTED: the anchored real-file copy could not
+        # load libpython (LC_RPATH resolved into venv/lib/), bricking every
+        # hermes command on real Macs (#95425), and re-pointed aliases lost
+        # the stdlib (#95541). `hermes doctor` now heals already-anchored
+        # venvs back to symlinks. Re-land requires a dylib-complete design
+        # verified on macOS hardware first.
 
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file

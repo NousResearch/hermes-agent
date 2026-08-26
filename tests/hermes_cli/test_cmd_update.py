@@ -353,12 +353,79 @@ class TestCmdUpdateBranchFallback:
         assert "official repo not checked" in captured.out
         assert "Already up to date!" not in captured.out
 
+    @pytest.mark.parametrize(
+        ("health_after_repair", "runtime_status", "expected_runtime_checks"),
+        [
+            (True, (False, SimpleNamespace(sqlite_version_string="3.46.1")), 1),
+            (False, (True, None), 0),
+        ],
+    )
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_current_checkout_verification_failure_is_durable(
+    def test_current_checkout_python_repair_failure_is_durable(
+        self,
+        mock_run,
+        _mock_which,
+        mock_args,
+        health_after_repair,
+        runtime_status,
+        expected_runtime_checks,
+    ):
+        """Python repair must not bypass runtime and durable outcome checks."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[
+                (False, "broken before repair"),
+                (health_after_repair, "broken after repair"),
+            ],
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd,
+            "_post_update_sqlite_runtime_status",
+            return_value=runtime_status,
+        ) as runtime_check, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        assert runtime_check.call_count == expected_runtime_checks
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_node_repair_verification_failure_is_durable(
         self, mock_run, _mock_which, mock_args
     ):
-        """A failed runtime check must fail receipts and gateway automation."""
+        """A failed Node-path runtime check must fail durable outcomes."""
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
 
@@ -388,7 +455,6 @@ class TestCmdUpdateBranchFallback:
         assert exit_info.value.code == 1
         write_gateway_exit.assert_called_once_with(False)
         finalize_receipt.assert_called_once_with("partial")
-
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(

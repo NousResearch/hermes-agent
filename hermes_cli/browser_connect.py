@@ -104,13 +104,29 @@ _WINDOWS_PROGID_MAP = (
 )
 
 # Linux xdg default-web-browser .desktop name fragments → canonical key.
+# Includes the Flatpak application ids (``com.google.Chrome.desktop`` etc.),
+# which share none of the native package name fragments.
 _LINUX_DESKTOP_MAP = (
     ("google-chrome", "chrome"),
+    ("com.google.chrome", "chrome"),
     ("chromium", "chromium"),
     ("brave", "brave"),
     ("microsoft-edge", "edge"),
+    ("com.microsoft.edge", "edge"),
     ("msedge", "edge"),
 )
+
+# Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
+_LINUX_FLATPAK_IDS = {
+    "chrome": "com.google.Chrome",
+    "chromium": "org.chromium.Chromium",
+    "brave": "com.brave.Browser",
+    "edge": "com.microsoft.Edge",
+}
+_LINUX_SNAP_PROFILE_PARTS = {
+    "chromium": ("snap", "chromium", "common", "chromium"),
+    "brave": ("snap", "brave", "current", ".config", "BraveSoftware", "Brave-Browser"),
+}
 
 # macOS LaunchServices bundle-id fragments → canonical key.
 _DARWIN_BUNDLE_MAP = (
@@ -150,10 +166,12 @@ def _real_profile_relparts(browser: str) -> tuple:
 def real_profile_data_dir(browser: str, system: str | None = None) -> str | None:
     """Return the default user-data-dir for a Chromium ``browser`` on ``system``.
 
-    Returns None for unknown browsers. Does not check existence — callers that
-    need that should stat the result. Paths are built with the TARGET system's
-    separator (posix for Darwin/Linux, backslash for Windows) so an explicit
-    ``system`` argument resolves correctly regardless of the host OS.
+    Returns None for unknown browsers. On Linux the native ($XDG_CONFIG_HOME),
+    snap and Flatpak locations are tried and the first existing one wins; the
+    native path is returned when none exists so the caller's error names it.
+    Darwin/Windows paths are not stat'ed. Paths are built with the TARGET
+    system's separator (posix for Darwin/Linux, backslash for Windows) so an
+    explicit ``system`` argument resolves correctly regardless of the host OS.
     """
     if browser not in _CHROMIUM_BROWSERS:
         return None
@@ -167,7 +185,19 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
         return ntpath.join(local, *win_parts)
     # Linux / other POSIX
     config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
-    return posixpath.join(config, *linux_name.split("/"))
+    candidates = [posixpath.join(config, *linux_name.split("/"))]
+    snap_parts = _LINUX_SNAP_PROFILE_PARTS.get(browser)
+    if snap_parts:
+        candidates.append(posixpath.join(home, *snap_parts))
+    flatpak_id = _LINUX_FLATPAK_IDS.get(browser)
+    if flatpak_id:
+        candidates.append(
+            posixpath.join(home, ".var", "app", flatpak_id, "config", *linux_name.split("/"))
+        )
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
 
 
 def chromium_executable(browser: str, system: str | None = None) -> str | None:

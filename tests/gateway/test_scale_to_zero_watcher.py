@@ -84,6 +84,7 @@ async def test_watcher_does_not_quiesce_when_the_platform_owns_the_suspend(
     # No cooldown either: nothing was driven, so the next tick is free to act
     # the moment the platform picture changes.
     assert r._scale_to_zero_cooldown_until == 0.0
+    assert r._scale_to_zero_no_suspend_logged is True
 
 
 @pytest.mark.asyncio

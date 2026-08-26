@@ -31437,7 +31437,47 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from gateway.control_socket import GatewayControlServer
 
-        _control_server = GatewayControlServer()
+        # pause-for-update (#92091 step 2): the updater asks this gateway to
+        # drain in-flight turns and exit cleanly — releasing every venv file
+        # handle — instead of being tree-killed mid-turn. Same drain path as
+        # SIGUSR1/service restarts (request_restart(via_service=True)); the
+        # updater (or the service manager) relaunches after the code swap.
+        # The handler runs on the socket's executor thread, so the restart
+        # request is marshalled onto the loop thread; the ACK returns the
+        # drain budget so the caller knows how long to wait for exit.
+        _main_loop = asyncio.get_running_loop()
+
+        def _pause_for_update_handler() -> dict:
+            try:
+                from hermes_cli.gateway import _get_restart_drain_timeout
+
+                _drain = float(_get_restart_drain_timeout())
+            except Exception:
+                _drain = 30.0
+            accepted_box: list[bool] = []
+            _done = threading.Event()
+
+            def _request() -> None:
+                try:
+                    accepted_box.append(
+                        runner.request_restart(detached=False, via_service=True)
+                    )
+                finally:
+                    _done.set()
+
+            _main_loop.call_soon_threadsafe(_request)
+            _done.wait(timeout=5.0)
+            accepted = bool(accepted_box and accepted_box[0])
+            return {
+                "pausing": accepted,
+                "already_stopping": not accepted,
+                "pid": os.getpid(),
+                "drain_timeout": _drain,
+            }
+
+        _control_server = GatewayControlServer(
+            verb_handlers={"pause-for-update": _pause_for_update_handler}
+        )
         if not await _control_server.start():
             _control_server = None
         else:

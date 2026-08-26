@@ -5116,6 +5116,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     profiles: dict[str, int] = {}
     mapped_pids = []
+    socket_acks: list[dict] = []
     for pid in running_pids:
         proc = profile_processes.get(pid)
         if proc is None:
@@ -5123,6 +5124,23 @@ def _pause_windows_gateways_for_update() -> dict | None:
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        # Socket-first pause (#92091 step 2): ask the gateway to drain and
+        # exit itself instead of relying on the marker poll + force-kill
+        # ladder. A positive ACK means the gateway is running its own
+        # graceful restart path (same drain as SIGUSR1/service restarts) and
+        # will release its venv handles on the way out. No answer (older
+        # gateway, no socket) → the marker watcher / force-kill fallback
+        # below behaves exactly as before this verb existed.
+        try:
+            from gateway.control_socket import pause_gateway_for_update
+
+            ack = pause_gateway_for_update(Path(proc.path))
+            if ack and (ack.get("pausing") or ack.get("already_stopping")):
+                socket_acks.append(ack)
+        except Exception as exc:
+            logger.debug(
+                "Socket pause unavailable for gateway %s: %s", pid, exc
+            )
 
     # Resolve each mapped worker's venv-side launcher BEFORE draining: the
     # drain stops tracking a PID exactly when it dies, so a gracefully
@@ -5143,6 +5161,23 @@ def _pause_windows_gateways_for_update() -> dict | None:
         drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
     except Exception:
         drain_timeout = 10.0
+    if socket_acks:
+        # A socket-paused gateway drains its ACTIVE TURN before exiting; give
+        # it the budget it declared (plus teardown grace) rather than only
+        # the local default, so a mid-turn gateway isn't force-killed at the
+        # end of a too-short wait — the exact outcome the verb exists to
+        # prevent.
+        try:
+            declared = max(
+                float(a.get("drain_timeout") or 0.0) for a in socket_acks
+            )
+            drain_timeout = max(drain_timeout, declared + 10.0)
+        except Exception:
+            pass
+        print(
+            f"  → {len(socket_acks)} gateway(s) ACKed socket pause; "
+            f"waiting up to {int(drain_timeout)}s for graceful exit"
+        )
     survivors = _m()._wait_for_windows_update_gateway_exit(
         mapped_pids,
         timeout=drain_timeout,

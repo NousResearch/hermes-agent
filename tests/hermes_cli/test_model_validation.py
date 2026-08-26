@@ -299,6 +299,7 @@ class TestCopilotNormalization:
         # New Go models keep their family routing: GLM chat/completions,
         # Qwen anthropic_messages.
         assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "glm-5.3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
         # Custom opencode-go-* providers route according to opencode-go rules
         # (family-prefix providers, issue #85589).

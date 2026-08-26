@@ -7018,7 +7018,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # shows ON while macOS re-prompts on every capture, and the modern prompt
         # has no Allow button, so users loop. One line of guidance after update
         # tells affected users how to complete the one-time re-grant.
-        if sys.platform == "darwin" and has_desktop_app:
+        if sys.platform == "darwin" and had_desktop_app_before_update:
             print()
             print(
                 "  ℹ macOS: if Hermes re-prompts for permissions you already "

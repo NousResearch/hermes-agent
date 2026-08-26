@@ -1202,6 +1202,55 @@ def check_macos_tcc_anchor(should_fix: bool = False) -> None:
         check_warn(f"macOS TCC anchor check failed: {e}")
 
 
+def check_macos_full_disk_access() -> None:
+    """One-grant guidance: Full Disk Access silences every folder prompt.
+
+    macOS TCC prompts per-category (Desktop, then Downloads, then Documents,
+    ...), so first-run agents drip-feed permission dialogs as they touch each
+    folder. ONE Full Disk Access grant covers all of them, permanently — and
+    with the stable signing identities now in place (#73681/#95091/#95131),
+    it survives updates too. This check probes whether the terminal context
+    already has FDA and, when it doesn't, prints the exact one-switch setup
+    with the System Settings deep link.
+
+    Probe: readability of ``~/Library/Application Support/com.apple.TCC`` —
+    the TCC database directory itself is FDA-gated, readable ONLY with the
+    grant, and (critically) probing it with os.access/listdir does NOT
+    trigger a prompt: TCC prompts fire for protected-CATEGORY paths (Desktop
+    etc.), while the TCC dir simply returns EPERM without one. Silent on
+    non-macOS.
+    """
+    if sys.platform != "darwin":
+        return
+    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
+    try:
+        os.listdir(tcc_dir)
+        has_fda = True
+    except PermissionError:
+        has_fda = False
+    except OSError:
+        # Missing dir / other error: can't tell — stay silent rather than
+        # nag on an indeterminate probe.
+        return
+    if has_fda:
+        check_ok(
+            "macOS Full Disk Access granted",
+            "(no per-folder permission prompts will occur)",
+        )
+        return
+    check_info(
+        "One switch silences all macOS folder prompts: grant your terminal "
+        "app Full Disk Access and Hermes will never trip per-folder dialogs "
+        "(Desktop/Downloads/Documents/...) again. Open: System Settings → "
+        "Privacy & Security → Full Disk Access — or run:\n"
+        "      open \"x-apple.systempreferences:com.apple.preference"
+        ".security?Privacy_AllFiles\"\n"
+        "    then enable your terminal (and Hermes.app if you use Desktop), "
+        "and restart them once. With Hermes' stable signing identities the "
+        "grant survives every update."
+    )
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1375,6 +1424,10 @@ def run_doctor(args):
     # macOS TCC anchor (issue #85345): uv-managed interpreter paths move on
     # every patch bump and orphan TCC grants. Silent on non-macOS.
     check_macos_tcc_anchor(should_fix)
+
+    # macOS Full Disk Access (issue #52010 follow-up): one grant silences
+    # every per-folder prompt permanently. Silent on non-macOS.
+    check_macos_full_disk_access()
 
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).

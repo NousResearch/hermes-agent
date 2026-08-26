@@ -540,6 +540,19 @@ macOS/Windows signing and notarization run automatically when the relevant crede
 
 ### macOS permissions and local rebuilds (TCC)
 
+**Silence every folder prompt with one switch.** macOS prompts per-category
+(Desktop, then Downloads, then Documents, ...) as Hermes touches each folder.
+A single **Full Disk Access** grant covers all of them, permanently — and
+with Hermes' stable signing identities it survives every update:
+
+1. System Settings → **Privacy & Security → Full Disk Access** (or run
+   `open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`)
+2. Enable your terminal app — and **Hermes.app** if you use Desktop.
+3. Fully quit and relaunch them once.
+
+`hermes doctor` reports whether the current terminal context already has the
+grant, and `hermes setup` shows this tip on macOS when it doesn't.
+
 macOS remembers permission grants (Full Disk Access, Desktop/Downloads/Documents,
 Accessibility, Automation, microphone) against the app's *code-signing identity*,
 not its path. Locally built and self-updated apps are signed with a stable

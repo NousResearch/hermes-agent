@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from tools.file_operations import (
     _is_write_denied,
     ReadResult,
@@ -303,19 +304,14 @@ class TestShellFileOpsHelpers:
 
         def side_effect(command, **kwargs):
             commands.append(command)
-            # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
-            # cannot block the read; it still reports a plain byte count.
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "5\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                import base64 as b64
-                return {"output": b64.b64encode(b"hello").decode(), "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "hello", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": "hello\n", "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0), size=5, sample=b"hello", content="hello\n", total_lines=1
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -323,16 +319,22 @@ class TestShellFileOpsHelpers:
         result = ops.read_file(r"C:\Users\alice\notes.txt")
 
         assert result.error is None
-        assert commands[0] == (
+        # One compound probe carries every stage; each embeds the MSYS path.
+        # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
+        # cannot block the read; it still reports a plain byte count.
+        assert len(commands) == 1
+        probe = commands[0]
+        assert probe.startswith(
             "if [ -f '/c/Users/alice/notes.txt' ]; "
             "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
+        )
+        assert "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64" in probe
+        assert "sed -n '1,2000p' '/c/Users/alice/notes.txt' 2>/dev/null | cut -b1-8001" in probe
+        assert "wc -l < '/c/Users/alice/notes.txt'" in probe
+        assert (
             "elif [ -e '/c/Users/alice/notes.txt' ]; "
             "then echo __hermes_not_regular__; "
-            "else exit 1; fi"
-        )
-        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
-        assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
+        ) in probe
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
@@ -355,14 +357,15 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "12\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "print('ok')\n", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": leaked, "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0), size=12, sample=b"print('ok')\n",
+                        content=leaked, total_lines=1,
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -773,17 +776,19 @@ class TestByteLayerBinaryDetection:
     # --- integration: read_file over the mocked terminal ------------------
 
     def _dispatch(self, cjk_bytes):
-        import base64 as b64
-
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                return {"output": b64.b64encode(cjk_bytes[:1000]).decode(), "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0),
+                        size=len(cjk_bytes),
+                        sample=cjk_bytes[:1000],
+                        content=cjk_bytes.decode("utf-8", errors="replace"),
+                        total_lines=1,
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         return side_effect

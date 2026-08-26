@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 import {
   $backgroundStatusBySession,
   dismissBackgroundProcess,
@@ -261,5 +263,57 @@ describe('refreshBackgroundProcesses dead-session guard', () => {
     await refreshBackgroundProcesses(SID)
 
     expect(request).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ── Review-thread hardenings on the guard (#94950) ───────────────────────────
+describe('refreshBackgroundProcesses dead-session guard hardenings', () => {
+  beforeEach(() => {
+    $backgroundStatusBySession.set({})
+    resetBackgroundPollingGuard()
+  })
+
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('matches the structured 4001 code, not a message substring, when a code is present', () => {
+    // Structured gateway rejection: the code decides, both directions.
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found', { code: 4001 }))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('gone', { code: 4001 }))).toBe(true)
+
+    // An unrelated coded error whose text merely MENTIONS the phrase must not
+    // latch — that would freeze the status stack on a healthy session.
+    expect(
+      isSessionGoneForBackgroundPolling(
+        new JsonRpcGatewayError('tool failed: upstream said session not found', { code: 5007 })
+      )
+    ).toBe(false)
+
+    // Codeless errors keep the message fallback (legacy frames).
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found'))).toBe(true)
+  })
+
+  it('a full guard reset (runtime re-mint) resumes polling every latched session', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+    expect(request).toHaveBeenCalledTimes(2)
+
+    // Gateway reconnect re-mints runtimes: the no-arg reset (wired at the
+    // reconnect seams) must clear every latched id, not just one.
+    resetBackgroundPollingGuard()
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+
+    expect(request).toHaveBeenCalledTimes(4)
   })
 })

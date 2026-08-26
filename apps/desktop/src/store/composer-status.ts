@@ -1,5 +1,7 @@
 import { atom, computed } from 'nanostores'
 
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 import { translateNow } from '@/i18n'
 import { stableArray } from '@/lib/stable-array'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
@@ -387,10 +389,23 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
  *  (#94219 fallout). Latch the id here and skip it until something rebinds it. */
 const goneSessions = new Set<string>()
 
+/** Gateway JSON-RPC code for "session not found" (tui_gateway _sess_nowait). */
+const GATEWAY_SESSION_NOT_FOUND_CODE = 4001
+
 /** A gone session is unrecoverable for THIS runtime id; a timeout or transport
  *  blip is not. Only the former may stop the poll — misclassifying a transient
- *  failure would silently freeze the status stack on a healthy session. */
+ *  failure would silently freeze the status stack on a healthy session.
+ *
+ *  Match the gateway's 4001 code when the error carries one (JsonRpcGatewayError
+ *  from a structured RPC rejection) — a message substring alone could latch on
+ *  an unrelated error class that merely mentions "session not found" (e.g. a
+ *  wrapped tool/report string). The message fallback survives only for errors
+ *  with no numeric code at all, where the frame's structure was lost. */
 export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
+  if (error instanceof JsonRpcGatewayError && typeof error.code === 'number') {
+    return error.code === GATEWAY_SESSION_NOT_FOUND_CODE
+  }
+
   const message = error instanceof Error ? error.message : String(error ?? '')
 
   return /session not found/i.test(message)

@@ -16,11 +16,12 @@ def _preflight(tmp_path: Path) -> quick_local.QuickLocalPreflight:
     return quick_local.QuickLocalPreflight(
         paths=quick_local.managed_paths(tmp_path),
         reusable_endpoint=None,
-        ollama_install_required=False,
     )
 
 
-def test_build_server_config_uses_profile_scoped_storage_and_qwen_embedding(tmp_path):
+def test_build_server_config_uses_profile_scoped_storage_and_local_embedding(
+    tmp_path,
+):
     paths = quick_local.managed_paths(tmp_path)
 
     config = quick_local.build_server_config(
@@ -39,11 +40,10 @@ def test_build_server_config_uses_profile_scoped_storage_and_qwen_embedding(tmp_
         "storage": {"workspace": str(tmp_path / "openviking" / "data")},
         "embedding": {
             "dense": {
-                "provider": "ollama",
-                "model": "qwen3-embedding:0.6b",
-                "api_base": "http://localhost:11434/v1",
-                "dimension": 1024,
-                "input": "text",
+                "provider": "local",
+                "model": "bge-small-zh-v1.5-f16",
+                "dimension": 512,
+                "cache_dir": str(tmp_path / "openviking" / "models"),
             }
         },
         "vlm": {
@@ -250,7 +250,7 @@ def test_openviking_install_is_bounded_and_isolated(tmp_path, monkeypatch):
         "install",
         "--python",
         str(paths.runtime_python),
-        "openviking>=0.4.16,<0.6",
+        "openviking[local-embed]>=0.4.16,<0.6",
     ]
     assert all(kwargs["cwd"] == paths.root for _command, kwargs in calls)
     assert all(kwargs["stdin"] is subprocess.DEVNULL for _command, kwargs in calls)
@@ -277,102 +277,46 @@ def test_openviking_install_failure_is_not_activated(tmp_path, monkeypatch):
         setup._ensure_openviking_installed(quick_local.managed_paths(tmp_path))
 
 
-def test_ollama_install_requires_caller_consent(tmp_path, monkeypatch):
-    monkeypatch.setattr(quick_local, "ollama_command_available", lambda: False)
-    install = MagicMock(side_effect=AssertionError("must not install without consent"))
-    monkeypatch.setattr(quick_local, "_install_ollama", install)
-    setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (True, ""))
-
-    with pytest.raises(quick_local.OllamaInstallRequired):
-        setup._ensure_ollama(
-            paths=quick_local.managed_paths(tmp_path),
-            allow_install=False,
+def test_existing_openviking_without_local_embedding_runtime_is_not_reused(
+    tmp_path,
+    monkeypatch,
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.runtime_python.parent.mkdir(parents=True)
+    paths.runtime_python.touch()
+    paths.server_command.touch()
+    run = MagicMock(
+        return_value=SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="ModuleNotFoundError: No module named 'llama_cpp'",
         )
-
-    install.assert_not_called()
-
-
-def test_ollama_install_start_and_model_pull(tmp_path, monkeypatch):
-    available = iter([False, True])
-    events = []
-    monkeypatch.setattr(
-        quick_local, "ollama_command_available", lambda: next(available)
-    )
-    monkeypatch.setattr(
-        quick_local,
-        "_install_ollama",
-        lambda: events.append("install") or True,
-    )
-    monkeypatch.setattr(quick_local, "_ollama_running", lambda: False)
-    monkeypatch.setattr(
-        quick_local,
-        "_start_ollama",
-        lambda _paths: events.append("start") or (True, "started"),
-    )
-    monkeypatch.setattr(quick_local, "_ollama_models", lambda: [])
-    monkeypatch.setattr(quick_local, "_ollama_model_available", lambda *_args: False)
-    monkeypatch.setattr(
-        quick_local,
-        "_pull_ollama_model",
-        lambda model: events.append(("pull", model)) or True,
-    )
-    setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (True, ""))
-
-    setup._ensure_ollama(
-        paths=quick_local.managed_paths(tmp_path),
-        allow_install=True,
-    )
-
-    assert events == [
-        "install",
-        "start",
-        ("pull", "qwen3-embedding:0.6b"),
-    ]
-
-
-def test_windows_ollama_install_command_uses_official_powershell_installer():
-    command = quick_local._windows_ollama_install_command("powershell.exe")
-
-    assert command == [
-        "powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "Invoke-RestMethod https://ollama.com/install.ps1 | Invoke-Expression",
-    ]
-
-
-def test_homebrew_ollama_install_does_not_inherit_stdin(monkeypatch):
-    run = MagicMock(return_value=SimpleNamespace(returncode=0))
-    monkeypatch.setattr(quick_local.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(
-        quick_local.shutil, "which", lambda _name: "/opt/homebrew/bin/brew"
     )
     monkeypatch.setattr(quick_local.subprocess, "run", run)
 
-    assert quick_local._install_ollama() is True
-    run.assert_called_once_with(
-        ["/opt/homebrew/bin/brew", "install", "ollama"],
-        check=False,
-        stdin=subprocess.DEVNULL,
-    )
+    assert quick_local.openviking_install_satisfies_requirement(paths) is False
+    assert "import llama_cpp" in run.call_args.args[0][2]
 
 
-def test_ollama_model_pull_does_not_inherit_stdin(monkeypatch):
-    run = MagicMock(return_value=SimpleNamespace(returncode=0))
+def test_existing_openviking_with_local_embedding_runtime_is_reused(
+    tmp_path,
+    monkeypatch,
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.runtime_python.parent.mkdir(parents=True)
+    paths.runtime_python.touch()
+    paths.server_command.touch()
     monkeypatch.setattr(
-        quick_local.shutil, "which", lambda _name: "/usr/local/bin/ollama"
+        quick_local.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="0.4.16\n",
+            stderr="",
+        ),
     )
-    monkeypatch.setattr(quick_local.subprocess, "run", run)
 
-    assert quick_local._pull_ollama_model("qwen3-embedding:0.6b") is True
-    run.assert_called_once_with(
-        ["/usr/local/bin/ollama", "pull", "qwen3-embedding:0.6b"],
-        check=False,
-        stdin=subprocess.DEVNULL,
-    )
+    assert quick_local.openviking_install_satisfies_requirement(paths) is True
 
 
 def test_validation_server_does_not_inherit_stdin(tmp_path, monkeypatch):
@@ -414,7 +358,6 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
         },
     )
     monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: None)
-    monkeypatch.setattr(setup, "_ensure_ollama", lambda **_kwargs: None)
     monkeypatch.setattr(quick_local, "find_available_port", lambda **_kwargs: 1937)
 
     def start(endpoint, config_path, hermes_home, server_command):
@@ -434,7 +377,6 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
 
     result = setup.provision(
         hermes_home=tmp_path,
-        allow_ollama_install=False,
         preflight=_preflight(tmp_path),
     )
 
@@ -444,16 +386,22 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
     final_config = json.loads(paths.server_config.read_text(encoding="utf-8"))
     assert final_config["storage"]["workspace"] == str(paths.workspace)
     assert final_config["server"]["port"] == 1937
+    assert final_config["embedding"]["dense"]["cache_dir"] == str(paths.model_cache)
     assert validation_configs[0]["storage"]["workspace"] != str(paths.workspace)
+    assert validation_configs[0]["embedding"]["dense"]["cache_dir"] == str(
+        paths.model_cache
+    )
     assert json.loads(paths.ovcli_config.read_text(encoding="utf-8")) == {
         "url": "http://127.0.0.1:1937",
         "actor_peer_id": "hermes",
     }
     if os.name != "nt":
         assert stat.S_IMODE(paths.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(paths.model_cache.stat().st_mode) == 0o700
         assert stat.S_IMODE(paths.server_config.stat().st_mode) == 0o600
         assert stat.S_IMODE(paths.ovcli_config.stat().st_mode) == 0o600
     stop.assert_called_once_with(process)
+    assert quick_local.QuickLocalStage.PREPARE_EMBEDDING in events
     assert quick_local.QuickLocalStage.VALIDATE in events
     assert events[-2:] == [
         quick_local.QuickLocalStage.WRITE_CONFIG,
@@ -477,7 +425,6 @@ def test_failed_validation_stops_child_and_leaves_profile_inactive(
         },
     )
     monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: None)
-    monkeypatch.setattr(setup, "_ensure_ollama", lambda **_kwargs: None)
     monkeypatch.setattr(quick_local, "find_available_port", lambda **_kwargs: 1933)
     monkeypatch.setattr(
         quick_local,
@@ -493,7 +440,6 @@ def test_failed_validation_stops_child_and_leaves_profile_inactive(
     ):
         setup.provision(
             hermes_home=tmp_path,
-            allow_ollama_install=False,
             preflight=_preflight(tmp_path),
         )
 
@@ -604,7 +550,7 @@ def test_setup_menu_keeps_cloud_custom_paths_and_adds_quick_local(
                 ),
                 (
                     "Quick Local Setup",
-                    "Set up OpenViking and Ollama on this device",
+                    "Set up OpenViking with built-in local embeddings",
                 ),
                 (
                     "Connect to an existing server",
@@ -614,43 +560,6 @@ def test_setup_menu_keeps_cloud_custom_paths_and_adds_quick_local(
         )
     ]
     quick_setup.assert_called_once()
-
-
-def test_quick_local_cli_cancellation_before_ollama_install_changes_nothing(
-    tmp_path,
-    monkeypatch,
-):
-    paths = quick_local.managed_paths(tmp_path)
-
-    class FakeSetup:
-        def __init__(self, **_kwargs):
-            pass
-
-        def preflight(self, _home):
-            return quick_local.QuickLocalPreflight(
-                paths=paths,
-                reusable_endpoint=None,
-                ollama_install_required=True,
-            )
-
-        def provision(self, **_kwargs):
-            raise AssertionError("cancelled setup must not provision")
-
-    monkeypatch.setattr(quick_local, "QuickLocalSetup", FakeSetup)
-    provider_config = {}
-    config = {"memory": {}}
-
-    result = openviking_module._run_quick_local_setup(
-        select=lambda *args, **kwargs: -1,
-        cancelled=-1,
-        config=config,
-        provider_config=provider_config,
-        env_path=tmp_path / ".env",
-    )
-
-    assert result is openviking_module._SETUP_CANCELLED
-    assert provider_config == {}
-    assert config == {"memory": {}}
 
 
 def test_quick_local_cli_links_private_profile_and_runtime_config(
@@ -666,7 +575,6 @@ def test_quick_local_cli_links_private_profile_and_runtime_config(
             return quick_local.QuickLocalPreflight(
                 paths=paths,
                 reusable_endpoint=None,
-                ollama_install_required=False,
             )
 
         def provision(self, **_kwargs):
@@ -681,8 +589,6 @@ def test_quick_local_cli_links_private_profile_and_runtime_config(
     provider_config = {}
 
     result = openviking_module._run_quick_local_setup(
-        select=MagicMock(),
-        cancelled=-1,
         config=config,
         provider_config=provider_config,
         env_path=tmp_path / ".env",

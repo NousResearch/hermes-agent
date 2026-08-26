@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
-import shutil
 import socket
 import subprocess
 import sys
@@ -21,28 +19,27 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlparse
-from urllib.request import ProxyHandler, Request, build_opener
 
-from packaging.specifiers import SpecifierSet
+from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 
 from utils import atomic_json_write
 
 DEPLOYMENT = "quick_local"
-EMBEDDING_MODEL = "qwen3-embedding:0.6b"
-EMBEDDING_DIMENSION = 1024
-OPENVIKING_REQUIREMENT = "openviking>=0.4.16,<0.6"
+EMBEDDING_MODEL = "bge-small-zh-v1.5-f16"
+EMBEDDING_DIMENSION = 512
+OPENVIKING_REQUIREMENT = "openviking[local-embed]>=0.4.16,<0.6"
 
-_OPENVIKING_VERSION_SPECIFIER = SpecifierSet(
-    OPENVIKING_REQUIREMENT.removeprefix("openviking")
-)
+_OPENVIKING_REQUIREMENT = Requirement(OPENVIKING_REQUIREMENT)
+_OPENVIKING_VERSION_SPECIFIER = _OPENVIKING_REQUIREMENT.specifier
 _ROOT_DIRNAME = "openviking"
 _SERVER_CONFIG_FILENAME = "ov.conf"
 _OVCLI_CONFIG_FILENAME = "ovcli.conf"
 _WORKSPACE_DIRNAME = "data"
+_MODEL_CACHE_DIRNAME = "models"
 _DEFAULT_PORT = 1933
 _PORT_ATTEMPTS = 20
-_MODEL_DOWNLOAD_SIZE = "approximately 639 MB"
+_MODEL_DOWNLOAD_SIZE = "approximately 46 MiB"
 _HEALTH_TIMEOUT_SECONDS = 60.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.5
 _PROCESS_STOP_TIMEOUT_SECONDS = 10.0
@@ -51,9 +48,7 @@ _PROCESS_STOP_TIMEOUT_SECONDS = 10.0
 class QuickLocalStage(str, Enum):
     PREFLIGHT = "preflight"
     INSTALL_OPENVIKING = "install_openviking"
-    INSTALL_OLLAMA = "install_ollama"
-    START_OLLAMA = "start_ollama"
-    DOWNLOAD_MODEL = "download_model"
+    PREPARE_EMBEDDING = "prepare_embedding"
     VALIDATE = "validate"
     WRITE_CONFIG = "write_config"
     COMPLETE = "complete"
@@ -72,6 +67,7 @@ class QuickLocalPaths:
     server_config: Path
     ovcli_config: Path
     workspace: Path
+    model_cache: Path
 
     @property
     def runtime_python(self) -> Path:
@@ -90,7 +86,6 @@ class QuickLocalPaths:
 class QuickLocalPreflight:
     paths: QuickLocalPaths
     reusable_endpoint: Optional[str]
-    ollama_install_required: bool
 
 
 @dataclass(frozen=True)
@@ -102,10 +97,6 @@ class QuickLocalSetupResult:
 
 class QuickLocalSetupError(RuntimeError):
     """Quick Local could not finish without partially activating it."""
-
-
-class OllamaInstallRequired(QuickLocalSetupError):
-    """Quick Local needs explicit permission to install Ollama."""
 
 
 ProgressReporter = Callable[[QuickLocalProgress], None]
@@ -120,6 +111,7 @@ def managed_paths(hermes_home: Path) -> QuickLocalPaths:
         server_config=root / _SERVER_CONFIG_FILENAME,
         ovcli_config=root / _OVCLI_CONFIG_FILENAME,
         workspace=root / _WORKSPACE_DIRNAME,
+        model_cache=root / _MODEL_CACHE_DIRNAME,
     )
 
 
@@ -154,11 +146,10 @@ def build_server_config(
         "storage": {"workspace": str(paths.workspace)},
         "embedding": {
             "dense": {
-                "provider": "ollama",
+                "provider": "local",
                 "model": EMBEDDING_MODEL,
-                "api_base": "http://localhost:11434/v1",
                 "dimension": EMBEDDING_DIMENSION,
-                "input": "text",
+                "cache_dir": str(paths.model_cache),
             }
         },
         "vlm": dict(vlm),
@@ -275,22 +266,17 @@ class QuickLocalSetup:
         return QuickLocalPreflight(
             paths=paths,
             reusable_endpoint=reusable_endpoint,
-            ollama_install_required=(
-                reusable_endpoint is None and not ollama_command_available()
-            ),
         )
 
     def provision(
         self,
         *,
         hermes_home: Path,
-        allow_ollama_install: bool,
         preflight: Optional[QuickLocalPreflight] = None,
     ) -> QuickLocalSetupResult:
         try:
             return self._provision(
                 hermes_home=Path(hermes_home),
-                allow_ollama_install=allow_ollama_install,
                 preflight=preflight,
             )
         except QuickLocalSetupError:
@@ -302,7 +288,6 @@ class QuickLocalSetup:
         self,
         *,
         hermes_home: Path,
-        allow_ollama_install: bool,
         preflight: Optional[QuickLocalPreflight],
     ) -> QuickLocalSetupResult:
         preflight = preflight or self.preflight(hermes_home)
@@ -327,10 +312,6 @@ class QuickLocalSetup:
 
         vlm = resolve_hermes_vlm_config()
         self._ensure_openviking_installed(preflight.paths)
-        self._ensure_ollama(
-            paths=preflight.paths,
-            allow_install=allow_ollama_install,
-        )
 
         port = find_available_port(
             preferred_endpoint=_configured_endpoint(preflight.paths)
@@ -425,37 +406,6 @@ class QuickLocalSetup:
                 "installer output above."
             )
 
-    def _ensure_ollama(
-        self,
-        *,
-        paths: QuickLocalPaths,
-        allow_install: bool,
-    ) -> None:
-        _add_windows_ollama_to_path()
-        if not ollama_command_available():
-            if not allow_install:
-                raise OllamaInstallRequired("Ollama is required for Quick Local.")
-            self._emit(QuickLocalStage.INSTALL_OLLAMA, "Installing Ollama...")
-            if not _install_ollama() or not ollama_command_available():
-                raise QuickLocalSetupError(
-                    "Ollama installation failed or the ollama command is not yet "
-                    "available. Install it manually, restart the terminal, and retry."
-                )
-
-        if not _ollama_running():
-            self._emit(QuickLocalStage.START_OLLAMA, "Starting Ollama...")
-            started, detail = _start_ollama(paths)
-            if not started:
-                raise QuickLocalSetupError(f"Ollama could not be started: {detail}")
-
-        if not _ollama_model_available(EMBEDDING_MODEL, _ollama_models()):
-            self._emit(
-                QuickLocalStage.DOWNLOAD_MODEL,
-                f"Downloading {EMBEDDING_MODEL} ({_MODEL_DOWNLOAD_SIZE})...",
-            )
-            if not _pull_ollama_model(EMBEDDING_MODEL):
-                raise QuickLocalSetupError(f"Could not download {EMBEDDING_MODEL}.")
-
     def _validate_generated_config(
         self,
         *,
@@ -475,6 +425,12 @@ class QuickLocalSetup:
             config_path = validation_root / _SERVER_CONFIG_FILENAME
             atomic_json_write(config_path, validation_config, mode=0o600)
 
+            _prepare_private_directory(paths.model_cache)
+            self._emit(
+                QuickLocalStage.PREPARE_EMBEDDING,
+                f"Preparing {EMBEDDING_MODEL}; its {_MODEL_DOWNLOAD_SIZE} model "
+                "is downloaded once if needed...",
+            )
             self._emit(
                 QuickLocalStage.VALIDATE,
                 "Validating OpenViking with a temporary local server...",
@@ -509,7 +465,8 @@ def openviking_install_satisfies_requirement(paths: QuickLocalPaths) -> bool:
             [
                 str(paths.runtime_python),
                 "-c",
-                "import importlib.metadata; print(importlib.metadata.version('openviking'))",
+                "import importlib.metadata; import llama_cpp; "
+                "print(importlib.metadata.version('openviking'))",
             ],
             capture_output=True,
             text=True,
@@ -523,11 +480,6 @@ def openviking_install_satisfies_requirement(paths: QuickLocalPaths) -> bool:
     except (InvalidVersion, OSError, subprocess.SubprocessError):
         return False
     return version in _OPENVIKING_VERSION_SPECIFIER
-
-
-def ollama_command_available() -> bool:
-    _add_windows_ollama_to_path()
-    return shutil.which("ollama") is not None
 
 
 def find_available_port(
@@ -685,174 +637,6 @@ def _stop_process(process: subprocess.Popen) -> bool:
         return True
     except Exception:
         return False
-
-
-def _install_ollama() -> bool:
-    system = platform.system()
-    if system == "Darwin":
-        brew = shutil.which("brew")
-        if brew:
-            result = subprocess.run(
-                [brew, "install", "ollama"],
-                check=False,
-                stdin=subprocess.DEVNULL,
-            )
-            if result.returncode == 0:
-                return True
-        return _run_ollama_shell_installer()
-    if system == "Linux":
-        return _run_ollama_shell_installer()
-    if system != "Windows":
-        return False
-    powershell = next(
-        (
-            executable
-            for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh")
-            if (executable := shutil.which(name))
-        ),
-        None,
-    )
-    if not powershell:
-        return False
-    result = subprocess.run(
-        _windows_ollama_install_command(powershell),
-        check=False,
-        stdin=subprocess.DEVNULL,
-    )
-    _add_windows_ollama_to_path()
-    return result.returncode == 0
-
-
-def _windows_ollama_install_command(powershell: str) -> list[str]:
-    return [
-        powershell,
-        "-NoLogo",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "Invoke-RestMethod https://ollama.com/install.ps1 | Invoke-Expression",
-    ]
-
-
-def _run_ollama_shell_installer() -> bool:
-    result = subprocess.run(
-        ["bash", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
-        check=False,
-        stdin=subprocess.DEVNULL,
-    )
-    return result.returncode == 0
-
-
-def _ollama_running() -> bool:
-    try:
-        request = Request("http://127.0.0.1:11434/api/tags", method="GET")
-        with build_opener(ProxyHandler({})).open(request, timeout=3):
-            return True
-    except (OSError, TimeoutError):
-        return False
-
-
-def _ollama_models() -> list[str]:
-    try:
-        request = Request("http://127.0.0.1:11434/api/tags", method="GET")
-        with build_opener(ProxyHandler({})).open(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        return [
-            str(model.get("name"))
-            for model in payload.get("models", [])
-            if isinstance(model, dict) and model.get("name")
-        ]
-    except (OSError, TimeoutError, json.JSONDecodeError, AttributeError):
-        return []
-
-
-def _ollama_model_available(model_name: str, available: list[str]) -> bool:
-    return any(
-        installed == model_name
-        or installed.startswith(f"{model_name}-")
-        or (":" not in model_name and installed.split(":", 1)[0] == model_name)
-        for installed in available
-    )
-
-
-def _pull_ollama_model(model_name: str) -> bool:
-    command = shutil.which("ollama")
-    if not command:
-        return False
-    try:
-        result = subprocess.run(
-            [command, "pull", model_name],
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-        return result.returncode == 0
-    except OSError:
-        return False
-
-
-def _start_ollama(paths: QuickLocalPaths) -> tuple[bool, str]:
-    command = shutil.which("ollama")
-    if not command:
-        return False, "ollama command not found"
-    log_path = paths.root.parent / "logs" / "ollama.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-
-    try:
-        with log_path.open("ab") as log_file:
-            common_kwargs: dict[str, Any] = {
-                "stdout": log_file,
-                "stderr": log_file,
-            }
-            try:
-                process = subprocess.Popen(
-                    [command, "serve"],
-                    **common_kwargs,
-                    **windows_detach_popen_kwargs(),
-                    stdin=subprocess.DEVNULL,
-                )
-            except OSError:
-                if os.name != "nt":
-                    raise
-                from hermes_cli._subprocess_compat import (
-                    windows_detach_flags_without_breakaway,
-                )
-
-                process = subprocess.Popen(
-                    [command, "serve"],
-                    **common_kwargs,
-                    creationflags=windows_detach_flags_without_breakaway(),
-                    stdin=subprocess.DEVNULL,
-                )
-    except OSError as exc:
-        return False, str(exc)
-
-    deadline = time.monotonic() + 15.0
-    while time.monotonic() < deadline:
-        if _ollama_running():
-            return True, "started"
-        if process.poll() is not None:
-            return False, f"ollama serve exited with status {process.returncode}"
-        time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
-    _stop_process(process)
-    return False, f"timed out; review {log_path}"
-
-
-def _add_windows_ollama_to_path() -> None:
-    if platform.system() != "Windows":
-        return
-    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-    if not local_app_data:
-        return
-    install_dir = Path(local_app_data) / "Programs" / "Ollama"
-    if not (install_dir / "ollama.exe").is_file():
-        return
-    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
-    if os.path.normcase(str(install_dir)) not in {
-        os.path.normcase(entry) for entry in entries
-    }:
-        os.environ["PATH"] = os.pathsep.join([str(install_dir), *entries])
 
 
 def _uses_noncopyable_credentials(provider: str, source: str, api_key: str) -> bool:

@@ -15,17 +15,17 @@ The setup offers three connection types:
 - **OpenViking Service (VolcEngine Cloud)** — connect to the managed cloud
   service with an API key.
 - **Quick Local Setup** — install a compatible OpenViking release in an
-  isolated runtime, install or reuse Ollama, download
-  `qwen3-embedding:0.6b`, and create a private local
-  configuration under the active Hermes profile. OpenViking reuses the active
-  saved Hermes LLM provider and static API-key credentials for its VLM.
+  isolated runtime with its built-in `bge-small-zh-v1.5-f16` embedding model,
+  and create a private local configuration under the active Hermes profile.
+  OpenViking runs embeddings in-process with `llama-cpp-python` and reuses the
+  active saved Hermes LLM provider and static API-key credentials for its VLM.
 - **Connect to an existing server** — link a self-managed local or remote
   OpenViking server.
 
-Quick Local streams installation and model-download output. It validates the
-generated configuration with a temporary server before activating the profile.
-Hermes starts the configured local OpenViking server when memory is first used;
-the server and Ollama remain running for reuse after a Hermes session exits.
+Quick Local reports installation and first-model-download progress. It validates
+the generated configuration with a temporary server before activating the
+profile. Hermes starts the configured local OpenViking server when memory is
+first used; the server remains running for reuse after a Hermes session exits.
 
 ## Self-managed requirements
 

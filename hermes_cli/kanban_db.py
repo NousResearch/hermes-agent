@@ -168,6 +168,16 @@ DECISION_BLOCK_KINDS = {"stakeholder-decision", "escalation"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# P2a: canonical task kinds. A task's type within the board. ``task`` is the
+# default and the backfill for every pre-existing row; ``subtask`` is a
+# containment hint (paired with ``parent_task_id``) and does NOT imply a
+# dependency edge. ``gate`` marks a human/automation decision gate.
+VALID_TASK_KINDS = {"task", "bug", "spike", "subtask", "gate"}
+DEFAULT_TASK_KIND = "task"
+
+# P2a: valid epic statuses (subset enforced by create/update).
+VALID_EPIC_STATUSES = {"active", "done", "archived"}
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
@@ -217,6 +227,11 @@ def _assert_not_delegated_child_mutation() -> None:
         raise PermissionError(
             "delegate_task child contexts cannot mutate Kanban tasks or boards"
         )
+
+
+def assert_mutation_allowed() -> None:
+    """Public domain guard for cross-store mutations such as provisioning."""
+    _assert_not_delegated_child_mutation()
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -563,6 +578,10 @@ _CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
     "hermes_kanban_current_board_override",
     default=None,
 )
+_KANBAN_HOME_OVERRIDE: ContextVar[Path | None] = ContextVar(
+    "hermes_kanban_home_override",
+    default=None,
+)
 
 
 @contextlib.contextmanager
@@ -573,6 +592,16 @@ def scoped_current_board(slug: str):
         yield
     finally:
         _CURRENT_BOARD_OVERRIDE.reset(token)
+
+
+@contextlib.contextmanager
+def scoped_kanban_home(root: str | Path):
+    """Temporarily pin Kanban storage to ``root`` for this context only."""
+    token: Token[Path | None] = _KANBAN_HOME_OVERRIDE.set(Path(root))
+    try:
+        yield
+    finally:
+        _KANBAN_HOME_OVERRIDE.reset(token)
 
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
@@ -597,14 +626,20 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     return s
 
 
+def normalize_board_slug(slug: Optional[str]) -> Optional[str]:
+    """Public board-slug normalizer for host validation contracts."""
+    return _normalize_board_slug(slug)
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
     Resolution order:
 
-    1. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
+    1. Context-local override installed by :func:`scoped_kanban_home`.
+    2. ``HERMES_KANBAN_HOME`` env var when set and non-empty (explicit
        override for tests and unusual deployments).
-    2. ``get_default_hermes_root()``, which already returns ``<root>``
+    3. ``get_default_hermes_root()``, which already returns ``<root>``
        when ``HERMES_HOME`` is ``<root>/profiles/<name>``, and returns
        ``HERMES_HOME`` directly for Docker / custom deployments.
 
@@ -613,6 +648,9 @@ def kanban_home() -> Path:
     profile's ``HERMES_HOME`` would silently fork the board per profile,
     which breaks the dispatcher / worker handoff.
     """
+    scoped = _KANBAN_HOME_OVERRIDE.get()
+    if scoped is not None:
+        return scoped
     override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
     if override:
         return Path(override).expanduser()
@@ -1180,6 +1218,14 @@ class Task:
     # Optional flat tag for grouping related work (e.g. "atm10").
     # Not a hierarchy; not validated against an allow-list.
     theme: Optional[str] = None
+    # P2a: canonical task kind (VALID_TASK_KINDS). ``task`` is the default and
+    # the backfill for pre-existing rows. See ``VALID_TASK_KINDS``.
+    task_kind: str = DEFAULT_TASK_KIND
+    # P2a: non-blocking task/subtask containment. Points at the containing
+    # task. It is NOT a dependency: ``parent_ids``/``child_ids`` and the
+    # readiness machinery never read this column. Dependency semantics live
+    # exclusively in ``task_links``. NULL = not contained.
+    parent_task_id: Optional[str] = None
     # Kanban v2: epic grouping. Nullable FK to epics.id. NULL = ungrouped.
     epic_id: Optional[str] = None
     # Kanban v2: timestamp when task entered 'done' status. Used by
@@ -1288,6 +1334,12 @@ class Task:
                 row["session_id"] if "session_id" in keys else None
             ),
             theme=row["theme"] if "theme" in keys else None,
+            task_kind=(
+                row["task_kind"] if "task_kind" in keys and row["task_kind"] else DEFAULT_TASK_KIND
+            ),
+            parent_task_id=(
+                row["parent_task_id"] if "parent_task_id" in keys and row["parent_task_id"] else None
+            ),
             epic_id=row["epic_id"] if "epic_id" in keys else None,
             done_at=row["done_at"] if "done_at" in keys else None,
             archived_at=row["archived_at"] if "archived_at" in keys else None,
@@ -1389,6 +1441,34 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class Epic:
+    """In-memory view of a row from the ``epics`` table (Kanban v2)."""
+
+    id: str
+    title: str
+    description: Optional[str]
+    board_slug: Optional[str]
+    status: str
+    parent_epic_id: Optional[str]
+    created_at: int
+    updated_at: int
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Epic":
+        keys = set(row.keys())
+        return cls(
+            id=row["id"],
+            title=row["title"],
+            description=row["description"] if "description" in keys else None,
+            board_slug=row["board_slug"] if "board_slug" in keys else None,
+            status=row["status"] if "status" in keys else "active",
+            parent_epic_id=row["parent_epic_id"] if "parent_epic_id" in keys else None,
+            created_at=int(row["created_at"]),
+            updated_at=int(row["updated_at"]),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1484,6 +1564,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- allow-list. Set at create-time or via CLI; ``kanban_edit`` does
     -- not mutate this in v1 (scope-locked to ``skills``).
     theme                TEXT,
+    -- P2a: canonical task kind (VALID_TASK_KINDS). Defaults to 'task';
+    -- backfilled on migration for pre-existing rows.
+    task_kind            TEXT NOT NULL DEFAULT 'task',
+    -- P2a: non-blocking task/subtask containment. NOT a dependency — the
+    -- readiness/promotion machinery and parent_ids/child_ids never read it.
+    -- Dependency edges live exclusively in task_links.
+    parent_task_id       TEXT,
     -- Tier classification set at triage: 'fast' (routine ops/infra/config)
     -- or 'full' (product/feature/research/multi-step). NULL = unclassified,
     -- treated as 'fast' for backward compatibility. The contract validator
@@ -2871,6 +2958,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "archived_at" not in cols:
         _add_column_if_missing(conn, "tasks", "archived_at", "archived_at INTEGER")
 
+    # ── P2a: canonical task kind + non-blocking containment ──────────
+    if "task_kind" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "task_kind", "task_kind TEXT NOT NULL DEFAULT 'task'"
+        )
+    if "parent_task_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "parent_task_id", "parent_task_id TEXT")
+
     # Backfill done_at for existing done tasks using completed_at or
     # updated_at as a proxy. This is a one-shot migration — subsequent
     # transitions to 'done' will set done_at explicitly. Guard against
@@ -2936,6 +3031,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_theme ON tasks(theme)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -3482,6 +3580,13 @@ def create_task(
     # on it without re-reading config.
     pipeline_mode: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    # P2a: canonical task kind. One of VALID_TASK_KINDS. Defaults to 'task'.
+    task_kind: Optional[str] = None,
+    # P2a: non-blocking containment parent. Must exist on the SAME board;
+    # never treated as a dependency (no readiness gating, no task_links row).
+    parent_task_id: Optional[str] = None,
+    # P2a: attach the new task to an epic (same-board). Validated on create.
+    epic_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3527,6 +3632,16 @@ def create_task(
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
+    # ── P2a: validate task_kind + containment + epic attachment ──────
+    task_kind = (task_kind or "").strip().lower() or DEFAULT_TASK_KIND
+    if task_kind not in VALID_TASK_KINDS:
+        raise ValueError(
+            f"task_kind must be one of {sorted(VALID_TASK_KINDS)}, got {task_kind!r}"
+        )
+    parent_task_id = (parent_task_id or "").strip() or None
+    if task_kind == "subtask" and parent_task_id is None:
+        raise ValueError("subtask requires parent_task_id")
+    epic_id = (epic_id or "").strip() or None
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -3778,6 +3893,26 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # ── P2a: validate non-blocking containment parent ──────
+                # parent_task_id is NOT a dependency: no task_links row, no
+                # readiness gating. It must exist on THIS board and must not
+                # be the task itself.
+                if parent_task_id is not None:
+                    if parent_task_id == task_id:
+                        raise ValueError("a task cannot contain itself")
+                    parent_row = conn.execute(
+                        "SELECT id FROM tasks WHERE id = ?", (parent_task_id,)
+                    ).fetchone()
+                    if parent_row is None:
+                        raise ValueError(
+                            f"unknown parent_task_id: {parent_task_id!r} "
+                            "(containment parent must exist on the same board)"
+                        )
+
+                # ── P2a: validate epic attachment (same-board) ─────────
+                if epic_id is not None:
+                    _validate_epic_for_attachment(conn, epic_id, board_slug_for_epic=board)
+
                 # Project-linked worktree: a fresh worktree dir under the repo
                 # plus a deterministic branch (project slug + task id). Together
                 # these kill the random ``wt/<task-id>`` worker fallback and the
@@ -3804,8 +3939,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds, skills, max_retries,
                         model_override, provider_override, reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, theme, tier, pipeline_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, theme, tier, pipeline_mode,
+                        task_kind, parent_task_id, epic_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3834,6 +3970,9 @@ def create_task(
                         theme.strip() if isinstance(theme, str) and theme.strip() else None,
                         tier.strip() if isinstance(tier, str) and tier.strip() else None,
                         pipeline_mode.strip() if isinstance(pipeline_mode, str) and pipeline_mode.strip() else None,
+                        task_kind,
+                        parent_task_id,
+                        epic_id,
                     ),
                 )
                 for pid in parents:
@@ -3862,6 +4001,9 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "task_kind": task_kind,
+                        "parent_task_id": parent_task_id,
+                        "epic_id": epic_id,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -4092,6 +4234,128 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+_TASK_UPDATE_UNSET = object()
+
+
+def update_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Any = _TASK_UPDATE_UNSET,
+    body: Any = _TASK_UPDATE_UNSET,
+    priority: Any = _TASK_UPDATE_UNSET,
+    task_kind: Any = _TASK_UPDATE_UNSET,
+    parent_task_id: Any = _TASK_UPDATE_UNSET,
+    epic_id: Any = _TASK_UPDATE_UNSET,
+    board: Optional[str] = None,
+) -> Optional[Task]:
+    """Atomically edit canonical task fields and return the updated task.
+
+    Omitted fields remain unchanged. ``body=None``, ``parent_task_id=None`` and
+    ``epic_id=None`` explicitly clear those fields. Containment stays separate
+    from dependency links and all hierarchy checks happen before the write.
+    """
+    task_id = (task_id or "").strip()
+    if not task_id:
+        raise ValueError("task_id must be non-empty")
+
+    updates: list[str] = []
+    params: list[Any] = []
+    changed_fields: list[str] = []
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT task_kind, parent_task_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if current is None:
+            return None
+
+        resulting_kind = current["task_kind"] or DEFAULT_TASK_KIND
+        resulting_parent = current["parent_task_id"]
+
+        if title is not _TASK_UPDATE_UNSET:
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError("title must be non-empty text")
+            updates.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+
+        if body is not _TASK_UPDATE_UNSET:
+            if body is not None and not isinstance(body, str):
+                raise ValueError("body must be text or null")
+            updates.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+
+        if priority is not _TASK_UPDATE_UNSET:
+            if isinstance(priority, bool) or not isinstance(priority, int):
+                raise ValueError("priority must be an integer")
+            updates.append("priority = ?")
+            params.append(priority)
+            changed_fields.append("priority")
+
+        if task_kind is not _TASK_UPDATE_UNSET:
+            if not isinstance(task_kind, str):
+                raise ValueError("task_kind must be text")
+            resulting_kind = task_kind.strip().lower()
+            if resulting_kind not in VALID_TASK_KINDS:
+                raise ValueError(
+                    f"task_kind must be one of {sorted(VALID_TASK_KINDS)}"
+                )
+            updates.append("task_kind = ?")
+            params.append(resulting_kind)
+            changed_fields.append("task_kind")
+
+        if parent_task_id is not _TASK_UPDATE_UNSET:
+            if parent_task_id is not None and not isinstance(parent_task_id, str):
+                raise ValueError("parent_task_id must be text or null")
+            resulting_parent = (
+                (parent_task_id or "").strip()
+                if parent_task_id is not None
+                else None
+            ) or None
+            _validate_containment_parent(conn, task_id, resulting_parent)
+            updates.append("parent_task_id = ?")
+            params.append(resulting_parent)
+            changed_fields.append("parent_task_id")
+
+        if resulting_kind == "subtask" and resulting_parent is None:
+            raise ValueError("subtask requires parent_task_id")
+
+        if epic_id is not _TASK_UPDATE_UNSET:
+            if epic_id is not None and not isinstance(epic_id, str):
+                raise ValueError("epic_id must be text or null")
+            normalized_epic = (
+                (epic_id or "").strip() if epic_id is not None else None
+            ) or None
+            if normalized_epic is not None:
+                _validate_epic_for_attachment(
+                    conn,
+                    normalized_epic,
+                    board_slug_for_epic=board,
+                )
+            updates.append("epic_id = ?")
+            params.append(normalized_epic)
+            changed_fields.append("epic_id")
+
+        if updates:
+            params.append(task_id)
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            _append_event(
+                conn,
+                task_id,
+                "edited",
+                {"fields": sorted(changed_fields)},
+            )
+
+    if changed_fields:
+        notify_task_updated(conn, task_id, changed_fields)
+    return get_task(conn, task_id)
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
@@ -4310,6 +4574,106 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# P2a: non-blocking task containment (distinct from dependency links)
+# ---------------------------------------------------------------------------
+#
+# ``parent_task_id`` is containment: a task lives *inside* another task (or a
+# subtask rolls up into a parent) without implying any execution ordering.
+# These helpers are deliberately named so they can never be mistaken for the
+# dependency surface above (``parent_ids`` / ``child_ids``), and they only ever
+# touch the ``tasks.parent_task_id`` column — never ``task_links``.
+
+
+def get_task_parent(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
+    """Return the containing parent task, or ``None`` when not contained.
+
+    Containment is non-blocking: the returned parent has no effect on the
+    child's readiness or dispatch, unlike a dependency edge in ``task_links``.
+    """
+    row = conn.execute(
+        "SELECT p.* FROM tasks p JOIN tasks c ON c.parent_task_id = p.id "
+        "WHERE c.id = ?",
+        (task_id,),
+    ).fetchone()
+    return Task.from_row(row) if row else None
+
+
+def get_subtask_children(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return the ids of tasks directly contained by ``task_id``.
+
+    These are containment children (``parent_task_id``), NOT dependency
+    children (``task_links``). Ordering is stable by id.
+    """
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY id",
+        (task_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def set_task_parent(conn: sqlite3.Connection, task_id: str, parent_task_id: Optional[str]) -> bool:
+    """Set (or reparent) a task's containment parent. Non-blocking.
+
+    Validates same-board existence and rejects self-parenting and cycles
+    (a task cannot be contained by one of its own descendants). Returns
+    False when ``task_id`` does not exist.
+    """
+    parent_task_id = (parent_task_id or "").strip() or None
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            return False
+        _validate_containment_parent(conn, task_id, parent_task_id)
+        conn.execute(
+            "UPDATE tasks SET parent_task_id = ? WHERE id = ?",
+            (parent_task_id, task_id),
+        )
+    return True
+
+
+def clear_task_parent(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Clear a task's containment parent. Returns False when task absent."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET parent_task_id = NULL WHERE id = ?", (task_id,)
+        )
+    return cur.rowcount > 0
+
+
+def _validate_containment_parent(
+    conn: sqlite3.Connection, task_id: str, parent_task_id: Optional[str]
+) -> None:
+    """Fail closed: same-board existence, no self-parent, no containment cycle."""
+    if parent_task_id is None:
+        return
+    if parent_task_id == task_id:
+        raise ValueError("a task cannot contain itself")
+    if (
+        conn.execute("SELECT 1 FROM tasks WHERE id = ?", (parent_task_id,)).fetchone()
+        is None
+    ):
+        raise ValueError(
+            f"unknown parent_task_id: {parent_task_id!r} "
+            "(containment parent must exist on the same board)"
+        )
+    # Cycle check: walk containment ancestors of parent_task_id; if we reach
+    # task_id, then task_id is already an ancestor of parent_task_id.
+    seen: set[str] = set()
+    cursor: Optional[str] = parent_task_id
+    while cursor is not None and cursor not in seen:
+        if cursor == task_id:
+            raise ValueError(
+                f"setting parent_task_id={parent_task_id!r} on {task_id!r} "
+                "would create a containment cycle"
+            )
+        seen.add(cursor)
+        row = conn.execute(
+            "SELECT parent_task_id FROM tasks WHERE id = ?", (cursor,)
+        ).fetchone()
+        cursor = row["parent_task_id"] if row else None
+    return
+
+
 def task_graph_contexts(
     conn: sqlite3.Connection, task_ids: Iterable[str]
 ) -> dict[str, dict]:
@@ -4397,6 +4761,291 @@ def collate_children(
         }
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# P2a: epic primitives (public) + task-to-epic attachment
+# ---------------------------------------------------------------------------
+
+
+def _new_epic_id() -> str:
+    return "epic_" + secrets.token_hex(4)
+
+
+def _epic_board_slug(board: Optional[str]) -> Optional[str]:
+    """Resolve the board an epic will live on (normalised, default if None)."""
+    return _normalize_board_slug(board) or DEFAULT_BOARD
+
+
+def create_epic(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    description: Optional[str] = None,
+    board_slug: Optional[str] = None,
+    parent_epic_id: Optional[str] = None,
+    status: str = "active",
+    epic_id: Optional[str] = None,
+) -> str:
+    """Create an epic and return its id.
+
+    Validates the title, status, and — when set — that ``parent_epic_id``
+    exists on the same board and does not introduce a hierarchy cycle.
+    ``epic_id`` allows an explicit id (used by tests and idempotent callers).
+    """
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("epic title is required")
+    status = (status or "").strip().lower() or "active"
+    if status not in VALID_EPIC_STATUSES:
+        raise ValueError(
+            f"epic status must be one of {sorted(VALID_EPIC_STATUSES)}, got {status!r}"
+        )
+    board_slug = _epic_board_slug(board_slug)
+    parent_epic_id = (parent_epic_id or "").strip() or None
+    now = int(time.time())
+    with write_txn(conn):
+        if parent_epic_id is not None:
+            _validate_epic_parent(conn, parent_epic_id, board_slug)
+        if epic_id is not None:
+            epic_id = str(epic_id).strip()
+            if not epic_id:
+                raise ValueError("epic_id must be non-empty")
+        else:
+            epic_id = _new_epic_id()
+        conn.execute(
+            "INSERT INTO epics (id, title, description, board_slug, status, "
+            "parent_epic_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (epic_id, title, description, board_slug, status, parent_epic_id, now, now),
+        )
+    return epic_id
+
+
+def get_epic(conn: sqlite3.Connection, epic_id: str) -> Optional[Epic]:
+    row = conn.execute("SELECT * FROM epics WHERE id = ?", (epic_id,)).fetchone()
+    return Epic.from_row(row) if row else None
+
+
+def list_epics(
+    conn: sqlite3.Connection,
+    *,
+    board_slug: Optional[str] = None,
+    parent_epic_id: Optional[str] = None,
+) -> list[Epic]:
+    query = "SELECT * FROM epics WHERE 1=1"
+    params: list[Any] = []
+    if board_slug is not None:
+        query += " AND board_slug = ?"
+        params.append(_epic_board_slug(board_slug))
+    if parent_epic_id is not None:
+        query += " AND parent_epic_id = ?"
+        params.append(parent_epic_id)
+    query += " ORDER BY created_at ASC, id ASC"
+    return [Epic.from_row(r) for r in conn.execute(query, params).fetchall()]
+
+
+_EPIC_UNSET = object()
+
+
+def update_epic(
+    conn: sqlite3.Connection,
+    epic_id: str,
+    *,
+    title: Any = _EPIC_UNSET,
+    description: Any = _EPIC_UNSET,
+    status: Any = _EPIC_UNSET,
+    parent_epic_id: Any = _EPIC_UNSET,
+) -> Optional[Epic]:
+    """Update an epic atomically and return its new canonical representation.
+
+    Omitted values remain unchanged. ``description=None`` clears the description
+    and ``parent_epic_id=None`` detaches the epic from its parent. Hierarchy
+    updates validate same-board identity and reject self-parenting and cycles.
+    """
+    epic_id = (epic_id or "").strip()
+    if not epic_id:
+        raise ValueError("epic_id must be non-empty")
+
+    updates: list[str] = []
+    params: list[Any] = []
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT board_slug FROM epics WHERE id = ?", (epic_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        board_slug = row["board_slug"] or DEFAULT_BOARD
+
+        if title is not _EPIC_UNSET:
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError("epic title is required")
+            updates.append("title = ?")
+            params.append(title.strip())
+
+        if description is not _EPIC_UNSET:
+            if description is not None and not isinstance(description, str):
+                raise ValueError("epic description must be text or null")
+            updates.append("description = ?")
+            params.append(description)
+
+        if status is not _EPIC_UNSET:
+            if not isinstance(status, str) or not status.strip():
+                raise ValueError("epic status is required")
+            normalized_status = status.strip().lower()
+            if normalized_status not in VALID_EPIC_STATUSES:
+                raise ValueError(
+                    f"epic status must be one of {sorted(VALID_EPIC_STATUSES)}, "
+                    f"got {normalized_status!r}"
+                )
+            updates.append("status = ?")
+            params.append(normalized_status)
+
+        if parent_epic_id is not _EPIC_UNSET:
+            if parent_epic_id is not None and not isinstance(parent_epic_id, str):
+                raise ValueError("parent_epic_id must be text or null")
+            normalized_parent = (
+                (parent_epic_id or "").strip() if parent_epic_id is not None else None
+            ) or None
+            if normalized_parent is not None:
+                _validate_epic_parent(conn, normalized_parent, board_slug)
+                if normalized_parent == epic_id:
+                    raise ValueError("an epic cannot be its own parent")
+                _assert_no_epic_cycle(conn, epic_id, normalized_parent)
+            updates.append("parent_epic_id = ?")
+            params.append(normalized_parent)
+
+        if updates:
+            updates.append("updated_at = ?")
+            params.extend((int(time.time()), epic_id))
+            conn.execute(
+                f"UPDATE epics SET {', '.join(updates)} WHERE id = ?", params
+            )
+
+    return get_epic(conn, epic_id)
+
+
+def set_epic_parent(
+    conn: sqlite3.Connection, epic_id: str, parent_epic_id: Optional[str]
+) -> bool:
+    """Reparent an epic (hierarchy). Validates same-board existence + cycles."""
+    parent_epic_id = (parent_epic_id or "").strip() or None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT board_slug FROM epics WHERE id = ?", (epic_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        board_slug = row["board_slug"] or DEFAULT_BOARD
+        if parent_epic_id is not None:
+            _validate_epic_parent(conn, parent_epic_id, board_slug)
+            if parent_epic_id == epic_id:
+                raise ValueError("an epic cannot be its own parent")
+            _assert_no_epic_cycle(conn, epic_id, parent_epic_id)
+        conn.execute(
+            "UPDATE epics SET parent_epic_id = ?, updated_at = ? WHERE id = ?",
+            (parent_epic_id, int(time.time()), epic_id),
+        )
+    return True
+
+
+def _validate_epic_parent(
+    conn: sqlite3.Connection, parent_epic_id: str, board_slug: Optional[str]
+) -> None:
+    """Fail closed: the parent epic must exist on the SAME board."""
+    row = conn.execute(
+        "SELECT board_slug FROM epics WHERE id = ?", (parent_epic_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown parent_epic_id: {parent_epic_id!r}")
+    parent_board = row["board_slug"] or DEFAULT_BOARD
+    expected = board_slug or DEFAULT_BOARD
+    if parent_board != expected:
+        raise ValueError(
+            f"epic {parent_epic_id!r} is on board {parent_board!r}, "
+            f"not {expected!r}"
+        )
+
+
+def _assert_no_epic_cycle(
+    conn: sqlite3.Connection, epic_id: str, parent_epic_id: str
+) -> None:
+    """Raise if parenting ``epic_id`` under ``parent_epic_id`` closes a cycle."""
+    seen: set[str] = set()
+    cursor: Optional[str] = parent_epic_id
+    while cursor is not None and cursor not in seen:
+        if cursor == epic_id:
+            raise ValueError(
+                f"setting parent_epic_id={parent_epic_id!r} on {epic_id!r} "
+                "would create an epic hierarchy cycle"
+            )
+        seen.add(cursor)
+        row = conn.execute(
+            "SELECT parent_epic_id FROM epics WHERE id = ?", (cursor,)
+        ).fetchone()
+        cursor = row["parent_epic_id"] if row else None
+
+
+def _validate_epic_for_attachment(
+    conn: sqlite3.Connection, epic_id: str, board_slug_for_epic: Optional[str] = None
+) -> None:
+    """Fail closed: an epic referenced by a task must exist on this board."""
+    row = conn.execute(
+        "SELECT board_slug FROM epics WHERE id = ?", (epic_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown epic_id: {epic_id!r}")
+    epic_board = row["board_slug"] or DEFAULT_BOARD
+    expected = _epic_board_slug(board_slug_for_epic)
+    if epic_board != expected:
+        raise ValueError(
+            f"epic {epic_id!r} is on board {epic_board!r}, not {expected!r}"
+        )
+
+
+def set_task_epic(
+    conn: sqlite3.Connection,
+    task_id: str,
+    epic_id: Optional[str],
+    *,
+    board: Optional[str] = None,
+) -> bool:
+    """Attach (or detach) a task to an epic on the selected board.
+
+    ``board`` is explicit for non-default board connections. Containment is
+    validated against that canonical board and never creates a dependency.
+    """
+    epic_id = (epic_id or "").strip() or None
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            return False
+        if epic_id is not None:
+            _validate_epic_for_attachment(conn, epic_id, board_slug_for_epic=board)
+        conn.execute(
+            "UPDATE tasks SET epic_id = ? WHERE id = ?", (epic_id, task_id)
+        )
+    return True
+
+
+def clear_task_epic(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Detach a task from its epic. Returns False when task absent."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET epic_id = NULL WHERE id = ?", (task_id,)
+        )
+    return cur.rowcount > 0
+
+
+def epic_task_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """Return ``{epic_id: {'total': N, <status>: N, ...}}`` across all epics."""
+    counts: dict[str, dict[str, int]] = {}
+    for row in conn.execute(
+        "SELECT epic_id, status, COUNT(*) AS n FROM tasks "
+        "WHERE epic_id IS NOT NULL GROUP BY epic_id, status"
+    ).fetchall():
+        bucket = counts.setdefault(row["epic_id"], {"total": 0})
+        bucket[row["status"]] = int(row["n"])
+        bucket["total"] += int(row["n"])
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -8516,6 +9165,181 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             payload if payload != {"status": "ready"} else None,
         )
         return True
+
+
+def _set_task_status_direct(
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_status: str,
+    *,
+    actor: str,
+) -> bool:
+    """Apply a guarded direct lane move and preserve run/graph invariants."""
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    effective_status = new_status
+    with write_txn(conn):
+        previous = conn.execute(
+            "SELECT status, current_run_id, worker_pid, claim_lock "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if previous is None:
+            return False
+
+        if previous["status"] == "running" and new_status == "ready":
+            resume_status = _retry_status_for_run(
+                conn,
+                task_id,
+                previous["current_run_id"],
+            )
+            if resume_status == "review":
+                effective_status = (
+                    "review" if _parents_satisfied(conn, task_id) else "todo"
+                )
+
+        if effective_status == "ready" and not _parents_satisfied(conn, task_id):
+            return False
+
+        was_running = previous["status"] == "running"
+        reopening_satisfied_parent = (
+            previous["status"] in {"done", "archived"}
+            and effective_status not in {"done", "archived"}
+        )
+        changed = conn.execute(
+            "UPDATE tasks SET status = ?, "
+            "claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
+            "claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
+            "worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "WHERE id = ?",
+            (
+                effective_status,
+                effective_status,
+                effective_status,
+                effective_status,
+                task_id,
+            ),
+        )
+        if changed.rowcount != 1:
+            return False
+
+        run_id = None
+        if (
+            was_running
+            and effective_status != "running"
+            and previous["current_run_id"]
+        ):
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary=f"status changed to {effective_status} ({actor})",
+            )
+            terminations.append(
+                (previous["worker_pid"], previous["claim_lock"])
+            )
+        _append_event(
+            conn,
+            task_id,
+            "status",
+            {
+                "status": effective_status,
+                "requested_status": new_status,
+                "actor": actor,
+            },
+            run_id=run_id,
+        )
+        if reopening_satisfied_parent:
+            invalidated = invalidate_descendants_for_parent_reopen(
+                conn,
+                task_id,
+                author=actor,
+            )
+            terminations.extend(invalidated["terminations"])
+
+    for worker_pid, claim_lock in terminations:
+        _terminate_reclaimed_worker(worker_pid, claim_lock)
+    if effective_status in {"done", "ready", "review"}:
+        recompute_ready(conn)
+    return True
+
+
+def transition_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    status: str,
+    *,
+    reason: Optional[str] = None,
+    block_kind: Optional[str] = None,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    reviewer: Optional[str] = None,
+    force_review: bool = False,
+    actor: str = "project-kanban-host",
+) -> bool:
+    """Route a requested status through the canonical lifecycle verb."""
+    normalized = (status or "").strip().lower()
+    if normalized == "running":
+        raise ValueError("running is dispatcher-managed")
+
+    current = get_task(conn, task_id)
+    if current is None:
+        return False
+    if current.status == normalized:
+        return True
+
+    if normalized == "done":
+        return complete_task(
+            conn,
+            task_id,
+            result=result,
+            summary=summary,
+            metadata=metadata,
+        )
+    if normalized == "blocked":
+        return block_task(
+            conn,
+            task_id,
+            reason=reason,
+            kind=block_kind,
+        )
+    if normalized == "scheduled":
+        return schedule_task(conn, task_id, reason=reason)
+    if normalized == "review":
+        return bool(
+            request_review(
+                conn,
+                task_id,
+                summary=summary,
+                metadata=metadata,
+                reviewer=reviewer,
+                force=force_review,
+            )
+        )
+    if normalized == "archived":
+        return archive_task(conn, task_id)
+    if normalized == "ready":
+        if current.status in {"blocked", "scheduled"}:
+            return unblock_task(conn, task_id)
+        if current.status == "review":
+            return reopen_review_task(conn, task_id)
+        return _set_task_status_direct(
+            conn,
+            task_id,
+            normalized,
+            actor=actor,
+        )
+    if normalized == "todo" and current.status == "review":
+        return reopen_review_task(conn, task_id)
+    if normalized in {"backlog", "triage", "todo"}:
+        return _set_task_status_direct(
+            conn,
+            task_id,
+            normalized,
+            actor=actor,
+        )
+    raise ValueError(f"unknown status: {status!r}")
 
 
 class ApproverProfileError(ValueError):

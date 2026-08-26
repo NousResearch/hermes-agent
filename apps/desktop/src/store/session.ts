@@ -634,6 +634,32 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
 // one platform may have more rows on disk than were loaded.
 export const $messagingTruncated = atom<boolean>(false)
+
+/**
+ * Every session row the renderer knows, for OWNER lookups. The sidebar splits
+ * its fetch into three source-scoped slices ($sessions / $cronSessions /
+ * $messagingSessions), and each slice's rows carry the same `profile` (and,
+ * when tagged, `connection_id`) stamps — but the owner ladder's row rung only
+ * searched recents. A cron or messaging session's approval.respond (or any
+ * session-scoped RPC) therefore found no owner, and on a registry-topology
+ * install failed closed with SessionOwnerResolutionError even though the row
+ * naming its owner was already in memory, one atom over. Concatenation order
+ * mirrors lookup priority: recents first (they can carry fresher optimistic
+ * connection tags), then the cron and messaging slices.
+ */
+export function ownerLookupSessionRows(): SessionInfo[] {
+  const cron = $cronSessions.get()
+  const messaging = $messagingSessions.get()
+
+  // Recents-only stays the common case; keep its array identity (no copy) so
+  // per-list memo caches (lineageAliases) keyed on the reference still hit.
+  if (!cron.length && !messaging.length) {
+    return $sessions.get()
+  }
+
+  return [...$sessions.get(), ...cron, ...messaging]
+}
+
 // Whether a profile's last session page was CAPPED by the request limit, keyed
 // by profile name — i.e. more rows exist on disk than were loaded. Replaces the
 // old exact per-profile totals: rendering `loaded/total` in the sidebar cost a

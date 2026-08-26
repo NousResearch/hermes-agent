@@ -47,6 +47,7 @@ import {
   knownSessionOwner,
   lineageAliases,
   markSessionRead,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
@@ -957,6 +958,10 @@ export function openTileGatewayScopes(): Set<string> {
  * exact unique owner hint (stamped when a routed create returns / at open
  * time; persisted), then the session row's owner (an exact route when the row
  * is connection-tagged, else its bare profile, else the hint's profile). The
+ * row rung searches every source-scoped slice (recents, cron, messaging), not
+ * just recents — a cron session's approval.respond used to find no owner here
+ * and fail closed on registry-topology installs even though its row (with its
+ * `profile` stamp) was already loaded for the sidebar's cron section. The
  * hint outranks the row for the same reason as contrib/wiring's ladder: a
  * row can be stamped from the ambient profile and carries no connection.
  * Returns undefined when no owner is known — the caller fails closed
@@ -972,7 +977,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   return (
     sessionTileOwnerRoute(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
-    knownSessionOwner($sessions.get(), storedSessionId)
+    knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
   )
 }
 

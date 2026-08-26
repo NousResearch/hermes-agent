@@ -32,7 +32,10 @@ vi.mock('@/app/session/hooks/use-session-actions/utils', async importActual => (
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
-const { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } = await import('@/store/session')
+
+const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
+  await import('@/store/session')
+
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
 const { $sessionTiles } = await import('@/store/session-states')
 const { makeSessionInfo } = await import('@/test/session-info')
@@ -59,6 +62,8 @@ beforeEach(() => {
 afterEach(() => {
   $connectionsRegistry.set(null)
   setSessions([])
+  setCronSessions([])
+  setMessagingSessions([])
   $sessionTiles.set([])
   $profiles.set([])
   _resetSessionOwnerHintsForTests({ storage: true })
@@ -151,6 +156,41 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     })
     expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('homelab', 'worker', 'session.activate', {
       session_id: 'stored-hidden'
+    })
+  })
+
+  it('resolves owners from the cron and messaging sidebar slices, not just recents (cron approval.respond)', async () => {
+    // A scheduler-minted cron session has no tile, no hint, and no row in
+    // $sessions — its row lives in the sidebar's cron slice. The row rung must
+    // see that slice, or the approval raised inside a cron chat fails closed
+    // with SessionOwnerResolutionError and can never be answered.
+    setCronSessions([makeSessionInfo({ id: 'stored-cron', profile: 'omar', source: 'cron' })])
+    const { ambientRequest, request } = dispatcher()
+
+    await expect(
+      request('approval.respond', { choice: 'once', request_id: 'req-1', session_id: 'stored-cron' })
+    ).resolves.toEqual({ profiled: true })
+    expect(gatewayMocks.requestGatewayForProfile).toHaveBeenLastCalledWith(
+      'omar',
+      'approval.respond',
+      {
+        choice: 'once',
+        request_id: 'req-1',
+        session_id: 'stored-cron'
+      },
+      undefined,
+      undefined
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(probe.resolveSessionOwner).not.toHaveBeenCalled()
+
+    // Messaging slice, connection-tagged row → exact route.
+    setMessagingSessions([makeSessionInfo({ connection_id: 'homelab', id: 'stored-tg', profile: 'bots' })])
+
+    await expect(request('prompt.submit', { session_id: 'stored-tg', text: 'hi' })).resolves.toEqual({ routed: true })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('homelab', 'bots', 'prompt.submit', {
+      session_id: 'stored-tg',
+      text: 'hi'
     })
   })
 })

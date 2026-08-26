@@ -35,7 +35,7 @@ import type { MutableRefObject } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
-import { $sessions, getSessionOwnerHint, knownSessionOwner } from '@/store/session'
+import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
@@ -76,7 +76,7 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     let owner: SessionOwnerScope = resolveSessionRpcOwner({
       routingSessionId,
       sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
-      sessionRowOwner: storedSessionId => knownSessionOwner($sessions.get(), storedSessionId),
+      sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),
       tileOwnerRoute: sessionTileOwnerRoute
     })
 

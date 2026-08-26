@@ -1,8 +1,17 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshBackgroundProcesses, resetBackgroundPollingGuard } from './composer-status'
 import { $gateway } from './gateway'
-import { markRuntimeGone, noteRuntimeAlive, resetRuntimeGoneHealing } from './runtime-gone'
+import {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  markRuntimeGone,
+  markSessionGone,
+  noteRuntimeAlive,
+  resetBackgroundPollingGuardAfterRebind,
+  resetRuntimeGoneHealing
+} from './runtime-gone'
 import { $activeSessionId, $sessionResumeRequest } from './session'
 import { $sessionStates, $sessionTiles } from './session-states'
 
@@ -145,5 +154,32 @@ describe('refreshBackgroundProcesses recovery', () => {
 
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RUNTIME)
     expect($sessionResumeRequest.get()).toBeNull()
+  })
+})
+
+describe('gone-latch classifier and rebind seam', () => {
+  it('recognizes structured 4001 and bare legacy text without misclassifying coded errors', () => {
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('gone', { code: 4001 }))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found', { code: 5007 }))).toBe(false)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found'))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error("Error invoking remote method 'x': Error: session not found"))).toBe(
+      true
+    )
+    expect(isSessionGoneForBackgroundPolling(new Error('tool failed: upstream said session not found'))).toBe(false)
+  })
+
+  it('clears the latch only for ids a successful resume/activate rebound', () => {
+    markSessionGone('rt-dead')
+    markSessionGone('rt-other')
+
+    resetBackgroundPollingGuardAfterRebind('process.list', { session_id: 'rt-dead' }, { session_id: 'rt-dead' })
+    expect(isSessionGone('rt-dead')).toBe(true)
+
+    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: 'stored-1' }, { session_id: 'rt-dead' })
+    expect(isSessionGone('rt-dead')).toBe(false)
+    expect(isSessionGone('rt-other')).toBe(true)
+
+    resetBackgroundPollingGuardAfterRebind('session.activate', { session_id: 'rt-other' }, undefined)
+    expect(isSessionGone('rt-other')).toBe(false)
   })
 })

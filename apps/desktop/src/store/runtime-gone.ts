@@ -29,9 +29,15 @@ export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
     return code === GATEWAY_SESSION_NOT_FOUND_CODE
   }
 
-  const message = error instanceof Error ? error.message : String(error ?? '')
+  // Codeless errors: the frame's structure was lost somewhere (IPC bridge,
+  // wrapped rethrow). Accept only a bare "session not found" body — a tool or
+  // report string that merely mentions the phrase must not latch a live runtime.
+  const message = (error instanceof Error ? error.message : String(error ?? ''))
+    .trim()
+    .replace(/^Error invoking remote method '[^']+':\s*Error:\s*/i, '')
+    .replace(/^Error:\s*/i, '')
 
-  return /session not found/i.test(message)
+  return /^(?:4001\s*[:,-]?\s*)?session not found[.!]?$/i.test(message)
 }
 
 export function isSessionGone(sid: string): boolean {
@@ -59,6 +65,32 @@ export function resetBackgroundPollingGuard(sid?: string): void {
   }
 
   goneSessions.clear()
+}
+
+/** Clear the gone-latch for the ids a successful `session.resume` /
+ *  `session.activate` just rebound — the stored id it was asked for and the
+ *  runtime id it answered with.
+ *
+ *  A socket reconnect is NOT a rebind: the backend may have reaped the old
+ *  runtime, and merely reopening a WebSocket does not make that id valid
+ *  again. Only a successful resume/activate response is proof the runtime can
+ *  be targeted, so this is the one seam that un-latches per id. */
+export function resetBackgroundPollingGuardAfterRebind(
+  method: string,
+  params: Record<string, unknown>,
+  result: unknown
+): void {
+  if (method !== 'session.activate' && method !== 'session.resume') {
+    return
+  }
+
+  const candidates = [params.session_id, (result as { session_id?: unknown } | null)?.session_id]
+
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) {
+      goneSessions.delete(value.trim())
+    }
+  }
 }
 
 /** Heal a session view whose bound runtime id the gateway no longer holds.

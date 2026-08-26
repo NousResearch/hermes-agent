@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearClarifyRequest, setClarifyRequest } from './clarify'
 import {
@@ -16,8 +17,8 @@ import {
   setSecretRequest,
   setSudoRequest
 } from './prompts'
-import { resetBackgroundPollingGuard } from './runtime-gone'
 import { $activeSessionId } from './session'
+import { isSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 
 // Prompts are parked per-session; the exported $*Request views are scoped to the
 // active session, so each test focuses the session it's asserting on.
@@ -29,6 +30,7 @@ afterEach(() => {
   clearAllPrompts()
   clearClarifyRequest()
   $activeSessionId.set(null)
+  resetBackgroundPollingGuard()
 })
 
 describe('approval prompt store', () => {
@@ -129,6 +131,34 @@ describe('approval prompt store', () => {
       ['approval.pending', { session_id: 's1' }],
       ['approval.received', { request_id: 'r1', session_id: 's1' }]
     ])
+  })
+
+  it('does not replay a pending approval after the runtime is rejected as gone', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    await replayPendingApproval({ request }, 'dead-runtime')
+    await replayPendingApproval({ request }, 'dead-runtime')
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(isSessionGone('dead-runtime')).toBe(true)
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('keeps approval receipt failures contained and marks the runtime gone', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    $activeSessionId.set('dead-runtime')
+
+    await expect(
+      receiveApprovalRequest({ request }, { command: 'x', description: 'd', requestId: 'r1', sessionId: 'dead-runtime' })
+    ).resolves.toBeUndefined()
+
+    expect(isSessionGone('dead-runtime')).toBe(true)
+    expect($approvalRequest.get()?.requestId).toBe('r1')
   })
 })
 

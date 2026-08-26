@@ -8,9 +8,15 @@ import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
-import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
+import {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  markSessionGone,
+  noteRuntimeAlive,
+  resetBackgroundPollingGuard
+} from './runtime-gone'
 import { $sessions, lineageAliases } from './session'
-import { $sessionStates } from './session-states'
+import { $sessionStates, requestForOwnedSession } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
@@ -401,7 +407,14 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   }
 
   try {
-    const result = await gateway.request<{ processes?: GatewayProcessEntry[] }>('process.list', { session_id: sid })
+    const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
+      gateway.request<T>(method, params ?? {})
+    const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
+      sid,
+      ambientRequest,
+      'process.list',
+      { session_id: sid }
+    )
 
     reconcileBackgroundProcesses(sid, result?.processes ?? [])
     // The binding answered, so it is healthy: refund the stored session's
@@ -441,10 +454,34 @@ export function dismissBackgroundProcess(sid: string, id: string) {
  *  row while the process lived on, stranding rogue tasks. On failure the row
  *  stays so the user can retry / see it didn't die. */
 export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
+  const gateway = $gateway.get()
+
+  if (isSessionGone(sid)) {
+    // The backend has already declared this runtime gone, so there is no
+    // authoritative process left to kill through this session. Remove the
+    // stale local row instead of leaving the Stop button permanently inert.
+    dismissBackgroundProcess(sid, id)
+
+    return
+  }
+
+  if (!gateway) {
+    return
+  }
+
   try {
-    await $gateway.get()?.request('process.kill', { process_id: id, session_id: sid })
+    const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
+      gateway.request<T>(method, params ?? {})
+    await requestForOwnedSession(sid, ambientRequest, 'process.kill', { process_id: id, session_id: sid })
     dismissBackgroundProcess(sid, id)
   } catch (err) {
+    if (isSessionGoneForBackgroundPolling(err)) {
+      dismissBackgroundProcess(sid, id)
+      markSessionGone(sid)
+
+      return
+    }
+
     notifyError(err, 'Could not stop the process')
   }
 }
@@ -471,7 +508,18 @@ export function resetSessionBackground(sid: string) {
     dismissed.add(item.id)
 
     if (item.state === 'running') {
-      void gateway?.request('process.kill', { process_id: item.id, session_id: sid }).catch(() => undefined)
+      if (gateway && !isSessionGone(sid)) {
+        const ambientRequest = <T>(method: string, params?: Record<string, unknown>) =>
+          gateway.request<T>(method, params ?? {})
+        void requestForOwnedSession(sid, ambientRequest, 'process.kill', {
+          process_id: item.id,
+          session_id: sid
+        }).catch(error => {
+          if (isSessionGoneForBackgroundPolling(error)) {
+            markSessionGone(sid)
+          }
+        })
+      }
     }
   }
 

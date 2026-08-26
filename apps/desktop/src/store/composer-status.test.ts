@@ -7,9 +7,11 @@ import {
   isSessionGoneForBackgroundPolling,
   reconcileBackgroundProcesses,
   refreshBackgroundProcesses,
-  resetBackgroundPollingGuard
+  resetBackgroundPollingGuard,
+  stopBackgroundProcess
 } from './composer-status'
 import { $gateway } from './gateway'
+import { markSessionGone } from './runtime-gone'
 
 const SID = 'sess-1'
 
@@ -262,6 +264,41 @@ describe('refreshBackgroundProcesses dead-session guard', () => {
     await refreshBackgroundProcesses(SID)
 
     expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('dismisses a stale process row when Stop is clicked after the runtime is gone', async () => {
+    reconcileBackgroundProcesses(SID, [running('stale')])
+    markSessionGone(SID)
+    $gateway.set({ request: vi.fn() } as never)
+
+    await stopBackgroundProcess(SID, 'stale')
+
+    expect(items()).toEqual([])
+  })
+
+  it('dismisses a stale process row while the gateway is disconnected', async () => {
+    reconcileBackgroundProcesses(SID, [running('disconnected')])
+    markSessionGone(SID)
+    $gateway.set(null as never)
+
+    await stopBackgroundProcess(SID, 'disconnected')
+
+    expect(items()).toEqual([])
+  })
+
+  it('dismisses and latches when Stop discovers the runtime is gone', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    reconcileBackgroundProcesses(SID, [running('rejected')])
+    $gateway.set({ request } as never)
+
+    await stopBackgroundProcess(SID, 'rejected')
+    await stopBackgroundProcess(SID, 'rejected')
+
+    expect(items()).toEqual([])
+    expect(request).toHaveBeenCalledTimes(1)
   })
 })
 

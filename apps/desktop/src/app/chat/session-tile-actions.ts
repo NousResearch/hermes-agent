@@ -22,7 +22,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection, $sessions, knownSessionOwner, sessionMatchesStoredId } from '@/store/session'
+import { $sessions, knownSessionOwner, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,

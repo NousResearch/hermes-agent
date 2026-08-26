@@ -568,14 +568,17 @@ export function useGatewayBoot({
         // re-pulls /api/profiles deterministically post-switch — leaving the
         // rail stale or (if a stale in-flight response landed) collapsed
         // (#85731). Best-effort like the rest: a failure keeps the cached
-        // list rather than blanking the rail.
+        // list rather than blanking the rail. NOT awaited: refreshProfiles
+        // now carries a bounded retry chain (#70679), and switch completion
+        // must not wait out backoff timers against an unhealthy backend.
         if (!(await adoptPrimaryProfile(ownsSwitch)) || !ownsSwitch()) {
           return
         }
 
+        void refreshActiveProfile().catch(() => undefined)
+
         await Promise.all([
           seedDefaultCwd(ownsSwitch),
-          refreshActiveProfile().catch(() => undefined),
           callbacksRef.current.refreshHermesConfig(false, ownsSwitch).catch(() => undefined),
           callbacksRef.current.refreshSessions(ownsSwitch).catch(() => undefined)
         ])

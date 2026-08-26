@@ -371,6 +371,7 @@ describe('ConnectionSwitcher', () => {
   // snapshot.
   it('repaints the menu after a connections.save without reload (#95393)', async () => {
     const before = registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')])
+
     const after = registry([
       connection('local', 'This device', 'local'),
       connection('homelab', 'Homelab'),

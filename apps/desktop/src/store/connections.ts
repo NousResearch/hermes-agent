@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { isTimeoutError, withTimeout, BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import {
   beginGatewaySwitch,

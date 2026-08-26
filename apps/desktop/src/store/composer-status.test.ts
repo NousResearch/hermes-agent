@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
 import { JsonRpcGatewayError } from '@hermes/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $backgroundStatusBySession,

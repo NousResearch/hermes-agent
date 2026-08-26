@@ -450,19 +450,27 @@ async function openSecondary(entry: Secondary): Promise<void> {
     if (reopening) {
       try {
         const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
-        const { resetBackgroundPollingGuard } = await import('@/store/composer-status')
 
         resetTileRuntimeBindings({
           connectionId: entry.connectionId || 'local',
           profile: entry.profile
         })
-        // Runtime re-mint also invalidates the status-stack gone-latch: ids
-        // the dead runtime 4001'd may be live again once tiles re-resume.
-        resetBackgroundPollingGuard()
         reconcileBusyAfterOpen = () => reconcileBusyStatesOnReconnect(entry.scope)
       } catch {
         // Best effort for partial test/HMR graphs. Production always loads the
         // real store; a failed import must not make the transport unrecoverable.
+      }
+
+      try {
+        // Runtime re-mint also invalidates the status-stack gone-latch: ids
+        // the dead runtime 4001'd may be live again once tiles re-resume.
+        // Separate try: tests that mock only session-states must not lose the
+        // rebinding wiring to a failed composer-status import (and vice versa).
+        const { resetBackgroundPollingGuard } = await import('@/store/composer-status')
+
+        resetBackgroundPollingGuard()
+      } catch {
+        // Same best-effort contract as above.
       }
     }
 

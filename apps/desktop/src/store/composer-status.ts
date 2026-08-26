@@ -1,6 +1,5 @@
-import { atom, computed } from 'nanostores'
-
 import { JsonRpcGatewayError } from '@hermes/shared'
+import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
 import { stableArray } from '@/lib/stable-array'

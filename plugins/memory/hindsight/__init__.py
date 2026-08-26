@@ -134,8 +134,16 @@ def _import_hindsight_embedded():
     Kept as its own function so the isolation seam is directly testable and so
     every future caller gets the guard by construction rather than by
     remembering to wrap the import.
+
+    Uses a plain ``import`` rather than ``importlib.import_module`` so tests
+    (and any other caller) can substitute the module via ``sys.modules`` /
+    ``builtins.__import__`` interception. ``import_module`` bypasses both,
+    which silently defeats those seams.
     """
-    return _import_guarded("hindsight").HindsightEmbedded
+    with _preserved_process_env("hindsight"):
+        from hindsight import HindsightEmbedded
+
+        return HindsightEmbedded
 
 
 
@@ -1348,7 +1356,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 _ensure_cloud_client_dependency()
-                Hindsight = _import_guarded("hindsight_client").Hindsight
+                # Plain `import` (not importlib) so the module resolution
+                # stays interceptable via builtins.__import__ — the lazy-dep
+                # ordering tests guard this seam, and importlib bypasses it.
+                # The env guard is what actually matters here and it wraps
+                # either form.
+                with _preserved_process_env("hindsight_client"):
+                    from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
                 if self._api_key:

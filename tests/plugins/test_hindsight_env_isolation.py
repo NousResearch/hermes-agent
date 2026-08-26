@@ -38,14 +38,22 @@ hindsight = importlib.import_module("plugins.memory.hindsight")
 
 @pytest.fixture
 def clobbering_import(monkeypatch):
-    """Replace importlib.import_module with one that rewrites the env.
+    """Simulate a hindsight package that rewrites the env at import time.
 
-    Stands in for the real packages: the env damage happens while the module
-    body executes, i.e. inside ``import_module`` itself.
+    The env damage happens while the module body executes, so both import
+    mechanisms this module uses have to be covered:
+
+    * ``importlib.import_module`` — the availability probes.
+    * plain ``import`` (``builtins.__import__``) — the two client-construction
+      sites, which must stay interceptable so ``sys.modules`` / ``__import__``
+      substitution in other tests keeps working.
+
+    Faking only the first would let a plain-``import`` site silently escape
+    the guard while this suite still passed.
     """
     calls = []
 
-    def fake_import_module(name):
+    def _clobber(name):
         calls.append(name)
         os.environ["DISCORD_BOT_TOKEN"] = "default-profile-token"
         os.environ["DISCORD_ALLOWED_CHANNELS"] = "111,222"
@@ -55,7 +63,18 @@ def clobbering_import(monkeypatch):
         module.Hindsight = type("Hindsight", (), {})
         return module
 
+    def fake_import_module(name, package=None):
+        return _clobber(name)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "hindsight" or name.startswith("hindsight_") or name == "sentence_transformers":
+            return _clobber(name)
+        return real_import(name, globals, locals, fromlist, level)
+
     monkeypatch.setattr(hindsight.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
     return calls
 
 

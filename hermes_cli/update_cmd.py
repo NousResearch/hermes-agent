@@ -5615,36 +5615,89 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     }
 
 
-def _gateway_restart_recovery_profiles(
+def _gateway_recovery_partition(
     plan, *, skip_profiles: set[str] | None = None
-) -> list[str]:
-    """Return supervised gateway profiles that a fresh process may restart.
+) -> tuple[dict[str, str], list[dict]]:
+    """Partition pre-update runtimes into fresh-restart candidates and skips.
 
     The update inventory is captured before the checkout changes.  It is the
     only safe source here: re-importing ``hermes_cli.gateway`` in the failing
-    interpreter is exactly what can raise the original ``ImportError``. Manual
-    gateways are intentionally excluded because no supervisor is available to
-    bring them back after a stop.
+    interpreter is exactly what can raise the original ``ImportError``.
+
+    Returns ``(candidates, skipped)`` where ``candidates`` maps profile →
+    supervisor for supervised gateway runtimes the fresh process may restart,
+    and ``skipped`` lists every other inventoried runtime the recovery pass
+    deliberately does NOT touch, each with an explicit reason.  Nothing from
+    the spawn ledger may vanish from the recovery pass silently: manual
+    gateways have no relaunch authority, and serve/dashboard runtimes (the
+    ``update_inventory`` serve collector) are owned by the Desktop app or a
+    human terminal, not by this recovery boundary.
     """
-    profiles: set[str] = set()
     skip_profiles = skip_profiles or set()
+    candidates: dict[str, str] = {}
+    skipped: list[dict] = []
     try:
         for runtime in getattr(plan, "runtimes", ()) or ():
-            if (
-                getattr(runtime, "kind", None) == "gateway"
-                and getattr(runtime, "supervisor", None) in _FRESH_RESTART_SUPERVISORS
-            ):
-                profile = getattr(runtime, "profile", None)
-                if isinstance(profile, str) and profile and profile not in skip_profiles:
-                    profiles.add(profile)
+            kind = getattr(runtime, "kind", None)
+            profile = getattr(runtime, "profile", None)
+            supervisor = getattr(runtime, "supervisor", None)
+            if not isinstance(profile, str) or not profile:
+                continue
+            if kind == "gateway":
+                if profile in skip_profiles:
+                    continue
+                if supervisor in _FRESH_RESTART_SUPERVISORS:
+                    candidates.setdefault(profile, str(supervisor))
+                else:
+                    skipped.append(
+                        {
+                            "profile": profile,
+                            "kind": "gateway",
+                            "supervisor": str(supervisor),
+                            "reason": (
+                                "manual gateway has no supervisor relaunch"
+                                " authority; left running for explicit operator"
+                                " restart"
+                            ),
+                        }
+                    )
+            elif kind in ("serve", "dashboard"):
+                if supervisor == "desktop":
+                    reason = (
+                        "desktop app owns and respawns this serve backend;"
+                        " the recovery pass must not restart it out from under"
+                        " its supervisor"
+                    )
+                else:
+                    reason = (
+                        "manually launched serve/dashboard has no relaunch"
+                        " authority; left running for explicit operator"
+                        " restart"
+                    )
+                skipped.append(
+                    {
+                        "profile": profile,
+                        "kind": str(kind),
+                        "supervisor": str(supervisor),
+                        "reason": reason,
+                    }
+                )
     except Exception as exc:
         logger.debug("Could not prepare fresh gateway restart profiles: %s", exc)
-    return sorted(profiles)
+    return candidates, skipped
+
+
+def _gateway_restart_recovery_profiles(
+    plan, *, skip_profiles: set[str] | None = None
+) -> list[str]:
+    """Return supervised gateway profiles that a fresh process may restart."""
+    candidates, _ = _gateway_recovery_partition(plan, skip_profiles=skip_profiles)
+    return sorted(candidates)
 
 
 def _recover_gateway_restart_after_abort(
     plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None
-) -> dict[str, list[str]]:
+) -> dict[str, list]:
     """Retry supervised gateway restarts from a clean Python process.
 
     ``hermes update`` normally performs the fleet restart in the interpreter
@@ -5658,12 +5711,38 @@ def _recover_gateway_restart_after_abort(
     Only profiles classified as supervisor-owned by the pre-update inventory
     are handed off.  A manual gateway must remain running and be reported for
     explicit operator action rather than being killed without a relaunch
-    authority.  The returned protocol is persisted in the update receipt so
-    operators can distinguish a spawn failure from a per-profile failure.
+    authority; serve/dashboard runtimes from the spawn ledger are likewise
+    recorded as skipped with a reason instead of vanishing from the pass.
+    The returned protocol is persisted in the update receipt so operators can
+    distinguish a spawn failure from a per-profile failure.
+
+    Outcome honesty: ``verified`` means the fresh child independently observed
+    the profile's systemd unit active after the relaunch.  A zero exit from
+    ``gateway restart`` alone is NOT observed proof that the new code
+    generation is serving, so those outcomes are reported as
+    ``relaunch_attempted`` and never claim supervisor coverage.
     """
-    profiles = _gateway_restart_recovery_profiles(plan, skip_profiles=skip_profiles)
+    candidates, skipped = _gateway_recovery_partition(
+        plan, skip_profiles=skip_profiles
+    )
+    profiles = sorted(candidates)
     if not profiles:
-        return {"requested": [], "succeeded": [], "failed": []}
+        return {
+            "requested": [],
+            "verified": [],
+            "relaunch_attempted": [],
+            "failed": [],
+            "skipped": skipped,
+        }
+
+    def _all_failed() -> dict[str, list]:
+        return {
+            "requested": profiles,
+            "verified": [],
+            "relaunch_attempted": [],
+            "failed": profiles,
+            "skipped": skipped,
+        }
 
     command = [
         sys.executable,
@@ -5685,7 +5764,7 @@ def _recover_gateway_restart_after_abort(
         systemd_run = shutil.which("systemd-run")
         if not systemd_run:
             logger.warning("Cannot isolate fresh gateway recovery from the gateway cgroup")
-            return {"requested": profiles, "succeeded": [], "failed": profiles}
+            return _all_failed()
         command = [
             systemd_run,
             "--user",
@@ -5697,7 +5776,7 @@ def _recover_gateway_restart_after_abort(
         ]
 
     kwargs = {
-        "input": json.dumps({"profiles": profiles}),
+        "input": json.dumps({"profiles": profiles, "supervisors": candidates}),
         "capture_output": True,
         "text": True,
         "encoding": "utf-8",
@@ -5718,39 +5797,52 @@ def _recover_gateway_restart_after_abort(
         result = subprocess.run(command, **kwargs)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Fresh gateway restart recovery failed: %s", exc)
-        return {"requested": profiles, "succeeded": [], "failed": profiles}
+        return _all_failed()
 
     if result.returncode != 0:
         logger.warning("Fresh gateway restart recovery exited %s", result.returncode)
-        return {"requested": profiles, "succeeded": [], "failed": profiles}
+        return _all_failed()
 
     try:
         recovery_result = json.loads(result.stdout or "")
-        succeeded = recovery_result.get("succeeded")
+        verified = recovery_result.get("verified")
+        relaunch_attempted = recovery_result.get("relaunch_attempted")
         failed = recovery_result.get("failed")
     except (AttributeError, TypeError, ValueError):
         logger.warning("Fresh gateway restart recovery returned invalid JSON")
-        return {"requested": profiles, "succeeded": [], "failed": profiles}
+        return _all_failed()
 
+    buckets = (verified, relaunch_attempted, failed)
+    reported: list[str] = []
+    if all(isinstance(bucket, list) for bucket in buckets):
+        reported = [*verified, *relaunch_attempted, *failed]
     if (
-        not isinstance(succeeded, list)
-        or not isinstance(failed, list)
-        or any(not isinstance(profile, str) for profile in [*succeeded, *failed])
-        or set(succeeded) != set(profiles)
-        or failed
+        not all(isinstance(bucket, list) for bucket in buckets)
+        or any(not isinstance(profile, str) for profile in reported)
+        or set(reported) != set(profiles)
+        or len(reported) != len(set(reported))
     ):
         logger.warning("Fresh gateway restart recovery returned incomplete profiles")
-        return {
-            "requested": profiles,
-            "succeeded": succeeded if isinstance(succeeded, list) else [],
-            "failed": failed if isinstance(failed, list) else profiles,
-        }
+        return _all_failed()
 
-    print(
-        "  ✓ Retried supervised gateway restart(s) in a fresh process: "
-        + ", ".join(profiles)
-    )
-    return {"requested": profiles, "succeeded": succeeded, "failed": []}
+    if verified:
+        print(
+            "  ✓ Restarted supervised gateway(s) in a fresh process"
+            " (systemd-verified active): " + ", ".join(sorted(verified))
+        )
+    if relaunch_attempted:
+        print(
+            "  ⚠ Relaunch attempted in a fresh process but not"
+            " supervisor-verified (check these gateways manually): "
+            + ", ".join(sorted(relaunch_attempted))
+        )
+    return {
+        "requested": profiles,
+        "verified": sorted(verified),
+        "relaunch_attempted": sorted(relaunch_attempted),
+        "failed": sorted(failed),
+        "skipped": skipped,
+    }
 
 
 def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
@@ -8802,16 +8894,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 gateway_mode=gateway_mode,
                 skip_profiles=_already_restarted_profiles,
             )
-            _recovery_profiles = list(_recovery_result.get("requested") or [])
-            _recovery_succeeded = set(_recovery_result.get("succeeded") or [])
-            _recovered = not _recovery_profiles or (
-                _recovery_succeeded == set(_recovery_profiles)
-                and not _recovery_result.get("failed")
-            )
-            if _recovery_succeeded:
+            # Only systemd-VERIFIED outcomes may claim supervisor coverage.
+            # A relaunch that merely exited 0 ("relaunch_attempted") was never
+            # observed by the code and must not clear the incomplete flag.
+            _recovery_verified = set(_recovery_result.get("verified") or [])
+            if _recovery_verified:
                 relaunched_profiles.extend(
                     profile
-                    for profile in sorted(_recovery_succeeded)
+                    for profile in sorted(_recovery_verified)
                     if profile not in relaunched_profiles
                 )
             _planned_gateway_runtimes = [
@@ -8823,18 +8913,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _planned_gateway_profiles = {
                 runtime.profile for runtime in _planned_gateway_runtimes
             }
-            _covered_gateway_profiles = _already_restarted_profiles | set(
-                _recovery_succeeded
-            )
-            _all_gateway_profiles_are_safe_to_recover = all(
-                runtime.profile in _already_restarted_profiles
-                or getattr(runtime, "supervisor", None) in _FRESH_RESTART_SUPERVISORS
-                for runtime in _planned_gateway_runtimes
+            _covered_gateway_profiles = (
+                _already_restarted_profiles | _recovery_verified
             )
             _recovery_complete = bool(_planned_gateway_profiles) and (
                 _planned_gateway_profiles <= _covered_gateway_profiles
-                and _all_gateway_profiles_are_safe_to_recover
-                and (not _recovery_profiles or _recovered)
+                and not _recovery_result.get("failed")
+                and not _recovery_result.get("relaunch_attempted")
             )
             if _recovery_complete:
                 # The fresh child is the recovery terminal result. Leave the

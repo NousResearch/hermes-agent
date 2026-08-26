@@ -68,9 +68,18 @@ class TestReceiptLifecycle:
 
     def test_fresh_recovery_result_reaches_persisted_receipt(self, receipt_home):
         recovery = {
-            "requested": ["coder", "default"],
-            "succeeded": ["default"],
+            "requested": ["coder", "default", "ops"],
+            "verified": ["default"],
+            "relaunch_attempted": ["ops"],
             "failed": ["coder"],
+            "skipped": [
+                {
+                    "profile": "desk",
+                    "kind": "serve",
+                    "supervisor": "desktop",
+                    "reason": "desktop app owns and respawns this serve backend",
+                }
+            ],
         }
 
         ur.begin_update_receipt()
@@ -83,7 +92,11 @@ class TestReceiptLifecycle:
         path = _finalize("partial")
 
         payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["gateway_restart"]["fresh_recovery"] == recovery
+        persisted = payload["gateway_restart"]["fresh_recovery"]
+        assert persisted == recovery
+        # The conservative vocabulary is the persisted contract: no bucket may
+        # rebrand an unverified relaunch as supervisor-backed success.
+        assert "succeeded" not in persisted
 
     def test_latest_pointer_written_and_readable(self, receipt_home):
         ur.begin_update_receipt()

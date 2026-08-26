@@ -113,17 +113,26 @@ class UpdateReceipt:
             "phase_error": phase_error,
         }
         if fresh_recovery is not None:
-            result["fresh_recovery"] = {
-                "requested": [
-                    str(profile) for profile in fresh_recovery.get("requested", [])
-                ],
-                "succeeded": [
-                    str(profile) for profile in fresh_recovery.get("succeeded", [])
-                ],
-                "failed": [
-                    str(profile) for profile in fresh_recovery.get("failed", [])
-                ],
+            # Conservative outcome vocabulary: "verified" is the only bucket
+            # allowed to claim supervisor coverage; "relaunch_attempted" means
+            # the relaunch exited 0 without independent supervisor
+            # observation. "skipped" preserves runtimes (manual gateways,
+            # serve/dashboard entries) the pass deliberately did not touch.
+            persisted: dict[str, Any] = {
+                key: [str(profile) for profile in fresh_recovery.get(key, [])]
+                for key in ("requested", "verified", "relaunch_attempted", "failed")
             }
+            persisted["skipped"] = [
+                {
+                    "profile": str(entry.get("profile", "")),
+                    "kind": str(entry.get("kind", "")),
+                    "supervisor": str(entry.get("supervisor", "")),
+                    "reason": str(entry.get("reason", "")),
+                }
+                for entry in fresh_recovery.get("skipped", [])
+                if isinstance(entry, dict)
+            ]
+            result["fresh_recovery"] = persisted
         self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:

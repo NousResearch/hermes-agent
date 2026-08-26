@@ -5083,6 +5083,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_format_concurrent_instances_message",
         "_format_time_ago",
         "_gateway_service_matches_profile",
+        "_gateway_recovery_partition",
         "_gateway_restart_recovery_profiles",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",

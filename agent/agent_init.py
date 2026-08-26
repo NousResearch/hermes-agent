@@ -2831,9 +2831,10 @@ def init_agent(
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
     from agent.native_compaction import resolve_native_compaction_capabilities
-    agent.capabilities = resolve_native_compaction_capabilities(
+    agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model,
         base_url=agent.base_url,
+        provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
     )
     agent.max_compression_attempts = compression_max_attempts

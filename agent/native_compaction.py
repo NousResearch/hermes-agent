@@ -72,6 +72,7 @@ def resolve_native_compaction_capabilities(
     *,
     model: Optional[str],
     base_url: Optional[str],
+    provider: Optional[str] = None,
     is_codex_backend: bool = False,
 ) -> Dict[str, bool]:
     """Resolve the native-compaction capability for a runtime destination.
@@ -79,9 +80,11 @@ def resolve_native_compaction_capabilities(
     The result is deliberately explicit: a resolved ``False`` is different
     from an unresolved capability and must survive model switches unchanged.
     """
-    eligible = is_native_compaction_model(model) and is_direct_openai_route(
-        base_url,
-        is_codex_backend=is_codex_backend,
+    normalized_provider = (provider or "").strip().lower()
+    direct_default = normalized_provider == "openai" and not base_url
+    eligible = is_native_compaction_model(model) and (
+        direct_default
+        or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend)
     )
     return {"native_compaction": eligible}
 
@@ -178,7 +181,7 @@ def native_compaction_context_management(
     (``agent.codex_responses_native_compaction = False``, set by the
     conversation loop's rejection recovery) takes effect on the next call.
     """
-    capabilities = getattr(agent, "capabilities", None)
+    capabilities = getattr(agent, "runtime_capabilities", None)
     if isinstance(capabilities, dict):
         if not bool(capabilities.get("native_compaction", False)):
             return None

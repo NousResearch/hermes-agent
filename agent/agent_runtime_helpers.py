@@ -1748,8 +1748,17 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
-        if "capabilities" in rt:
-            agent.capabilities = dict(rt.get("capabilities") or {})
+        if "runtime_capabilities" in rt:
+            raw_capabilities = rt["runtime_capabilities"]
+            if not isinstance(raw_capabilities, dict):
+                logger.warning("Ignoring malformed runtime capabilities snapshot")
+            else:
+                agent.runtime_capabilities = dict(raw_capabilities)
+        elif "capabilities" in rt:
+            # Read snapshots written by the initial capability propagation patch.
+            raw_capabilities = rt["capabilities"]
+            if isinstance(raw_capabilities, dict):
+                agent.runtime_capabilities = dict(raw_capabilities)
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
         agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
@@ -2932,6 +2941,11 @@ def switch_model(
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
+    normalized_new_provider = (new_provider or "").strip().lower()
+    if not base_url and normalized_new_provider == "openai":
+        # An omitted URL means the provider's canonical direct endpoint.
+        base_url = "https://api.openai.com/v1"
+
     # Same-provider switches may omit base_url intentionally (for example, a
     # direct caller refreshing credentials). Resolve capabilities from the
     # endpoint that the normalization below will retain, not from the empty
@@ -2948,6 +2962,7 @@ def switch_model(
         else resolve_native_compaction_capabilities(
             model=new_model,
             base_url=effective_base_url,
+            provider=new_provider,
             is_codex_backend=(new_provider or '').strip().lower() == 'openai-codex',
         )
     )
@@ -2995,7 +3010,7 @@ def switch_model(
             "_is_anthropic_oauth",
             "_config_context_length",
             "_reasoning_echo_flag",
-            "capabilities",
+            "runtime_capabilities",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -3306,7 +3321,7 @@ def switch_model(
 
     # Publish the destination capability map only after every runtime setup
     # above has succeeded. Failed switches must leave the old map intact.
-    agent.capabilities = destination_capabilities
+    agent.runtime_capabilities = destination_capabilities
 
     # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
     # The breaker's error text tells the user to "switch models ... then
@@ -3335,7 +3350,7 @@ def switch_model(
         # recovery or fallback restore would resurrect the PRE-switch
         # overrides via the stale init-time snapshot (#75091 seam).
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
+        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

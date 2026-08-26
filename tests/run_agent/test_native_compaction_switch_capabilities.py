@@ -36,6 +36,16 @@ def test_untrusted_destination_capabilities_are_explicitly_denied():
     assert capabilities == {"native_compaction": False}
 
 
+def test_default_openai_destination_is_enabled_without_explicit_base_url():
+    capabilities = resolve_native_compaction_capabilities(
+        model="gpt-5.6",
+        base_url="",
+        provider="openai",
+    )
+
+    assert capabilities == {"native_compaction": True}
+
+
 def test_explicit_false_capability_denies_native_payload():
     agent = _agent({"native_compaction": False})
 

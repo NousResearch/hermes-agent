@@ -287,6 +287,35 @@ class TestRuntimeFailedSweep:
         assert dl.sweep_failed_for_runtime("telegram") == []
         assert _row("ob-1")["state"] == "abandoned"
 
+    def test_delivered_row_is_never_reclaimed_by_reconnect_sweep(self):
+        """Idempotency: once delivered, a reconnect sweep must not re-send.
+
+        Strongest form: the row previously failed with the allowlisted
+        transient error and is force-restamped with that ``last_error`` even
+        after delivery, so the ONLY guard standing between the sweep and a
+        duplicate send is the ``state='delivered'`` filter itself.
+        """
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "send_path_degraded")
+
+        # First reconnect legitimately claims and (successfully) redelivers.
+        assert len(dl.sweep_failed_for_runtime("telegram")) == 1
+        dl.mark_delivered("ob-1")
+        # Simulate a mark_delivered that leaves the retryable error string
+        # behind: even then, a delivered row must never be reclaimed.
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET last_error=? "
+                "WHERE obligation_id=?",
+                ("send_path_degraded", "ob-1"),
+            )
+
+        assert dl.sweep_failed_for_runtime("telegram") == []
+        row = _row("ob-1")
+        assert row is not None
+        assert row["state"] == "delivered"
+        assert row["attempts"] == 1
+
     def test_current_owner_stale_row_is_abandoned(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")

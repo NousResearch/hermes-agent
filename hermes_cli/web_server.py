@@ -4604,12 +4604,22 @@ def _dashboard_spawn_executable() -> str:
         for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
             candidate = PROJECT_ROOT / rel
             if candidate.is_file():
-                resolved = candidate.resolve()
                 # Same interpreter → keep sys.executable (preserves the
-                # docstring's console-ownership behavior verbatim).
-                if resolved == exe.resolve():
+                # docstring's console-ownership behavior verbatim). Compare
+                # UNRESOLVED normalized paths: a venv's bin/python is
+                # typically a SYMLINK to the base interpreter, so resolving
+                # both sides makes the venv python and the dependency-less
+                # base compare equal — exactly the SSH-runtime case this
+                # function exists to fix. The unresolved path IS the venv's
+                # identity (pyvenv.cfg discovery keys off argv0's location).
+                if os.path.normcase(os.path.normpath(str(candidate))) == (
+                    os.path.normcase(os.path.normpath(str(exe)))
+                ):
                     return sys.executable
-                return str(resolved)
+                # Return the candidate UNRESOLVED for the same reason:
+                # invoking the resolved target would bypass pyvenv.cfg and
+                # run the bare base interpreter again.
+                return str(candidate)
     except OSError:
         pass
     return sys.executable

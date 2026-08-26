@@ -67,3 +67,24 @@ class TestDashboardSpawnExecutable:
             patch.object(sys, "executable", str(base_interp)),
         ):
             assert web_server._dashboard_spawn_executable() == str(base_interp)
+
+    def test_venv_symlink_to_base_is_still_preferred_unresolved(self, tmp_path):
+        """The Linux-standard layout: venv/bin/python is a SYMLINK to the
+        base interpreter. The chooser must return the UNRESOLVED venv path —
+        resolving it would compare equal to the base interpreter (missing
+        the swap) or spawn the base directly (bypassing pyvenv.cfg). This is
+        the exact layout of the #90026 report."""
+        base = tmp_path / "uv-base" / "python"
+        base.parent.mkdir(parents=True)
+        base.touch()
+        venv_py = tmp_path / "venv" / "bin" / "python"
+        venv_py.parent.mkdir(parents=True)
+        venv_py.symlink_to(base)
+        with (
+            patch.object(web_server, "PROJECT_ROOT", tmp_path),
+            patch.object(sys, "executable", str(base)),
+        ):
+            chosen = web_server._dashboard_spawn_executable()
+        assert chosen == str(venv_py), (
+            "must return the unresolved venv path, not the symlink target"
+        )

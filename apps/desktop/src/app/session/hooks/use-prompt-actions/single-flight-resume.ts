@@ -21,7 +21,10 @@ const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
 // deadline therefore belongs here too: a caller that joins an older wedged
 // flight must inherit the same bounded settlement and identity-safe eviction,
 // rather than depending on whichever surface happened to create the flight.
-const SESSION_RESUME_SETTLEMENT_TIMEOUT_MS = 20_000
+// Keep this beyond HermesGateway's ordinary 30s request budget. The transport
+// should get the first chance to settle or reject a valid resume; this outer
+// deadline only breaks flights from non-standard callers that never settle.
+const SESSION_RESUME_SETTLEMENT_TIMEOUT_MS = 35_000
 
 export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
   const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)

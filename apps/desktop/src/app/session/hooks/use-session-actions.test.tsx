@@ -1987,7 +1987,7 @@ describe('resumeSession failure recovery', () => {
     let firstResume!: Promise<unknown>
     await act(async () => {
       firstResume = resume!('stored-1', true)
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(35_000)
       await firstResume
     })
 

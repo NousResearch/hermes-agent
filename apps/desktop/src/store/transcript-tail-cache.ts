@@ -61,8 +61,6 @@ function purgeLegacyV1(store: Storage): void {
     return
   }
 
-  legacyPurged = true
-
   try {
     const doomed: string[] = []
 
@@ -77,6 +75,11 @@ function purgeLegacyV1(store: Storage): void {
     for (const key of doomed) {
       store.removeItem(key)
     }
+
+    // Only latch on a completed sweep: a mid-sweep throw retries on the next
+    // storage() touch instead of leaving a partial purge latched for the
+    // window's lifetime.
+    legacyPurged = true
   } catch {
     // best effort
   }
@@ -278,6 +281,55 @@ export function dropTranscriptTail(storedSessionId: string, scope?: TranscriptTa
     writeIndex(
       store,
       readIndex(store).filter(entry => entry !== suffix)
+    )
+  } catch {
+    // best effort
+  }
+}
+
+/** Drop EVERY scope's entry for a stored id. Delete-path only: the save-path
+ *  scope (ownerRoute) and the delete-path scope (the removed row's
+ *  connection_id) are derived from different sources, so a shape drift
+ *  between them would orphan the entry until LRU eviction (#94914 review,
+ *  defect 1). A DELETED stored id cannot be legitimately reused, so sweeping
+ *  all scopes is safe there — but never on the failed-resume path, where a
+ *  same-id twin in another profile must keep its own tail. */
+export function dropTranscriptTailEverywhere(storedSessionId: string): void {
+  const id = (storedSessionId ?? '').trim()
+  const store = storage()
+
+  if (!store || !id) {
+    return
+  }
+
+  try {
+    const namesId = (entry: string): boolean => {
+      if (entry === id) {
+        return true
+      }
+
+      if (!entry.startsWith('[')) {
+        return false
+      }
+
+      try {
+        const parsed = JSON.parse(entry)
+
+        return Array.isArray(parsed) && parsed[2] === id
+      } catch {
+        return false
+      }
+    }
+
+    const index = readIndex(store)
+
+    for (const entry of index.filter(namesId)) {
+      store.removeItem(PREFIX + entry)
+    }
+
+    writeIndex(
+      store,
+      index.filter(entry => !namesId(entry))
     )
   } catch {
     // best effort

@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import {
   clearTranscriptTails,
   dropTranscriptTail,
+  dropTranscriptTailEverywhere,
   loadTranscriptTail,
   saveTranscriptTail
 } from './transcript-tail-cache'
@@ -166,6 +167,21 @@ describe('transcript tail cache', () => {
 
       expect(loadTranscriptTail('sess-d', { profile: 'p1' })).toBeNull()
       expect(loadTranscriptTail('sess-d', { profile: 'p2' })).not.toBeNull()
+    })
+
+    it('delete-path everywhere-drop clears every scope of the id even when scopes drifted', () => {
+      // Save under a routed scope (connectionId present); the delete path
+      // derives its scope from the removed row, which may lack the tag —
+      // the everywhere-drop must still clear the entry (#94914 defect 1).
+      saveTranscriptTail('sess-gone', [msg('routed-row')], { connectionId: 'homelab', profile: 'ops' })
+      saveTranscriptTail('sess-gone', [msg('local-row')], { profile: 'ops' })
+      saveTranscriptTail('sess-kept', [msg('other-row')], { profile: 'ops' })
+
+      dropTranscriptTailEverywhere('sess-gone')
+
+      expect(loadTranscriptTail('sess-gone', { connectionId: 'homelab', profile: 'ops' })).toBeNull()
+      expect(loadTranscriptTail('sess-gone', { profile: 'ops' })).toBeNull()
+      expect(loadTranscriptTail('sess-kept', { profile: 'ops' })).not.toBeNull()
     })
 
     it('purges pre-scoping v1 entries so a stale tail can never paint again', async () => {

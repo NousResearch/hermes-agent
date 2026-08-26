@@ -486,6 +486,9 @@ _SNAPSHOT_IGNORES = (
     "RunningChromeVersion",
     "SingletonSocket",
     "*.tmp",
+    "*-journal",         # SQLite rollback journals — sidecars of the auth DBs,
+    "*-wal",             # which are copied via online-backup; a stale sidecar
+    "*-shm",             # next to a backed-up DB corrupts it.
     "BrowserMetrics-spare.pma",
 )
 
@@ -494,18 +497,16 @@ _SNAPSHOT_IGNORES = (
 # Paths here are RELATIVE TO A PROFILE DIR (Default, "Profile 6", …) — the
 # caller resolves which source profile is active and mirrors these into the
 # copy's ``Default`` so the launched Chromium (which opens ``Default``) lands
-# on the user's real signed-in session.
+# on the user's real signed-in session. No ``-journal``/``-wal`` sidecars: the
+# SQLite DBs are copied via the online-backup API (see _copy_auth_file), which
+# produces a self-contained DB with committed state folded in — copying a
+# stale raw journal on top of that would corrupt it.
 _AUTH_REFRESH_PROFILE_FILES = (
     "Cookies",
-    "Cookies-journal",
     "Network/Cookies",
-    "Network/Cookies-journal",
     "Login Data",
-    "Login Data-journal",
     "Login Data For Account",
-    "Login Data For Account-journal",
     "Web Data",
-    "Web Data-journal",
     "Preferences",
 )
 
@@ -554,25 +555,76 @@ def _secure_snapshot_root(path: str) -> None:
         logger.debug("could not secure real-profile snapshot dir %s: %s", path, e)
 
 
-def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> None:
+# Auth files that are SQLite databases: on Windows a running Chrome holds these
+# with an exclusive lock, so a raw file copy raises WinError 32 ("being used by
+# another process") and a naive best-effort skip leaves the copy signed-out.
+# These are copied via SQLite's online-backup API instead, which reads a
+# consistent committed snapshot while the lock is held. Matched by basename.
+_SQLITE_AUTH_DBS = frozenset({
+    "Cookies", "Login Data", "Login Data For Account", "Web Data",
+})
+
+
+def _copy_auth_file(src_file: str, dst_file: str) -> bool:
+    """Copy one auth file, lock-aware. Returns True on success.
+
+    For SQLite DBs (Cookies/Login Data/…), use the online-backup API so the
+    copy works even while the browser holds the file's write lock (Windows).
+    Everything else is a plain copy. A DB whose backup fails falls through to a
+    raw copy attempt; only if BOTH fail do we report failure to the caller.
+    """
+    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+    if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
+        try:
+            import sqlite3
+
+            # Read-only URI + immutable-free: we want a consistent committed
+            # snapshot, not to fight the writer. Short busy timeout so a truly
+            # wedged DB fails fast rather than hanging the launch.
+            source = sqlite3.connect(f"file:{src_file}?mode=ro", uri=True, timeout=5)
+            try:
+                out = sqlite3.connect(dst_file)
+                try:
+                    with out:
+                        source.backup(out)
+                finally:
+                    out.close()
+            finally:
+                source.close()
+            return True
+        except Exception as e:
+            logger.debug("real-profile: sqlite-backup of %s failed (%s); trying raw copy",
+                         src_file, e)
+    # Non-DB file, or DB whose backup failed: raw copy.
+    try:
+        shutil.copy2(src_file, dst_file)
+        return True
+    except OSError as e:
+        logger.debug("real-profile: could not copy %s: %s", src_file, e)
+        return False
+
+
+def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
     """Copy ``source_profile``'s auth files into the copy's ``Default`` slot.
 
     agent-browser launches ``Default`` in the copied user-data-dir; mirroring
     the active source profile's cookies/logins/prefs there is what makes the
     session actually signed in (the LinkedIn/Gmail "logged out" bug when the
-    real session lives in a non-Default profile).
+    real session lives in a non-Default profile). Lock-aware (Windows), so a
+    running Chrome doesn't block the cookie DBs.
+
+    Returns the number of DB auth files that could NOT be copied (0 = clean).
     """
     dst_default = os.path.join(dst, "Default")
+    failed_dbs = 0
     for rel in _AUTH_REFRESH_PROFILE_FILES:
         s = os.path.join(src, source_profile, rel)
         if not os.path.isfile(s):
             continue
-        d = os.path.join(dst_default, rel)
-        try:
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            shutil.copy2(s, d)
-        except OSError as e:
-            logger.debug("real-profile auth mirror: skipped %s: %s", rel, e)
+        ok = _copy_auth_file(s, os.path.join(dst_default, rel))
+        if not ok and os.path.basename(rel) in _SQLITE_AUTH_DBS:
+            failed_dbs += 1
+    return failed_dbs
 
 
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
@@ -632,8 +684,11 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
 
         if not populated:
             # Fresh (or torn-and-rebuilding): drop any partial Default and copy
-            # the ACTIVE profile's full dir (minus caches) into the copy's
-            # Default. Only the active profile is copied — never the others.
+            # the ACTIVE profile's full dir (minus caches AND the locked auth
+            # DBs) into the copy's Default. The SQLite auth DBs are excluded
+            # here because a raw copytree of a file a running Chrome holds open
+            # raises on Windows; they are copied lock-aware by
+            # _mirror_profile_auth below (sqlite online-backup).
             dst_default = os.path.join(dst, "Default")
             try:
                 shutil.rmtree(dst_default, ignore_errors=True)
@@ -642,7 +697,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                     dst_default,
                     dirs_exist_ok=True,
                     symlinks=False,
-                    ignore=shutil.ignore_patterns(*_SNAPSHOT_IGNORES),
+                    ignore=shutil.ignore_patterns(*_SNAPSHOT_IGNORES, *_SQLITE_AUTH_DBS),
                     ignore_dangling_symlinks=True,
                 )
             except shutil.Error as multi:
@@ -651,10 +706,20 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                     "real-profile snapshot: %d file(s) skipped copying %s/%s",
                     len(multi.args[0]) if multi.args else 0, src, source_profile,
                 )
-        else:
-            # Already populated: re-sync just the active profile's auth files
-            # into Default so fresh logins show up (no full recopy).
-            _mirror_profile_auth(src, dst, source_profile)
+
+        # Both paths: copy the active profile's auth DBs into Default,
+        # lock-aware (sqlite online-backup) so a running Chrome on Windows
+        # doesn't block them. This is also the per-launch fresh-login re-sync.
+        failed_dbs = _mirror_profile_auth(src, dst, source_profile)
+        if failed_dbs:
+            # We could not read the user's cookie/login DBs at all — even the
+            # online-backup fallback failed. Rather than launch a silently
+            # signed-out session, fail closed with an actionable message.
+            return None, (
+                f"could not read the '{browser}' profile's login data "
+                f"({failed_dbs} database(s) locked). Close {browser} and retry, "
+                "or turn browser.use_real_profile off."
+            )
 
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):

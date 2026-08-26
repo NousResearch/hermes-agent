@@ -759,3 +759,76 @@ class TestReviewRound3:
         assert err is None
         snap.assert_called_once()
         bt._real_profile_cdp_cache.clear()
+
+
+class TestWindowsLockedProfileCopy:
+    """Windows: a running Chrome holds Cookies/Login Data with an exclusive
+    lock. The auth DBs must be copied via SQLite online-backup (works under the
+    lock), not a raw copy that fails and leaves a signed-out snapshot."""
+
+    def _locked_src(self, root):
+        import sqlite3, json
+        (root / "Default" / "Network").mkdir(parents=True)
+        (root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
+        (root / "Default" / "Preferences").write_text("{}")
+        ck = str(root / "Default" / "Cookies")
+        con = sqlite3.connect(ck)
+        con.execute("create table cookies(host_key, name)")
+        con.executemany("insert into cookies values(?,?)",
+                        [("nous.ai", f"c{i}") for i in range(42)])
+        con.commit()
+        return root, con  # caller keeps con open to simulate the live lock
+
+    def test_locked_cookie_db_copied_via_backup(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        import sqlite3, shutil
+        src, con = self._locked_src(tmp_path / "real")
+        con.execute("BEGIN"); con.execute("insert into cookies values('u','uncommitted')")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        try:
+            dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        finally:
+            con.rollback(); con.close()
+        assert err is None
+        copy_ck = str(home / "browser-profile" / "chrome" / "Default" / "Cookies")
+        t = str(tmp_path / "probe"); shutil.copy2(copy_ck, t)
+        n = sqlite3.connect(t).execute("select count(*) from cookies").fetchone()[0]
+        assert n == 42  # committed rows copied under the lock; uncommitted excluded
+        # No stale journal/wal sidecar left next to the backed-up DB.
+        assert not (home / "browser-profile" / "chrome" / "Default" / "Cookies-journal").exists()
+
+    def test_copy_auth_file_backs_up_db(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        import sqlite3
+        src = str(tmp_path / "Cookies")
+        con = sqlite3.connect(src); con.execute("create table cookies(x)"); con.execute("insert into cookies values(1)"); con.commit(); con.close()
+        dst = str(tmp_path / "out" / "Cookies")
+        assert bc._copy_auth_file(src, dst) is True
+        assert sqlite3.connect(dst).execute("select count(*) from cookies").fetchone()[0] == 1
+
+    def test_copy_auth_file_plain_for_non_db(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        src = str(tmp_path / "Preferences"); open(src, "w").write('{"k":1}')
+        dst = str(tmp_path / "out" / "Preferences")
+        assert bc._copy_auth_file(src, dst) is True
+        assert open(dst).read() == '{"k":1}'
+
+    def test_fail_closed_when_db_unreadable(self, tmp_path, monkeypatch):
+        """If even the online-backup can't read the DB, snapshot fails closed
+        rather than launching a silently signed-out session."""
+        import hermes_cli.browser_connect as bc
+        import json
+        root = tmp_path / "real"
+        (root / "Default").mkdir(parents=True)
+        (root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
+        (root / "Default" / "Cookies").write_text("not-a-db")
+        (root / "Default" / "Preferences").write_text("{}")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        # Force both sqlite-backup and raw copy to fail for the DB.
+        monkeypatch.setattr(bc, "_copy_auth_file",
+                            lambda s, d: False if os.path.basename(s) in bc._SQLITE_AUTH_DBS else True)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(root))
+        assert dst is None
+        assert err and "login data" in err.lower() and "close" in err.lower()

@@ -1787,7 +1787,13 @@ _MIRROR_PROVENANCE_RANK = {
 }
 
 
-def _target_mirror_eligible(job: dict, target: dict, *, global_mirror: bool) -> bool:
+def _target_mirror_eligible(
+    job: dict,
+    target: dict,
+    *,
+    global_mirror: bool,
+    origin_match: Optional[bool] = None,
+) -> bool:
     """Whether a resolved delivery target may receive the transcript mirror.
 
     The June origin-scoping refactor gated mirroring on target == origin,
@@ -1810,17 +1816,28 @@ def _target_mirror_eligible(job: dict, target: dict, *, global_mirror: bool) -> 
 
     Broadcast expansions (``all``, bare-platform home targets) carry no
     provenance tag and are never eligible — unchanged invariant.
+
+    ``origin_match`` lets the caller pass a precomputed
+    ``_target_matches_origin`` result (``_deliver_result`` already computes it
+    for the same target); when ``None`` it is computed here so tests and
+    future callers stay self-contained.
     """
-    origin = _resolve_origin(job) or {}
-    if _target_matches_origin(
-        origin, target.get("platform", ""), target.get("chat_id", ""),
-        target.get("thread_id"),
-    ):
+    if origin_match is None:
+        origin = _resolve_origin(job) or {}
+        origin_match = _target_matches_origin(
+            origin, target.get("platform", ""), target.get("chat_id", ""),
+            target.get("thread_id"),
+        )
+    if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
     if resolved_from == "origin_fallback":
         # Same activation rules as an origin target: per-job attach wins,
-        # else the global flag.
+        # else the global flag. This deliberately restates the precedence
+        # _cron_mirror_delivery_enabled encodes (keep the two in sync): the
+        # sole production caller pre-merges it into `global_mirror`, but the
+        # helper must stay correct standalone — a per-job False must beat a
+        # raw global True for any caller that does not pre-merge.
         per_job = job.get("attach_to_session")
         if isinstance(per_job, bool):
             return per_job
@@ -3203,7 +3220,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Broadcast/fan-out targets are never mirrored (_target_mirror_eligible).
         origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
         mirror_this_target = mirror_enabled and _target_mirror_eligible(
-            job, target, global_mirror=mirror_enabled,
+            job, target, global_mirror=mirror_enabled, origin_match=origin_target,
         )
         # Pass the origin's user_id so a per-user-isolated group chat resolves to
         # the exact member who scheduled the job — parity with send_message.
@@ -3744,11 +3761,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 is_dm=is_dm_target,
                                 scope_id=origin.get("scope_id"),
                             )
-                    elif in_channel_surface and not origin_target:
+                    elif in_channel_surface and not inchannel_continuable:
                         logger.warning(
-                            "Job '%s': in_channel delivery to %s:%s is not the "
-                            "origin conversation (origin=%s:%s thread=%s) — seed "
-                            "skipped, brief not continuable here",
+                            "Job '%s': in_channel delivery to %s:%s is not a "
+                            "continuable target (origin=%s:%s thread=%s; not the "
+                            "origin conversation, and not a mirror-eligible "
+                            "fallback/opted-in target the seed can key) — seed "
+                            "skipped; the plain mirror below may still apply",
                             job["id"], platform_name, chat_id,
                             origin.get("platform"), origin.get("chat_id"),
                             origin.get("thread_id"),

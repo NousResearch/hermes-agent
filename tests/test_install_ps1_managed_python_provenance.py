@@ -45,7 +45,7 @@ def _run_venv_stage(
         capture_output=True,
         text=True,
         check=False,
-        timeout=30,
+        timeout=45,
     )
 
 
@@ -167,6 +167,29 @@ def test_python_find_drains_large_stderr_without_deadlock(tmp_path: Path) -> Non
 
     assert run.returncode == 0, run.stdout + run.stderr
     assert "Creating virtual environment with Python 3.11" in run.stdout
+
+
+def test_python_find_timeout_kills_uv_and_fails_stage(tmp_path: Path) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    hermes_home = tmp_path / "hermes-home"
+    install_dir = tmp_path / "install"
+    uv = hermes_home / "bin" / "uv.exe"
+    uv.parent.mkdir(parents=True)
+    install_dir.mkdir()
+    compile_fake_uv(powershell, uv)
+    env = {
+        **os.environ,
+        "FAKE_UV_LOG": str(tmp_path / "uv.log"),
+        "FAKE_UV_FIND_DELAY_MS": "60000",
+    }
+
+    run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
+
+    assert run.returncode != 0
+    assert "uv python find 3.11 timed out after 30000 ms" in (run.stdout + run.stderr)
 
 
 def test_venv_failure_fails_stage_and_restores_existing_environment(

@@ -403,6 +403,94 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     )
 
 
+def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> List[str]:
+    """Mode-specific guidance echoed in the create/update response.
+
+    The teaching that used to live in CRONJOB_SCHEMA parameter descriptions
+    (paid for on every API call of every session) is delivered here instead —
+    once, in the tool result, at the moment the model actually created a job
+    in that mode. Keep each note short and actionable; only fire notes for
+    modes the job actually uses.
+    """
+    notes: List[str] = []
+    if job.get("monitor_script") or job.get("monitor_url"):
+        notes.append(
+            "Monitor mode: the source runs first each tick and its output is "
+            "hashed as exact bytes — unchanged output suppresses the agent run "
+            "(silent no_change tick), changed output injects a MONITOR CHANGE "
+            "DETECTED diff into the prompt. The first tick always runs as "
+            "baseline. The source must emit STABLE output (no timestamps, no "
+            "random ordering) or every tick will look changed."
+        )
+    if job.get("no_agent"):
+        notes.append(
+            "no_agent mode: stdout is delivered verbatim; EMPTY stdout sends "
+            "nothing at all (watchdog pattern — script should stay quiet when "
+            "there is nothing to report). Non-zero exit or timeout sends an "
+            "error alert. prompt/skills are ignored."
+        )
+    _deliver = (user_deliver or "").strip().lower()
+    if _deliver:
+        if "all" in _deliver.split(","):
+            notes.append(
+                "deliver='all' resolves at fire time and never includes "
+                "bot-chat targets — channels connected later are picked up "
+                "automatically."
+            )
+        if _deliver.startswith("bot-chat:"):
+            notes.append(
+                "Targeting another profile's Bot Chat costs that bot an agent "
+                "turn per run."
+            )
+        # platform:chat_id with no thread segment loses topic targeting —
+        # warn once here instead of carrying the warning in the schema.
+        for target in _deliver.split(","):
+            parts = target.strip().split(":")
+            if (
+                len(parts) == 2
+                and parts[0] not in ("bot-chat", "sms")
+                and parts[1]
+                and not parts[1].startswith("#")
+            ):
+                notes.append(
+                    f"deliver target '{target.strip()}' has no :thread_id "
+                    "segment — on thread/topic platforms the delivery lands in "
+                    "the main chat, not a topic."
+                )
+                break
+    return notes
+
+
+def _split_monitor_arg(
+    monitor: Optional[str],
+    monitor_script: Optional[str],
+    monitor_url: Optional[str],
+) -> tuple:
+    """Resolve the model-facing ``monitor`` field into the stored pair.
+
+    The schema advertises ONE ``monitor`` field; the value's shape decides the
+    transport: ``http(s)://...`` is a URL source, anything else is a script
+    path (a legal script path can never start with a URL scheme). Jobs keep
+    storing ``monitor_script``/``monitor_url`` separately — this is an
+    interface merge, not a storage migration — and the legacy field names are
+    still accepted as aliases so older transcripts/replays keep working.
+
+    Returns ``(monitor_script, monitor_url)`` with update semantics:
+    ``None`` = leave unchanged, ``''`` = clear. Setting one source via
+    ``monitor`` clears the other, so switching transports in one call never
+    trips the mutual-exclusion invariant. An explicit ``monitor`` wins over
+    the legacy aliases.
+    """
+    if monitor is None:
+        return monitor_script, monitor_url
+    value = monitor.strip()
+    if not value:
+        return "", ""  # clear both sources
+    if value.lower().startswith(("http://", "https://")):
+        return "", value
+    return value, ""
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -1304,7 +1392,11 @@ def cronjob(
                 if not script:
                     return tool_error(
                         "create with no_agent=True requires a script — "
-                        "the script is the job.",
+                        "the script is the job. In no_agent mode the LLM is "
+                        "skipped entirely: prompt and skills are ignored, "
+                        "non-empty stdout is delivered verbatim, empty stdout "
+                        "sends nothing (watchdog pattern), and a non-zero "
+                        "exit or timeout sends an error alert.",
                         success=False,
                     )
             elif not prompt and not canonical_skills:
@@ -1420,6 +1512,12 @@ def cronjob(
                 "message": _create_message,
                 **_gateway_liveness_notice(),
             }
+            # Mode-specific guidance rides in the create response (once, when
+            # relevant) instead of in the schema (every API call). See
+            # _mode_guidance_notes.
+            _notes = _mode_guidance_notes(job, _normalize_deliver_param(deliver))
+            if _notes:
+                _result["guidance"] = _notes
             return json.dumps(_result, indent=2)
 
         if normalized == "list":
@@ -1716,7 +1814,13 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            _upd_result: Dict[str, Any] = {"success": True, "job": _format_job(updated)}
+            # An update can switch a job into monitor / no_agent mode or
+            # change its delivery — echo the same mode guidance as create.
+            _upd_notes = _mode_guidance_notes(updated, _normalize_deliver_param(deliver))
+            if _upd_notes:
+                _upd_result["guidance"] = _upd_notes
+            return json.dumps(_upd_result, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1727,25 +1831,9 @@ def cronjob(
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
-    "description": """Manage scheduled cron jobs with a single compressed tool.
+    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
-Use action='create' to schedule a new job from a prompt or one or more skills.
-Use action='list' to inspect jobs.
-Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
-
-action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue. Optionally pass 'prompt' with action='run' to inject transient per-run context (appended to the job's stored prompt for that single fire only, never persisted).
-
-To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
-
-Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
-On update, passing skills=[] clears attached skills.
-
-NOTE: The agent's final response is auto-delivered to the target. Put the primary
-user-facing content in the final response. Cron jobs run autonomously with no user
-present — they cannot ask questions or request clarification.
-
-Scheduling from cron-run sessions is disabled by default and enabled via cron.allow_agent_scheduling in config.yaml. When enabled, jobs created from a cron run are user-owned in the same flat job table as every other job, and their delivery resolves to the creating job's own persistent target — never to the ephemeral cron-run session. Prefer updating an existing job (list first, then update by job_id) over creating near-duplicates.""",
+Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1759,11 +1847,11 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
+                "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
             },
             "name": {
                 "type": "string",
@@ -1775,81 +1863,47 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), 'bot-chat' (inject the output into this profile's canonical Bot Chat as a real message — the bot reads it, acts on it, and responds in that chat; 'bot-chat:<profile>' targets another local profile's Bot Chat, costing that bot an agent turn per run), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all', 'bot-chat:research'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time (and never includes bot-chat targets), so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
             },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
             },
-            "monitor_script": {
+            "monitor": {
                 "type": "string",
-                "description": f"Optional monitor-mode source script (same rules as `script`: relative to {display_hermes_home()}/scripts/, .sh/.bash via bash, else Python). Each tick it runs FIRST and its output is hashed as exact bytes: UNCHANGED output suppresses the agent run entirely (no LLM, no delivery, recorded as a silent no_change tick); CHANGED output injects a MONITOR CHANGE DETECTED block (unified diff + new output) into the prompt before a normal agent run. The first tick always runs the agent (baseline). Scripts must emit STABLE output — no timestamps or random ordering — or every tick looks changed. Mutually exclusive with monitor_url; incompatible with no_agent=True. On update, pass empty string to clear."
-            },
-            "monitor_url": {
-                "type": "string",
-                "description": "Optional http(s) URL used as the monitor source instead of a script — fetched with a bounded GET (30s timeout, 256KB cap) each tick. Same hash-suppression semantics as monitor_script. Mutually exclusive with monitor_script. On update, pass empty string to clear."
+                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
             },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
-                "description": (
-                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
-                    "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
-                    "\n\n"
-                    "DELIVERY SEMANTICS when True: "
-                    "(a) non-empty stdout is sent verbatim as the message; "
-                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
-                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
-                    "\n\n"
-                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
-                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
-                ),
+                "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything needing reasoning."
             },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Optional job ID or list of job IDs whose most recent completed output is "
-                    "injected into the prompt as context before each run. "
-                    "Use this to chain cron jobs: job A collects data, job B processes it. "
-                    "Each entry must be a valid job ID (from cronjob action='list'); "
-                    "for a job's OWN previous output, prefer the `continuity` flag. "
-                    "Note: injects the most recent completed output — does not wait for "
-                    "upstream jobs running in the same tick. "
-                    "On update, pass an empty array to clear."
-                ),
+                "description": "Optional job ID(s) whose most recent completed output is injected as context each run — chains jobs (A collects, B processes). For a job's OWN previous output prefer `continuity`. On update, [] clears."
             },
             "continuity": {
                 "type": "boolean",
-                "description": (
-                    "When true, this recurring job carries continuity across runs: each run "
-                    "wakes up with the job's own most recent output injected into its prompt, "
-                    "so it can dedupe against what was already reported and continue where the "
-                    "last run left off (scouts, monitors, incremental digests). "
-                    "First run has no previous output and runs unchanged. "
-                    "On update, pass false to turn continuity off (other context_from entries "
-                    "are preserved). Default: false."
-                ),
+                "description": "True = each run sees the job's own previous output, so it can dedupe and continue where it left off (scouts, monitors, incremental digests). Default false. On update, false turns it off."
             },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+                "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the origin DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts."
             },
         },
         "required": ["action"]
@@ -1882,11 +1936,18 @@ def check_cronjob_requirements() -> bool:
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="cronjob",
-    toolset="cronjob",
-    schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: cronjob(
+
+def _cronjob_handler(args, **kw):
+    """Model-tool dispatch for ``cronjob``.
+
+    Resolves the one model-facing ``monitor`` field into the stored
+    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted
+    as aliases so older transcripts/replays keep working).
+    """
+    _mon_script, _mon_url = _split_monitor_arg(
+        args.get("monitor"), args.get("monitor_script"), args.get("monitor_url")
+    )
+    return cronjob(
         action=args.get("action", ""),
         job_id=args.get("job_id"),
         prompt=args.get("prompt"),
@@ -1909,11 +1970,18 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
-        monitor_script=args.get("monitor_script"),
-        monitor_url=args.get("monitor_url"),
+        monitor_script=_mon_script,
+        monitor_url=_mon_url,
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
-    ),
+    )
+
+
+registry.register(
+    name="cronjob",
+    toolset="cronjob",
+    schema=CRONJOB_SCHEMA,
+    handler=_cronjob_handler,
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )

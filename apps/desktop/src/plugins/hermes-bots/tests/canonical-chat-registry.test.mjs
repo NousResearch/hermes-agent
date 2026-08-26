@@ -133,7 +133,11 @@ test('openBotCanonicalChat takes only the bot owner — identity needs nothing e
 
 // ── 2. no registry row → create ─────────────────────────────────────────────
 
-test('no registry row mints a hidden "Bot Chat" session with the intro kickoff', async () => {
+test('no registry row mints a hidden "Bot Chat" session WITHOUT an intro kickoff', async () => {
+  // Click-path resolution: a miss mints the session silently. The intro turn
+  // fires only from New Agent creation (kickoff: true) — re-firing it here
+  // burned a model turn and stamped a user-attributed prompt into the chat
+  // on every resolution miss (retitle/hidden-listing/update skew).
   const runtime = loadOpenPath({
     request: async method => {
       if (method === 'session.list') return { sessions: [] }
@@ -148,8 +152,11 @@ test('no registry row mints a hidden "Bot Chat" session with the intro kickoff',
   const create = runtime.requests.find(r => r.method === 'session.create')
   assert.equal(create?.params?.title, 'Bot Chat')
   assert.equal(create?.params?.hidden, true)
+  // The eager title write persisted the row; no user-attributed intro.
+  const titled = runtime.requests.find(r => r.method === 'session.title')
+  assert.equal(titled?.params?.session_id, 'rt-1')
   const kickoff = runtime.requests.find(r => r.method === 'prompt.submit')
-  assert.equal(kickoff?.params?.session_id, 'rt-1')
+  assert.equal(kickoff, undefined)
 })
 
 test('a failed open of the registry row surfaces instead of forking a replacement', async () => {

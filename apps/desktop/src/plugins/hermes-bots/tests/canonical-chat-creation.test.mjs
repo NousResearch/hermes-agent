@@ -35,13 +35,42 @@ test('regression: creation materializes and titles the lazy row before opening i
       events.push(method)
       if (method === 'session.create') return { stored_session_id: 'stored-1', session_id: 'runtime-1' }
       if (method === 'session.title') {
-        assert.deepEqual(params, { session_id: 'runtime-1', title: 'Bot Chat' })
+        // vm-realm objects fail assert.deepEqual on prototype identity —
+        // compare via JSON.stringify (harness contract). A throw here is
+        // NOT inert: createCanonicalChat reads it as "eager title
+        // unsupported" and falls back to the compat kickoff.
+        assert.equal(JSON.stringify(params), JSON.stringify({ session_id: 'runtime-1', title: 'Bot Chat' }))
       }
       return {}
     }
   })
 
+  // No kickoff option: the click-path mint. The eager title write persists
+  // the row, so NO intro turn fires — the user speaks first (ScottFive).
   assert.equal(await runtime.createCanonicalChat('ops'), 'stored-1')
+  assert.deepEqual(events, [
+    'session.list',
+    'session.create',
+    'session.title',
+    'open:stored-1'
+  ])
+})
+
+test('New Agent creation (kickoff: true) still sends the one intro turn', async () => {
+  const events = []
+  const runtime = loadCanonicalCreation({
+    openSession: async id => events.push(`open:${id}`),
+    request: async (method, params) => {
+      events.push(method)
+      if (method === 'session.create') return { stored_session_id: 'stored-1', session_id: 'runtime-1' }
+      if (method === 'prompt.submit') {
+        assert.equal(params.session_id, 'runtime-1')
+      }
+      return {}
+    }
+  })
+
+  assert.equal(await runtime.createCanonicalChat('ops', { kickoff: true }), 'stored-1')
   assert.deepEqual(events, [
     'session.list',
     'session.create',
@@ -84,5 +113,5 @@ test('regression: a failed intro still returns the created registry row', async 
 
   // The chat exists under the canonical title — the next click finds it by
   // NAME (the registry), so a failed kickoff can never orphan or fork it.
-  assert.equal(await runtime.createCanonicalChat('newbie'), 'new-bot-chat')
+  assert.equal(await runtime.createCanonicalChat('newbie', { kickoff: true }), 'new-bot-chat')
 })

@@ -5731,14 +5731,25 @@ async function findExistingCanonicalChat(owner) {
   return rows.find(row => isCanonicalBotChatHistory(row)) || null
 }
 
-/** Create the bot's ONE forever chat: a real session titled "Bot Chat",
- *  opened with a kickoff message (the gateway prunes zero-message sessions,
- *  so the chat is born with the bot introducing itself). Adopts the existing
- *  "Bot Chat" row instead of creating when the profile already has one —
- *  minting while a "Bot Chat" row exists is always wrong twice over: it
- *  forks the forever-chat AND the new row can never take the (already held)
- *  canonical title. Creates on the bot's own source via requestForBot. */
-function createCanonicalChat(owner) {
+/** Create the bot's ONE forever chat: a real session titled "Bot Chat".
+ *  Adopts the existing "Bot Chat" row instead of creating when the profile
+ *  already has one — minting while a "Bot Chat" row exists is always wrong
+ *  twice over: it forks the forever-chat AND the new row can never take the
+ *  (already held) canonical title. Creates on the bot's own source via
+ *  requestForBot.
+ *
+ *  `kickoff` (New Agent creation ONLY): submit the self-introduction prompt
+ *  so a brand-new bot greets its owner once. Every other caller — the bot
+ *  row's click-path canonical resolution above all — must NOT pass it: a
+ *  resolution miss (retitled row, hidden-listing gap, post-update skew)
+ *  re-mints the session, and re-firing the intro there burned a model turn
+ *  and stamped a user-attributed "Hey, tell me about yourself!" into the
+ *  chat on every click (ScottFive report). The kickoff's original session-
+ *  persistence job is done by the eager session.title write below on modern
+ *  gateways; older gateways that reject the eager write keep a narrow
+ *  compat kickoff, else the pruner reaps the empty lazy session and the
+ *  chat never survives its own creation. */
+function createCanonicalChat(owner, { kickoff = false } = {}) {
   const { bot, name, key, route } = botOwner(owner)
   const inflight = canonicalCreations.get(key)
 
@@ -5781,9 +5792,12 @@ function createCanonicalChat(owner) {
     // before either the open or kickoff, closing both the 404 race and the
     // untitled window. Older gateways may not support the eager write; retain
     // the kickoff-and-retry fallback below.
+    let titled = false
+
     if (runtime) {
       try {
         await requestForBot(bot, 'session.title', { session_id: runtime, title: CANONICAL_CHAT_TITLE })
+        titled = true
       } catch {
         /* compatibility fallback: prompt.submit will persist the lazy row */
       }
@@ -5809,22 +5823,44 @@ function createCanonicalChat(owner) {
     }
 
     if (runtime) {
-      await new Promise(resolve => window.setTimeout(resolve, 400))
+      // Intro turn: only on genuine New Agent creation (`kickoff`), or as the
+      // COMPAT persistence write when the eager title failed — an old gateway
+      // prunes the zero-message lazy session, so without some first prompt
+      // the chat never survives its own creation. A titled row needs neither:
+      // the user speaks first.
+      const submitIntro = kickoff || !titled
 
-      try {
-        await requestForBot(bot, 'prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+      if (submitIntro) {
+        await new Promise(resolve => window.setTimeout(resolve, 400))
 
-        if (!opened && sid && typeof host.openSession === 'function') {
+        try {
+          await requestForBot(bot, 'prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+
+          if (!opened && sid && typeof host.openSession === 'function') {
+            await host.openSession(sid, {
+              ...(route ? { route } : {}),
+              profile: name,
+              intent: 'main',
+              keepAllProfilesScope: route ? true : false
+            })
+          }
+        } catch {
+          // The chat already exists under the canonical title — the next click
+          // finds it by name instead of making a second Bot Chat.
+        }
+      } else if (!opened && sid && typeof host.openSession === 'function') {
+        // No intro turn: still finish mounting the chat when the first open
+        // raced the (now titled) row.
+        try {
           await host.openSession(sid, {
             ...(route ? { route } : {}),
             profile: name,
             intent: 'main',
             keepAllProfilesScope: route ? true : false
           })
+        } catch {
+          /* row is titled and persistent — the next click opens it by name */
         }
-      } catch {
-        // The chat already exists under the canonical title — the next click
-        // finds it by name instead of making a second Bot Chat.
       }
     }
 
@@ -10083,8 +10119,11 @@ function CreateAgentDialog({ open, onClose, roster }) {
       // Birth the bot's forever chat right away: it introduces itself as
       // the first thing the user sees, and the pin exists from minute one.
       try {
-        // Creates, pins, opens, and kicks off the intro in one flow.
-        const sid = await createCanonicalChat(slug)
+        // Creates, pins, opens, and kicks off the intro in one flow. This is
+        // the ONE caller allowed to request the intro turn — genuine New
+        // Agent creation. Click-path resolution (openBotCanonicalChat) mints
+        // silently so a resolution miss never burns a turn (ScottFive).
+        const sid = await createCanonicalChat(slug, { kickoff: true })
 
         if (!sid && typeof host.newChat === 'function') {
           host.newChat(slug)

@@ -1492,6 +1492,118 @@ def test_host_todo_snapshot_does_not_block_recursive_llm_checkpoint():
     assert engine.last_error is None
 
 
+def test_background_notification_compaction_binds_host_real_user_anchor():
+    """A synthetic current turn must not make the host reject the prepared receipt."""
+    config = {
+        "context": {
+            "governor": {
+                "summary_mode": "extractive",
+                "checkpoint_strategy": "off",
+            }
+        }
+    }
+    with patch("hermes_cli.config.load_config", return_value=config):
+        engine = ContextGovernorEngine(binary="/tmp/context-governor")
+    _bind_fixture(engine)
+    engine._target_tokens = lambda current_tokens: 900
+    synthetic_notification = (
+        "[IMPORTANT: Background process proc_deadbeef completed normally "
+        "(exit code 0).]"
+    )
+
+    def run_json(args, payload):
+        if args[:3] == ["compact-v2", "--dir", str(engine.store_dir)]:
+            response = _checkpoint_response(1, session_id="background-session")
+            response["compacted_messages"][-1] = {
+                "role": "user",
+                "content": synthetic_notification,
+            }
+            return response
+        if args and args[0] == "finalize-v2":
+            response = copy.deepcopy(payload["candidate"])
+            response["compacted_messages"] = copy.deepcopy(
+                payload["compacted_messages"]
+            )
+            response["receipt"]["compacted_approx_tokens"] = 100
+            response["receipt"]["token_savings_estimate"] = 900
+            return response
+        if args[:3] == ["prepare-v2", "--dir", str(engine.store_dir)]:
+            receipt = payload["receipt"]
+            return {
+                "schema": "PendingReceiptInfoV2",
+                "receipt_id": receipt["receipt_id"],
+                "session_id": receipt["session_id"],
+                "generation": receipt["generation"],
+                "created_utc": "2026-08-26T00:00:00Z",
+                "pending_path": f"/tmp/{receipt['receipt_id']}.json",
+                "expected_compacted_message_count": len(payload["compacted_messages"]),
+                "expected_compacted_transcript_blake3": receipt[
+                    "compacted_transcript_blake3"
+                ],
+                "expected_compacted_transcript_sha256": receipt[
+                    "compacted_transcript_sha256"
+                ],
+                "expected_compacted_messages": copy.deepcopy(
+                    payload["compacted_messages"]
+                ),
+                "verified": True,
+            }
+        if args[:3] == ["activate-v2", "--dir", str(engine.store_dir)]:
+            return {
+                "schema": "ReceiptActivationResultV2",
+                "receipt_id": payload["receipt_id"],
+                "activated": True,
+                "verified": True,
+            }
+        raise AssertionError(f"unexpected command: {args}")
+
+    engine._run_json = run_json
+    original = [
+        {"role": "user", "content": "Completely fix context compaction."},
+        {"role": "assistant", "content": "Working on the fix."},
+        {"role": "user", "content": synthetic_notification},
+    ]
+
+    compacted = engine.compress(original, current_tokens=100)
+    before_host_boundary = copy.deepcopy(compacted)
+    from agent.conversation_compression import _ensure_compressed_has_user_turn
+
+    _ensure_compressed_has_user_turn(original, compacted)
+
+    assert compacted == before_host_boundary
+    assert any(
+        message.get("role") == "user"
+        and message.get("content") == "Completely fix context compaction."
+        for message in compacted
+    )
+    assert engine.validate_pending_compression(compacted) is True
+    assert engine.commit_pending_compression(compacted) is True
+
+
+def test_zero_user_continuation_anchor_is_idempotent_at_host_boundary():
+    """The host must not append another continuation after adapter-side repair."""
+    from agent.context_compressor import COMPRESSION_CONTINUATION_USER_CONTENT
+    from agent.conversation_compression import _ensure_compressed_has_user_turn
+
+    notification = "[IMPORTANT: Background process proc_zero completed normally.]"
+    original = [
+        {"role": "assistant", "content": "runtime-only session"},
+        {"role": "user", "content": notification},
+    ]
+    compacted = [
+        {"role": "assistant", "content": "deterministic extractive summary"},
+        {
+            "role": "user",
+            "content": (f"{notification}\n\n{COMPRESSION_CONTINUATION_USER_CONTENT}"),
+        },
+    ]
+    before_host_boundary = copy.deepcopy(compacted)
+
+    _ensure_compressed_has_user_turn(original, compacted)
+
+    assert compacted == before_host_boundary
+
+
 def test_host_alternation_repair_is_bound_into_the_receipt_projection():
     """The finalized receipt must describe the host-repaired transcript.
 
@@ -1629,6 +1741,86 @@ def test_host_alternation_repair_is_bound_into_the_receipt_projection():
 
     assert engine.last_error is None
     assert generation == 2
+
+
+@pytest.mark.integration
+def test_real_binary_background_notification_compacts_across_generations(
+    tmp_path, monkeypatch
+):
+    """The live protocol must bind the host anchor and keep recursive continuity."""
+    binary = os.environ.get("CONTEXT_GOVERNOR_BINARY") or shutil.which(
+        "context-governor"
+    )
+    if binary is None:
+        pytest.skip("context-governor binary is not installed")
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    binding = ContextGovernorKeyState(home, binary).initialize_first_install()
+    binding.close()
+
+    store = home / "context-governor"
+    session_id = "background-notification-e2e"
+    config = {
+        "context": {
+            "governor": {
+                "summary_mode": "llm",
+                "checkpoint_strategy": "after_n:999",
+                "token_budget": 64,
+                "min_net_savings_tokens": 128,
+                "allocator": "deterministic_v1",
+                "budget_mode": "hard_cascade",
+                "protect_first_n": 0,
+                "protect_last_n": 1,
+                "max_lineage_generation": 8,
+            }
+        }
+    }
+    from agent.conversation_compression import _ensure_compressed_has_user_turn
+
+    with patch("hermes_cli.config.load_config", return_value=config):
+        engine = ContextGovernorEngine(binary=binary, store_dir=store)
+        engine.on_session_start(session_id)
+        engine.update_model("fixture", context_length=1_000, provider="openai-codex")
+        first_input = [
+            {"role": "user", "content": "Preserve this human intent."},
+            {"role": "assistant", "content": "old context " * 800},
+            {
+                "role": "user",
+                "content": (
+                    "[IMPORTANT: Background process proc_first completed normally "
+                    "(exit code 0).]"
+                ),
+            },
+        ]
+        first = engine.compress(first_input, current_tokens=10)
+        first_before_host = copy.deepcopy(first)
+        _ensure_compressed_has_user_turn(first_input, first)
+        assert first == first_before_host
+        assert engine.validate_pending_compression(first) is True
+        engine.commit_pending_compression(first)
+
+        second_input = first + [
+            {"role": "assistant", "content": "new context " * 800},
+            {
+                "role": "user",
+                "content": (
+                    "[IMPORTANT: Background process proc_second completed normally "
+                    "(exit code 0).]"
+                ),
+            },
+        ]
+        second = engine.compress(second_input, current_tokens=10)
+        second_before_host = copy.deepcopy(second)
+        _ensure_compressed_has_user_turn(second_input, second)
+        assert second == second_before_host
+        assert engine.validate_pending_compression(second) is True
+        engine.commit_pending_compression(second)
+
+    assert engine.compression_count == 2
+    assert engine.last_error is None
+    assert not list((store / ".pending").glob("*.json"))
 
 
 @pytest.mark.integration

@@ -25,6 +25,7 @@ first attempt at this fix failed in production: ``_check_local_runtime()`` runs
 before ``initialize()`` reaches its import.
 """
 
+import builtins
 import importlib
 import os
 import sys
@@ -194,5 +195,36 @@ class TestDependencyProbesAreGuarded:
         from hermes_cli import memory_setup
 
         memory_setup._install_dependencies("provider")
+
+        assert os.environ["HERMES_PROBE_CANARY"] == "original"
+
+    def test_memory_setup_probe_restores_env_when_import_raises(
+        self, tmp_path, monkeypatch
+    ):
+        plugin_dir = tmp_path / "provider"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - fake-env-mutating-dep\n", encoding="utf-8"
+        )
+        import plugins.memory
+
+        monkeypatch.setattr(
+            plugins.memory, "find_provider_dir", lambda name: plugin_dir
+        )
+        from hermes_cli import memory_setup
+
+        monkeypatch.setenv("HERMES_PROBE_CANARY", "original")
+        real_import = builtins.__import__
+
+        def mutating_failing_import(name, *args, **kwargs):
+            if name == "fake_env_mutating_dep":
+                os.environ["HERMES_PROBE_CANARY"] = "clobbered"
+                raise RuntimeError("dependency import failed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mutating_failing_import)
+
+        with pytest.raises(RuntimeError, match="dependency import failed"):
+            memory_setup._install_dependencies("provider")
 
         assert os.environ["HERMES_PROBE_CANARY"] == "original"

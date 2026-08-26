@@ -8,10 +8,14 @@ spend controls server-side.
 
 Wire notes (verified live against api.router.com, Aug 2026):
 
-* **Responses API only.** Router implements ``GET /v1/models`` and
-  ``POST /v1/responses``; ``POST /v1/chat/completions`` does not exist and
-  404s. ``api_mode="codex_responses"`` plus the ``api.router.com`` host
-  mandate in ``hermes_cli/providers.py`` keep every path off the chat wire.
+* **Responses API is the native wire.** Router serves ``GET /v1/models``
+  and ``POST /v1/responses``; ``POST /v1/chat/completions`` is only a
+  minimal compatibility shim (added Aug 2026) that translates onto
+  Responses. Per-model reasoning-effort validation, reasoning summaries,
+  and prompt caching are Responses-surface features, so
+  ``api_mode="codex_responses"`` plus the ``api.router.com`` host mandate
+  in ``hermes_cli/providers.py`` keep every path on the native wire —
+  the same shape as the ``api.openai.com`` mandate.
 * **Account-scoped catalog.** Valid model IDs are whatever the key's
   ``GET /v1/models`` returns (BYOK accounts see extra entries), so this
   profile ships **no** ``fallback_models`` — the picker relies on the live

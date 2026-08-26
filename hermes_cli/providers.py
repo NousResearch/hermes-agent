@@ -663,8 +663,10 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
       - api.meta.ai only achieves KV-cache hits on /v1/responses with
         prompt_cache_retention; /v1/chat/completions returns 0 cached
         tokens (measured 0% vs 93-99% on /responses with retention).
-      - api.router.com (Ramp Router) implements ONLY the Responses API —
-        POST /v1/chat/completions does not exist on the host and 404s.
+      - api.router.com (Ramp Router) is Responses-native: per-model
+        reasoning-effort validation, reasoning summaries, and prompt
+        caching live on /v1/responses; /v1/chat/completions is only a
+        minimal compatibility shim translated onto it.
       - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
       - Kimi's ``/coding`` endpoint speaks native Messages.
       - AWS Bedrock runtime hosts speak Converse.
@@ -697,9 +699,11 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     # cache-cold (0% vs 93-99% measured). Exact-hostname match per #32243.
     if hostname == "api.meta.ai":
         return "codex_responses"
-    # Ramp Router (api.router.com) is Responses-only: the host serves
-    # GET /v1/models and POST /v1/responses, and /v1/chat/completions 404s
-    # (docs.router.com/api/endpoint). Exact-hostname match per #32243.
+    # Ramp Router (api.router.com) is Responses-native: reasoning-effort
+    # validation, reasoning summaries, and prompt caching live on
+    # /v1/responses, and /v1/chat/completions is only a minimal
+    # compatibility shim (docs.router.com/api/endpoint). Exact-hostname
+    # match per #32243.
     if hostname == "api.router.com":
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):

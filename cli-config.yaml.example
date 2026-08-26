@@ -152,10 +152,11 @@ model:
 #   router:
 #     base_url: https://api.router.com/v1
 #     api_key: ${RAMP_ROUTER_API_KEY}
-#     # api_mode auto-detected as codex_responses for api.router.com — the host
-#     # is Responses-only (/v1/chat/completions 404s). The bundled router
-#     # provider covers this; a named custom provider is only needed for a
-#     # non-default Router-compatible endpoint.
+#     # api_mode auto-detected as codex_responses for api.router.com — the
+#     # Responses API is Router's native wire (chat/completions is only a
+#     # compatibility shim). The bundled router provider covers this; a named
+#     # custom provider is only needed for a non-default Router-compatible
+#     # endpoint.
 
 
 # Command-minted credentials (optional): key_cmd

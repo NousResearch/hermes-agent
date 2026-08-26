@@ -163,8 +163,9 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.actual.inc":
         return "codex_responses"
-    # Ramp Router: Responses-only host — /v1/chat/completions does not
-    # exist and 404s (docs.router.com/api/endpoint). Mirrors the
+    # Ramp Router: Responses-native host — /v1/chat/completions is only a
+    # minimal compatibility shim, while reasoning and caching support live
+    # on /v1/responses (docs.router.com/api/endpoint). Mirrors the
     # host_mandated_api_mode clause in hermes_cli/providers.py so the
     # runtime resolver stays in lockstep. Exact hostname per #32243.
     if hostname == "api.router.com":

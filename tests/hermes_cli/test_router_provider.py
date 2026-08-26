@@ -1,7 +1,8 @@
 """Behavior contracts for the Ramp Router (api.router.com) provider.
 
-Router is Responses-only: the host implements GET /v1/models and
-POST /v1/responses, and POST /v1/chat/completions does not exist (404).
+Router is Responses-native: the host implements GET /v1/models and
+POST /v1/responses, and /v1/chat/completions is only a minimal
+compatibility shim translated onto Responses.
 These tests pin the host mandate, the runtime URL detection that mirrors
 it, and the profile/auth registry wiring — same contract suite shape as
 tests/hermes_cli/test_meta_prompt_cache.py.

@@ -1737,7 +1737,6 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["requested_provider"] == "custom:lmstudio"
 
 
-<<<<<<< HEAD
 def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
     """OpenCode Free is keyless: an exhausted credential pool must not raise
     a missing-credential error. The provider resolves with the keyless

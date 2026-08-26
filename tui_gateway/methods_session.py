@@ -8,6 +8,10 @@ import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
@@ -1086,6 +1090,13 @@ def _(rid, params: dict, session: dict) -> dict:
         except Exception as e:
             return _err(rid, 5007, str(e))
     if reactions is None:
+        logger.warning(
+            "message.react: no row for session=%r row_id=%r key=%r — stale "
+            "client row id or session not rehydrated",
+            params.get("session_id"),
+            row_id,
+            params.get("session_id"),
+        )
         return _err(rid, 4040, "message not found in this session")
     return _ok(rid, {"row_id": int(row_id), "reactions": reactions})
 

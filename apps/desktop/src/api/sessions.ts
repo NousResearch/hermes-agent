@@ -1,4 +1,5 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -37,16 +38,11 @@ function sessionScopeQuery(scope?: ProfileScope): string {
  * correctly know nothing about this Desktop-local registry id. Preserve an
  * explicit owner from a multi-source response; otherwise stamp the active
  * non-local source so a later resume cannot fall back to a same-named local
- * profile.
+ * profile. Delegates to the canonical row-stamp helper so this stays the ONE
+ * write shape for connection_id on backend-returned rows.
  */
 function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
-  const connectionId = getApiRequestConnection()?.trim()
-
-  if (!connectionId || connectionId === 'local') {
-    return sessions
-  }
-
-  return sessions.map(session => (session.connection_id ? session : { ...session, connection_id: connectionId }))
+  return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
 }
 
 /**

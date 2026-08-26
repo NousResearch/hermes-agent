@@ -205,6 +205,14 @@ _PREFIX_PATTERNS = [
     # prefix, so the charset stays broad and the length floor does the discriminating.
     r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    # age (filo.io / str4d) key families — fixed-length bech32 bodies with no
+    # checksum, so the full length is the only discriminator. Secret keys are
+    # "AGE-SECRET-KEY-" (15) + 59 chars incl. the '1' version byte = 74 total;
+    # recipients are "age1" + 58 = 62. Recipient keys are PUBLIC but masked
+    # anyway: same body shape as secrets and a false positive costs nothing
+    # next to a missed private key.
+    r"AGE-SECRET-KEY-[1-9A-HJ-NP-Za-km-z]{59}",  # age secret (private) key
+    r"age1[1-9A-HJ-NP-Za-km-z]{58}",             # age recipient (public) key
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key

@@ -146,6 +146,29 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
+    def test_age_keys(self):
+        """age (filo.io) secret and recipient keys mask via their prefixes.
+
+        Secret: "AGE-SECRET-KEY-" + 59 bech32 chars (incl. '1' version
+        byte) = 74 total. Recipient: "age1" + 58 = 62. Recipients are
+        public but masked anyway — same body shape as secrets.
+        """
+        secret = "AGE-SECRET-KEY-" + "1" + "K" * 29 + "k" * 29
+        assert len(secret) == 74
+        recipient = "age1" + "K" * 29 + "k" * 29
+        assert len(recipient) == 62
+        for key in (secret, recipient):
+            result = redact_sensitive_text(f"generated {key} ok")
+            assert key not in result, f"{key[:20]}… survived redaction"
+
+    def test_age_prefix_requires_word_boundary_and_length(self):
+        """Prose and short fragments must not false-positive."""
+        for benign in [
+            "the ages1 catalogued sites were visited",  # prose, wrong shape
+            "AGE-SECRET-KEY-SHORT",                      # body far under length
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
 
 
 

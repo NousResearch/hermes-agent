@@ -4881,8 +4881,8 @@ def test_ws_disconnect_running_sidecar_still_closes_without_orphan_timer(monkeyp
     )
     monkeypatch.setattr(
         server,
-        "_close_session_by_id",
-        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: closed.append((session["_sid"], end_reason)) or True,
     )
     monkeypatch.setattr(
         server, "_schedule_ws_orphan_reap", lambda sid: scheduled.append(sid)
@@ -17707,8 +17707,9 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session["_sid"], end_reason)) or True,
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
     # outlives the test; grace=0 short-circuits it so no thread lingers.
@@ -17725,46 +17726,64 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server._sessions.clear()
 
 
-def test_close_sessions_for_transport_skips_rebound_session(monkeypatch):
-    """Rebind-between-snapshot-and-stomp (#77129 concept salvage).
-
-    _close_sessions_for_transport snapshots owned sessions under
-    _sessions_lock, then parks each on the drop sentinel. A concurrent
-    session.resume that rebinds the session to a NEW live transport in
-    between must NOT be stomped back onto the sentinel — that knocks an
-    attached client into detached state and arms an orphan reap against a
-    session with a live owner. The stomp must revalidate ownership under
-    the lock and skip (park AND reap) when the transport already moved on.
-    """
+@pytest.mark.parametrize("close_on_disconnect", [True, False])
+def test_close_sessions_for_transport_skips_session_rebound_before_claim(
+    monkeypatch, close_on_disconnect
+):
+    """A resume between snapshot and claim keeps either session type alive."""
     reaps = []
+    teardowns = []
     monkeypatch.setattr(
         server, "_schedule_ws_orphan_reap", lambda sid: reaps.append(sid)
     )
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: teardowns.append((session, end_reason)) or True,
+    )
     old_transport = object()  # the disconnecting transport
     new_transport = object()  # live rebind target (no _closed attr → alive)
+    session = {"transport": old_transport, "close_on_disconnect": close_on_disconnect}
+    original_sessions_lock = server._sessions_lock
+    rebound = threading.Event()
 
-    class _RebindsOnStomp(dict):
-        """Simulates a session.resume landing between snapshot and stomp:
-        the first 'viewers' read inside the stomp loop (i.e. after the
-        snapshot already selected this session) rebinds the transport."""
+    class _SnapshotInterlock:
+        """Rebind in a second thread immediately after the ownership snapshot."""
 
-        def get(self, key, default=None):
-            if key == "viewers" and not self.get("_rebound_flag"):
-                dict.__setitem__(self, "_rebound_flag", True)
-                dict.__setitem__(self, "transport", new_transport)
-            return dict.get(self, key, default)
+        def __init__(self):
+            self._snapshot_released = False
 
-    session = _RebindsOnStomp(
-        {"transport": old_transport, "close_on_disconnect": False}
-    )
+        def __enter__(self):
+            original_sessions_lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            original_sessions_lock.release()
+            if not self._snapshot_released:
+                self._snapshot_released = True
+
+                def _resume_rebind():
+                    with server._session_resume_lock:
+                        session["transport"] = new_transport
+                    rebound.set()
+
+                thread = threading.Thread(target=_resume_rebind)
+                thread.start()
+                assert rebound.wait(timeout=1)
+                thread.join(timeout=1)
+            return False
+
+    monkeypatch.setattr(server, "_sessions_lock", _SnapshotInterlock())
     server._sessions.clear()
     server._sessions["rebound"] = session
     try:
         reaped, detached = server._close_sessions_for_transport(old_transport)
         assert reaped == 0
-        assert detached == 0  # skipped, not parked
-        assert session["transport"] is new_transport  # rebind preserved
-        assert reaps == []  # no orphan reap armed against the live owner
+        assert detached == 0
+        assert server._sessions["rebound"] is session
+        assert session["transport"] is new_transport
+        assert teardowns == []
+        assert reaps == []
     finally:
         server._sessions.clear()
 

@@ -131,6 +131,7 @@ export function connectionScopedAtom<T>(
   options?: ConnectionScopeOptions
 ): WritableAtom<T> {
   const includeProfile = options?.includeProfile !== false
+
   const entry: ScopedEntry<T> = {
     $value: atom<T>(fallback),
     applying: false,
@@ -140,6 +141,7 @@ export function connectionScopedAtom<T>(
     key,
     suffix: connectionScopeSuffix(activeConnection, includeProfile)
   }
+
   entry.$value.set(loadEntry(entry))
   registry.push(entry)
 

@@ -72,9 +72,7 @@ describe('foregroundSessionScopes', () => {
       }
     ])
 
-    expect(foregroundSessionScopes()).toEqual(
-      new Set(['conn:cloud-a::default', 'conn:cloud-b::default'])
-    )
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud-a::default', 'conn:cloud-b::default']))
   })
 
   it('releases an idle pane owner when the pane closes', () => {

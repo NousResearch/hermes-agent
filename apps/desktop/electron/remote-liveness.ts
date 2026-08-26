@@ -68,9 +68,7 @@ export class RemoteRevalidationCoordinator {
   }
 }
 
-interface EnsureHealthyPooledRemoteBackendForDispatchOptions<
-  TConnection extends RemoteConnectionDescriptor
-> {
+interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
@@ -86,9 +84,7 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<
  * caller. The caller should single-flight this function per cached promise so
  * concurrent dispatches share one retire/reconnect sequence.
  */
-export async function ensureHealthyPooledRemoteBackendForDispatch<
-  TConnection extends RemoteConnectionDescriptor
->({
+export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
   connectionPromise,
   currentConnectionPromise,
   probe,

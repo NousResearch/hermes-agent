@@ -4,14 +4,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const gatewayState = atom<'closed' | 'open'>('closed')
 
-const listPersistedSessions = vi.fn(
-  async (_route: unknown, options: { profile: string }) => ({
-    sessions: [{ id: `${options.profile}-bot`, profile: options.profile, started_at: 1, title: 'Bot Chat' }]
-  })
-)
+const listPersistedSessions = vi.fn(async (_route: unknown, options: { profile: string }) => ({
+  sessions: [{ id: `${options.profile}-bot`, profile: options.profile, started_at: 1, title: 'Bot Chat' }]
+}))
 
 const setPersistedSessionHidden = vi.fn(
-  async (_route: unknown, _options: { hidden: boolean; profile: string; sessionId: string }) => ({ hidden: true, ok: true })
+  async (_route: unknown, _options: { hidden: boolean; profile: string; sessionId: string }) => ({
+    hidden: true,
+    ok: true
+  })
 )
 
 const request = vi.fn(async (method: string) =>
@@ -86,7 +87,9 @@ describe('Bot Mode hidden-session reconciliation lifecycle', () => {
         expect.objectContaining({ hidden: true, profile: 'beta', sessionId: 'beta-bot' })
       ])
     )
-    expect(request.mock.calls.some(([method]) => method === 'session.list' || method === 'session.set_hidden')).toBe(false)
+    expect(request.mock.calls.some(([method]) => method === 'session.list' || method === 'session.set_hidden')).toBe(
+      false
+    )
 
     disposers.forEach(dispose => dispose())
     const readsAtDispose = listPersistedSessions.mock.calls.length

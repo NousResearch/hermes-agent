@@ -87,6 +87,7 @@ const remoteConnection = {
 
 function installRemoteDesktop() {
   let mintCount = 0
+
   const getConnection = vi.fn(async (profile?: null | string) => ({
     authMode: 'token' as const,
     baseUrl: 'http://127.0.0.1:5151',
@@ -95,15 +96,18 @@ function installRemoteDesktop() {
     token: 'local-token',
     wsUrl: 'ws://127.0.0.1:5151/api/ws?token=local'
   }))
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...remoteConnection,
     connectionId,
     profile
   }))
+
   const getGatewayWsUrl = vi.fn(async () => ({
     ok: true as const,
     wsUrl: 'ws://127.0.0.1:5151/api/ws?token=fresh-local'
   }))
+
   const getGatewayWsUrlFor = vi.fn(
     async ({ connectionId, profile }: { connectionId: string; profile: string }): Promise<GatewayWsUrlResult> => {
       mintCount += 1
@@ -132,6 +136,7 @@ function installPrimaryDesktop(authMode: 'oauth' | 'token') {
     token: 'primary-token',
     wsUrl: authMode === 'oauth' ? 'wss://gateway.example.test/api/ws?ticket=stale' : 'ws://127.0.0.1:5151/api/ws'
   }))
+
   const getGatewayWsUrl = vi.fn(async (profile?: null | string) => ({
     ok: true as const,
     wsUrl:
@@ -139,6 +144,7 @@ function installPrimaryDesktop(authMode: 'oauth' | 'token') {
         ? `wss://gateway.example.test/api/ws?profile=${profile ?? 'default'}&ticket=fresh`
         : 'ws://127.0.0.1:5151/api/ws?token=fresh'
   }))
+
   const getConnectionFor = vi.fn()
   const getGatewayWsUrlFor = vi.fn()
 
@@ -183,6 +189,7 @@ async function expectSecondaryRecoveryFailure(
   gateway.connectionState = 'closed'
 
   vi.useFakeTimers()
+
   const retry = request('session.resume').then(
     () => undefined,
     error => error

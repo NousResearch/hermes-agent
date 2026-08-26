@@ -98,6 +98,7 @@ export function listTileSessionRow(deps: {
 
   const knownOwner =
     sessionTileOwnerRoute(deps.storedSessionId) ?? knownSessionOwner(deps.sessions, deps.storedSessionId)
+
   const ownerRoute: SessionProfileRoute | undefined =
     knownOwner && typeof knownOwner === 'object' ? knownOwner : undefined
 
@@ -178,6 +179,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const knownOwner: SessionOwnerScope =
         sessionTileOwnerRoute(storedIdRef.current) ?? knownSessionOwner($sessions.get(), storedIdRef.current)
+
       // A bare profile is the legacy/unknown tile shape. Preserve its ambient
       // behavior; only a composite route is strong enough to retarget a tile
       // across same-named sources.

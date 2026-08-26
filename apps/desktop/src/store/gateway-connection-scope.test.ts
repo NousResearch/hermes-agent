@@ -50,6 +50,7 @@ const {
   setPrimaryGateway,
   setPrimaryGatewayConnectionId
 } = await import('./gateway')
+
 const { setApiRequestConnection } = await import('@/hermes')
 
 function installDesktop(): void {
@@ -160,7 +161,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     expect(gatewayMocks.closed).toHaveLength(1)
   })
 
-  it("does not let a remote tile keep-set pin a local same-named secondary", async () => {
+  it('does not let a remote tile keep-set pin a local same-named secondary', async () => {
     // Chrome is on another profile so 'default' is a real secondary, not the
     // spared active key. A homelab bot tile keep-set must keep only the
     // composite scope — the local 'default' socket still idles out.

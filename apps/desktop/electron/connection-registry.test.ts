@@ -726,6 +726,7 @@ test('roster: unique profiles keep bare handles; duplicates get @name-device', (
 test('roster: source profile metadata follows the connection-qualified row', () => {
   const local = { id: 'local', kind: 'local' as const, label: 'This device' }
   const vps = { id: 'vps', kind: 'remote' as const, label: 'VPS', url: 'http://vps:8642' }
+
   const vpsMeta = {
     display_name: 'Emma',
     ui_meta: { 'hermes-bots': { title: 'Emma', shape: 'blobatar::sun', color: '#8b5cf6' } },

@@ -124,22 +124,25 @@ describe('requestModelOptions', () => {
       provider: 'nous',
       providers: [{ models: ['chrome-model'], name: 'Nous', slug: 'nous' }]
     }
+
     const routedPayload = {
       model: 'berry-model',
       provider: 'openai',
       providers: [{ models: ['berry-model'], name: 'OpenAI', slug: 'openai' }]
     }
+
     const gateway = {
       request: vi.fn(() => Promise.resolve(gatewayPayload))
     }
+
     const request = vi.fn(() => Promise.resolve(routedPayload)) as unknown as <T>(
       method: string,
       params?: Record<string, unknown>
     ) => Promise<T>
 
-    await expect(
-      requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })
-    ).resolves.toBe(routedPayload)
+    await expect(requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })).resolves.toBe(
+      routedPayload
+    )
 
     expect(request).toHaveBeenCalledWith('model.options', { explicit_only: true, session_id: 'tile-1' })
     expect(gateway.request).not.toHaveBeenCalled()
@@ -151,13 +154,12 @@ describe('requestModelOptions', () => {
       provider: 'hermes-local',
       providers: [{ models: ['berry-local'], name: 'Hermes Local', slug: 'hermes-local' }]
     }
+
     const request = vi.fn(() => Promise.reject(new Error('gateway request unavailable')))
 
     vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
 
-    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toEqual(
-      restPayload
-    )
+    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toEqual(restPayload)
     expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, 'berry')
   })
 })

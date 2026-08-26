@@ -134,7 +134,6 @@ test('oauthGuardMayHardFail keeps the strict guard when the list is unusable', (
   assert.equal(oauthGuardMayHardFail([{ supportsPassword: true }]), true)
 })
 
-
 test('oauthGuardMayHardFail treats status-shaped string basic as password-only', () => {
   assert.equal(oauthGuardMayHardFail(['basic'] as any), false)
   assert.equal(oauthGuardMayHardFail([' basic '] as any), false)

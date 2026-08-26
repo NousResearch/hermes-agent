@@ -37,13 +37,8 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
-const {
-  $gateway,
-  closeSecondaryGateways,
-  configureGatewayRegistry,
-  ensureGatewayForProfile,
-  setPrimaryGateway
-} = await import('./gateway')
+const { $gateway, closeSecondaryGateways, configureGatewayRegistry, ensureGatewayForProfile, setPrimaryGateway } =
+  await import('./gateway')
 
 type DesktopStub = { getConnection: ReturnType<typeof vi.fn> }
 

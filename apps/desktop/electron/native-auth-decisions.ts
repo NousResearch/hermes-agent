@@ -168,6 +168,7 @@ export function normalizeAdvertisedAuthProviders(providers: unknown): Advertised
       }
 
       out.push({ name, supportsPassword: PASSWORD_PROVIDER_NAMES.has(name) })
+
       continue
     }
 

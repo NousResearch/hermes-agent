@@ -9542,9 +9542,7 @@ async function teardownSshConnection(profile) {
               // connectWindowsRemote does not share POSIX lock/kill. Stay
               // silent on the kill path, but leave a log so quit is not a
               // mysterious no-op on Windows remotes.
-              sshRememberLog(
-                '[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply'
-              )
+              sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
             }
           : remoteLifecycle.disconnect
     }
@@ -14099,11 +14097,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        })`
-      )
+      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
 
       return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
     }

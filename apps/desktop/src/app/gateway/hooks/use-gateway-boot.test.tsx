@@ -9,7 +9,13 @@ import {
   selectConnection,
   setConnectionsRegistry
 } from '@/store/connections'
-import { activeGateway, closeSecondaryGateways, ensureGatewayForAgent, isActivePrimary, requestGatewayForAgent } from '@/store/gateway'
+import {
+  activeGateway,
+  closeSecondaryGateways,
+  ensureGatewayForAgent,
+  isActivePrimary,
+  requestGatewayForAgent
+} from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,

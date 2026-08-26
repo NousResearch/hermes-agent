@@ -128,6 +128,7 @@ describe('resolvePinnedSessions', () => {
       row('foreign', { last_active: 1, pinned: true, profile: 'k9' }),
       row('local', { last_active: 50, pinned: true, profile: 'default' })
     ]
+
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions(['foreign', 'local'], index, sessions, settled).map(s => s.id)).toEqual([

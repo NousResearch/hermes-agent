@@ -286,9 +286,9 @@ describe('localRouteFallbackProfiles', () => {
   })
 
   it('synthesizes local routes for a genuine local enumeration error', () => {
-    expect(
-      localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('ECONNREFUSED'))
-    ).toEqual(['default'])
+    expect(localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('ECONNREFUSED'))).toEqual([
+      'default'
+    ])
   })
 })
 

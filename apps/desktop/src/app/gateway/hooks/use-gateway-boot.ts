@@ -742,6 +742,7 @@ export function useGatewayBoot({
 
     const offEvent = gateway.onEvent(event => {
       const connectionId = activeGatewayConnectionId()
+
       const scopedEvent = {
         ...event,
         profile: sourceProfile,

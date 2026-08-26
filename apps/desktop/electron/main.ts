@@ -3495,31 +3495,35 @@ async function releaseBackendLock(updateRoot, tag) {
 
   const shim = venvHermesShimPath(updateRoot)
 
-  const gate = await waitForBackendRelease(initialPids, {
-    isShimLocked: () => Boolean(isShimLocked(shim)),
-    isPidAlive: isPidAliveWindows,
-    collectStragglerPids: () => {
-      const stragglers = []
+  const gate = await waitForBackendRelease(
+    initialPids,
+    {
+      isShimLocked: () => Boolean(isShimLocked(shim)),
+      isPidAlive: isPidAliveWindows,
+      collectStragglerPids: () => {
+        const stragglers = []
 
-      const currentHermesProcess = backendConnectionState.getProcess()
+        const currentHermesProcess = backendConnectionState.getProcess()
 
-      if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
-        stragglers.push(currentHermesProcess.pid)
-      }
-
-      for (const entry of backendPool.values()) {
-        if (entry.process && Number.isInteger(entry.process.pid)) {
-          stragglers.push(entry.process.pid)
+        if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
+          stragglers.push(currentHermesProcess.pid)
         }
-      }
 
-      return stragglers
+        for (const entry of backendPool.values()) {
+          if (entry.process && Number.isInteger(entry.process.pid)) {
+            stragglers.push(entry.process.pid)
+          }
+        }
+
+        return stragglers
+      },
+      killProcessTree: forceKillProcessTree,
+      sleep: (ms: number) => new Promise(r => setTimeout(r, ms)),
+      now: () => Date.now(),
+      log: rememberLog
     },
-    killProcessTree: forceKillProcessTree,
-    sleep: (ms: number) => new Promise(r => setTimeout(r, ms)),
-    now: () => Date.now(),
-    log: rememberLog
-  }, tag)
+    tag
+  )
 
   if (gate.unlocked) {
     return { unlocked: true }

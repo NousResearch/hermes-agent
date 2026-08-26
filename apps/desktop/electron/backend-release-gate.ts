@@ -68,9 +68,7 @@ export async function waitForBackendRelease(
   tag: string,
   deadlineMs: number = RELEASE_GATE_DEADLINE_MS
 ): Promise<ReleaseGateResult> {
-  const killedPids = new Set<number>(
-    initialPids.filter(pid => Number.isInteger(pid) && pid > 0)
-  )
+  const killedPids = new Set<number>(initialPids.filter(pid => Number.isInteger(pid) && pid > 0))
 
   const deadline = deps.now() + deadlineMs
 
@@ -78,9 +76,7 @@ export async function waitForBackendRelease(
     const lingering = [...killedPids].filter(pid => deps.isPidAlive(pid))
 
     if (!deps.isShimLocked() && lingering.length === 0) {
-      deps.log(
-        `[${tag}] venv shim unlocked and ${killedPids.size} signalled backend PID(s) exited; safe to proceed`
-      )
+      deps.log(`[${tag}] venv shim unlocked and ${killedPids.size} signalled backend PID(s) exited; safe to proceed`)
 
       return { unlocked: true, lingeringPids: [] }
     }

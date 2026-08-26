@@ -12,11 +12,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import {
-  RELEASE_GATE_POLL_MS,
-  type ReleaseGateDeps,
-  waitForBackendRelease
-} from './backend-release-gate'
+import { RELEASE_GATE_POLL_MS, type ReleaseGateDeps, waitForBackendRelease } from './backend-release-gate'
 
 /** A fake clock where sleep() advances time instantly. */
 function fakeClock() {
@@ -137,11 +133,7 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
           return clock.now() < RELEASE_GATE_POLL_MS
         }
 
-        return (
-          pid === 7777 &&
-          stragglerKilledAt !== null &&
-          clock.now() < stragglerKilledAt + 2 * RELEASE_GATE_POLL_MS
-        )
+        return pid === 7777 && stragglerKilledAt !== null && clock.now() < stragglerKilledAt + 2 * RELEASE_GATE_POLL_MS
       }
     })
 
@@ -151,9 +143,7 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
     expect(result.unlocked).toBe(true)
     expect(result.lingeringPids).toEqual([])
     // The gate must have dwelled until the straggler actually exited.
-    expect(clock.now()).toBeGreaterThanOrEqual(
-      (stragglerKilledAt ?? 0) + 2 * RELEASE_GATE_POLL_MS
-    )
+    expect(clock.now()).toBeGreaterThanOrEqual((stragglerKilledAt ?? 0) + 2 * RELEASE_GATE_POLL_MS)
   })
 
   it('ignores invalid PIDs in the seed and straggler sets', async () => {

@@ -25,11 +25,7 @@ const isWindows = process.platform === 'win32'
 
 function spawnSleeper(): { pid: number; kill: () => void } {
   // A real python if available (mirrors the backend shape), else powershell.
-  const child = spawn(
-    'powershell',
-    ['-NoProfile', '-Command', 'Start-Sleep -Seconds 300'],
-    { stdio: 'ignore' }
-  )
+  const child = spawn('powershell', ['-NoProfile', '-Command', 'Start-Sleep -Seconds 300'], { stdio: 'ignore' })
 
   if (!child.pid) {
     throw new Error('sleeper failed to spawn')

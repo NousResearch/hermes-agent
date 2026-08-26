@@ -1124,6 +1124,8 @@ class CheckpointManager:
                     "debug": err or None}
 
         skipped_user_edits: List[str] = []
+        kept_oversize: List[str] = []
+        failed_deletes: List[str] = []
         restore_paths: Optional[List[str]] = None
         if safe and not file_path:
             plan = self.safe_restore_plan(abs_dir, commit_hash)
@@ -1157,7 +1159,6 @@ class CheckpointManager:
             # Hermes-created files absent from it (delete to restore state).
             checkout_targets: List[str] = []
             delete_targets: List[str] = []
-            kept_oversize: List[str] = []
             for rel in restore_paths:
                 ok_in_commit, _, _ = _run_git(
                     ["cat-file", "-e", f"{commit_hash}:{rel}"],
@@ -1184,6 +1185,7 @@ class CheckpointManager:
                         target.unlink()
                 except OSError as exc:
                     logger.debug("Safe restore: could not remove %s: %s", rel, exc)
+                    failed_deletes.append(rel)
             if not checkout_targets:
                 ok, stdout, err = True, "", ""
             else:
@@ -1218,11 +1220,13 @@ class CheckpointManager:
             result["file"] = file_path
         if restore_paths is not None:
             # Only what was actually acted on. A kept oversize path was not
-            # restored, and reporting it as such is how the data loss above
-            # stayed silent: the user was told "Restored" for a file that had
-            # just been unlinked.
+            # restored (and a failed unlink left the file in place), and
+            # reporting either as restored is how the data loss above stayed
+            # silent: the user was told "Restored" for a file that had just
+            # been unlinked.
+            not_restored = set(kept_oversize) | set(failed_deletes)
             result["restored_files"] = [
-                rel for rel in restore_paths if rel not in kept_oversize
+                rel for rel in restore_paths if rel not in not_restored
             ]
             result["skipped_user_edits"] = skipped_user_edits
             if kept_oversize:

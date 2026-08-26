@@ -528,6 +528,33 @@ class TestSafeRestore:
         assert "scratch.txt" in result["restored_files"]
         assert "skipped_oversize" not in result
 
+    def test_safe_restore_does_not_report_a_failed_delete_as_restored(
+        self, mgr, work_dir, monkeypatch,
+    ):
+        """A delete_target whose unlink fails stays on disk — reporting it in
+        restored_files is the same silent misreport the oversize fix closed."""
+        base = self._checkpoint(mgr, work_dir)
+
+        stubborn = work_dir / "stubborn.txt"
+        stubborn.write_text("agent scratch\n")
+        mgr.record_agent_write(str(stubborn))
+
+        import pathlib
+
+        real_unlink = pathlib.Path.unlink
+
+        def failing_unlink(self, *args, **kwargs):
+            if self.name == "stubborn.txt":
+                raise OSError(13, "Permission denied")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", failing_unlink)
+        result = mgr.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert stubborn.exists()
+        assert "stubborn.txt" not in result["restored_files"]
+
     def test_unsafe_restore_overwrites_everything(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
         (work_dir / "main.py").write_text("agent version\n")

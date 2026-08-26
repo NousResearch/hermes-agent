@@ -292,6 +292,7 @@ gateway:
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
     kept_user_edits:       "↷ Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
+    kept_oversize:         "↷ Kept (too large for checkpoints, no stored copy to revert to): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

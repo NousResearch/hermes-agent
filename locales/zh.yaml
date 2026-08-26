@@ -280,6 +280,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "无效的检查点编号。请使用 1-{max}。"
     restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
     kept_user_edits:       "↷ 已保留您的手动编辑：{files}\n如需一并恢复这些文件，请使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（文件过大无法纳入检查点，没有可恢复的存储副本）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:

@@ -1631,16 +1631,34 @@ def skill_manage(
         result = _create_skill(name, content, category)
 
     elif action == "edit":
+        # Legacy alias for a full rewrite (kept for old transcripts/callers;
+        # no longer advertised in the schema — use patch with `content`).
         if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+            return tool_error("content is required for a full rewrite. Provide the full updated SKILL.md text.", success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        # Two shapes: old_string/new_string = targeted replacement;
+        # content (alone) = full SKILL.md rewrite (absorbs the old 'edit').
+        if content and (old_string or new_string is not None):
+            return tool_error(
+                "Pass EITHER content (full SKILL.md rewrite) OR "
+                "old_string/new_string (targeted replacement), not both.",
+                success=False,
+            )
+        if content:
+            result = _edit_skill(name, content)
+        else:
+            if not old_string:
+                return tool_error(
+                    "patch needs old_string/new_string for a targeted "
+                    "replacement, or content for a full SKILL.md rewrite "
+                    "(read it first with skill_view()).",
+                    success=False,
+                )
+            if new_string is None:
+                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
@@ -1744,45 +1762,24 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
-        "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
-        "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
-        "skill's content into another one, or `absorbed_into=\"\"` when you're "
-        "pruning it with no forwarding target. This lets the curator tell "
-        "consolidation from pruning without guessing, so downstream consumers "
-        "(cron jobs that reference the old skill name, etc.) get updated "
-        "correctly. The target you name in `absorbed_into` must already "
-        "exist — create/patch the umbrella first, then delete.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
-        "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use. "
-        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Description: long descriptions are truncated to the first 57 chars "
-        "plus '...' in the system prompt skill index; longer text is visible "
-        "via skills_list/skill_view. Keep the trigger self-contained in that "
-        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
-        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
-        "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
-        "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "Create, update, or delete skills — your procedural memory for "
+        "recurring task types. Actions: create (full SKILL.md + optional "
+        f"category; lands in {display_hermes_home()}/skills/), patch "
+        "(old_string/new_string for a targeted fix — preferred; OR content "
+        "alone for a full SKILL.md rewrite), delete, write_file/remove_file "
+        "(supporting files). Existing skills are modified wherever they "
+        "live. Good skills: a self-contained trigger in the description's "
+        "first 57 chars ('Use when <trigger>. <one-line behavior>.'), "
+        "numbered steps with exact commands, pitfalls, verification (see "
+        "skill_view() for format). Confirm with the user before "
+        "create/delete."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                "enum": ["create", "patch", "delete", "write_file", "remove_file"],
                 "description": "The action to perform."
             },
             "name": {
@@ -1796,8 +1793,9 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Full SKILL.md content (YAML frontmatter + markdown body). "
-                    "Required for 'create' and 'edit'. For 'edit', read the skill "
-                    "first with skill_view() and provide the complete updated text."
+                    "Required for 'create'; on 'patch' it performs a full "
+                    "rewrite (major overhauls only — read the skill first with "
+                    "skill_view(), and don't combine with old_string)."
                 )
             },
             "old_string": {
@@ -1840,20 +1838,13 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "string",
                 "description": "Content for the file. Required for 'write_file'."
             },
-            "absorbed_into": {
-                "type": "string",
-                "description": (
-                    "For 'delete' only — declares intent so the curator can "
-                    "tell consolidation from pruning without guessing. "
-                    "Pass the umbrella skill name when this skill's content "
-                    "was merged into another (the target must already exist). "
-                    "Pass an empty string when the skill is truly stale and "
-                    "being pruned with no forwarding target. Omitting the arg "
-                    "on delete is supported for backward compatibility but "
-                    "downstream tooling (e.g. cron-job skill reference "
-                    "rewriting) will have to guess at intent."
-                )
-            },
+            # NOTE: the handler also accepts `absorbed_into` on delete — the
+            # curator's consolidation pass declares merge-vs-prune intent with
+            # it. Deliberately NOT advertised in this schema: only curator
+            # sessions need it, the curator's own prompt documents it, and the
+            # curator-context delete guard's error re-teaches it on omission
+            # (_curator_consolidation_delete_guard). Keeping it out saves
+            # ~100 tokens on every call of every other session.
         },
         "required": ["action", "name"],
     },

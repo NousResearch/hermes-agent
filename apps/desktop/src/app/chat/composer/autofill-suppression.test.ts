@@ -22,10 +22,13 @@ function extractEditorBlock(src: string): string {
   // The visible editor's opening tag runs from its aria-disabled anchor to
   // the contentEditable prop — capture everything WebKit sees on that div.
   const start = src.indexOf("aria-disabled={inputDisabled ? true : undefined}")
+
   if (start === -1) {
     new Error('composer editor anchor missing')
   }
+
   const end = src.indexOf('contentEditable={', start)
+
   if (end === -1 || end <= start) {
     new Error('editor block end missing')
   }
@@ -45,6 +48,7 @@ describe('rich composer AutoFill suppression (#95089)', () => {
 
   it('opts the composer form out of autocomplete (form default overrides field hints in Safari)', () => {
     const rootIdx = src.indexOf('<ComposerPrimitive.Root')
+
     if (rootIdx === -1) {
       new Error('composer form primitive missing')
     }

@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest'
 // and scan a window of surrounding source instead.
 
 const COMPOSER_INDEX = resolve(__dirname, 'index.tsx')
+
 const USER_EDIT_COMPOSER = resolve(
   __dirname,
   '../../../components/assistant-ui/thread/user-edit-composer.tsx'
@@ -31,6 +32,7 @@ const WINDOW = 2600
 function sourceWindow(content: string, marker: string, where: string): string {
   const idx = content.indexOf(marker)
   expect(idx, `${where}: marker "${marker}" not found`).toBeGreaterThanOrEqual(0)
+
   return content.slice(Math.max(0, idx - WINDOW), idx + WINDOW)
 }
 
@@ -81,12 +83,14 @@ describe('composer fields suppress native contact AutoFill (#95089)', () => {
       expect(taWin.includes('autoComplete="off"'), `${label} hidden textarea: missing autoComplete="off"`).toBe(
         true
       )
+
       // Slice to the actual <textarea …/> tag (the window may contain sibling
       // markup like icon components that legitimately use name=).
       const taTag = taWin.slice(
         taWin.indexOf('<textarea'),
         taWin.indexOf('/>', taWin.indexOf('<textarea')) + 2
       )
+
       expect(/\sname="/.test(taTag), `${label} hidden textarea: must not carry name="..."`).toBe(false)
 
       // The form wrapper: Safari consults the <form>'s autocomplete state for

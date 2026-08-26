@@ -7,6 +7,7 @@ import ntpath
 import os
 import platform
 import posixpath
+import re
 import shlex
 import shutil
 import subprocess
@@ -244,29 +245,74 @@ def _detect_default_windows() -> str | None:
     return None
 
 
+_LS_HANDLERS_READER = (
+    "defaults",
+    "read",
+    "com.apple.LaunchServices/com.apple.launchservices.secure",
+    "LSHandlers",
+)
+
+
+def _launchservices_https_handler(dump: str) -> str | None:
+    """Return the bundle id registered for the ``https`` URL scheme.
+
+    ``dump`` is the ``defaults read … LSHandlers`` output: an array of
+    ``{ … }`` dictionaries, one per handler. Only the entry whose
+    ``LSHandlerURLScheme`` is ``https`` counts — a browser registered for
+    another scheme or a file type must not be mistaken for the default.
+    Returns None when no https handler is recorded, which is what macOS
+    stores while Safari (the implicit default) has never been replaced.
+    """
+    entries: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in dump:
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                buf = []
+                continue
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                entries.append("".join(buf))
+                continue
+        if depth >= 1:
+            buf.append(ch)
+    for entry in entries:
+        low = entry.lower()
+        if not re.search(r'lshandlerurlscheme\s*=\s*"?https"?\s*;', low):
+            continue
+        # The nested LSHandlerPreferredVersions block carries "-" placeholders
+        # under the same key names; the real bundle id is the first non-"-".
+        for role in re.findall(r'lshandlerrole(?:all|viewer)\s*=\s*"?([a-z0-9.\-]+)"?\s*;', low):
+            if role != "-":
+                return role
+        return None
+    return None
+
+
 def _detect_default_darwin() -> str | None:
-    # LaunchServices handler for the https scheme.
-    for reader in (
-        ["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"],
-    ):
-        try:
-            out = subprocess.run(
-                reader,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-            ).stdout.lower()
-        except Exception:
-            out = ""
-        for frag, browser in _DARWIN_BUNDLE_MAP:
-            if frag in out and "https" in out:
-                return browser
-    # Fallback: first installed Chromium app wins.
-    for browser in _CHROMIUM_BROWSERS:
-        if chromium_executable(browser, "Darwin"):
+    try:
+        out = subprocess.run(
+            list(_LS_HANDLERS_READER),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        ).stdout
+    except Exception:
+        return None
+    bundle = _launchservices_https_handler(out)
+    if not bundle:
+        return None
+    for frag, browser in _DARWIN_BUNDLE_MAP:
+        if bundle.startswith(frag):
             return browser
+    # A non-Chromium https handler (Safari, Firefox, Arc, …): fail closed.
+    # No "first installed Chromium wins" fallback — that would drive a
+    # browser the user never made their default.
     return None
 
 

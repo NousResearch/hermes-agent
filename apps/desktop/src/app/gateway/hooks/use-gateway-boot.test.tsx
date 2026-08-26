@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $desktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
@@ -39,7 +40,7 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
@@ -1686,6 +1687,100 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  // #95327: every focus/visibility/power-resume nudge probes an OPEN socket
+  // and force-closes it when the liveness ping times out. A backend that is
+  // merely BUSY (a long silent tool call holding the loop) fails that probe
+  // without being dead — closing the socket mid-turn is exactly what feeds the
+  // gateway's ws_orphan_reap interrupt ("Operation interrupted." placeholder).
+  // While any session still reports working, one inconclusive timeout must
+  // defer the teardown (bounded re-probe) instead of killing the transport.
+  it('wake probe: a timeout while a turn is IN FLIGHT defers the force-close', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    // A turn is running on this very socket; backend silence is expected until
+    // the tool call returns.
+    act(() => {
+      publishSessionState('rt-live-turn', {
+        ...createClientSessionState(null),
+        storedSessionId: 's-live-turn',
+        busy: true
+      })
+    })
+    expect($workingSessionIds.get()).toContain('s-live-turn')
+
+    // Busy-but-alive: the ping is swallowed (loop starved), not refused.
+    FakeWebSocket.pingMode = 'silent'
+
+    act(() => window.dispatchEvent(new Event('online')))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100)
+    })
+
+    // First inconclusive probe with work in flight: the socket must survive —
+    // not merely "some socket is open again after a teardown + redial", but
+    // THIS incarnation, whose transcript stream the running turn rides on.
+    expect($gatewayState.get()).toBe('open')
+    const survivingSocket = FakeWebSocket.instances[socketCountBefore - 1]
+
+    expect(survivingSocket.readyState).toBe(FakeWebSocket.OPEN)
+
+    clearAllSessionStates()
+
+    // Recovery must not wedge once the working flag is gone: persistent
+    // silence still exhausts the streak and rebuilds the transport.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
+    FakeWebSocket.pingMode = 'pong'
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect($gatewayState.get()).toBe('open')
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(socketCountBefore)
+  })
+
+  it('wake probe: repeated timeouts while busy still rebuild the socket (no deadlock)', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    const socketCountBefore = FakeWebSocket.instances.length
+
+    act(() => {
+      publishSessionState('rt-live-turn-2', {
+        ...createClientSessionState(null),
+        storedSessionId: 's-live-turn-2',
+        busy: true
+      })
+    })
+
+    // Genuinely dead under the working flag: EVERY probe keeps timing out.
+    FakeWebSocket.pingMode = 'silent'
+
+    for (let nudge = 0; nudge < 3; nudge += 1) {
+      act(() => window.dispatchEvent(new Event('online')))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+    }
+
+    clearAllSessionStates()
+
+    // The streak guard only DELAYS the teardown; a persistently unresponsive
+    // socket is still rebuilt rather than trusted forever.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
+
+    FakeWebSocket.pingMode = 'pong'
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
     expect($gatewayState.get()).toBe('open')
   })
 })

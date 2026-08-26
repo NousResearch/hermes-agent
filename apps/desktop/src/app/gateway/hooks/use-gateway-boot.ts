@@ -6,6 +6,7 @@ import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
+import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
@@ -96,7 +97,10 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // ride out a busy-but-healthy backend's scheduling jitter, short enough that a
 // half-open socket fails fast instead of hanging the wake path. Independent of
 // PROMPT_SUBMIT_REQUEST_TIMEOUT_MS (30 min) — that long timeout is correct for
-// an in-flight turn, but must never be what a dead connection burns.
+// an in-flight turn, but must never be what a dead connection burns. A probe
+// TIMEOUT alone no longer tears the socket down mid-turn (#95327): while a
+// turn is in flight the first timeout defers behind one bounded re-probe, so
+// only a STREAK of unanswered pings rebuilds the transport.
 const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
 // Bounded self-heal for a failed REMOTE boot (#82679): when the primary boot
@@ -214,6 +218,14 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
+    // backend can fail one probe; only a STREAK proves a genuinely dead
+    // socket while turns are in flight. Reset on any successful probe or a
+    // clean socket open.
+    let livenessProbeFailures = 0
+    // Bounded re-probe scheduled instead of an immediate teardown when a
+    // probe times out mid-turn (see gateway-liveness-policy.ts).
+    let livenessReprobeTimer: ReturnType<typeof setTimeout> | null = null
     // Wall-clock start of the current disconnect episode (first failed
     // reconnect attempt); null while healthy. Drives the time-based
     // escalation below. Reset on a clean open or a manual/wake reconnect.
@@ -261,6 +273,28 @@ export function useGatewayBoot({
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
+    }
+
+    const clearLivenessReprobeTimer = () => {
+      if (livenessReprobeTimer !== null) {
+        clearTimeout(livenessReprobeTimer)
+        livenessReprobeTimer = null
+      }
+    }
+
+    // One bounded retry before a mid-turn teardown: the first probe timeout
+    // while work is in flight is inconclusive (a busy backend starves the
+    // loop without being dead), so re-probe once after a short delay instead
+    // of force-closing a socket a running turn still rides on (#95327).
+    const scheduleLivenessReprobe = () => {
+      if (cancelled || livenessReprobeTimer !== null || $gatewaySwitching.get()) {
+        return
+      }
+
+      livenessReprobeTimer = setTimeout(() => {
+        livenessReprobeTimer = null
+        void reconnectNow()
+      }, LIVENESS_REPROBE_DELAY_MS)
     }
 
     const attemptReconnect = async () => {
@@ -436,18 +470,43 @@ export function useGatewayBoot({
       // ping; on failure force the socket down so the onState handler above
       // schedules a reconnect (and resetTileRuntimeBindings re-resumes tiles),
       // instead of letting the user's next submit hang against a dead socket.
+      //
+      // A TIMEOUT is not always proof of death, though (#95327): a backend
+      // mid-tool-call can starve its loop past this budget while perfectly
+      // alive, and tearing the socket down then feeds the gateway's
+      // ws_orphan_reap interrupt — the turn dies as a bare "Operation
+      // interrupted." placeholder. While any session still reports working,
+      // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
+      // only an exhausted streak (or no in-flight work) closes.
       try {
         await gateway.request('ping', {}, GATEWAY_LIVENESS_PROBE_TIMEOUT_MS)
+        livenessProbeFailures = 0
       } catch (probeErr) {
         // A version-skewed backend that predates the ping method answers
         // -32601 (method not found) — a HEALTHY response, not a dead socket.
         // Force-closing on it would spin the reconnect loop forever. Every
         // other failure (timeout on a swallowed ping, transport error) means
-        // the socket is not actually alive and must be rebuilt.
+        // the socket is not PROVABLY alive and must eventually be rebuilt.
         if (probeErr instanceof JsonRpcGatewayError && probeErr.code === -32601) {
+          livenessProbeFailures = 0
+
           return
         }
 
+        livenessProbeFailures += 1
+
+        const decision = decideLivenessForceClose({
+          workingSessionCount: $workingSessionIds.get().length,
+          consecutiveFailures: livenessProbeFailures
+        })
+
+        if (!decision.close) {
+          scheduleLivenessReprobe()
+
+          return
+        }
+
+        livenessProbeFailures = 0
         gateway.close()
       }
     }
@@ -523,6 +582,8 @@ export function useGatewayBoot({
         const ownsSwitch = () => !cancelled && switchToken !== null && isCurrentGatewaySwitch(switchToken)
         clearReconnectTimer()
         clearBootRetryTimer()
+        clearLivenessReprobeTimer()
+        livenessProbeFailures = 0
         bootRetryAttempt = 0
         reconnectAttempt = 0
         reconnectFailingSince = null
@@ -747,7 +808,9 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         reauthNotified = false
         escalated = false
+        livenessProbeFailures = 0
         clearReconnectTimer()
+        clearLivenessReprobeTimer()
 
         // A revalidate-driven reconnect can rebuild the backend in place when the
         // cached remote was found dead, which re-drives the boot-progress overlay.
@@ -1076,6 +1139,7 @@ export function useGatewayBoot({
       endGatewaySwitch()
       clearReconnectTimer()
       clearBootRetryTimer()
+      clearLivenessReprobeTimer()
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()

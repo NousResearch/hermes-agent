@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import current_secret_scope as _current_secret_scope
 from agent.secret_scope import get_secret as _scoped_get_secret
 
 
@@ -65,11 +66,58 @@ def _get_scoped_secret(name, default=None):
     profile's own value, so fall back to it. Same pattern as the Slack
     ``SLACK_APP_TOKEN`` read (#59739) and
     ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+
+    The no-scope path has one more rung for the platform requirement gate:
+    ``check_requirements()`` runs at gateway startup BEFORE any per-profile
+    secret scope is installed, and ``get_secret`` without a scope simply
+    reads ``os.environ`` — so a Bitwarden-managed ``BUZZ_PRIVATE_KEY``
+    (only ``BWS_ACCESS_TOKEN`` in ``.env``) was invisible to the check and
+    Buzz was silently skipped (#95216). When no scope is active and the
+    process env has no value, consult a one-shot build of the profile's
+    secret mapping (``build_profile_secret_scope`` resolves external secret
+    sources) so externally managed credentials pass the gate. An ACTIVE
+    scope still shadows this rung entirely — it never runs under
+    multiplexing, so cross-profile isolation is unchanged.
     """
     try:
-        val = _scoped_get_secret(name, default)
+        val = _scoped_get_secret(name, None)
     except _UnscopedSecretError:
         val = os.getenv(name)
+    if val is None and _current_secret_scope() is None:
+        val = _unscoped_profile_secrets().get(name)
+    return val if val is not None else default
+
+
+_UNSCOPED_PROFILE_SECRETS: Optional[Dict[str, str]] = None
+
+
+def _unscoped_profile_secrets() -> Dict[str, str]:
+    """One-shot build of the active profile's secret mapping.
+
+    Cached for the process: the build shells out to external secret
+    resolvers (Bitwarden via ``BWS_ACCESS_TOKEN``), and the requirement
+    gate / validate / is_connected probes all want the same snapshot. Any
+    failure degrades to an empty mapping — callers then simply report the
+    platform as not configured, which is the pre-fix behavior.
+    """
+    global _UNSCOPED_PROFILE_SECRETS
+    if _UNSCOPED_PROFILE_SECRETS is None:
+        try:
+            from agent.secret_scope import build_profile_secret_scope
+            from hermes_constants import get_hermes_home
+
+            _UNSCOPED_PROFILE_SECRETS = dict(
+                build_profile_secret_scope(get_hermes_home())
+            )
+        except Exception:
+            logger.warning(
+                "Buzz requirement probe could not build the profile secret "
+                "scope; Bitwarden-managed credentials will not be visible "
+                "to the startup gate (#95216)",
+                exc_info=True,
+            )
+            _UNSCOPED_PROFILE_SECRETS = {}
+    return _UNSCOPED_PROFILE_SECRETS
     return val if val is not None else default
 
 
@@ -1358,16 +1406,24 @@ def check_requirements() -> bool:
         extra = _profile_buzz_extra()
         relay = str(extra.get("relay_url") or "").strip()
         return bool(relay and _resolve_private_key(extra))
-    if not os.getenv("BUZZ_RELAY_URL", "").strip():
+    # Scope-aware read: the gate runs before per-profile scopes install, and
+    # BUZZ_RELAY_URL can be externally managed just like the key (#95216).
+    if not (_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip():
         return False
     return bool(_resolve_private_key())
 
 
 def validate_config(config) -> bool:
-    """Validate that the platform config has enough info to connect."""
+    """Validate that the platform config has enough information to connect."""
     extra = getattr(config, "extra", {}) or {}
-    relay = _scoped_platform_setting("BUZZ_RELAY_URL", extra, "relay_url")
-    relay = relay if relay is not None else extra.get("relay_url", "")
+    # Inside a secondary profile scope, extra is authoritative (#98738);
+    # unscoped, the env read gains the external-secret rung so a managed
+    # relay passes too (#95216).
+    if _profile_scoped():
+        relay = _scoped_platform_setting("BUZZ_RELAY_URL", extra, "relay_url")
+        relay = relay if relay is not None else extra.get("relay_url", "")
+    else:
+        relay = _get_scoped_secret("BUZZ_RELAY_URL", "") or extra.get("relay_url", "")
     return bool(relay and _resolve_private_key(extra))
 
 

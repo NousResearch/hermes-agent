@@ -1006,8 +1006,11 @@ def install_cua_driver(
     a further ~600s wait on Windows). ``hermes computer-use install
     --upgrade`` leaves it False — an explicit upgrade request should still
     reinstall when the check is indeterminate. On Windows this flag also
-    prevents every installer run, because install.ps1 may require console or
-    UAC consent; automatic updates instead point at the explicit command.
+    defers contract REPAIRS and fresh INSTALLS to the explicit command
+    (those paths can legitimately need a human: first-time autostart
+    elevation, SmartScreen). Routine confirmed upgrades DO run, in
+    unattended-safe mode: stdin closed, version pinned, lock/network
+    preflights, and the shorter background ceiling below.
 
     ``show_installer_progress`` controls the installer's own progress line.
     ``hermes update`` already prints a contextual line before its update
@@ -1194,25 +1197,15 @@ def install_cua_driver(
             )
             return True
         if _state is not None and _state.get("update_available"):
-            if is_windows and require_confirmed_update:
-                _latest = _state.get("latest_version")
-                if _latest:
-                    _print_info(
-                        f"    {driver_cmd} {_latest} is available; keeping the "
-                        "installed version because its Windows installer may "
-                        "require interactive consent."
-                    )
-                else:
-                    _print_info(
-                        f"    A newer {driver_cmd} release is available; "
-                        "keeping the installed version because its Windows "
-                        "installer may require interactive consent."
-                    )
-                _print_info(
-                    "    Update it from an interactive terminal with: "
-                    "hermes computer-use install --upgrade"
-                )
-                return True
+            # Windows routine upgrades run UNATTENDED-SAFE rather than
+            # deferring: stdin is closed (a consent Read-Host can't block),
+            # the version is pinned, the ceiling is
+            # _CUA_BACKGROUND_UPDATE_TIMEOUT, and _run_cua_driver_installer's
+            # preflights skip in seconds when the install lock is held or
+            # GitHub is unreachable. Only contract repairs and fresh installs
+            # stay interactive-only (guards above/below) — those are the
+            # paths where upstream legitimately needs a human (first-time
+            # autostart elevation, SmartScreen).
             # Pin the installer to the release check-update just confirmed.
             # `latest_version` comes from the GitHub Releases API, so its
             # assets are published — unlike the installer script's baked
@@ -1477,6 +1470,67 @@ def _clear_stale_cua_install_lock() -> None:
         logger.debug("stale cua install lock check failed: %s", e)
 
 
+def _cua_install_lock_held() -> bool:
+    """True when the upstream installer's lock is held by a LIVE process.
+
+    Called after ``_clear_stale_cua_install_lock()``: anything provably
+    stale is already gone, so a surviving lock artifact means a concurrent
+    (or orphaned-but-alive) install owns it. Upstream waits up to
+    ``LOCK_STALE_AFTER_SECONDS=600`` on a held lock before probing —
+    unattended refreshes must not eat that wait (the 11-minute hang class,
+    #87703): they skip instead. Best-effort: unreadable state reports
+    not-held so a probe failure can never block an install.
+    """
+    try:
+        if sys.platform == "win32":
+            lock_file = _cua_windows_install_lock_file()
+            if not lock_file.is_file():
+                return False
+            # install.ps1 holds the file open with FileShare::None — any
+            # open attempt fails with a sharing violation while it's held.
+            # _clear_stale_windows_cua_install_lock() already deleted it if
+            # it was unheld, so surviving = held; confirm with an open probe.
+            try:
+                with open(lock_file, "r+b"):
+                    return False  # opened fine → not held (racy leftover)
+            except PermissionError:
+                return True
+            except OSError:
+                return True
+        lock_dir = _cua_install_lock_dir()
+        return lock_dir.is_dir()
+    except Exception as e:
+        logger.debug("cua install lock probe failed: %s", e)
+        return False
+
+
+def _cua_release_endpoint_reachable(timeout: float = 5.0) -> bool:
+    """Fast probe: can we reach GitHub's release download host at all?
+
+    The upstream installers (install.ps1 / _install-rust.sh) download from
+    ``github.com/<repo>/releases/download/...``. When that host is
+    unreachable (outage, DNS, firewall), the installer dies slowly inside
+    its own retries while the unattended refresh eats the whole ceiling.
+    A 5s HEAD tells us in seconds. Only a *connection-level* failure counts
+    as unreachable — any HTTP response (including 4xx/5xx) proves the path
+    works and lets the installer make its own decisions.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            "https://github.com/trycua/cua/releases", method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True  # server answered → reachable
+    except Exception as e:
+        logger.debug("cua release endpoint probe failed: %s", e)
+        return False
+
+
 def _ps_single_quote(value: str) -> str:
     """Return a PowerShell single-quoted string literal."""
     return "'" + value.replace("'", "''") + "'"
@@ -1677,6 +1731,50 @@ def _run_cua_driver_installer(
     # refresh doesn't wedge waiting on a dead holder (issue #58762).
     _clear_stale_cua_install_lock()
 
+    # Unattended refreshes (installer_timeout set by `hermes update`) fail
+    # FAST on the two conditions that otherwise consume the whole ceiling:
+    #
+    # 1. Install lock held by a live process — upstream would poll it for up
+    #    to LOCK_STALE_AFTER_SECONDS=600 before probing the holder. That is
+    #    the 11-minute silent hang class (#87703; observed live 2026-08-25:
+    #    "cua-driver refreshing timed out after 660s"). Skip in ~0s instead.
+    # 2. Release host unreachable (outage/DNS/firewall) — the installer
+    #    would die slowly inside its own retries. A 5s HEAD answers now.
+    #
+    # Explicit `computer-use install --upgrade` runs keep upstream's full
+    # lock-recovery semantics — a human is watching and can wait or Ctrl-C.
+    if installer_timeout is not None:
+        if _cua_install_lock_held():
+            _print_info(
+                "    Another cua-driver install is in progress (upstream "
+                "install lock is held) — skipping this refresh."
+            )
+            _print_info(
+                "    If no install is really running, retry with: "
+                "hermes computer-use install --upgrade"
+            )
+            return False
+        if not _cua_release_endpoint_reachable():
+            _print_info(
+                "    github.com is unreachable — skipping cua-driver "
+                "refresh (will retry on the next update)."
+            )
+            return False
+        if is_windows:
+            # -NoAutoStart skips Register-CuaDriverAutostart entirely — the
+            # ONLY branch of install.ps1 that self-elevates (UAC). Cost: an
+            # existing cua-driver-serve task keeps pointing at the previous
+            # binary until the next interactive upgrade re-registers it.
+            # scriptblock invocation (instead of `| iex`) is what lets us
+            # pass the parameter to a piped script.
+            install_cmd = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "$sc = irm https://raw.githubusercontent.com/trycua/cua/"
+                "main/libs/cua-driver/scripts/install.ps1; "
+                "& ([scriptblock]::Create($sc)) -NoAutoStart",
+            ]
+
     # POSIX: run the installer in its own process group so a timeout kill
     # takes out the whole `curl | bash` pipeline (and the exec'd
     # _install-rust.sh), not just the outer shell. Otherwise the surviving
@@ -1759,7 +1857,17 @@ def _run_cua_driver_installer(
         """
         _kill_installer_tree(proc)
         try:
-            proc.communicate(timeout=_CUA_INSTALLER_DRAIN_GRACE)
+            drained_out, _ = proc.communicate(timeout=_CUA_INSTALLER_DRAIN_GRACE)
+            # Diagnosability (#87703 post-mortem): the partial output names
+            # WHERE the installer was stuck (lock wait, consent prompt,
+            # download) — before this, the answer died with the process and
+            # the timeout line was unactionable.
+            if drained_out:
+                logger.warning(
+                    "cua-driver installer timed out; last output before "
+                    "kill:\n%s",
+                    drained_out[-2000:],
+                )
         except subprocess.TimeoutExpired:
             # Deliberately not closing proc.stdout here. communicate()'s
             # reader threads are still blocked on that handle and closing it

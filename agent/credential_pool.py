@@ -21,6 +21,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
+    credential_secret_fingerprints,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
@@ -2168,25 +2169,46 @@ def _incoming_token_is_a_rotation(
 
     An absent secret on both sides is "nothing to compare", not a rotation.
 
-    This relies on both fingerprints being derived from the same field:
-    ``_credential_secret_fingerprint`` prefers ``agent_key`` over
-    ``access_token``, and today only the owned nous ``device_code`` entry
-    carries an ``agent_key`` — which takes the direct-comparison branch above.
-    A borrowed payload growing an ``agent_key`` would fingerprint a different
-    field than the stored entry did and read as a rotation on every load again.
+    The stored side is a single fingerprint of whichever field
+    ``_credential_secret_fingerprint`` preferred when the entry was written, so
+    the incoming side is compared against *every* fingerprint its secret fields
+    can produce rather than against that same preference. Otherwise a borrowed
+    payload that grows a higher-priority field (an ``agent_key`` next to its
+    ``access_token``) would fingerprint a different field than the stored entry
+    did and silently read as a rotation on every load again — the very bug this
+    function exists to fix, reintroduced by a payload shape change alone.
     """
     incoming = payload.get("access_token")
     if incoming is None:
         return False
     if existing.access_token:
         return incoming != existing.access_token
-    stored_fingerprint = existing.extra.get("secret_fingerprint")
-    incoming_fingerprint = sanitize_borrowed_credential_payload(
-        payload, provider
-    ).get("secret_fingerprint")
-    if not stored_fingerprint or not incoming_fingerprint:
+    stored_fingerprint = (existing.extra or {}).get("secret_fingerprint")
+    if not stored_fingerprint:
+        # Pre-fingerprint entry: nothing on disk identifies the old secret.
         return False
-    return stored_fingerprint != incoming_fingerprint
+    if not is_borrowed_credential_source(payload.get("source") or existing.source, provider):
+        # Owned entries persist their secret; an empty stored token with a
+        # fingerprint beside it is not a shape this comparison can read.
+        return False
+    incoming_fingerprints = credential_secret_fingerprints(payload)
+    if not incoming_fingerprints:
+        logger.debug(
+            "credential-pool: %s/%s has a stored secret fingerprint but the incoming "
+            "payload carries no fingerprintable secret; keeping its status "
+            "(unknown is not changed)",
+            provider,
+            existing.source,
+        )
+        return False
+    if stored_fingerprint in incoming_fingerprints:
+        return False
+    logger.debug(
+        "credential-pool: %s/%s secret fingerprint changed; clearing its status as a rotation",
+        provider,
+        existing.source,
+    )
+    return True
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:

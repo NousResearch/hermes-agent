@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 
 def _fingerprint(provider: str, token: str) -> str:
@@ -122,3 +123,87 @@ def test_missing_fingerprint_is_not_treated_as_a_rotation(tmp_path, monkeypatch)
     entry = load_pool("openrouter").entries()[0]
     assert entry.last_status == "exhausted"
     assert entry.last_error_code == 429
+
+
+def _exhausted_env_entry(token_fingerprint: str):
+    from agent.credential_pool import PooledCredential
+
+    return PooledCredential(
+        provider="openrouter",
+        id="cred-1",
+        label="OPENROUTER_API_KEY",
+        auth_type="api_key",
+        priority=0,
+        source="env:OPENROUTER_API_KEY",
+        access_token="",
+        last_status="exhausted",
+        last_error_code=429,
+        extra={"secret_fingerprint": token_fingerprint},
+    )
+
+
+def test_payload_growing_a_secret_field_is_not_a_rotation():
+    """Field drift must not silently reintroduce the every-load rotation.
+
+    The stored fingerprint is whichever field the writer preferred. A borrowed
+    payload that later carries an ``agent_key`` next to the same unchanged
+    ``access_token`` fingerprints a different field — matching against every
+    fingerprint the payload can produce keeps that from reading as a rotation.
+    """
+    from agent.credential_pool import _incoming_token_is_a_rotation
+
+    entry = _exhausted_env_entry(_fingerprint("openrouter", "same-key"))
+    payload = {
+        "source": "env:OPENROUTER_API_KEY",
+        "access_token": "same-key",
+        "agent_key": "a-derived-agent-key",
+    }
+
+    assert _incoming_token_is_a_rotation(entry, "openrouter", payload) is False
+
+
+def test_genuinely_different_secret_is_still_a_rotation():
+    """The any-field match must not swallow a real key change."""
+    from agent.credential_pool import _incoming_token_is_a_rotation
+
+    entry = _exhausted_env_entry(_fingerprint("openrouter", "old-key"))
+    payload = {"source": "env:OPENROUTER_API_KEY", "access_token": "new-key"}
+
+    assert _incoming_token_is_a_rotation(entry, "openrouter", payload) is True
+
+
+def test_unfingerprintable_incoming_payload_logs_why_status_is_kept(caplog):
+    """Stored fingerprint, nothing comparable incoming: keep status, say so.
+
+    "Unknown is not changed" is deliberate policy, so it has to be
+    distinguishable in a log from a comparison that failed by accident.
+    """
+    from agent.credential_pool import _incoming_token_is_a_rotation
+
+    entry = _exhausted_env_entry(_fingerprint("openrouter", "same-key"))
+    payload = {"source": "env:OPENROUTER_API_KEY", "access_token": ""}
+
+    with caplog.at_level(logging.DEBUG, logger="agent.credential_pool"):
+        assert _incoming_token_is_a_rotation(entry, "openrouter", payload) is False
+
+    assert "unknown is not changed" in caplog.text
+
+
+def test_entry_without_extra_does_not_raise():
+    """No construction path may make the comparison blow up on ``extra``."""
+    from agent.credential_pool import PooledCredential, _incoming_token_is_a_rotation
+
+    entry = PooledCredential(
+        provider="openrouter",
+        id="cred-1",
+        label="OPENROUTER_API_KEY",
+        auth_type="api_key",
+        priority=0,
+        source="env:OPENROUTER_API_KEY",
+        access_token="",
+        last_status="exhausted",
+    )
+    object.__setattr__(entry, "extra", None)
+    payload = {"source": "env:OPENROUTER_API_KEY", "access_token": "some-key"}
+
+    assert _incoming_token_is_a_rotation(entry, "openrouter", payload) is False

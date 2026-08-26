@@ -658,6 +658,13 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
+    # True only when commands execute on the SAME host as the Hermes process
+    # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
+    # only describe the execution target when this is True — remote/container
+    # backends must not inherit controller-side platform behavior (e.g. the
+    # macOS TCC search pruning in tools/file_operations.py).
+    is_local: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 

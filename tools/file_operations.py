@@ -2890,7 +2890,20 @@ class ShellFileOperations(FileOperations):
         return result
 
     def _macos_search_exclusions(self, path: str) -> List[str]:
-        """Protected descendants to prune for this search root, if any."""
+        """Protected descendants to prune for this search root, if any.
+
+        Gated on ``env.is_local``: ``sys.platform``/``Path.home()`` describe
+        the CONTROLLER, but search commands execute on ``self.env``'s host — a
+        macOS controller driving a Linux container/SSH backend must not prune
+        the remote's (unprotected) Downloads, and TCC doesn't exist there
+        anyway. A Linux controller driving a macOS SSH host keeps today's
+        behavior (no pruning); detecting the remote OS is out of scope here.
+        Environments without the flag (test fakes, plugins) default to local
+        semantics — pruning is a warning-carrying skip, never data loss.
+        """
+        env = getattr(self, "env", None)
+        if env is not None and getattr(env, "is_local", True) is False:
+            return []
         cwd = getattr(self.env, "cwd", None) or self.cwd
         return _macos_protected_search_exclusions(
             path, cwd=cwd, home=_HOME, platform=sys.platform
@@ -3368,9 +3381,23 @@ class ShellFileOperations(FileOperations):
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
-        for item in self._macos_search_exclusions(path):
-            dirname = item.split("/")[-1]
-            cmd_parts.append(f"--exclude-dir={self._escape_shell_arg(dirname)}")
+
+        # Protected-dir pruning CANNOT use --exclude-dir here: grep matches
+        # exclude-dir globs against BASENAMES anywhere in the tree, so
+        # --exclude-dir=Downloads would silently skip every nested directory
+        # named Downloads (a repo's own Downloads/ folder included), not just
+        # the protected home child. When exclusions apply (darwin broad-home
+        # search on a local backend), route through find's path-scoped -prune
+        # instead — same traversal-prevention the find backend uses.
+        protected_paths = [
+            os.path.normpath(os.path.join(path, item))
+            for item in self._macos_search_exclusions(path)
+        ]
+        if protected_paths:
+            return self._search_with_grep_pruned(
+                pattern, path, file_glob, limit, offset, output_mode, context,
+                protected_paths,
+            )
         
         # Add context if requested
         if context > 0:
@@ -3415,6 +3442,56 @@ class ShellFileOperations(FileOperations):
         # pipefail does not turn truncated results into false errors.
         cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
+        return self._parse_grep_search_output(result, output_mode, limit, offset, context)
+
+    def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
+                                 limit: int, offset: int, output_mode: str, context: int,
+                                 protected_paths: List[str]) -> SearchResult:
+        """grep fallback with PATH-scoped protected-dir pruning.
+
+        Files are enumerated by ``find`` with the same ``-path ... -prune``
+        expression the find backend uses (traversal never enters the protected
+        dirs, so macOS never sees an access attempt), then handed to grep via
+        ``-exec {} +``. This exists because grep's own ``--exclude-dir``
+        matches basenames anywhere in the tree — it cannot express "only the
+        home-level Downloads". Hidden directories are pruned to mirror the
+        plain path's ``--exclude-dir='.*'``. Trade-off: with ``-exec {} +``
+        find folds grep's exit code into its own generic non-zero, so a hard
+        grep error surfaces as an empty result rather than exit 2 — acceptable
+        for this darwin-local-broad-search-only branch.
+        """
+        grep_parts = ["grep", "-nHE"]
+        if context > 0:
+            grep_parts.extend(["-C", str(context)])
+        if output_mode == "files_only":
+            grep_parts.append("-l")
+        elif output_mode == "count":
+            grep_parts.append("-c")
+        grep_parts.append(self._escape_shell_arg(pattern))
+
+        prune_terms = " -o ".join(
+            f"-path {self._escape_shell_arg(item)}" for item in protected_paths
+        )
+        find_parts = [
+            "find", self._escape_shell_arg(path or "."),
+            f"\\( {prune_terms} \\) -prune", "-o",
+            "\\( -type d -name '.*' \\) -prune", "-o",
+            "-type f",
+        ]
+        if file_glob:
+            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+        find_parts.extend(["-exec", *grep_parts, "{}", "+"])
+        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        cmd = (
+            "set -o pipefail; " + " ".join(find_parts)
+            + f" 2>/dev/null | head -n {fetch_limit}"
+        )
+        result = self._exec(cmd, timeout=60)
+        return self._parse_grep_search_output(result, output_mode, limit, offset, context)
+
+    def _parse_grep_search_output(self, result, output_mode: str, limit: int,
+                                  offset: int, context: int) -> SearchResult:
+        """Shared grep output parsing for the plain and pruned variants."""
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout, so grep's diagnostic lines

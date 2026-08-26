@@ -110,7 +110,10 @@ def test_legacy_ripgrep_file_fallback_keeps_protected_globs(tmp_path, monkeypatc
         assert "!Downloads/**" in command
 
 
-def test_grep_fallback_excludes_protected_directories(tmp_path, monkeypatch):
+def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
+    """The grep fallback must NOT use --exclude-dir (basename-wide: it would
+    skip every nested dir named Downloads anywhere under the root). It routes
+    through find's path-scoped -prune instead."""
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
@@ -121,9 +124,54 @@ def test_grep_fallback_excludes_protected_directories(tmp_path, monkeypatch):
 
     ops.search("needle", path=str(home), target="content")
 
-    grep_command = next(command for command in env.commands if " grep " in command)
+    pruned_command = next(command for command in env.commands if "-prune" in command)
     for dirname in PROTECTED_NAMES:
-        assert f"--exclude-dir='{dirname}'" in grep_command
+        # Path-scoped pruning: full protected path present, no basename-wide
+        # --exclude-dir for protected names.
+        assert str(home / dirname) in pruned_command
+        assert f"--exclude-dir={dirname}" not in pruned_command
+        assert f"--exclude-dir='{dirname}'" not in pruned_command
+
+
+def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeypatch):
+    """A repo-internal directory literally named 'Downloads' must still be
+    searched by the pruned grep path — the exact regression --exclude-dir had."""
+    home = tmp_path / "Users" / "alice"
+    project = home / "work" / "repo" / "Downloads"
+    project.mkdir(parents=True)
+    (project / "notes.txt").write_text("needle here\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    (protected / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+    result = ops.search("needle", path=str(home), target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert any("work/repo/Downloads/notes.txt" in p for p in matched_paths)
+    assert not any(str(protected / "secret.txt") in p for p in matched_paths)
+
+
+def test_remote_backend_never_prunes(tmp_path, monkeypatch):
+    """Non-local environments get no exclusions: platform facts describe the
+    controller, not the execution host (macOS controller + Linux SSH backend
+    must not prune the remote's Downloads)."""
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    env = RecordingEnvironment(home)
+    env.is_local = False  # remote/container-shaped backend
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    result = ops.search("*.txt", path=str(home), target="files")
+
+    rg_command = next(command for command in env.commands if command.startswith("rg --files"))
+    assert "!Downloads/**" not in rg_command
+    assert result.warning is None
 
 
 def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):

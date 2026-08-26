@@ -32,7 +32,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;\nglobalThis.__botConnectionRoute = botConnectionRoute;\nglobalThis.__resolveBotConnectionRoute = resolveBotConnectionRoute;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;\nglobalThis.__botConnectionRoute = botConnectionRoute;\nglobalThis.__resolveBotConnectionRoute = resolveBotConnectionRoute;\nglobalThis.__preferReachableSameNameRows = preferReachableSameNameRows;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -714,5 +714,155 @@ test('source contract: active roster queries use the SDK ambient owner route', (
     source.match(/requestForBot\(activeBot, 'profiles\.list', \{\}\)/g)?.length,
     2,
     'roster hydration and the session sweep must both use the upstream ambient-owner route'
+  )
+})
+
+test('preferReachableSameNameRows: drops a dead loopback twin when This device is live', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const live = {
+    name: 'profile-a',
+    handle: 'profile-a-this-device',
+    connectionId: 'local',
+    connectionKind: 'local',
+    connectionLabel: 'This device',
+    sourceReachable: true
+  }
+  const dead = {
+    name: 'profile-a',
+    handle: 'profile-a-127-0-0-1-19119',
+    connectionId: 'loopback-19119',
+    connectionKind: 'remote',
+    connectionLabel: '127.0.0.1:19119',
+    remoteSource: true,
+    sourceScoped: true,
+    sourceReachable: false
+  }
+  const other = {
+    name: 'profile-b',
+    handle: 'profile-b-127-0-0-1-19119',
+    connectionId: 'loopback-19119',
+    connectionKind: 'remote',
+    connectionLabel: '127.0.0.1:19119',
+    remoteSource: true,
+    sourceScoped: true,
+    sourceReachable: false
+  }
+
+  const out = prefer([dead, live, other])
+
+  assert.equal(out.length, 2)
+  assert.equal(out[0], live)
+  assert.equal(out[1], other)
+})
+
+test('preferReachableSameNameRows: keeps two live sources with the same profile name', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const local = {
+    name: 'research',
+    connectionId: 'local',
+    connectionLabel: 'This device',
+    sourceReachable: true
+  }
+  const homelab = {
+    name: 'research',
+    connectionId: 'homelab',
+    connectionLabel: 'Homelab',
+    remoteSource: true,
+    sourceReachable: true
+  }
+
+  const out = prefer([local, homelab])
+
+  assert.equal(out.length, 2)
+  assert.equal(out[0], local)
+  assert.equal(out[1], homelab)
+})
+
+test('preferReachableSameNameRows: keeps an unreachable row when no live twin exists', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const dead = {
+    name: 'research',
+    connectionId: 'loopback-19119',
+    sourceReachable: false
+  }
+
+  const out = prefer([dead])
+
+  assert.equal(out.length, 1)
+  assert.equal(out[0], dead)
+})
+
+test('preferReachableSameNameRows: connect-on-demand counts as reachable', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const onDemand = {
+    name: 'research',
+    connectionId: 'mac-mini',
+    sourceError: 'connect-on-demand',
+    sourceReachable: false
+  }
+  const dead = {
+    name: 'research',
+    connectionId: 'loopback-19119',
+    sourceReachable: false
+  }
+
+  const out = prefer([onDemand, dead])
+
+  assert.equal(out.length, 1)
+  assert.equal(out[0], onDemand)
+})
+
+test('preferReachableSameNameRows: sourceMissing drops when a live same-name row exists', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const live = { name: 'research', connectionId: 'local', sourceReachable: true }
+  const missing = {
+    name: 'research',
+    connectionId: 'gone',
+    sourceMissing: true,
+    sourceReachable: false
+  }
+
+  const out = prefer([missing, live])
+
+  assert.equal(out.length, 1)
+  assert.equal(out[0], live)
+})
+
+test('preferReachableSameNameRows: ghosts stay so a selected offline owner is not replaced', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const live = { name: 'research', connectionId: 'local', sourceReachable: true }
+  const ghost = {
+    name: 'research',
+    connectionId: 'loopback-19119',
+    ghost: true,
+    sourceReachable: false
+  }
+
+  const out = prefer([ghost, live])
+
+  assert.equal(out.length, 2)
+  assert.equal(out[0], ghost)
+  assert.equal(out[1], live)
+})
+
+test('preferReachableSameNameRows: does not mutate the input list', () => {
+  const { __preferReachableSameNameRows: prefer } = runtime()
+  const rows = [
+    { name: 'research', connectionId: 'loopback-19119', sourceReachable: false },
+    { name: 'research', connectionId: 'local', sourceReachable: true }
+  ]
+
+  prefer(rows)
+
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].connectionId, 'loopback-19119')
+})
+
+test('source contract: presentation collapses unreachable twins; shared roster does not', () => {
+  assert.match(source, /preferReachableSameNameRows\(filteredRoster\)/)
+  assert.match(source, /\$lastRoster\.set\(roster\.filter\(row => !row\?\.ghost\)\)/)
+  assert.doesNotMatch(
+    source.slice(source.indexOf('function groupChatMemberBots'), source.indexOf('function durableGroupChatMembers')),
+    /preferReachableSameNameRows/
   )
 })

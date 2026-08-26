@@ -6,6 +6,8 @@ when bwrap is missing or its runtime probe fails, so CI without bwrap
 stays green.
 """
 
+import builtins
+import inspect
 import os
 import shutil
 import subprocess
@@ -15,7 +17,12 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments.base import get_sandbox_dir
-from tools.environments.bubblewrap import BindMount, BubblewrapConfig, BubblewrapEnvironment
+from tools.environments.bubblewrap import (
+    BindMount,
+    BubblewrapConfig,
+    BubblewrapEnvironment,
+    build_bwrap_args,
+)
 from tools.environments.local import LocalEnvironment
 
 
@@ -245,3 +252,104 @@ class TestProfileNetworkAndWritableSet:
         result = env.execute(f"touch {shared}/from-sandbox")
         assert result["returncode"] != 0
         assert "ead-only" in result["output"]
+
+
+MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
+
+
+def _mounts(argv):
+    """The mount directives of a bwrap argv as (flag, *operands) tuples, in order."""
+    out, i = [], 0
+    while i < len(argv):
+        n = MOUNT_FLAGS.get(argv[i])
+        if n is None:
+            i += 1
+            continue
+        out.append(tuple(argv[i:i + 1 + n]))
+        i += 1 + n
+    return out
+
+
+def _chdir(argv):
+    return argv[argv.index("--chdir") + 1]
+
+
+class TestConstructionTimeMounts:
+    """Only --chdir follows the tracked cwd; the mount set is fixed."""
+
+    def test_builder_signature_takes_only_construction_inputs_and_tracked_cwd(self):
+        params = list(inspect.signature(build_bwrap_args).parameters)
+        assert params == ["config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path"]
+
+    def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
+        home = os.path.expanduser("~")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        first = env._wrap_popen_args(["bash"])
+        assert _chdir(first) == str(work_dir)
+
+        # The same path a real `cd $HOME` reports through the cwd marker.
+        env._update_cwd({"output": f"{env._cwd_marker}{home}{env._cwd_marker}\n", "returncode": 0})
+        assert env.cwd == home
+
+        second = env._wrap_popen_args(["bash"])
+        assert _chdir(second) == home
+        assert _mounts(second) == _mounts(first)
+        assert (str(work_dir), str(work_dir)) in [m[1:] for m in _mounts(second) if m[0] == "--bind"]
+        assert home not in {p for m in _mounts(second) for p in m[1:]}
+
+    def test_builder_reads_nothing_from_state_dir(self, sandbox_root, work_dir, monkeypatch):
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        state_dir = env.get_temp_dir()
+
+        def guard(name, real):
+            def wrapped(path, *args, **kwargs):
+                if str(path).startswith(state_dir):
+                    raise AssertionError(f"{name}() touched the state dir: {path}")
+                return real(path, *args, **kwargs)
+            return wrapped
+
+        monkeypatch.setattr(builtins, "open", guard("open", builtins.open))
+        monkeypatch.setattr(os, "listdir", guard("os.listdir", os.listdir))
+        monkeypatch.setattr(os, "scandir", guard("os.scandir", os.scandir))
+
+        for tracked in (str(work_dir), os.path.expanduser("~"), "/usr/share"):
+            env.cwd = tracked
+            argv = env._wrap_popen_args(["bash"])
+            assert _chdir(argv) == tracked
+            build_bwrap_args(env._config, str(work_dir), state_dir, env._home, env._hermes_home, tracked)
+
+
+@needs_bwrap
+class TestConstructionTimeMountsIntegration:
+    @pytest.fixture
+    def env(self, sandbox_root, work_dir):
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            yield env
+        finally:
+            env.cleanup()
+
+    def test_chdir_to_home_keeps_root_read_only(self, env, work_dir):
+        home = os.path.expanduser("~")
+        before = _mounts(env._wrap_popen_args(["bash"]))
+        assert env.execute(f"cd {home}")["returncode"] == 0
+        assert env.cwd == home
+        assert env.execute("pwd")["output"].strip() == home
+        assert _mounts(env._wrap_popen_args(["bash"])) == before
+
+        result = env.execute("touch ./probe-hermes-bwrap")
+        assert result["returncode"] != 0
+        assert "ead-only" in result["output"]
+
+    def test_state_dir_holds_only_the_state_files(self, env, work_dir):
+        for command in ("true", f"cd {os.path.expanduser('~')}", "export HERMES_PROBE=1"):
+            assert env.execute(command)["returncode"] == 0
+        state_dir = Path(env.get_temp_dir())
+        allowed = {Path(env._snapshot_path).name, Path(env._cwd_file).name}
+        listing = {p.name for p in state_dir.iterdir()}
+        # cwd tracking uses the output marker, so the cwd file name is
+        # reserved but never written; the snapshot must be there.
+        assert listing <= allowed, listing
+        assert Path(env._snapshot_path).name in listing

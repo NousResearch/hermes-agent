@@ -98,6 +98,44 @@ class TestSubscribe:
         assert _load_subscriptions()["notifier"]["secret"] == "original"
 
 
+class TestCronJobSubscribe:
+    """--cron-job: event-triggered cron jobs (ChatGPT Work-inspired)."""
+
+    def test_valid_job_ref_stored_as_id(self, monkeypatch):
+        # resolve_job_ref is imported inside _cmd_subscribe from cron.jobs
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(
+            jobs_mod, "resolve_job_ref",
+            lambda ref: {"id": "job-abc123", "name": ref},
+        )
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="ev", cron_job="sweeper"
+        ))
+        assert _load_subscriptions()["ev"]["cron_job"] == "job-abc123"
+
+    def test_unknown_job_rejected(self, monkeypatch, capsys):
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "resolve_job_ref", lambda ref: None)
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="ev", cron_job="nope"
+        ))
+        assert "no cron job matches" in capsys.readouterr().out
+        assert "ev" not in _load_subscriptions()
+
+    def test_cron_job_plus_deliver_only_rejected(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="ev",
+            cron_job="sweeper",
+            deliver_only=True,
+            deliver="telegram",
+        ))
+        assert "mutually exclusive" in capsys.readouterr().out
+        assert "ev" not in _load_subscriptions()
+
+
 class TestList:
 
     def test_with_entries(self, capsys):

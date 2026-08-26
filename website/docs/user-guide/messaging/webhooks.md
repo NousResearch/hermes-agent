@@ -89,6 +89,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `cron_job` | No | Fire an existing cron job (by ID or name) on each event instead of starting a fresh webhook agent session. The rendered `prompt` becomes transient per-run context; the job's own prompt, skills, model, and delivery settings apply. Mutually exclusive with `deliver_only`. See [Event-Triggered Cron Jobs](#event-triggered-cron-jobs). |
 
 ### Full example
 
@@ -394,6 +395,55 @@ hermes webhook subscribe antenna-matches \
 - The `skills` field is ignored in direct delivery mode (no agent runs, so there's nothing to inject skills into).
 - Template rendering uses the same `{dot.notation}` syntax as agent mode, including the `{__raw__}` token.
 - Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver.
+
+---
+
+## Event-Triggered Cron Jobs {#event-triggered-cron-jobs}
+
+Set `cron_job` on a route to fire an **existing cron job** whenever an event arrives — instead of polling on a fixed cadence or starting a fresh webhook agent session. This turns any scheduled job into an event-driven task: keep the schedule as a fallback sweep (or make it a rarely-firing one) and let the webhook fire it the moment something actually changes.
+
+Inspired by ChatGPT Work's webhook-triggered scheduled tasks (August 2026), which let a scheduled task respond to new Gmail messages, Slack channel activity, or GitHub pull request changes instead of checking on a timer.
+
+How it works:
+
+1. The event passes the same HMAC auth, rate limiting, `events`/`filters`/`script` filtering, and idempotency as any other route.
+2. The route's `prompt` template is rendered from the payload and injected into the job as **transient per-run context** (the same rail as `cronjob(action='run', prompt=...)` — the job's stored prompt is never mutated).
+3. The job fires through the same at-most-once claim the scheduler uses, so a webhook burst cannot double-fire a job that is already running, and the job's own delivery target receives the output.
+
+### Example: fire a PR-review job on review feedback
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        pr-feedback:
+          events: ["pull_request_review"]
+          secret: "github-webhook-secret"
+          cron_job: "pr-review-sweeper"        # existing job ID or name
+          prompt: |
+            PR #{number} in {repository.full_name} received new review feedback
+            from {review.user.login}: {review.body}
+```
+
+### Via the CLI
+
+```bash
+hermes webhook subscribe pr-feedback \
+  --events "pull_request_review" \
+  --cron-job "pr-review-sweeper" \
+  --prompt "PR #{number} received feedback: {review.body}"
+```
+
+The job reference is validated when you create the subscription, so typos surface immediately.
+
+### Notes
+
+- `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
+- The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
+- Paused/disabled jobs are not fired; the event is logged and dropped.
+- The POST returns `202 Accepted` immediately; the job runs in the background.
 
 ---
 

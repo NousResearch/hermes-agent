@@ -38,7 +38,7 @@ import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -94,6 +94,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
+import { clearDismissedErrorRows } from '../chat/failed-turn-dismissal'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
@@ -785,11 +786,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
 
-  // Clear a failed turn's red error banner. Errors are renderer-local (never
-  // persisted): a bare error placeholder is dropped entirely; a partial-output
-  // failure keeps its content and sheds the error. Both the runtime cache AND
-  // the live $messages view must be updated — preserveLocalAssistantErrors
-  // re-grafts any still-errored view message on the next session.info flush.
+  // Dismiss a renderer-local failed turn from BOTH the live view and its warm
+  // runtime cache. Authoritative user history remains intact; only a proven
+  // optimistic companion row leaves with the errored assistant payload.
   const dismissError = useCallback(
     (messageId: string) => {
       const runtimeSessionId = activeSessionIdRef.current
@@ -798,26 +797,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
-        messages.flatMap(message => {
-          if (message.id !== messageId || !message.error) {
-            return [message]
-          }
-
-          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
-            return []
-          }
-
-          return [{ ...message, error: undefined, pending: false }]
-        })
-
       // View first: the cache update below triggers a re-sync that reads
       // $messages as the error-preservation baseline.
-      setMessages(clearErrorIn($messages.get()))
+      setMessages(clearDismissedErrorRows($messages.get(), messageId))
 
       updateSessionState(runtimeSessionId, state => ({
         ...state,
-        messages: clearErrorIn(state.messages)
+        messages: clearDismissedErrorRows(state.messages, messageId)
       }))
     },
     [activeSessionIdRef, updateSessionState]

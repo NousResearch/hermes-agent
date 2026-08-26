@@ -8907,6 +8907,34 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
 
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
+// #95279: the picker's catalog read rides the BOT's own socket — a lazily
+// dialed second backend that can wedge (cold pool spawn, dropped remote hop)
+// without the primary socket ever noticing. An unbounded RPC there left the
+// query pending forever and the picker spinning ("never settles"). Bound every
+// attempt: past the budget the query rejects and ModelPicker falls back to its
+// free-text inputs instead of an eternal GlyphSpinner.
+const MODEL_OPTIONS_SETTLE_MS = 20000
+
+function boundedModelOptionsFetch(fetch, settleMs = MODEL_OPTIONS_SETTLE_MS) {
+  // window.setTimeout (not bare setTimeout): bare vm test harnesses expose
+  // timers only through the window shim. With no scheduler at all, degrade to
+  // the old unbounded behavior rather than not fetching.
+  const scope = typeof window === 'undefined' ? null : window
+
+  if (!scope || typeof scope.setTimeout !== 'function') {
+    return fetch
+  }
+
+  let timerId = null
+  const deadline = new Promise((_, reject) => {
+    timerId = scope.setTimeout(() => {
+      reject(new Error(`model.options did not answer within ${Math.round(settleMs / 1000)}s (#95279 settle guard)`))
+    }, settleMs)
+  })
+
+  return Promise.race([fetch, deadline]).finally(() => scope.clearTimeout(timerId))
+}
+
 function useModelOptions(bot = null) {
   // Hook body runs during render: an orphaned row must paint the picker
   // disabled/erroring, not throw into the pane's error boundary.
@@ -8916,11 +8944,18 @@ function useModelOptions(bot = null) {
 
   return useQuery({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
-    queryFn: () => requestForBot(bot, 'model.options', {
-      include_unconfigured: true,
-      explicit_only: false,
-      refresh: true
-    }),
+    // No forced `refresh`: forcing a network read on EVERY mount bypassed the
+    // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
+    // pane visibility flip) knocked the picker back into its loading state and
+    // discarded the user's staged selection mid-edit (#95279). The cached read
+    // still refreshes per staleTime like every other surface's catalog.
+    queryFn: () =>
+      boundedModelOptionsFetch(
+        requestForBot(bot, 'model.options', {
+          include_unconfigured: true,
+          explicit_only: false
+        })
+      ),
     enabled: !orphaned,
     staleTime: 120000,
     retry: false

@@ -2153,6 +2153,20 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
         _fresh_compaction_message_copy,
     )
 
+    # Context engines may run this exact host boundary before receipt
+    # finalization so the authenticated projection already carries the anchor.
+    # Alternation repair can merge the zero-user continuation marker into a
+    # neighboring synthetic notification, so recognize containment rather than
+    # requiring a standalone row. Re-appending it here would mutate the receipt
+    # projection on every host pass and break the next recursive generation.
+    if any(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and COMPRESSION_CONTINUATION_USER_CONTENT in _message_text(message)
+        for message in compressed
+    ):
+        return
+
     for message in reversed(original_messages):
         if _is_real_user_message(message):
             _insert_real_user_anchor(

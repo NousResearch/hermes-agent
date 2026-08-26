@@ -185,6 +185,24 @@ describe('connection registry cache', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it('boot restore yields to a source the user already picked while boot was settling', async () => {
+    // Primary is local, launch mode is primary. The user clicks a fleet-rail
+    // square on the homelab gateway before the boot-time restore runs. The
+    // restore must not "return" the window to the primary over that choice.
+    list.mockResolvedValue({ ...registry, primary: 'local', launchMode: 'primary' })
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await selectConnection('homelab', { profile: 'omer' })
+    expect($activeConnectionId.get()).toBe('homelab')
+    ensureGatewayAgent.mockClear()
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect($activeConnectionId.get()).toBe('homelab')
+  })
+
   it('uses only the resolved descriptor identity for the active gateway', () => {
     setConnectionsRegistry({ ...registry, primary: 'homelab' })
     $connection.set({ connectionId: 'work-vps', mode: 'remote' })
@@ -267,6 +285,22 @@ describe('selectConnection', () => {
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
     expect($connection.get()?.connectionId).toBe('local')
     expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  it('lands on an explicit profile instead of the one last used on that source', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    // Remember "scout" on homelab by activating it once…
+    await selectConnection('homelab', { profile: 'scout' })
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'scout', expect.anything())
+
+    // …then pick a different square on the same source: the click wins over
+    // whatever was last used there, and the fresh draft targets that profile.
+    await selectConnection('local')
+    await selectConnection('homelab', { profile: 'omer' })
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'omer', expect.anything())
+    expect($newChatProfile.get()).toBe('omer')
   })
 
   it('restores the last profile used on each source', async () => {

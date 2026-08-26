@@ -1825,6 +1825,14 @@ export const en: Translations = {
     switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Manage gateways…',
+    fleet: {
+      allOnGateway: 'All profiles on this gateway',
+      gateway: gateway => `Profiles on ${gateway}`,
+      gatewayUnreachable: gateway => `${gateway} · unreachable`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      deleteOn: gateway => ` on ${gateway}`
+    },
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,

@@ -9021,7 +9021,19 @@ function readDesktopConnectionsRegistry() {
     tightenSecretFileMode(DESKTOP_CONNECTIONS_REGISTRY_PATH)
     registry = normalizeRegistry(JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')))
   } catch {
+    // Whole-file corruption (truncated write, mangled hand-edit). The
+    // degraded local-only registry keeps boot working, but the file BYTES are
+    // the user's connection data — preserve them in a sidecar BEFORE any
+    // later write (drift reconcile, connection save) overwrites the file
+    // (#94246: recovery must never be data loss).
+    preserveCorruptRegistrySidecar()
     registry = normalizeRegistry(null)
+  }
+
+  if (registry?.quarantined?.length) {
+    rememberLog(
+      `[connections] ${registry.quarantined.length} malformed registry entr${registry.quarantined.length === 1 ? 'y was' : 'ies were'} quarantined (kept under "quarantined" in connections.json); healthy connections loaded normally.`
+    )
   }
 
   // Heal v1 -> v2 drift: the v1 global route names a remote this registry has
@@ -9050,6 +9062,31 @@ function readDesktopConnectionsRegistry() {
   connectionRegistryCacheMtime = mtime
 
   return registry
+}
+
+// Copy an unparseable connections.json aside (once per corruption event) so a
+// later registry write can never destroy the only copy of the user's saved
+// connections (#94246). Best effort: failure to preserve must not block boot.
+function preserveCorruptRegistrySidecar() {
+  try {
+    const rawText = fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')
+
+    if (!rawText.trim()) {
+      return
+    }
+
+    const sidecar = `${DESKTOP_CONNECTIONS_REGISTRY_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+    if (!fs.existsSync(sidecar)) {
+      fs.writeFileSync(sidecar, rawText, { mode: 0o600 })
+    }
+
+    rememberLog(
+      `[connections] connections.json could not be parsed; preserved the original file at ${sidecar} and continuing with a local-only registry. No connection data was deleted.`
+    )
+  } catch {
+    // The read itself failed (missing file, permissions) — nothing to save.
+  }
 }
 
 function writeDesktopConnectionsRegistry(registry) {
@@ -9098,7 +9135,16 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
     launchMode: registry.launchMode,
     lastUsed: registry.lastUsed,
     secureTokenStorage,
-    connections: registry.connections.map(sanitizeRegistryConnection)
+    connections: registry.connections.map(sanitizeRegistryConnection),
+    // Surface quarantined-entry NOTICES only (reason + best-effort label) —
+    // the raw entries can carry token envelopes and stay in the file (#94246).
+    quarantined: (registry.quarantined || []).map(q => ({
+      reason: String(q?.reason || 'unknown'),
+      label:
+        q && q.entry && typeof q.entry === 'object' && typeof (q.entry as any).label === 'string'
+          ? (q.entry as any).label
+          : ''
+    }))
   }
 }
 

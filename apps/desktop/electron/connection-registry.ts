@@ -73,6 +73,22 @@ export interface RegistryConnection {
   remoteProfile?: string
 }
 
+/**
+ * A registry entry that failed normalization (#94246). The raw entry is USER
+ * DATA — it is preserved verbatim here (and re-persisted on every write)
+ * instead of being silently dropped, so a malformed/corrupt entry never
+ * requires "delete connections.json" recovery and never loses the user's
+ * connection material.
+ */
+export interface QuarantinedRegistryEntry {
+  reason: string
+  entry: unknown
+}
+
+/** Upper bound on preserved quarantine entries so a pathological file cannot
+ * grow the registry without limit. Oldest-first within one load pass. */
+export const REGISTRY_QUARANTINE_CAP = 20
+
 export interface ConnectionRegistry {
   version: typeof REGISTRY_VERSION
   /** id of the connection that owns the window/primary backend. */
@@ -83,6 +99,8 @@ export interface ConnectionRegistry {
    * so registries written before multi-source switching still normalize. */
   lastUsed: string
   connections: RegistryConnection[]
+  /** Entries preserved from a malformed load — absent when empty. */
+  quarantined?: QuarantinedRegistryEntry[]
 }
 
 // ── Labels and ids ──────────────────────────────────────────────────────────
@@ -1043,16 +1061,56 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
   const seenLabels = new Set<string>()
   const seenIds = new Set<string>()
   const connections: RegistryConnection[] = []
+  const quarantined: QuarantinedRegistryEntry[] = []
+
+  const quarantine = (reason: string, entry: unknown) => {
+    if (quarantined.length < REGISTRY_QUARANTINE_CAP) {
+      quarantined.push({ reason, entry })
+    }
+  }
+
+  // Entries quarantined by a previous load are user data too — carry them
+  // through every subsequent normalize/write cycle rather than dropping them
+  // the first time the file is rewritten.
+  if (Array.isArray(parsed.quarantined)) {
+    for (const item of parsed.quarantined) {
+      if (item && typeof item === 'object' && 'entry' in (item as Record<string, unknown>)) {
+        quarantine(String((item as Record<string, unknown>).reason || 'unknown'), (item as Record<string, unknown>).entry)
+      }
+    }
+  }
+
+  // Best-effort plain-data copy for entries that blew up mid-normalization —
+  // the raw object may carry whatever poisoned it, so never persist it as-is.
+  const safeEntryCopy = (item: unknown) => {
+    try {
+      return JSON.parse(JSON.stringify(item))
+    } catch {
+      return { unserializable: true }
+    }
+  }
 
   for (const item of rawConnections) {
-    if (!item || typeof item !== 'object') {
+    if (!item) {
+      continue // null/false/'' carry no user data
+    }
+
+    if (typeof item !== 'object') {
+      // A string/number here is usually a mangled hand-edit — still user data.
+      quarantine('entry-malformed', item)
+
       continue
     }
 
+    // One bad entry must never abort the whole registry load (#94246): any
+    // unexpected throw quarantines THIS entry and the loop moves on.
+    try {
     const entry = item as Record<string, unknown>
     const kind = entry.kind
 
     if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
+      quarantine('entry-unrecognized-kind', item)
+
       continue
     }
 
@@ -1086,6 +1144,8 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
       const url = String(entry.url || '').trim()
 
       if (!url) {
+        quarantine('entry-missing-url', item)
+
         continue
       }
 
@@ -1111,6 +1171,8 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
       const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
 
       if (!ssh) {
+        quarantine('entry-missing-ssh-host', item)
+
         continue
       }
 
@@ -1119,6 +1181,9 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
     }
 
     connections.push(clean)
+    } catch {
+      quarantine('entry-normalization-failed', safeEntryCopy(item))
+    }
   }
 
   if (!connections.some(c => c.kind === 'local')) {
@@ -1129,13 +1194,19 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
   const primary = connections.some(c => c.id === storedPrimary) ? storedPrimary : LOCAL_CONNECTION_ID
   const storedLastUsed = String(parsed.lastUsed || '').trim()
 
-  return {
+  const normalized: ConnectionRegistry = {
     version: REGISTRY_VERSION,
     primary,
     launchMode: parsed.launchMode === 'last-used' ? 'last-used' : 'primary',
     lastUsed: connections.some(c => c.id === storedLastUsed) ? storedLastUsed : primary,
     connections
   }
+
+  if (quarantined.length > 0) {
+    normalized.quarantined = quarantined
+  }
+
+  return normalized
 }
 
 /**

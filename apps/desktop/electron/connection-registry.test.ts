@@ -1808,3 +1808,116 @@ test('migrateV1ToRegistry carries v1 remote headers into the registry entry', ()
     'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' }
   })
 })
+
+// --- normalizeRegistry per-entry quarantine (#94246 remainder) ---
+//
+// One malformed entry must never cost the user the rest of the registry, and
+// malformed entries are USER DATA: they are preserved under `quarantined`
+// (with the raw entry verbatim) instead of being silently deleted on the next
+// registry write. "Only deleting connections.json recovers" was the reported
+// failure shape; the recovery must never be data loss.
+
+test('normalizeRegistry quarantines malformed entries instead of silently dropping them', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'a',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' },
+      { id: 'c', kind: 'remote', label: 'No URL entry' },
+      { kind: 'nonsense', label: 'Mystery box', extra: 'still my data' },
+      { id: 's', kind: 'ssh', label: 'No host ssh' }
+    ]
+  })
+
+  // Healthy entries all load.
+  assert.deepEqual(
+    registry.connections.map(c => c.id),
+    ['local', 'a']
+  )
+  assert.equal(registry.primary, 'a')
+
+  // The malformed ones are preserved verbatim, with reasons.
+  assert.equal((registry.quarantined || []).length, 3)
+
+  const reasons = registry.quarantined!.map(q => q.reason).sort()
+
+  assert.deepEqual(reasons, ['entry-missing-ssh-host', 'entry-missing-url', 'entry-unrecognized-kind'])
+
+  const mystery = registry.quarantined!.find(q => q.reason === 'entry-unrecognized-kind')
+
+  assert.deepEqual(mystery!.entry, { kind: 'nonsense', label: 'Mystery box', extra: 'still my data' })
+})
+
+test('normalizeRegistry preserves previously quarantined entries across round trips', () => {
+  const first = normalizeRegistry({
+    version: 2,
+    connections: [{ id: 'c', kind: 'remote', label: 'No URL entry' }]
+  })
+
+  assert.equal((first.quarantined || []).length, 1)
+
+  // Simulate write → read → normalize again (what every registry save does).
+  const second = normalizeRegistry(JSON.parse(JSON.stringify(first)))
+
+  assert.equal((second.quarantined || []).length, 1)
+  assert.deepEqual(second.quarantined![0].entry, { id: 'c', kind: 'remote', label: 'No URL entry' })
+})
+
+test('normalizeRegistry quarantines an entry that explodes during normalization (no whole-load abort)', () => {
+  const poisoned: any = { id: 'boom', kind: 'remote', url: 'http://10.0.0.9:9119' }
+
+  Object.defineProperty(poisoned, 'label', {
+    enumerable: true,
+    get() {
+      throw new Error('poisoned entry')
+    }
+  })
+
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'a',
+    connections: [poisoned, { id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }]
+  })
+
+  // The healthy entry still loads and keeps primary; the poisoned one is
+  // quarantined rather than aborting the whole registry load.
+  assert.deepEqual(
+    registry.connections.filter(c => c.kind === 'remote').map(c => c.id),
+    ['a']
+  )
+  assert.equal(registry.primary, 'a')
+  assert.equal((registry.quarantined || []).length, 1)
+  assert.equal(registry.quarantined![0].reason, 'entry-normalization-failed')
+})
+
+test('normalizeRegistry keeps a clean registry free of the quarantined key and caps quarantine growth', () => {
+  const clean = normalizeRegistry({
+    version: 2,
+    connections: [{ id: 'a', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }]
+  })
+
+  assert.equal('quarantined' in clean, false)
+
+  const flooded = normalizeRegistry({
+    version: 2,
+    connections: Array.from({ length: 100 }, (_, i) => ({ id: `q${i}`, kind: 'remote', label: `No URL ${i}` }))
+  })
+
+  assert.ok((flooded.quarantined || []).length <= 20)
+})
+
+test('normalizeRegistry quarantines non-object junk items that could still be user data', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    connections: ['{ mangled json fragment }', null, false, { id: 'a', kind: 'remote', label: 'A', url: 'http://x:1' }]
+  })
+
+  assert.deepEqual(
+    registry.connections.map(c => c.kind),
+    ['local', 'remote']
+  )
+  // null/false carry no data and are dropped; the string is preserved.
+  assert.equal((registry.quarantined || []).length, 1)
+  assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
+})

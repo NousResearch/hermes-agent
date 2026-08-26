@@ -34,6 +34,23 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    authorized = {
+        "engineer-grok", "architect-sol", "reviewer", "reviewer-grok",
+        "architect-grok", "engineer", "engineer38",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists",
+        lambda name: str(name).strip() in authorized,
+    )
+    try:
+        import hermes_cli.kanban_routing as _routing_mod
+    except ImportError:
+        _routing_mod = None
+    if _routing_mod is not None and hasattr(_routing_mod, "profile_is_available"):
+        monkeypatch.setattr(
+            "hermes_cli.kanban_routing.profile_is_available",
+            lambda name: str(name or "").strip() in authorized,
+        )
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     return home
@@ -490,12 +507,16 @@ def test_parent_ordering_and_completion_integrity_unchanged(kanban_home, tmp_pat
             title="parent",
             assignee="implementer",
             completion_contract=contract,
+            routing_criticality="noncritical",
+            routing_role="noncritical",
         )
         child = kb.create_task(
             conn,
             title="child",
             assignee="implementer",
             parents=[parent],
+            routing_criticality="noncritical",
+            routing_role="noncritical",
         )
         assert kb.get_task(conn, child).status == "todo"
         claimed = kb.claim_task(conn, parent)
@@ -528,3 +549,294 @@ def test_second_opinion_reviewer_grok_requires_explicit_flag(kanban_home):
         )
         assert kb.get_task(conn, tid).assignee == "reviewer-grok"
         assert kb.get_task(conn, tid).routing_second_opinion is True
+
+
+def _plant_review_task(
+    conn,
+    *,
+    assignee: str | None,
+    routing_role: str = "review",
+    routing_criticality: str | None = None,
+    routing_second_opinion: bool = False,
+    routing_preflight: int = 0,
+    title: str = "critical review",
+) -> str:
+    tid = kb.create_task(
+        conn,
+        title=title,
+        assignee="reviewer",
+        routing_role=routing_role,
+        routing_criticality=routing_criticality,
+        routing_second_opinion=routing_second_opinion,
+    )
+    conn.execute(
+        "UPDATE tasks SET status = 'review', assignee = ?, "
+        "routing_preflight = ? WHERE id = ?",
+        (assignee, routing_preflight, tid),
+    )
+    return tid
+
+
+def _plant_ready_task(
+    conn,
+    *,
+    assignee: str | None,
+    routing_role: str = "implementation",
+    routing_criticality: str | None = None,
+    routing_preflight: int = 0,
+    title: str = "critical impl",
+) -> str:
+    tid = kb.create_task(
+        conn,
+        title=title,
+        assignee=assignee or "engineer-grok",
+        routing_role=routing_role,
+        routing_criticality=routing_criticality,
+    )
+    conn.execute(
+        "UPDATE tasks SET status = 'ready', assignee = ?, "
+        "routing_preflight = ? WHERE id = ?",
+        (assignee, routing_preflight, tid),
+    )
+    return tid
+
+
+def test_create_critical_implementation_rejects_made_up_profile(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(_guard_error()) as exc:
+            kb.create_task(
+                conn,
+                title="critical impl",
+                assignee="made-up-impl",
+                routing_role="implementation",
+            )
+        assert exc.value.code in {
+            routing.REASON_UNKNOWN,
+            routing.REASON_UNAVAILABLE,
+            routing.REASON_DENIED,
+        }
+
+
+def test_assign_critical_implementation_rejects_made_up_profile(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="critical impl",
+            assignee="engineer-grok",
+            routing_role="implementation",
+        )
+        with pytest.raises(_guard_error()) as exc:
+            kb.assign_task(conn, tid, "made-up-impl")
+        assert kb.get_task(conn, tid).assignee == "engineer-grok"
+        assert exc.value.code in {
+            routing.REASON_UNKNOWN,
+            routing.REASON_UNAVAILABLE,
+            routing.REASON_DENIED,
+        }
+
+
+def test_create_critical_implementation_rejects_unavailable_engineer_grok(kanban_home, monkeypatch):
+    if routing is not None and hasattr(routing, "profile_is_available"):
+        monkeypatch.setattr(
+            "hermes_cli.kanban_routing.profile_is_available",
+            lambda name: str(name or "").strip() != "engineer-grok",
+        )
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profile_exists",
+            lambda name: str(name or "").strip() != "engineer-grok",
+        )
+    with kb.connect() as conn:
+        with pytest.raises(_guard_error()) as exc:
+            kb.create_task(
+                conn,
+                title="critical impl",
+                assignee="engineer-grok",
+                routing_role="implementation",
+            )
+        assert exc.value.code == routing.REASON_UNAVAILABLE
+
+
+def test_unassigned_critical_ready_claim_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_ready_task(conn, assignee=None)
+        claimed = kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert claimed is None
+    assert task.status == "ready"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+    assert any(
+        ev.kind == "claim_rejected"
+        and (ev.payload or {}).get("reason") in {
+            routing.REASON_EMPTY,
+            routing.REASON_DENIED,
+            routing.REASON_UNAVAILABLE,
+        }
+        for ev in events
+    )
+
+
+def test_unavailable_critical_assignee_claim_rejected(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="critical impl",
+            assignee="engineer-grok",
+            routing_role="implementation",
+        )
+    if routing is not None and hasattr(routing, "profile_is_available"):
+        monkeypatch.setattr(
+            "hermes_cli.kanban_routing.profile_is_available",
+            lambda name: str(name or "").strip() != "engineer-grok",
+        )
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profile_exists",
+            lambda name: str(name or "").strip() != "engineer-grok",
+        )
+    with kb.connect() as conn:
+        claimed = kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert claimed is None
+    assert task.status == "ready"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+    assert any(
+        ev.kind == "claim_rejected"
+        and (ev.payload or {}).get("reason") == routing.REASON_UNAVAILABLE
+        for ev in events
+    )
+
+
+def test_critical_review_made_up_claim_review_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_review_task(conn, assignee="made-up-reviewer")
+        claimed = kb.claim_review_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert claimed is None
+    assert task.status == "review"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+
+
+def test_critical_review_engineer_claim_review_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_review_task(conn, assignee="engineer")
+        claimed = kb.claim_review_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert claimed is None
+    assert task.status == "review"
+    assert task.claim_lock is None
+
+
+def test_critical_review_reviewer_claim_allowed(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_review_task(conn, assignee="reviewer")
+        claimed = kb.claim_review_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert claimed is not None
+    assert task.status == "running"
+    assert task.assignee == "reviewer"
+
+
+def test_critical_review_architect_sol_claim_allowed(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_review_task(conn, assignee="architect-sol")
+        claimed = kb.claim_review_task(conn, tid)
+    assert claimed is not None
+    assert claimed.assignee == "architect-sol"
+    assert claimed.status == "running"
+
+
+def test_critical_review_unauthorized_installed_profile_review_dispatch_blocked(kanban_home):
+    spawned: list[str] = []
+
+    def _spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 4242
+
+    with kb.connect() as conn:
+        tid = _plant_review_task(conn, assignee="engineer")
+        result = kb.dispatch_once(conn, spawn_fn=_spawn)
+        task = kb.get_task(conn, tid)
+    assert result.spawned == []
+    assert spawned == []
+    assert task.status == "review"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+    assert tid in getattr(result, "skipped_routing_denied", [])
+
+
+def test_preflight_task_promote_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked impl",
+            assignee="engineer-grok",
+            routing_role="implementation",
+            triage=True,
+        )
+        conn.execute("UPDATE tasks SET status = 'todo', routing_preflight = 1 WHERE id = ?", (tid,))
+        ok, reason = kb.promote_task(conn, tid, actor="human")
+        task = kb.get_task(conn, tid)
+    assert ok is False
+    assert reason is not None
+    assert "preflight" in reason.lower() or "ROUTING" in reason
+    assert task.status == "todo"
+    assert task.routing_preflight is True
+
+
+def test_preflight_task_ordinary_claim_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_ready_task(
+            conn,
+            assignee="engineer-grok",
+            routing_preflight=1,
+        )
+        claimed = kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert claimed is None
+    assert task.status == "ready"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+
+
+def test_preflight_review_claim_rejected(kanban_home):
+    with kb.connect() as conn:
+        tid = _plant_review_task(
+            conn,
+            assignee="reviewer",
+            routing_preflight=1,
+        )
+        claimed = kb.claim_review_task(conn, tid)
+        task = kb.get_task(conn, tid)
+    assert claimed is None
+    assert task.status == "review"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+
+
+def test_explicit_human_routing_approval_clears_preflight_and_allows_execution(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked impl",
+            assignee="engineer-grok",
+            routing_role="implementation",
+            triage=True,
+        )
+        conn.execute("UPDATE tasks SET status = 'todo', routing_preflight = 1 WHERE id = ?", (tid,))
+        assert kb.get_task(conn, tid).routing_preflight is True
+        ok = kb.assign_task(conn, tid, "engineer-grok")
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.routing_preflight is False
+        promoted, reason = kb.promote_task(conn, tid, actor="human")
+        assert promoted is True, reason
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.status == "running"
+        assert claimed.assignee == "engineer-grok"

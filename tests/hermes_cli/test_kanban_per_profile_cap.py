@@ -41,9 +41,11 @@ def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         for i in range(5):
-            kb.create_task(conn, title=f"a{i}", assignee="alpha")
+            kb.create_task(conn, title=f"a{i}", assignee="alpha",
+                           routing_criticality="noncritical", routing_role="noncritical")
         for i in range(3):
-            kb.create_task(conn, title=f"b{i}", assignee="beta")
+            kb.create_task(conn, title=f"b{i}", assignee="beta",
+                           routing_criticality="noncritical", routing_role="noncritical")
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=True,
@@ -66,7 +68,8 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     kb = isolated_kanban_home_with_profiles
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        ids = [kb.create_task(conn, title=f"a{i}", assignee="alpha") for i in range(3)]
+        ids = [kb.create_task(conn, title=f"a{i}", assignee="alpha",
+                              routing_criticality="noncritical", routing_role="noncritical") for i in range(3)]
 
     # First tick: cap=1, only 1 alpha dispatched
     with kb.connect_closing() as conn:

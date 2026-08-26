@@ -89,7 +89,13 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     kb, _home = isolated_kanban_home
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        task_id = kb.create_task(conn, title="t1", assignee="default")
+        task_id = kb.create_task(
+            conn,
+            title="t1",
+            assignee="default",
+            routing_criticality="noncritical",
+            routing_role="noncritical",
+        )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,

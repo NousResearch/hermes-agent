@@ -3306,7 +3306,36 @@ def _routing_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "second_opinion": bool(row["routing_second_opinion"])
         if "routing_second_opinion" in keys and row["routing_second_opinion"]
         else False,
+        "preflight": bool(row["routing_preflight"])
+        if "routing_preflight" in keys and row["routing_preflight"]
+        else False,
     }
+
+
+def _execution_routing_error(row: Any) -> Optional[kroute.RoutingGuardError]:
+    """Claim/dispatch-time revalidation. None means execution may proceed."""
+    fields = _routing_from_row(row or {})
+    if fields["preflight"]:
+        return kroute.RoutingGuardError(
+            kroute.REASON_PREFLIGHT,
+            "task is parked for human routing preflight and cannot be executed",
+            details={
+                "assignee": row["assignee"] if row and "assignee" in set(row.keys()) else None,
+                "criticality": fields["criticality"],
+                "role": fields["role"],
+            },
+        )
+    try:
+        kroute.check_assignment(
+            row["assignee"] if row and "assignee" in set(row.keys()) else None,
+            criticality=fields["criticality"],
+            role=fields["role"],
+            second_opinion=fields["second_opinion"],
+            routing=kroute.load_routing_config_from_disk(),
+        )
+    except kroute.RoutingGuardError as exc:
+        return exc
+    return None
 
 
 def create_task(
@@ -5034,29 +5063,21 @@ def claim_task(
             return None
         row = conn.execute(
             "SELECT assignee, routing_criticality, routing_role, "
-            "routing_second_opinion FROM tasks WHERE id = ? AND status = 'ready'",
+            "routing_second_opinion, routing_preflight FROM tasks "
+            "WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
-        if row is not None and row["assignee"]:
-            try:
-                fields = _routing_from_row(row)
-                kroute.check_assignment(
-                    row["assignee"],
-                    criticality=fields["criticality"],
-                    role=fields["role"],
-                    second_opinion=fields["second_opinion"],
-                    routing=kroute.load_routing_config_from_disk(),
-                )
-            except kroute.RoutingGuardError as exc:
-                _append_event(
-                    conn, task_id, "claim_rejected",
-                    {
-                        "reason": exc.code,
-                        "message": str(exc),
-                        "details": exc.details,
-                    },
-                )
-                return None
+        blocked = _execution_routing_error(row)
+        if blocked is not None:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": blocked.code,
+                    "message": str(blocked),
+                    "details": blocked.details,
+                },
+            )
+            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -5183,6 +5204,24 @@ def claim_review_task(
                         "source_status": "review",
                     },
                 )
+            return None
+        row = conn.execute(
+            "SELECT assignee, routing_criticality, routing_role, "
+            "routing_second_opinion, routing_preflight FROM tasks "
+            "WHERE id = ? AND status = 'review'",
+            (task_id,),
+        ).fetchone()
+        blocked = _execution_routing_error(row)
+        if blocked is not None:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {
+                    "reason": blocked.code,
+                    "message": str(blocked),
+                    "details": blocked.details,
+                    "lane": "review",
+                },
+            )
             return None
         cur = conn.execute(
             """
@@ -7658,7 +7697,7 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, routing_preflight FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
@@ -7668,6 +7707,12 @@ def promote_task(
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
             f"'todo' or 'blocked'"
+        )
+    keys = set(row.keys())
+    if "routing_preflight" in keys and row["routing_preflight"]:
+        return False, (
+            f"task {task_id} is parked for human routing preflight "
+            f"({kroute.REASON_PREFLIGHT})"
         )
 
     unsatisfied = _unsatisfied_parent_evals(conn, task_id)
@@ -10975,7 +11020,8 @@ def _dispatch_once_locked(
     review_rows = []
     if review_dispatch_enabled():
         review_rows = conn.execute(
-            "SELECT id, assignee FROM tasks "
+            "SELECT id, assignee, routing_criticality, routing_role, "
+            "routing_second_opinion, routing_preflight FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
             "ORDER BY priority DESC, created_at ASC"
         ).fetchall()
@@ -11048,6 +11094,10 @@ def _dispatch_once_locked(
             break
         row_assignee = row["assignee"]
         routing_fields = _routing_from_row(row)
+        blocked = _execution_routing_error(row)
+        if blocked is not None and row_assignee:
+            result.skipped_routing_denied.append(row["id"])
+            continue
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
@@ -11291,6 +11341,10 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        blocked = _execution_routing_error(row)
+        if blocked is not None:
+            result.skipped_routing_denied.append(row["id"])
             continue
         try:
             from hermes_cli.profiles import profile_exists

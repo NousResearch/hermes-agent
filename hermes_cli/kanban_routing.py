@@ -35,6 +35,7 @@ REASON_UNAVAILABLE = "ROUTING_UNAVAILABLE"
 REASON_UNKNOWN = "ROUTING_UNKNOWN"
 REASON_EMPTY = "ROUTING_EMPTY"
 REASON_FALLBACK = "ROUTING_FALLBACK"
+REASON_PREFLIGHT = "ROUTING_PREFLIGHT"
 
 DEFAULT_ROUTING_CONFIG: dict[str, Any] = {
     "default_criticality": CRITICALITY_CRITICAL,
@@ -228,6 +229,29 @@ def allowed_critical_assignees(
     return allowed
 
 
+def installed_profile_names() -> set[str]:
+    """Controller-owned installed/authorized profile roster."""
+    try:
+        from hermes_cli.profiles import list_profiles
+        return {str(p.name).strip() for p in list_profiles() if getattr(p, "name", None)}
+    except Exception:
+        return set()
+
+
+def profile_is_available(name: Any) -> bool:
+    """True when *name* is an installed/authorized Hermes profile."""
+    chosen = _canonical_name(name)
+    if not chosen:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists
+        if profile_exists(chosen):
+            return True
+    except Exception:
+        pass
+    return chosen in installed_profile_names()
+
+
 def check_assignment(
     assignee: Any,
     *,
@@ -237,13 +261,15 @@ def check_assignment(
     routing: Optional[Mapping[str, Any]] = None,
     valid_names: Optional[Iterable[str]] = None,
     apply_default: Optional[str] = None,
+    require_available: bool = True,
 ) -> RoutingDecision:
     """Validate an assignee against the Sprint 3 routing policy.
 
     Empty critical assignee is a hard block — callers must not fill
     ``default_assignee`` / active profile / ``default``. Noncritical empty
     assignee may use ``apply_default`` only after that default itself
-    passes this check.
+    passes this check. Arbitrary nonempty strings are not legal critical
+    assignees; they must exist on the installed/authorized roster.
     """
     cfg = routing or default_routing_config()
     crit, resolved_role, second = resolve_routing_fields(
@@ -273,6 +299,7 @@ def check_assignment(
                 second_opinion=second,
                 routing=cfg,
                 valid_names=valid_names,
+                require_available=require_available,
             )
         return RoutingDecision(None, crit, resolved_role, second)
 
@@ -291,12 +318,23 @@ def check_assignment(
                 second_opinion=second,
                 routing=cfg,
                 valid_names=valid_names,
+                require_available=require_available,
             )
         raise RoutingGuardError(
             REASON_UNKNOWN,
             f"assignee {chosen!r} is not an installed profile",
             details=details,
         )
+
+    if require_available and not profile_is_available(chosen):
+        if crit == CRITICALITY_CRITICAL:
+            raise RoutingGuardError(
+                REASON_UNAVAILABLE,
+                f"required critical assignee {chosen!r} is missing or unknown",
+                details=details,
+            )
+        # Noncritical dummy/test assignees remain legal. Critical work
+        # never accepts an uninstalled name.
 
     noncritical_only = {
         str(n).strip() for n in (cfg.get("noncritical_only") or []) if str(n).strip()
@@ -312,8 +350,7 @@ def check_assignment(
         allowed = allowed_critical_assignees(
             resolved_role, second_opinion=second, routing=cfg,
         )
-        policy_names = policy_profile_names(cfg)
-        if chosen in policy_names and chosen not in allowed:
+        if chosen not in allowed:
             raise RoutingGuardError(
                 REASON_DENIED,
                 f"{chosen} is not an allowed {resolved_role} assignee for critical work",

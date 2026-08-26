@@ -16,6 +16,17 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_decompose as decomp
 
+_orig_create_task = kb.create_task
+
+
+def _create_task_noncritical(*args, **kwargs):
+    kwargs.setdefault("routing_criticality", "noncritical")
+    kwargs.setdefault("routing_role", "noncritical")
+    return _orig_create_task(*args, **kwargs)
+
+
+kb.create_task = _create_task_noncritical
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -83,8 +94,10 @@ def test_decompose_with_fanout_creates_children(kanban_home):
         "fanout": True,
         "rationale": "test split",
         "tasks": [
-            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
-            {"title": "build", "body": "code it", "assignee": "coder", "parents": [0]},
+            {"title": "research", "body": "look it up", "assignee": "researcher",
+             "parents": [], "criticality": "noncritical", "role": "noncritical"},
+            {"title": "build", "body": "code it", "assignee": "coder",
+             "parents": [0], "criticality": "noncritical", "role": "noncritical"},
         ],
     })
 

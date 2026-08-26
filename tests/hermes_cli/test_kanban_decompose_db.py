@@ -10,6 +10,17 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 
+_orig_create_task = kb.create_task
+
+
+def _create_task_noncritical(*args, **kwargs):
+    kwargs.setdefault("routing_criticality", "noncritical")
+    kwargs.setdefault("routing_role", "noncritical")
+    return _orig_create_task(*args, **kwargs)
+
+
+kb.create_task = _create_task_noncritical
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -38,8 +49,10 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
         assert kb.get_task(conn, tid).status == "triage"
 
     children = [
-        {"title": "research", "body": "look at prior art", "assignee": "researcher", "parents": []},
-        {"title": "build it", "body": "write code", "assignee": "engineer", "parents": [0]},
+        {"title": "research", "body": "look at prior art", "assignee": "researcher",
+         "parents": [], "criticality": "noncritical", "role": "noncritical"},
+        {"title": "build it", "body": "write code", "assignee": "engineer",
+         "parents": [0], "criticality": "noncritical", "role": "noncritical"},
     ]
     with kb.connect() as conn:
         child_ids = kb.decompose_triage_task(
@@ -75,7 +88,8 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
             conn,
             tid,
             root_assignee="orch",
-            children=[{"title": "task A", "assignee": "researcher"}],
+            children=[{"title": "task A", "assignee": "researcher",
+                       "criticality": "noncritical", "role": "noncritical"}],
             author="alice",
         )
     assert child_ids is not None

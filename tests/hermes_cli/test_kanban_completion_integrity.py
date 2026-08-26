@@ -18,6 +18,19 @@ from hermes_cli import kanban_completion_integrity as kci
 from hermes_cli import kanban_db as kb
 
 
+_orig_create_task = kb.create_task
+
+
+def create_task(*args, **kwargs):
+    """Integrity fixtures use dummy assignees; keep them explicitly noncritical."""
+    kwargs.setdefault("routing_criticality", "noncritical")
+    kwargs.setdefault("routing_role", "noncritical")
+    return _orig_create_task(*args, **kwargs)
+
+
+kb.create_task = create_task
+
+
 FAKE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
@@ -115,6 +128,8 @@ def _create_and_claim(conn, title: str, *, contract: dict, assignee: str = "impl
         title=title,
         assignee=assignee,
         completion_contract=contract,
+        routing_criticality="noncritical",
+        routing_role="noncritical",
     )
     claimed = kb.claim_task(conn, tid)
     assert claimed is not None
@@ -1401,6 +1416,9 @@ def test_sol11_cli_create_and_show_parse_governance_contract(kanban_home, tmp_pa
         initial_status="running",
         json=True,
         completion_contract=json.dumps(_git_contract(repo, base)),
+        routing_criticality="noncritical",
+        routing_role="noncritical",
+        routing_second_opinion=False,
     )
     rc = kc._cmd_create(args)
     assert rc == 0

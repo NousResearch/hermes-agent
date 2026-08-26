@@ -27,6 +27,17 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 
+_orig_create_task = kb.create_task
+
+
+def _create_task_noncritical(*args, **kwargs):
+    kwargs.setdefault("routing_criticality", "noncritical")
+    kwargs.setdefault("routing_role", "noncritical")
+    return _orig_create_task(*args, **kwargs)
+
+
+kb.create_task = _create_task_noncritical
+
 
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

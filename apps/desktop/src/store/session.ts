@@ -228,9 +228,7 @@ export type NewChatWorkspaceTarget = null | string | undefined
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
-export async function syncConfiguredDefaultProjectDir(
-  shouldPublish: () => boolean = () => true
-): Promise<string> {
+export async function syncConfiguredDefaultProjectDir(shouldPublish: () => boolean = () => true): Promise<string> {
   const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
 
   if (!settings) {

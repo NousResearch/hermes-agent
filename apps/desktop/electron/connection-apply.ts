@@ -61,10 +61,4 @@ async function resolveTerminalConnectionForSender(webContentsId, getTarget, ensu
   )
 }
 
-
-export {
-  applyConnectionChange,
-  commitConnectionFailure,
-  resolveTerminalConnection,
-  resolveTerminalConnectionForSender
-}
+export { applyConnectionChange, commitConnectionFailure, resolveTerminalConnection, resolveTerminalConnectionForSender }

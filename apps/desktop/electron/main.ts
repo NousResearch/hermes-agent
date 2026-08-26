@@ -356,10 +356,7 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
-import {
-  registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
+import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -9522,14 +9519,10 @@ async function teardownSshConnection(profile) {
 // SSH connection — so if the active profile resolves to a NON-SSH backend, the
 // terminal must NOT fall through to a global SSH host.
 function activeSshTerminalTarget(webContentsId?: number) {
-  const windowRoute =
-    typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
+  const windowRoute = typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
 
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    const scope = registrySshScopeForWindowRoute(
-      windowRoute,
-      readDesktopConnectionsRegistry()
-    )
+    const scope = registrySshScopeForWindowRoute(windowRoute, readDesktopConnectionsRegistry())
 
     if (!scope) {
       return null
@@ -9579,10 +9572,7 @@ async function ensureTerminalBackend(webContentsId: number) {
 // Loopback reach for the browser pane. Scoped to the SSH connection that
 // authorized it: a different host (or none) must never inherit live forwards
 // into somebody else's machine.
-const previewReachByWebContents = new Map<
-  number,
-  { registry: PreviewReachRegistry; scope: string }
->()
+const previewReachByWebContents = new Map<number, { registry: PreviewReachRegistry; scope: string }>()
 
 async function resetPreviewReach(webContentsId?: number) {
   if (typeof webContentsId === 'number') {
@@ -15300,9 +15290,7 @@ ipcMain.handle('hermes:stop-find-in-page', event => {
 
 // The renderer can't know whether a loopback URL is reachable — only main
 // knows which transport backs this gateway. Ask before loading one.
-ipcMain.handle('hermes:preview:reach', async (event, url) =>
-  reachablePreviewUrl(event.sender.id, String(url || ''))
-)
+ipcMain.handle('hermes:preview:reach', async (event, url) => reachablePreviewUrl(event.sender.id, String(url || '')))
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {

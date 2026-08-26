@@ -232,7 +232,6 @@ test('URL route fails closed for different token, headers, kind, or Cloud org', 
   }
 })
 
-
 test('profile remote wins over a registry-backed global SSH route', () => {
   const route = resolveDesktopRemoteRoute({
     config: {

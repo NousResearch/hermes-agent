@@ -23,7 +23,13 @@ import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, $removedSessionIds, $sessionMutationsInFlight, ALL_PROJECTS } from '@/store/projects'
+import {
+  $projectScope,
+  $projectTree,
+  $removedSessionIds,
+  $sessionMutationsInFlight,
+  ALL_PROJECTS
+} from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,

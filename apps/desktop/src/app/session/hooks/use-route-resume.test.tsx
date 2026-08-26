@@ -390,13 +390,13 @@ describe('useRouteResume', () => {
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
   })
 
-  it("does not re-resume the old session when the new profile gateway opens before /new commits (#68594)", () => {
+  it('does not re-resume the old session when the new profile gateway opens before /new commits (#68594)', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()
-    const activeSessionIdRef: MutableRefObject<null | string> = { current: "runtime-a" }
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-a' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([["session-a", "runtime-a"]]) }
-    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: "session-a" }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-a', 'runtime-a']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-a' }
 
     const { rerender } = render(
       <RouteResumeHarness
@@ -674,4 +674,3 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     expect($resumeExhaustedSessionId.get()).toBeNull()
   })
 })
-

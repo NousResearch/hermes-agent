@@ -95,10 +95,7 @@ test('routes a non-primary SSH connection independently from another window', ()
     registryScoped: true
   })
 
-  assert.equal(
-    registrySshScopeForWindowRoute(routes.get(11), registry),
-    'conn:source-b::worker'
-  )
+  assert.equal(registrySshScopeForWindowRoute(routes.get(11), registry), 'conn:source-b::worker')
   assert.equal(registrySshScopeForWindowRoute(routes.get(22), registry), null)
 })
 
@@ -123,4 +120,3 @@ test('uses the canonical default profile scope when a registry SSH route has no 
     'conn:source-b::default'
   )
 })
-

@@ -817,7 +817,8 @@ export function useSessionActions({
       // gateway can be untagged, so retain the captured ambient connection too.
       // Either way, route by the composite (connection, profile), never by a
       // same-named profile alone.
-      const sessionOwner: SessionOwnerScope = ownerRoute ||
+      const sessionOwner: SessionOwnerScope =
+        ownerRoute ||
         (resolvedConnectionId
           ? {
               connectionId: resolvedConnectionId,
@@ -2094,6 +2095,7 @@ export function useSessionActions({
       const archived = listed?.session
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+
       if (
         listed &&
         !stampedProfile &&
@@ -2101,8 +2103,10 @@ export function useSessionActions({
         $profiles.get().filter(item => item.name.trim()).length > 1
       ) {
         notifyError(new Error('Session ownership could not be resolved'), copy.archiveFailed)
+
         return
       }
+
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the

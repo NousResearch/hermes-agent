@@ -224,7 +224,12 @@ export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, '
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
   const id = String(connectionId ?? '').trim()
 
-  return normKey(profile) === g.primaryProfile && Boolean(id) && Boolean(g.primaryConnectionId) && id === g.primaryConnectionId
+  return (
+    normKey(profile) === g.primaryProfile &&
+    Boolean(id) &&
+    Boolean(g.primaryConnectionId) &&
+    id === g.primaryConnectionId
+  )
 }
 
 export function isActivePrimary(): boolean {

@@ -13,10 +13,8 @@ export function normalizeWindowConnectionRoute(value: unknown): WindowConnection
 
   const input = value as Record<string, unknown>
   const connectionId = typeof input.connectionId === 'string' ? input.connectionId.trim() : ''
-  const profile =
-    typeof input.profile === 'string' && input.profile.trim()
-      ? input.profile.trim()
-      : undefined
+
+  const profile = typeof input.profile === 'string' && input.profile.trim() ? input.profile.trim() : undefined
 
   return {
     connectionId: connectionId || null,
@@ -50,10 +48,12 @@ export class WindowConnectionRouteRegistry {
 
     if (!route) {
       this.routes.delete(webContentsId)
+
       return null
     }
 
     this.routes.set(webContentsId, route)
+
     return route
   }
 

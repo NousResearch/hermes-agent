@@ -23,7 +23,8 @@ let promptAckStatus: null | string = null
 vi.mock('@/hermes', () => ({
   HermesGateway: class {
     connectionState = 'closed'
-    eventHandler: ((event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) | null = null
+    eventHandler: ((event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) | null =
+      null
     stateHandler: ((state: string) => void) | null = null
     connect = vi.fn(async () => {
       this.connectionState = 'open'
@@ -36,15 +37,18 @@ vi.mock('@/hermes', () => ({
       return method === 'prompt.submit' && promptAckStatus ? { status: promptAckStatus } : { method, params }
     })
     close = vi.fn()
-    emit = (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => this.eventHandler?.(event)
+    emit = (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) =>
+      this.eventHandler?.(event)
     emitState = (state: string) => this.stateHandler?.(state)
-    onEvent = vi.fn((handler: (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) => {
-      this.eventHandler = handler
+    onEvent = vi.fn(
+      (handler: (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void) => {
+        this.eventHandler = handler
 
-      return () => {
-        this.eventHandler = null
+        return () => {
+          this.eventHandler = null
+        }
       }
-    })
+    )
     onState = vi.fn((handler: (state: string) => void) => {
       this.stateHandler = handler
 
@@ -338,12 +342,10 @@ describe('requestForSessionProfile', () => {
     installDesktop()
     const ambient = vi.fn(async () => ({ ambient: true }))
 
-    await requestForSessionProfile(
-      { connectionId: 'local', profile: 'default' },
-      ambient as never,
-      'prompt.submit',
-      { session_id: 'rt-bot-chat', text: 'research this' }
-    )
+    await requestForSessionProfile({ connectionId: 'local', profile: 'default' }, ambient as never, 'prompt.submit', {
+      session_id: 'rt-bot-chat',
+      text: 'research this'
+    })
 
     // prompt.submit ACKs immediately while the model keeps running. Releasing
     // the request-scoped socket here detaches the runtime session; the backend
@@ -375,23 +377,24 @@ describe('requestForSessionProfile', () => {
     vi.useRealTimers()
   })
 
-  it.each(['queued', 'redirected', 'future-nonterminal'])('retains a routed socket for non-terminal ACK status %s', async status => {
-    const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'default')
-    installDesktop()
-    const ambient = vi.fn(async () => ({ ambient: true }))
+  it.each(['queued', 'redirected', 'future-nonterminal'])(
+    'retains a routed socket for non-terminal ACK status %s',
+    async status => {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      installDesktop()
+      const ambient = vi.fn(async () => ({ ambient: true }))
 
-    promptAckStatus = status
+      promptAckStatus = status
 
-    await requestForSessionProfile(
-      'loki',
-      ambient as never,
-      'prompt.submit',
-      { session_id: `rt-${status}`, text: 'continue' }
-    )
+      await requestForSessionProfile('loki', ambient as never, 'prompt.submit', {
+        session_id: `rt-${status}`,
+        text: 'continue'
+      })
 
-    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
-  })
+      expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+    }
+  )
 
   it.each(['complete', 'completed', 'error'])('releases a routed socket for terminal ACK status %s', async status => {
     const primary = makePrimary()
@@ -401,12 +404,10 @@ describe('requestForSessionProfile', () => {
 
     promptAckStatus = status
 
-    await requestForSessionProfile(
-      'loki',
-      ambient as never,
-      'prompt.submit',
-      { session_id: `rt-${status}`, text: 'finish' }
-    )
+    await requestForSessionProfile('loki', ambient as never, 'prompt.submit', {
+      session_id: `rt-${status}`,
+      text: 'finish'
+    })
 
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
   })

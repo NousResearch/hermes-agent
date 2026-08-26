@@ -2,10 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  resolveTerminalConnection,
-  resolveTerminalConnectionForSender
-} from './connection-apply'
+import { resolveTerminalConnection, resolveTerminalConnectionForSender } from './connection-apply'
 
 const ssh = {
   host: 'registry-box.test',
@@ -49,6 +46,7 @@ test('terminal start re-reads the SSH target after backend startup', async () =>
     ssh,
     scope: 'connection:registry-ssh'
   }
+
   let ready = false
 
   const resolved = await resolveTerminalConnection(

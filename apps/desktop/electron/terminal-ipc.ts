@@ -292,11 +292,8 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnectionForSender(
-      event.sender.id,
-      activeSshTerminalTarget,
-      ensureBackend
-    )
+    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
+
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null
 

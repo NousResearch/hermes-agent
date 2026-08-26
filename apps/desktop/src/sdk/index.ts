@@ -625,9 +625,8 @@ export const host = {
     // the deleted profile.
     const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
 
-    const ambientRemoteConnectionId = ambientConnectionId && ambientConnectionId !== 'local'
-      ? ambientConnectionId
-      : null
+    const ambientRemoteConnectionId =
+      ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
 
     if (!name) {
       throw new Error('deleteProfile: profile name required')

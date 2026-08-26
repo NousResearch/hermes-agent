@@ -52,7 +52,7 @@ class TestToggle:
             "hermes_cli.setup.prompt_yes_no", lambda *_a, **_k: True
         )
         monkeypatch.setattr(
-            "hermes_cli.setup._record_send_opt_in_day", lambda: None
+            "hermes_cli.setup._record_send_consent_change", lambda **_k: None
         )
         monkeypatch.setattr(
             "hermes_cli.tools_config.save_config",

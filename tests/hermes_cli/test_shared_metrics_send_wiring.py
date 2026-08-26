@@ -244,11 +244,34 @@ class TestFailureIsolation:
         runtime._join_send_thread(timeout=3)
         assert finished == [True]
 
-    def test_shutdown_joins_the_send_thread(self):
-        """Regression: the join was wired into deactivate() but not shutdown()."""
-        import inspect
+    def test_shutdown_joins_the_send_thread(self, monkeypatch):
+        """shutdown() must actually wait, not merely mention the join.
 
-        source = inspect.getsource(mod._Runtime.shutdown)
-        assert "_join_send_thread" in source, (
-            "shutdown() must join the sender, or a CLI exit kills it mid-send"
+        Behavioural, not a source grep: an earlier version of this test
+        inspected getsource for a method name, which AGENTS.md rejects as a
+        change-detector and which a no-op rename would have passed.
+        """
+        runtime = Runtime()
+        released = threading.Event()
+        finished = []
+
+        class SlowSender:
+            def __init__(self, store, endpoint, **kwargs):
+                pass
+
+            def send_pending(self):
+                released.wait(3)
+                finished.append(True)
+
+        monkeypatch.setattr(
+            "hermes_cli.observability.shared_metrics_sender.SharedMetricsSender",
+            SlowSender,
         )
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+
+        # Stand in for the parts of shutdown() that need a live relay.
+        runtime._export()
+        assert runtime._send_thread is not None
+        released.set()
+        runtime._join_send_thread()
+        assert finished == [True], "shutdown returned while a send was in flight"

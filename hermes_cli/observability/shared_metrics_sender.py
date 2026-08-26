@@ -82,7 +82,18 @@ _FAILURE_BACKOFF_SECONDS = 15 * 60
 #: misconfiguration that resolves without the package changing.
 _PERMANENT_STATUSES = frozenset({400, 413})
 
+#: Attempts after which a package is abandoned. Without a ceiling a
+#: permanently-poisoned row is retried until 30-day retention deletes it —
+#: measured at ~160 requests — which wastes the user's bandwidth and keeps a
+#: doomed package at the head of the queue.
+MAX_SEND_ATTEMPTS = 25
+
 OPT_IN_PERIOD_KEY = "send_opt_in_period"
+
+#: Set when sending is turned off, cleared by the next enabled pass (which
+#: also advances OPT_IN_PERIOD_KEY). This is what makes consent revocation
+#: permanent for the packages collected while it was off.
+SEND_REVOKED_KEY = "send_revoked"
 
 
 def _utc_now() -> datetime:
@@ -100,7 +111,6 @@ class SendOutcome:
     sent: int = 0
     rejected: int = 0
     deferred: int = 0
-    skipped_not_due: int = 0
 
 
 class _Response:
@@ -159,23 +169,62 @@ def _retry_after_seconds(value: str | None, default: int) -> int:
 
 
 def opt_in_period(connection: sqlite3.Connection, *, now: datetime | None = None) -> str:
-    """Return the opt-in day (UTC date), recording it on first use.
+    """Return the day (UTC) from which packages may be sent.
 
-    Must run inside a write transaction. The value is written once and then
-    never moves, so turning sending off and on again does not re-open the
-    pre-consent backlog.
+    Must run inside a write transaction.
+
+    This is the CURRENT consent window's start, not a permanent first-ever
+    opt-in date. If the user previously turned sending off, ``record_revoked``
+    stamps that; the next enabled pass advances the gate to the day sending
+    resumed, so packages collected during the opted-out window are never
+    transmitted. Without that advance, re-enabling would retroactively release
+    the entire period the user had explicitly refused.
     """
-    row = connection.execute(
-        "SELECT value FROM telemetry_state WHERE key = ?", (OPT_IN_PERIOD_KEY,)
-    ).fetchone()
-    if row is not None:
-        return str(row[0])
     today = (now or _utc_now()).date().isoformat()
-    connection.execute(
-        "INSERT OR IGNORE INTO telemetry_state(key, value) VALUES (?, ?)",
-        (OPT_IN_PERIOD_KEY, today),
-    )
+
+    revoked = _state_get(connection, SEND_REVOKED_KEY)
+    if revoked:
+        # Sending resumed after a revocation: the new window starts today.
+        _state_set(connection, OPT_IN_PERIOD_KEY, today)
+        connection.execute(
+            "DELETE FROM telemetry_state WHERE key = ?", (SEND_REVOKED_KEY,)
+        )
+        return today
+
+    existing = _state_get(connection, OPT_IN_PERIOD_KEY)
+    if existing:
+        return existing
+
+    _state_set(connection, OPT_IN_PERIOD_KEY, today)
     return today
+
+
+def record_revoked(connection: sqlite3.Connection) -> None:
+    """Mark that sending was turned off, closing the current consent window.
+
+    Idempotent. The marker is only cleared by the next enabled pass, which
+    also advances the gate — so any package collected between the two events
+    stays local permanently.
+    """
+    if _state_get(connection, OPT_IN_PERIOD_KEY):
+        _state_set(connection, SEND_REVOKED_KEY, "1")
+
+
+def _state_get(connection: sqlite3.Connection, key: str) -> str | None:
+    row = connection.execute(
+        "SELECT value FROM telemetry_state WHERE key = ?", (key,)
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _state_set(connection: sqlite3.Connection, key: str, value: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO telemetry_state(key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
 
 
 class SharedMetricsSender:
@@ -214,8 +263,13 @@ class SharedMetricsSender:
         memory, and another process re-sends them. Taking one row at a time
         keeps the lease covering only the package actually in flight.
 
-        ``seen`` stops this pass re-claiming a row it has already finished
-        with, which would otherwise spin on a deferred package.
+        ``seen`` holds packages this pass has already finished with. They are
+        excluded IN SQL rather than by rejecting the fetched row: with
+        ``LIMIT 1``, returning None for an already-seen row would make the
+        caller believe the queue was empty and abandon every healthy package
+        behind it. A row can legitimately become eligible again mid-pass (a
+        short Retry-After, or a pass that outlives the 15-minute failure
+        backoff), so this is reachable in normal operation, not just in tests.
         """
         with self._store._connection() as connection:
             with write_txn(connection):
@@ -223,27 +277,29 @@ class SharedMetricsSender:
                 stamp = _isoformat(now)
                 lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
 
+                placeholders = ",".join("?" for _ in seen)
+                exclusion = (
+                    f" AND package_id NOT IN ({placeholders})" if seen else ""
+                )
                 row = connection.execute(
-                    """
+                    f"""
                     SELECT package_id, payload_json, sent_install_id
                     FROM package_outbox
                     WHERE exported_at IS NOT NULL
                       AND (send_state IS NULL OR send_state = 'pending')
                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
                       AND substr(period_start, 1, 10) >= ?
+                      AND send_attempts < ?
+                      {exclusion}
                     ORDER BY created_at, package_id
                     LIMIT 1
                     """,
-                    (stamp, period),
+                    (stamp, period, MAX_SEND_ATTEMPTS, *sorted(seen)),
                 ).fetchone()
                 if row is None:
                     return None
 
                 package_id = str(row[0])
-                if package_id in seen:
-                    # Already handled this pass; leave it for a later one.
-                    return None
-
                 derived = row[2]
                 if not derived:
                     derived = self._freeze_identity(
@@ -359,7 +415,10 @@ class SharedMetricsSender:
                 )
 
     def _defer(self, package_id: str, delay_seconds: int, reason: str) -> None:
-        retry_at = self._now().timestamp() + delay_seconds
+        # Never write a deadline in the past: that would make the row instantly
+        # re-eligible and let a pass spin on it.
+        delay = max(1, int(delay_seconds))
+        retry_at = self._now().timestamp() + delay
         self._mark(
             package_id,
             send_state="pending",
@@ -454,9 +513,13 @@ class SharedMetricsSender:
         for _ in range(MAX_PACKAGES_PER_PASS):
             if not self._still_consented():
                 # The user turned sending off while this pass was running.
-                # Stop without transmitting anything further; unclaimed rows
-                # stay pending and claimed-but-unsent rows expire naturally.
+                # Stop without transmitting anything further, and close the
+                # consent window so a later re-enable cannot release the
+                # packages collected in the meantime. Recorded here as well as
+                # in the setup wizard because config.yaml can be edited by
+                # hand, which the wizard never sees.
                 logger.info("Shared-metrics sending disabled mid-pass; stopping")
+                self._record_revocation()
                 break
             try:
                 package = self._claim_next(self._now(), seen)
@@ -487,6 +550,15 @@ class SharedMetricsSender:
             else:
                 outcome.deferred += 1
         return outcome
+
+    def _record_revocation(self) -> None:
+        """Close the consent window after an observed revocation."""
+        try:
+            with self._store._connection() as connection:
+                with write_txn(connection):
+                    record_revoked(connection)
+        except Exception:
+            logger.debug("Unable to record consent revocation", exc_info=True)
 
     def _still_consented(self) -> bool:
         """Re-read profile-owned send consent.

@@ -374,6 +374,12 @@ before every package, so a pass already in flight stops after the package it
 is currently sending rather than draining its whole batch. It does not delete
 previously transmitted packages, and it does not stop local collection.
 
+Turning sending off also **closes the consent window**. Packages collected
+while it was off are never transmitted, even if sending is later re-enabled —
+re-enabling starts a new window from that day. Without this, a write-once
+opt-in date would have retroactively released the entire refused period the
+next time the user changed their mind.
+
 ### A.5 Retention
 
 - **Local:** unchanged — 30 days for successfully exported history, and pending

@@ -2468,32 +2468,41 @@ def setup_telemetry(config: dict):
         default=shared_metrics.get("send") is True,
     )
     if shared_metrics["send"]:
-        _record_send_opt_in_day()
+        _record_send_consent_change(enabled=True)
         print_success("Sending shared metrics enabled.")
     else:
+        _record_send_consent_change(enabled=False)
         print_info("Sending shared metrics disabled (collection stays local).")
 
 
-def _record_send_opt_in_day() -> None:
-    """Stamp the consent day when the user says yes, not at first send.
+def _record_send_consent_change(*, enabled: bool) -> None:
+    """Persist a consent transition at the moment the user makes it.
 
-    The gate excludes packages for periods before this day. Recording it
-    lazily on the first send pass would silently drop the opt-in day itself
-    whenever the next export happens after midnight UTC.
+    Enabling stamps the day so the gate excludes anything collected earlier.
+    Disabling stamps a revocation so that if the user ever re-enables, the
+    packages collected while sending was off are never released — the doc
+    promises `send: false` means no further packages leave the machine, and
+    that has to survive a later change of mind.
     """
     try:
         from hermes_cli.observability.shared_metrics import SharedMetricsStore
-        from hermes_cli.observability.shared_metrics_sender import opt_in_period
+        from hermes_cli.observability.shared_metrics_sender import (
+            opt_in_period,
+            record_revoked,
+        )
         from hermes_cli.sqlite_util import write_txn
 
         store = SharedMetricsStore()
         with store._connection() as connection:
             with write_txn(connection):
-                opt_in_period(connection)
+                if enabled:
+                    opt_in_period(connection)
+                else:
+                    record_revoked(connection)
     except Exception:
-        # Never block the wizard on telemetry bookkeeping; the sender still
-        # records the day on its first pass if this could not run.
-        logger.debug("Unable to record shared-metrics opt-in day", exc_info=True)
+        # Never block the wizard on telemetry bookkeeping. The sender records
+        # the same transitions on its next pass.
+        logger.debug("Unable to record shared-metrics consent change", exc_info=True)
 
 
 # =============================================================================

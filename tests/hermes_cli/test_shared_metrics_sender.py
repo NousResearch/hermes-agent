@@ -16,10 +16,14 @@ import pytest
 
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_sender import (
+    MAX_ATTEMPTS,
     MAX_PACKAGES_PER_PASS,
+    MAX_SEND_ATTEMPTS,
     OPT_IN_PERIOD_KEY,
+    REQUEST_TIMEOUT_SECONDS,
     SharedMetricsSender,
     opt_in_period,
+    record_revoked,
 )
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
@@ -261,6 +265,60 @@ class TestConsentGate:
         _sender(store, transport).send_pending()
         assert transport.calls == []
 
+    def test_revoking_then_re_enabling_never_releases_the_off_window(self, store):
+        """Regression: re-opt-in retroactively transmitted the refused window.
+
+        opt_in_period was write-once, so packages collected while the user had
+        send: false still had period_start >= the ORIGINAL opt-in day. Turning
+        sending back on released the entire opted-out window — contradicting
+        the documented promise that `send: false` means no further packages
+        leave the machine.
+        """
+        _add_package(store, "consented", "2026-08-26")
+        with store._connection() as connection:
+            with __import__(
+                "hermes_cli.sqlite_util", fromlist=["write_txn"]
+            ).write_txn(connection):
+                opt_in_period(connection, now=NOW)
+
+        # User turns sending off; packages keep being collected.
+        with store._connection() as connection:
+            with __import__(
+                "hermes_cli.sqlite_util", fromlist=["write_txn"]
+            ).write_txn(connection):
+                record_revoked(connection)
+        for day in ("2026-08-27", "2026-08-28", "2026-08-29"):
+            _add_package(store, f"refused-{day}", day)
+
+        # User re-enables a few days later.
+        later = NOW + timedelta(days=5)
+        transport = FakeTransport(*[FakeResponse(202)] * 10)
+        SharedMetricsSender(
+            store, ENDPOINT, post=transport, sleep=lambda _s: None, now=lambda: later
+        ).send_pending()
+
+        sent = [json.loads(c["payload"])["package_id"] for c in transport.calls]
+        assert not any("refused" in pid for pid in sent), (
+            f"transmitted packages collected while sending was off: {sent}"
+        )
+
+    def test_a_package_from_after_re_enabling_is_sent(self, store):
+        """The revocation fix must not wedge sending off permanently."""
+        with store._connection() as connection:
+            with __import__(
+                "hermes_cli.sqlite_util", fromlist=["write_txn"]
+            ).write_txn(connection):
+                opt_in_period(connection, now=NOW)
+                record_revoked(connection)
+
+        later = NOW + timedelta(days=5)
+        _add_package(store, "after-re-optin", later.date().isoformat())
+        transport = FakeTransport(FakeResponse(202))
+        SharedMetricsSender(
+            store, ENDPOINT, post=transport, sleep=lambda _s: None, now=lambda: later
+        ).send_pending()
+        assert len(transport.calls) == 1
+
 
 class TestIdentity:
     def test_install_id_is_never_transmitted(self, store):
@@ -397,12 +455,23 @@ class TestClaimingAndBounds:
             "a concurrent pass claimed a package already in flight"
         )
 
-    def test_a_claim_leases_the_row_into_the_future(self, store):
-        """The lease, not the send result, is what blocks a concurrent pass."""
+    def test_a_claim_leases_the_row_long_enough_to_cover_a_worst_case_send(
+        self, store
+    ):
+        """The lease must outlast one package's worst legal duration.
+
+        Asserting merely "in the future" passed for a 1-second lease, which is
+        useless: a package can legally take three 30s timeouts plus backoff.
+        """
         _add_package(store, "pkg-1", "2026-08-26")
         claimed = _sender(store, FakeTransport())._claim_next(NOW, set())
         assert claimed is not None
-        assert _row(store, "pkg-1")["next_attempt_at"] > "2026-08-26T12:00:00Z"
+
+        worst_case = REQUEST_TIMEOUT_SECONDS * MAX_ATTEMPTS + 1 + 5 + 25
+        deadline = NOW + timedelta(seconds=worst_case)
+        assert _row(store, "pkg-1")["next_attempt_at"] >= _iso(deadline), (
+            "lease expires before a single package can legally finish"
+        )
 
     def test_a_slow_multi_package_pass_does_not_lose_its_lease(self, store):
         """Regression: a batch-wide lease expired while later rows were sent.
@@ -446,6 +515,85 @@ class TestClaimingAndBounds:
         assert sorted(first_posts) == ["pkg-0", "pkg-1", "pkg-2"]
         assert second_posts == [], (
             f"a concurrent pass re-sent {second_posts} after a lease expired"
+        )
+
+    def test_a_re_eligible_head_row_does_not_starve_the_tail(self, store):
+        """Regression: `seen` terminated the pass instead of skipping a row.
+
+        The claim query is LIMIT 1. When the oldest row was already handled
+        this pass but had become eligible again (short Retry-After, or a pass
+        outliving the 15-minute failure backoff), _claim_next returned None
+        and send_pending read that as "queue empty", abandoning every healthy
+        package behind it. Measured: 10 of 19 delivered.
+        """
+        _add_package(store, "aaa-head", "2026-08-26")
+        for i in range(5):
+            _add_package(store, f"zzz-{i}", "2026-08-26")
+        # Order by created_at puts the head first.
+        with store._connection() as connection:
+            connection.execute(
+                "UPDATE package_outbox SET created_at = '2026-08-26T00:00:00Z'"
+                " WHERE package_id = 'aaa-head'"
+            )
+
+        posts = []
+
+        def transport(endpoint, payload, *, timeout):
+            pid = json.loads(payload)["package_id"]
+            posts.append(pid)
+            if pid == "aaa-head":
+                # Well-behaved service: retry in one second, so the head is
+                # eligible again immediately.
+                return FakeResponse(429, retry_after="1")
+            return FakeResponse(202)
+
+        clock = {"t": NOW}
+        SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=transport,
+            sleep=lambda _s: None,
+            now=lambda: clock["t"] + timedelta(seconds=30 * len(posts)),
+        ).send_pending()
+
+        delivered = {p for p in posts if p.startswith("zzz")}
+        assert delivered == {f"zzz-{i}" for i in range(5)}, (
+            f"tail starved by a re-eligible head row; delivered {delivered}"
+        )
+
+    def test_a_poisoned_package_is_abandoned_eventually(self, store):
+        """Without a ceiling a doomed row is retried ~160 times over 30 days.
+
+        Drives the real loop rather than pre-setting a counter: a row seeded
+        at exactly the limit is also excluded by other predicates, so that
+        version of this test passed even with the ceiling removed.
+        """
+        _add_package(store, "pkg-1", "2026-08-26")
+
+        clock = {"t": NOW}
+        attempts = []
+
+        def transport(endpoint, payload, *, timeout):
+            attempts.append(1)
+            return FakeResponse(503)
+
+        # Run many passes, always well past any backoff, as a month of hook
+        # fires against a permanently failing package would.
+        for i in range(60):
+            SharedMetricsSender(
+                store,
+                ENDPOINT,
+                post=transport,
+                sleep=lambda _s: None,
+                now=lambda: clock["t"] + timedelta(hours=i),
+            ).send_pending()
+
+        row = _row(store, "pkg-1")
+        assert row["send_attempts"] <= MAX_SEND_ATTEMPTS, (
+            f"package retried {row['send_attempts']} times with no ceiling"
+        )
+        assert len(attempts) < 100, (
+            f"{len(attempts)} requests burned on one doomed package"
         )
 
     def test_an_expired_lease_is_reclaimed(self, store):
@@ -647,12 +795,22 @@ class TestCompression:
         captured = self._captured_request(payload)
         assert len(captured["data"]) < len(payload)
 
-    def test_gzip_round_trips_to_the_original_bytes(self):
-        import gzip as gziplib
+    def test_gzip_is_deterministic_across_time(self):
+        """Kills the mtime footgun: gzip embeds a timestamp by default.
+
+        The in-pass retry test cannot catch this — both attempts compress
+        within the same second. Compressing the same bytes at two different
+        wall-clock seconds is what actually exercises mtime=0.
+        """
+        import time as _time
 
         payload = json.dumps({"filler": "x" * 20000}).encode("utf-8")
-        captured = self._captured_request(payload)
-        assert gziplib.decompress(captured["data"]) == payload
+        first = self._captured_request(payload)["data"]
+        _time.sleep(1.1)
+        second = self._captured_request(payload)["data"]
+        assert first == second, (
+            "gzip output changed between seconds — mtime is being embedded"
+        )
 
     def test_small_payloads_are_sent_plain(self):
         payload = b'{"small": true}'

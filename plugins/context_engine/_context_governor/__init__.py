@@ -1416,6 +1416,19 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
             # Sanitation and the audited LLM checkpoint can both mutate the
             # emitted transcript. Rebind hashes/counts to that final adapter
             # output before persistence; never store the stale core response.
+            #
+            # The host also restores a real human turn when the retained tail
+            # contains only user-role runtime scaffolding (most notably a
+            # ``[IMPORTANT: Background process ...]`` notification). If that
+            # restoration happens after prepare-v2, validation correctly
+            # rejects the shifted projection and the turn cannot continue.
+            # Apply the exact host helper before alternation repair/finalize so
+            # both the receipt and SessionDB bind the same human-intent anchor.
+            from agent.conversation_compression import (
+                _ensure_compressed_has_user_turn,
+            )
+
+            _ensure_compressed_has_user_turn(source_messages, compacted)
             # The host repairs role-alternation in memory immediately after
             # compress() returns. Apply the same repair BEFORE finalize so
             # the receipt describes the exact transcript the host persists;

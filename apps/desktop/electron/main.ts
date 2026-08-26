@@ -9088,6 +9088,14 @@ async function saveRegistryConnection(input: any = {}) {
   if (existing && connectionDialFieldsChanged(existing, entry)) {
     await stopRegistryConnectionBackends(entry.id)
     broadcastConnectionsChanged({ connectionId: entry.id, reason: 'updated' })
+  } else {
+    // Every OTHER successful save (a brand-new connection, a label rename)
+    // must still republish the registry snapshot, or windows that didn't
+    // perform the save — and the switcher menu fed by $connectionsRegistry —
+    // keep painting the stale list until reload (#95393). 'saved' is a pure
+    // registry-refresh signal: no sockets moved, so listeners must not
+    // dispose or redial anything for it.
+    broadcastConnectionsChanged({ connectionId: entry.id, reason: 'saved' })
   }
 
   return sanitizeRegistryConnection(entry)
@@ -10330,7 +10338,7 @@ function sendConnectionApplied() {
 // scoped to that connection. Without this, a removed remote/cloud source keeps
 // its renderer WebSocket open and streaming as a ghost, and an edited one
 // keeps talking to the OLD endpoint until idle-reap.
-function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'updated' }) {
+function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) {
   for (const win of BrowserWindow.getAllWindows()) {
     const { webContents } = win
 

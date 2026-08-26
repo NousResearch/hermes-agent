@@ -796,6 +796,14 @@ export function useGatewayBoot({
         return
       }
 
+      // 'saved' is a pure registry-refresh push (new connection or label
+      // rename — #95393): no endpoint moved, so there is nothing to dispose,
+      // redial, or forget. The switcher's own onChanged listener re-pulls the
+      // registry snapshot for it.
+      if (payload.reason === 'saved') {
+        return
+      }
+
       disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
 
       if (payload.reason !== 'updated') {

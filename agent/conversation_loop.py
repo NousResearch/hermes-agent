@@ -257,10 +257,43 @@ def _moa_client_consumes_prepared_request(client: Any) -> bool:
     return callable(getattr(completions, "prepare", None))
 
 
+_MIN_CONTINUATION_OVERLAP = 32
+
+
+def _continuation_overlap_length(previous: str, continuation: str) -> int:
+    """Return the longest continuation prefix that repeats the previous suffix."""
+    if len(previous) < _MIN_CONTINUATION_OVERLAP or len(continuation) < _MIN_CONTINUATION_OVERLAP:
+        return 0
+
+    prefix_lengths = [0] * len(continuation)
+    matched = 0
+    for index in range(1, len(continuation)):
+        while matched and continuation[index] != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if continuation[index] == continuation[matched]:
+            matched += 1
+            prefix_lengths[index] = matched
+
+    matched = 0
+    last_index = len(previous) - 1
+    for index, char in enumerate(previous):
+        while matched and char != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if char == continuation[matched]:
+            matched += 1
+            if matched == len(continuation):
+                if index == last_index:
+                    return matched
+                matched = prefix_lengths[matched - 1]
+    return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
+
+
 def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
+    """Join continuation fragments without repeating a recovered tail."""
     joined = ""
     for part in parts:
+        if joined and part:
+            part = part[_continuation_overlap_length(joined, part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part

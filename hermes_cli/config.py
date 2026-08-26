@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -5434,7 +5435,12 @@ def _coerce_int(value: str):
 
 
 def _coerce_float(value: str):
-    """Return float(value) for a clean float literal, else None."""
+    """Return ``float(value)`` when conversion preserves its decimal value.
+
+    Decimal-looking identifiers can be much more precise than a binary float.
+    Silently rounding one here corrupts it before it reaches ``config.yaml``,
+    so values that do not round-trip through ``float`` remain strings.
+    """
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -5442,6 +5448,11 @@ def _coerce_float(value: str):
     # Reject NaN/inf spellings — they are almost never intended config values
     # and round-trip confusingly through YAML.
     if f != f or f in (float("inf"), float("-inf")):
+        return None
+    try:
+        if Decimal(value) != Decimal(str(f)):
+            return None
+    except InvalidOperation:
         return None
     return f
 

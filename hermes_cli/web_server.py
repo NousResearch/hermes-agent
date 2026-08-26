@@ -5064,31 +5064,33 @@ async def update_hermes():
             "update_command": "managed outside dashboard",
         }
 
-    install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        message = format_docker_update_message()
-        _record_completed_action("hermes-update", message, exit_code=1)
-        return {
-            "ok": False,
-            "pid": None,
-            "name": "hermes-update",
-            "error": "docker_update_unsupported",
-            "message": message,
-            "update_command": recommended_update_command_for_method(install_method),
-        }
+    # Shared admission gate (#91277 Phase 3): marker-first, then the
+    # docker/nix/apt heuristics — one decision with the CLI paths. The
+    # response keeps the pre-existing per-kind error codes the dashboard UI
+    # already keys on.
+    from hermes_cli.update_contract import (
+        evaluate_update_admission,
+        record_refusal_receipt,
+    )
 
-    if is_nix_install_method(install_method) or install_method == "apt":
-        message = recommended_update_command_for_method(install_method)
-        _record_completed_action("hermes-update", message, exit_code=1)
+    refusal = evaluate_update_admission(PROJECT_ROOT)
+    if refusal is not None:
+        _record_completed_action("hermes-update", refusal.message, exit_code=1)
+        record_refusal_receipt(refusal)
+        error_code = {
+            "docker": "docker_update_unsupported",
+            "image-marker": "docker_update_unsupported",
+            "image-marker-invalid": "docker_update_unsupported",
+            "apt": "apt_update_required",
+            "nix": "nix_update_unsupported",
+        }.get(refusal.code, "update_not_in_place")
         return {
             "ok": False,
             "pid": None,
             "name": "hermes-update",
-            "error": (
-                "apt_update_required" if install_method == "apt" else "nix_update_unsupported"
-            ),
-            "message": message,
-            "update_command": message,
+            "error": error_code,
+            "message": refusal.message,
+            "update_command": refusal.update_command,
         }
 
     existing = _ACTION_PROCS.get("hermes-update")

@@ -10725,12 +10725,8 @@ def cmd_update(args):
     ``sys.exit`` or unhandled exceptions).
     """
     from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
         is_managed,
-        is_nix_install_method,
         managed_error,
-        recommended_update_command_for_method,
     )
 
     if is_managed():
@@ -10753,20 +10749,23 @@ def cmd_update(args):
         print_update_plan(collect_runtime_inventory())
         return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
+    # Image-managed / package-managed admission gate (#91277 Phase 3): one
+    # shared decision for every mutation surface. Consults the baked image
+    # provenance marker first (authoritative, fail-closed on malformed),
+    # then the pre-existing docker/nix/apt heuristics. Prints the real
+    # update command, records a `refused` receipt so fleet tooling sees the
+    # blocked attempt, and exits 2 (refused-by-contract, distinct from
+    # exit 1 errors).
+    from hermes_cli.update_contract import (
+        evaluate_update_admission,
+        record_refusal_receipt,
+    )
 
-    if is_nix_install_method(install_method) or install_method == "apt":
-        print(recommended_update_command_for_method(install_method))
-        sys.exit(1)
+    refusal = evaluate_update_admission(PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches

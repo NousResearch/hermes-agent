@@ -152,6 +152,21 @@ def collect_runtime_inventory() -> UpdatePlan:
         if managed:
             plan.install_method = managed
         plan.updatable_in_place = method in ("git", "unknown") and not managed
+        # Baked image provenance (#91277 Phase 3): when the image marker is
+        # present it is authoritative — a bind-mounted checkout inside a
+        # container can look like `git` to the heuristics while the running
+        # filesystem is actually an immutable image. Fail-closed: an invalid
+        # marker still flips the plan to not-updatable.
+        try:
+            from hermes_cli.image_provenance import read_image_provenance
+
+            provenance = read_image_provenance()
+            if provenance is not None:
+                plan.updatable_in_place = False
+                if provenance.valid and provenance.manager:
+                    plan.install_method = provenance.manager
+        except Exception as exc:
+            logger.debug("Image provenance probe failed: %s", exc)
         plan.update_mechanism = recommended_update_command_for_method(method)
     except Exception as exc:
         logger.debug("Install-method probe failed: %s", exc)

@@ -19801,23 +19801,34 @@ def start_server(
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()
 
+            actual_port = _read_bound_port(server, fallback=port)
+            app.state.bound_port = actual_port
+
             # Positive process identity: record (pid, create_time, purpose,
             # spawner) in the machine spawn ledger and — on Windows — attach
             # to a kill-on-close job so this backend's whole child tree dies
             # with it. Both best-effort; failures degrade to legacy behavior.
+            # Registered AFTER the bind so the entry carries the ACTUAL port
+            # (ephemeral binds included) — the structured host/port/profile
+            # is what lets `hermes update` relaunch a manually-started serve
+            # on its real endpoint instead of dropping it (#63206).
             try:
                 from hermes_cli.process_identity import (
                     attach_self_to_kill_on_close_job,
                     register_self,
                 )
 
-                register_self("serve" if headless else "dashboard")
+                register_self(
+                    "serve" if headless else "dashboard",
+                    detail={
+                        "host": host,
+                        "port": actual_port,
+                        "profile": initial_profile or "",
+                    },
+                )
                 attach_self_to_kill_on_close_job()
             except Exception as exc:
                 _log.debug("process-identity registration skipped: %s", exc)
-
-            actual_port = _read_bound_port(server, fallback=port)
-            app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a

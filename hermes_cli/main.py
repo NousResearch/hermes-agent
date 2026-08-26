@@ -5094,6 +5094,9 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_android_python",
         "_is_fork",
         "_leftover_pausable_gateway_pids",
+        "_ledger_manual_serve_holders",
+        "_relaunch_stopped_serves",
+        "_serve_relaunch_commands",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
         "_npm_bin_exists",
@@ -11619,30 +11622,35 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print live listening dashboard processes and return the count."""
+    """Print live listening dashboard/serve processes and return the count.
+
+    Serve-mode backends are INCLUDED (#81564): `--stop` kills them, so
+    `--status` hiding them left Desktop SSH backends invisible to the CLI —
+    an operator could kill what they couldn't see. Ledger-registered serves
+    (profiled launches the argv scan can't match) surface via the
+    spawn-ledger augmentation in _scan_dashboard_processes.
+    """
     from gateway.status import _pid_exists
 
-    live: list[tuple[int, str]] = []
+    live: list[tuple[int, str, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if mode != "dashboard":
-            continue
         if port <= 0 or not _pid_exists(pid):
             continue
         if not _dashboard_listening(host, port):
             continue
-        live.append((pid, command))
+        live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard processes running.")
+        print("No hermes dashboard or serve processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard process(es) running:")
-    for pid, command in live:
-        print(f"    PID {pid}: {command}")
+    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    for pid, command, mode in live:
+        print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
 
 

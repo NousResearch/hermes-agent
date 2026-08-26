@@ -4613,6 +4613,113 @@ def _leftover_pausable_gateway_pids(
     return pids
 
 
+def _ledger_manual_serve_holders(
+    matches: list[tuple[int, str, str]],
+) -> list[dict]:
+    """Ledger entries for venv holders that are MANUAL serve/dashboard backends.
+
+    Positive identity only (#63206): the process self-registered in the spawn
+    ledger with purpose serve/dashboard, its (pid, create_time) still matches
+    a live process, and its recorded spawner is NOT alive (a Desktop-owned
+    backend keeps its live Electron spawner and must keep the refusal — the
+    app would respawn what we kill; a PowerShell-launched serve has no live
+    Hermes spawner). Returns the full ledger entries so the relauncher can
+    rebuild the launch command from structured host/port/profile instead of
+    parsing argv.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+    except Exception:
+        return []
+    holder_pids = {int(pid) for pid, _name, _cmd in matches}
+    out: list[dict] = []
+    for entry in ledger_entries():
+        if entry.get("purpose") not in ("serve", "dashboard"):
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid not in holder_pids:
+            continue
+        if spawner_is_dead(entry) is False:
+            continue  # live Desktop supervisor owns it — keep refusing
+        out.append(entry)
+    return out
+
+
+def _serve_relaunch_commands(entries: list[dict]) -> list[list[str]]:
+    """Rebuild launch commands for stopped serves from structured identity.
+
+    Uses the ledger's host/port/profile fields — never argv parsing (a
+    joined argv string cannot round-trip Windows paths with spaces). Entries
+    without a recorded port are skipped; the caller prints the manual hint
+    for those.
+    """
+    commands: list[list[str]] = []
+    hermes = None
+    try:
+        scripts_dir = _m()._venv_scripts_dir()
+        if scripts_dir is not None:
+            for name in ("hermes.exe", "hermes"):
+                candidate = scripts_dir / name
+                if candidate.is_file():
+                    hermes = str(candidate)
+                    break
+    except Exception:
+        hermes = None
+    if hermes is None:
+        hermes = "hermes"
+    for entry in entries:
+        port = entry.get("port")
+        if not isinstance(port, int) or port <= 0:
+            continue
+        cmd = [hermes]
+        profile = str(entry.get("profile") or "")
+        if profile and profile != "default":
+            cmd += ["--profile", profile]
+        cmd.append(str(entry.get("purpose")))
+        host = str(entry.get("host") or "")
+        if host:
+            cmd += ["--host", host]
+        cmd += ["--port", str(port)]
+        commands.append(cmd)
+    return commands
+
+
+def _relaunch_stopped_serves(token: dict) -> None:
+    """Idempotent atexit relaunch of manual serves stopped by the venv guard.
+
+    Mirrors the gateway resume token contract: `pending` flips False on the
+    first invocation so the explicit call and the atexit registration cannot
+    double-spawn (#63206).
+    """
+    if not token.get("pending"):
+        return
+    token["pending"] = False
+    entries = token.get("entries") or []
+    if not entries:
+        return
+    commands = _serve_relaunch_commands(entries)
+    skipped = len(entries) - len(commands)
+    failed: list = []
+    if commands:
+        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
+        failed = _m()._respawn_dashboard_processes(commands)
+    if skipped or failed:
+        print(
+            "  ⚠ Some stopped backends could not be relaunched automatically; "
+            "restart them manually (hermes serve --host <ip> --port <port>)."
+        )
+    try:
+        from hermes_cli.update_receipt import record_step
+
+        record_step(
+            "serve_relaunch",
+            not failed and not skipped,
+            f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
+        )
+    except Exception:
+        pass
+
+
 def _orphaned_desktop_backend_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int] | None:
@@ -6098,6 +6205,49 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "process(es) still hold the venv; stopping their trees"
                 )
                 _m()._stop_process_trees(_orphan_backends)
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            # Manual serve/dashboard rung (#63206): a network-bound
+            # `hermes serve --host <ip>` powering a REMOTE Desktop holds the
+            # venv and used to dead-end the update with exit 2 — the user's
+            # only option was killing the backend by hand, and nothing ever
+            # brought it back (the remote client's endpoint stayed dead).
+            # Positive ledger identity only: self-registered serve/dashboard
+            # whose recorded spawner is not alive (Desktop-owned backends
+            # keep the refusal — the app respawns what we kill). Stop them,
+            # and register an idempotent atexit relaunch built from the
+            # ledger's structured host/port/profile so the endpoint comes
+            # back on the SAME bind after the update — success or failure.
+            _serve_entries = _m()._ledger_manual_serve_holders(_venv_holders)
+            if _serve_entries:
+                print(
+                    f"  ⚠ {len(_serve_entries)} manual serve/dashboard "
+                    "backend(s) hold the venv; stopping them for the update "
+                    "(they will be relaunched on their recorded endpoints)"
+                )
+                _m()._stop_process_trees(
+                    [int(e["pid"]) for e in _serve_entries]
+                )
+                _serve_resume_token = {
+                    "pending": True,
+                    "entries": _serve_entries,
+                }
+                try:
+                    from hermes_cli.update_receipt import record_step
+
+                    record_step(
+                        "serve_pause",
+                        True,
+                        f"stopped={len(_serve_entries)}",
+                    )
+                except Exception:
+                    pass
+                import atexit as _serve_atexit
+
+                _serve_atexit.register(
+                    _m()._relaunch_stopped_serves, _serve_resume_token
+                )
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:

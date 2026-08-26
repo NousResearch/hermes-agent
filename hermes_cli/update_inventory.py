@@ -109,6 +109,8 @@ def _restart_mechanism(supervisor: str, profile: str) -> str:
         return "launchd"
     if supervisor == "desktop":
         return "desktop"
+    if supervisor == "manual-serve":
+        return "respawn-argv"
     return "manual"
 
 
@@ -120,6 +122,8 @@ def describe_restart_mechanism(mechanism: str, profile: str) -> str:
         return "launchctl kickstart -k (drain-first, per-label domain)"
     if mechanism == "desktop":
         return "Desktop app respawns its serve backend"
+    if mechanism == "respawn-argv":
+        return "stop before code swap, relaunch with recorded launch args"
     if profile != "default":
         return f"hermes -p {profile} gateway restart"
     return "hermes gateway restart"
@@ -291,6 +295,46 @@ def collect_runtime_inventory() -> UpdatePlan:
             )
     except Exception as exc:
         logger.debug("PID-file gateway inventory failed: %s", exc)
+
+    # Serve/dashboard backends from the spawn ledger (#63206). These are the
+    # runtimes the gateway collectors above can never see: a manually
+    # launched `hermes serve --host <ip>` for a remote Desktop, or a
+    # long-lived `hermes dashboard`. Every serve/dashboard registers itself
+    # (with structured host/port/profile since #63206) at startup, and
+    # ledger_entries() live-verifies (pid, create_time) so PID reuse never
+    # fabricates a row. Desktop-supervised backends are classified by their
+    # recorded spawner still being alive — those restart via the Desktop's
+    # own respawn, not ours.
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            purpose = entry.get("purpose")
+            if purpose not in ("serve", "dashboard"):
+                continue
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            has_live_spawner = spawner_is_dead(entry) is False
+            supervisor = "desktop" if has_live_spawner else "manual-serve"
+            profile = str(entry.get("profile") or "default")
+            plan.runtimes.append(
+                RuntimeRecord(
+                    kind=str(purpose),
+                    profile=profile,
+                    pid=pid,
+                    supervisor=supervisor,
+                    restart_via=_restart_mechanism(supervisor, profile),
+                    detail={
+                        "argv": entry.get("argv") or "",
+                        "host": entry.get("host") or "",
+                        "port": entry.get("port"),
+                    },
+                )
+            )
+    except Exception as exc:
+        logger.debug("Serve/dashboard ledger inventory failed: %s", exc)
 
     return plan
 

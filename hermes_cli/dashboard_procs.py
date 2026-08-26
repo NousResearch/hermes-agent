@@ -143,6 +143,31 @@ def _scan_dashboard_processes(
         dashboard_processes = [
             proc for proc in dashboard_processes if proc[0] not in exclude_pids
         ]
+
+    # Spawn-ledger augmentation (#63206/#81564): the substring patterns above
+    # miss profiled launches — `hermes --profile p serve --host <ip>` contains
+    # neither "hermes serve" nor "hermes_cli.main serve". Every serve/
+    # dashboard registers itself in the machine spawn ledger at startup with
+    # live-verified (pid, create_time), so ledger rows are positive identity,
+    # not argv guessing. Add any live ledger serve/dashboard the scan missed;
+    # prefer the ledger's recorded argv (full launch args) over the scan's
+    # truncated view.
+    try:
+        from hermes_cli.process_identity import ledger_entries
+
+        seen = {pid for pid, _ in dashboard_processes}
+        for entry in ledger_entries():
+            if entry.get("purpose") not in ("serve", "dashboard"):
+                continue
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or pid == self_pid or pid in seen:
+                continue
+            if exclude_pids and pid in exclude_pids:
+                continue
+            dashboard_processes.append((pid, str(entry.get("argv") or "")))
+    except Exception:
+        pass  # ledger unavailable → scan-only behavior, exactly as before
+
     return dashboard_processes
 
 

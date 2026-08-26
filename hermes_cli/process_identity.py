@@ -161,6 +161,13 @@ class LedgerEntry:
     spawner_create: Optional[float]
     registered_at: float
     argv: str
+    # Structured launch identity (#63206): what a relauncher needs to bring
+    # this runtime back after an update, without parsing argv. Empty for
+    # purposes that don't supply it; readers must use .get() — older ledger
+    # files on disk predate these keys.
+    host: str = ""
+    port: Optional[int] = None
+    profile: str = ""
 
 
 def _ledger_path() -> Path:
@@ -224,13 +231,23 @@ def _pid_alive_matches(pid: int, create_time: Optional[float]) -> Optional[bool]
         return None
 
 
-def register_self(purpose: str, *, project_root: Optional[Path] = None) -> bool:
+def register_self(
+    purpose: str,
+    *,
+    project_root: Optional[Path] = None,
+    detail: Optional[dict] = None,
+) -> bool:
     """Record this process in the machine spawn ledger. Best-effort.
 
     Called at the top of every long-lived entry point (serve/dashboard
     backend, gateway run loop). Dead entries — ``(pid, create_time)`` no
     longer live — are pruned on every write so the ledger tracks reality
     instead of growing forever.
+
+    ``detail`` optionally carries structured launch identity (#63206) —
+    ``host``/``port``/``profile`` — so the update pipeline can relaunch a
+    manually-started serve with its real bind address instead of guessing
+    from argv.
     """
     tag = parse_spawn_tag(os.environ.get(SPAWN_ENV_VAR))
     spawner_pid: Optional[int] = tag.spawner_pid if tag else None
@@ -262,10 +279,22 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None) -> bool:
         registered_at=time.time(),
         argv="",
     )
+    if detail:
+        try:
+            entry.host = str(detail.get("host") or "")
+            port = detail.get("port")
+            entry.port = int(port) if port is not None else None
+            entry.profile = str(detail.get("profile") or "")
+        except (TypeError, ValueError):
+            pass
     try:
         import sys as _sys
 
-        entry.argv = " ".join(_sys.argv[:6])
+        # 10 tokens (was 6): enough for `hermes serve --host X --port N
+        # --profile P` — the relaunch shapes #63206 needs — while still
+        # bounding pathological argv. Structured detail above is the
+        # canonical identity; argv is the human-readable fallback.
+        entry.argv = " ".join(_sys.argv[:10])
     except Exception:
         pass
 

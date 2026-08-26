@@ -169,3 +169,68 @@ def test_programmatic_read_and_chat_raw_paths_are_byte_identical(tmp_path):
 
     assert programmatic["content"] == chat_raw["content"]
     assert programmatic["content"].splitlines()[1] != long_line  # clamped identically
+
+
+def test_programmatic_early_document_branch_matches_file_ops_path_byte_for_byte(
+    tmp_path,
+):
+    """Pin the early structured-document branch against the file_ops path.
+
+    For an extractable document (``.ipynb``), ``read_file_tool`` builds the
+    page natively in its early branch — no gutter, no per-line clamp. The
+    same window (offset=2, limit=1) read through a real
+    ``ShellFileOperations.read_file(..., line_numbers=False)`` call must
+    produce byte-identical content, so the "stable" programmatic contract
+    cannot drift between the two construction paths.
+    """
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    notebook = {
+        "cells": [
+            {"cell_type": "code", "source": ["alpha\n", "beta\n"], "outputs": []},
+            {"cell_type": "markdown", "source": ["tail line\n"]},
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    target = tmp_path / "pins.ipynb"
+    target.write_text(json.dumps(notebook), encoding="utf-8")
+
+    # Chat path: early structured-document branch builds natively (no gutter).
+    chat = json.loads(
+        file_tools.read_file_tool(
+            str(target), offset=2, limit=1, task_id="pin-doc-chat", line_numbers=False
+        )
+    )
+    assert chat.get("extracted_document") is True
+
+    # Programmatic path: same early branch, same window, no gutter.
+    programmatic = json.loads(
+        file_tools.read_file_programmatic_tool(
+            str(target), offset=2, limit=1, task_id="pin-doc-prog"
+        )
+    )
+
+    # file_ops path: mirror the extracted text into a plain-text file and
+    # run the REAL backend read on the identical window with
+    # line_numbers=False. Both paths share canonical newline semantics:
+    # a raw page ends with "\n" (sed/cut always newline-terminate; the
+    # early branch appends it to its joined page).
+    from tools.read_extract import extract_document_text
+
+    # Line 2 of the extraction is the first source line ("alpha"); line 1
+    # is the "# ── Code cell N ──" header the extractor adds.
+    extracted_line2 = extract_document_text(str(target)).splitlines()[1]
+    assert extracted_line2 == "alpha"  # sanity: non-empty page content
+    mirror = tmp_path / "mirror.txt"
+    mirror.write_text(f"sentinel\n{extracted_line2}\ntail\n", encoding="utf-8")
+
+    file_ops = ShellFileOperations(LocalEnvironment())
+    raw = file_ops.read_file(str(mirror), offset=2, limit=1, line_numbers=False)
+
+    assert not raw.error
+    expected_page = f"{extracted_line2}\n"
+    # Byte-identical page content across all three construction paths.
+    assert programmatic["content"] == chat["content"] == raw.content == expected_page

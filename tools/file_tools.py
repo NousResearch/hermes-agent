@@ -494,12 +494,20 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     lines = extracted_text.splitlines()
     total_lines = len(lines)
     end_line = offset + limit - 1
+    # Terminate the raw page with a newline, matching the
+    # native file_ops read path (sed/cut always newline-
+    # terminate their output). With line_numbers=True the
+    # gutter join reproduces that shape anyway; with
+    # line_numbers=False the raw page must be byte-identical
+    # to the same window served through file_ops.
     page_text = "\n".join(lines[offset - 1:end_line])
     from tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
+    if lines[offset - 1:end_line] and not page_text.endswith("\n"):
+        page_text += "\n"
     result_dict = {
-        "content": (file_ops._add_line_numbers(page_text, offset) if page_text and line_numbers else page_text),
+        "content": (file_ops._add_line_numbers(page_text.rstrip("\n"), offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,

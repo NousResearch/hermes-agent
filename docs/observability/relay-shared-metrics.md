@@ -369,7 +369,9 @@ qualifications now apply:
   service's storage under their derived identifier. There is no read-back or
   delete API in the v1 contract.
 
-Setting `send: false` stops transmission immediately. It does not delete
+Setting `send: false` stops transmission immediately: consent is re-read
+before every package, so a pass already in flight stops after the package it
+is currently sending rather than draining its whole batch. It does not delete
 previously transmitted packages, and it does not stop local collection.
 
 ### A.5 Retention

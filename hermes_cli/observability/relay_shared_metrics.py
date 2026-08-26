@@ -1119,9 +1119,21 @@ class _Runtime:
             SharedMetricsSender,
         )
 
+        def still_consented() -> bool:
+            """Re-read consent so revoking `send` stops an in-flight pass."""
+            from hermes_cli.config import read_raw_config_readonly
+            from hermes_cli.observability.shared_metrics_send_config import (
+                resolve_send_config,
+            )
+
+            resolved = resolve_send_config(read_raw_config_readonly() or {})
+            return resolved.send and resolved.endpoint == endpoint
+
         try:
             SharedMetricsSender(
-                self.subscriber.store, endpoint
+                self.subscriber.store,
+                endpoint,
+                consent_check=still_consented,
             ).send_pending()
         except Exception:
             logger.warning("Shared-metrics send pass failed", exc_info=True)

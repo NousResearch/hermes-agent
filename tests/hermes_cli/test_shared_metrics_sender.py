@@ -114,6 +114,10 @@ def _row(store, package_id):
     )
 
 
+def _iso(moment):
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _sender(store, transport, **kwargs):
     return SharedMetricsSender(
         store,
@@ -148,17 +152,22 @@ class TestContractResponses:
         _sender(store, transport2).send_pending()
         assert transport2.calls == []
 
-    @pytest.mark.parametrize("status", [401, 403, 404, 413, 422])
-    def test_other_4xx_are_permanent_too(self, store, status):
-        """Retrying these every 15 minutes for 30 days fixes nothing."""
+    @pytest.mark.parametrize("status", [401, 403, 404, 422, 500, 503])
+    def test_unspecified_statuses_are_retried_not_discarded(self, store, status):
+        """403 is the ingest origin guard; a bad edge config must not lose data."""
         _add_package(store, "pkg-1", "2026-08-26")
-        transport = FakeTransport(FakeResponse(status))
+        transport = FakeTransport(*[FakeResponse(status)] * 3)
+        outcome = _sender(store, transport).send_pending()
+        assert outcome.deferred == 1
+        assert _row(store, "pkg-1")["send_state"] == "pending"
+
+    def test_413_is_permanent(self, store):
+        """A package over the 1 MiB cap cannot shrink by being retried."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        transport = FakeTransport(FakeResponse(413))
         outcome = _sender(store, transport).send_pending()
         assert outcome.rejected == 1
         assert len(transport.calls) == 1
-        row = _row(store, "pkg-1")
-        assert row["send_state"] == "rejected"
-        assert str(status) in row["last_error"]
 
     def test_429_defers_using_retry_after(self, store):
         _add_package(store, "pkg-1", "2026-08-26")
@@ -391,13 +400,53 @@ class TestClaimingAndBounds:
     def test_a_claim_leases_the_row_into_the_future(self, store):
         """The lease, not the send result, is what blocks a concurrent pass."""
         _add_package(store, "pkg-1", "2026-08-26")
-        with store._connection() as connection:
-            with __import__(
-                "hermes_cli.sqlite_util", fromlist=["write_txn"]
-            ).write_txn(connection):
-                claimed = _sender(store, FakeTransport())._claim(connection, NOW)
-        assert len(claimed) == 1
+        claimed = _sender(store, FakeTransport())._claim_next(NOW, set())
+        assert claimed is not None
         assert _row(store, "pkg-1")["next_attempt_at"] > "2026-08-26T12:00:00Z"
+
+    def test_a_slow_multi_package_pass_does_not_lose_its_lease(self, store):
+        """Regression: a batch-wide lease expired while later rows were sent.
+
+        One package can legally take ~96s (three 30s timeouts plus backoff).
+        With 20 rows claimed under one shared lease, the later rows' leases
+        expired mid-pass and a second process re-sent them. Packages are now
+        claimed one at a time, immediately before transmission.
+        """
+        for i in range(3):
+            _add_package(store, f"pkg-{i}", "2026-08-26")
+
+        clock = {"t": NOW}
+        first_posts, second_posts = [], []
+
+
+        def transport(endpoint, payload, *, timeout):
+            pid = json.loads(payload)["package_id"]
+            first_posts.append(pid)
+            # Burn the worst-case time budget for a single package.
+            clock["t"] += timedelta(seconds=96)
+            # A concurrent process probes for work while this package is still
+            # in flight. It must not be able to claim the package we hold.
+            # Restricted to that package so the probe cannot legitimately pick
+            # up the OTHER pending rows and make the assertion ambiguous.
+            held = _row(store, pid)
+            if held["next_attempt_at"] is not None:
+                eligible = held["next_attempt_at"] <= _iso(clock["t"])
+                if eligible and held["send_state"] != "sent":
+                    second_posts.append(pid)
+            return FakeResponse(202)
+
+        SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=transport,
+            sleep=lambda _s: None,
+            now=lambda: clock["t"],
+        ).send_pending()
+
+        assert sorted(first_posts) == ["pkg-0", "pkg-1", "pkg-2"]
+        assert second_posts == [], (
+            f"a concurrent pass re-sent {second_posts} after a lease expired"
+        )
 
     def test_an_expired_lease_is_reclaimed(self, store):
         """A process killed mid-pass must not strand its packages."""
@@ -444,10 +493,111 @@ class TestResilience:
         outcome = _sender(store, transport).send_pending()
         assert outcome.sent >= 1
 
+    @pytest.mark.parametrize(
+        "payload_json",
+        [
+            '["a", "list"]',
+            "null",
+            '"a string"',
+            "42",
+            '{"no_install_id": true}',
+            '{"install_id": ""}',
+            '{"install_id": null}',
+        ],
+    )
+    def test_valid_json_that_is_not_a_usable_package_is_skipped(
+        self, store, payload_json
+    ):
+        """Regression: a top-level array parsed fine, then .get() raised.
+
+        The AttributeError escaped the claim transaction and blocked every
+        healthy package behind it.
+        """
+        with store._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO package_outbox(
+                    package_id, period_start, period_end, payload_json,
+                    created_at, exported_at
+                ) VALUES ('bad', '2026-08-26T00:00:00Z', '2026-08-26T23:59:59Z',
+                          ?, '2026-08-26T00:00:00Z', '2026-08-26T01:00:00Z')
+                """,
+                (payload_json,),
+            )
+        _add_package(store, "good", "2026-08-26")
+
+        transport = FakeTransport(*[FakeResponse(202)] * 5)
+        outcome = _sender(store, transport).send_pending()
+
+        assert outcome.sent == 1, "the healthy package must still go out"
+        assert [json.loads(c["payload"])["package_id"] for c in transport.calls] == [
+            "good"
+        ]
+        assert _row(store, "bad")["send_state"] == "rejected"
+
     def test_send_pending_never_raises_on_a_broken_database(self, store, tmp_path):
         store.database_path.write_text("this is not a database")
         outcome = _sender(store, FakeTransport(FakeResponse(202))).send_pending()
         assert outcome.sent == 0
+
+
+class TestConsentRevocation:
+    """`send: false` must stop an in-flight pass, not just the next one."""
+
+    def test_revoking_consent_mid_pass_stops_further_sends(self, store):
+        for i in range(4):
+            _add_package(store, f"pkg-{i}", "2026-08-26")
+
+        consented = {"value": True}
+        posts = []
+
+        def transport(endpoint, payload, *, timeout):
+            posts.append(json.loads(payload)["package_id"])
+            consented["value"] = False  # user flips send off during the pass
+            return FakeResponse(202)
+
+        outcome = SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=transport,
+            sleep=lambda _s: None,
+            now=lambda: NOW,
+            consent_check=lambda: consented["value"],
+        ).send_pending()
+
+        assert len(posts) == 1, f"kept sending after consent was revoked: {posts}"
+        assert outcome.sent == 1
+
+    def test_no_send_at_all_when_consent_is_already_false(self, store):
+        _add_package(store, "pkg-1", "2026-08-26")
+        posts = []
+        SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=lambda *a, **k: posts.append(1) or FakeResponse(202),
+            sleep=lambda _s: None,
+            now=lambda: NOW,
+            consent_check=lambda: False,
+        ).send_pending()
+        assert posts == []
+
+    def test_an_unreadable_consent_check_fails_closed(self, store):
+        """If consent cannot be established, do not transmit."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        posts = []
+
+        def explode():
+            raise OSError("config unreadable")
+
+        SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=lambda *a, **k: posts.append(1) or FakeResponse(202),
+            sleep=lambda _s: None,
+            now=lambda: NOW,
+            consent_check=explode,
+        ).send_pending()
+        assert posts == []
 
 
 class TestCompression:

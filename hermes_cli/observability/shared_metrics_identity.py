@@ -92,8 +92,12 @@ def current_salt(
     fresh = (
         salt is not None
         and issued_at is not None
-        # A clock that jumped backwards must not be read as "aged out"; a
-        # future issue time simply means not yet due.
+        # Strictly within the window. A future issued_at means the clock moved
+        # backwards (or the value was tampered with), so the recorded age
+        # cannot be trusted and we reissue rather than keep using a salt of
+        # unknown vintage. Reissuing is the safe direction: it shortens
+        # linkability, and already-prepared packages keep their frozen
+        # identifier so retries stay byte-identical.
         and issued_at <= moment < issued_at + ROTATION_INTERVAL
     )
     if fresh:

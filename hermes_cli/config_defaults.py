@@ -3339,10 +3339,10 @@ DEFAULT_CONFIG = {
             # before consent stays local.
             "send": False,
             # Ingest endpoint. Production by default; override for staging or
-            # a local test server. The HERMES_TELEMETRY_ENDPOINT environment
-            # variable takes precedence (used by the live E2E so a test never
-            # has to mutate a user's config). Non-HTTPS is refused unless the
-            # host is localhost.
+            # a local test server. Deliberately NOT overridable by an
+            # environment variable: that would let an inherited value silently
+            # redirect telemetry a user consented to send to Nous. Non-HTTPS
+            # is refused unless the host is localhost.
             "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
     },

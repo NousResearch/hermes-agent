@@ -76,11 +76,15 @@ class TestSaltLifecycle:
             conn.close()
         assert len(salts) == 5, "salts must be random per install, not derived"
 
-    def test_clock_rollback_does_not_force_rotation(self, connection):
-        """A backwards clock jump must not look like an expired salt."""
+    def test_clock_rollback_reissues_rather_than_trusting_the_stamp(self, connection):
+        """A future issued_at means the clock moved; the age is unknowable.
+
+        Reissuing is the safe direction — it shortens linkability rather than
+        extending it, and packages already prepared keep their frozen id.
+        """
         first = current_salt(connection, now=T0)
         rolled_back = current_salt(connection, now=T0 - timedelta(days=5))
-        assert rolled_back != first, "an out-of-window time reissues rather than trusting it"
+        assert rolled_back != first
 
     def test_corrupt_issued_at_reissues_rather_than_crashing(self, connection):
         current_salt(connection, now=T0)

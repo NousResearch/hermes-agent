@@ -58,16 +58,29 @@ GZIP_THRESHOLD_BYTES = 4096
 #: Packages per pass. Bounds work on an interactive hook even after an outage.
 MAX_PACKAGES_PER_PASS = 20
 
-#: How long a claimed row is held by the claiming pass. A claim writes a
-#: LEASE INTO THE FUTURE: another process selecting on `next_attempt_at <= now`
-#: therefore skips it. Long enough to cover three attempts plus backoff
-#: (1+5+25s of jitter plus three 30s timeouts), short enough that a killed
-#: process's rows become eligible again quickly.
-_CLAIM_LEASE_SECONDS = 180
+#: How long a claimed row is held. The claim writes a LEASE INTO THE FUTURE:
+#: selection requires `next_attempt_at <= now`, so for the length of the lease
+#: no other process can take the package.
+#:
+#: This must exceed the worst case for ONE package — three 30s request
+#: timeouts plus 1s+5s of backoff, about 96s — which is why packages are
+#: claimed one at a time, immediately before being sent. An earlier revision
+#: claimed up to 20 rows under a single shared lease; a full batch can legally
+#: run ~1900s, so the later rows' leases expired while the pass still held
+#: them in memory and another process re-sent them.
+_CLAIM_LEASE_SECONDS = 300
 
 #: Floor applied after a pass fails to deliver, so a hard-down service is not
 #: retried on every task completion.
 _FAILURE_BACKOFF_SECONDS = 15 * 60
+
+#: Statuses that are permanent per the ingest contract. Deliberately narrow:
+#: 400 means the envelope is malformed and will never validate. 413 is added
+#: because a package over the service's 1 MiB cap cannot shrink on retry.
+#: Everything else — including 403 from the origin guard and 404 from a bad
+#: path — is retried, because those are usually deployment or edge
+#: misconfiguration that resolves without the package changing.
+_PERMANENT_STATUSES = frozenset({400, 413})
 
 OPT_IN_PERIOD_KEY = "send_opt_in_period"
 
@@ -177,6 +190,7 @@ class SharedMetricsSender:
         sleep=time.sleep,
         now=_utc_now,
         max_attempts: int = MAX_ATTEMPTS,
+        consent_check=None,
     ) -> None:
         self._store = store
         self._endpoint = endpoint
@@ -184,95 +198,132 @@ class SharedMetricsSender:
         self._sleep = sleep
         self._now = now
         self._max_attempts = max_attempts
+        # Called before every package. None disables the check for callers
+        # that have already established consent out of band (tests, E2E).
+        self._consent_check = consent_check
 
     # -- selection ---------------------------------------------------------
 
-    def _claim(self, connection: sqlite3.Connection, now: datetime) -> list[dict]:
-        """Atomically take ownership of the packages this pass will try.
+    def _claim_next(self, now: datetime, seen: set[str]) -> dict | None:
+        """Claim exactly ONE package, immediately before it is sent.
 
-        Claiming inside the write transaction is what stops two Hermes
-        processes sharing one database from sending the same package twice.
-        Duplicates would be harmless (the service dedupes by package_id and
-        the bytes are identical) but they waste the user's bandwidth.
+        Claiming a whole batch up front does not work: a single shared lease
+        has to cover the entire pass, and 20 retrying packages can legally run
+        far longer than any sane lease (three 30s timeouts plus backoff each).
+        The later rows' leases then expire while this pass still holds them in
+        memory, and another process re-sends them. Taking one row at a time
+        keeps the lease covering only the package actually in flight.
+
+        ``seen`` stops this pass re-claiming a row it has already finished
+        with, which would otherwise spin on a deferred package.
         """
-        period = opt_in_period(connection, now=now)
-        stamp = _isoformat(now)
-        lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
-        rows = connection.execute(
-            """
-            SELECT package_id, payload_json, sent_install_id
-            FROM package_outbox
-            WHERE exported_at IS NOT NULL
-              AND (send_state IS NULL OR send_state = 'pending')
-              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND substr(period_start, 1, 10) >= ?
-            ORDER BY created_at, package_id
-            LIMIT ?
-            """,
-            (stamp, period, MAX_PACKAGES_PER_PASS),
-        ).fetchall()
+        with self._store._connection() as connection:
+            with write_txn(connection):
+                period = opt_in_period(connection, now=now)
+                stamp = _isoformat(now)
+                lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
 
-        claimed: list[dict] = []
-        salt: str | None = None
-        for row in rows:
-            package_id = str(row[0])
-            derived = row[2]
-            if not derived:
-                # Freeze the derived identity on first attempt so a later salt
-                # rotation cannot change the bytes sent under this package_id.
-                if salt is None:
-                    salt = current_salt(connection, now=now)
-                try:
-                    payload = json.loads(row[1])
-                    install_id = str(payload.get("install_id", ""))
-                except (TypeError, ValueError):
-                    # A row we cannot parse can never be sent. Mark it and move
-                    # on: one unreadable package must not block every other
-                    # package behind it, and aborting here would roll back the
-                    # whole claim transaction.
-                    logger.warning(
-                        "Shared-metrics package %s is unreadable; not sending",
-                        package_id,
+                row = connection.execute(
+                    """
+                    SELECT package_id, payload_json, sent_install_id
+                    FROM package_outbox
+                    WHERE exported_at IS NOT NULL
+                      AND (send_state IS NULL OR send_state = 'pending')
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                      AND substr(period_start, 1, 10) >= ?
+                    ORDER BY created_at, package_id
+                    LIMIT 1
+                    """,
+                    (stamp, period),
+                ).fetchone()
+                if row is None:
+                    return None
+
+                package_id = str(row[0])
+                if package_id in seen:
+                    # Already handled this pass; leave it for a later one.
+                    return None
+
+                derived = row[2]
+                if not derived:
+                    derived = self._freeze_identity(
+                        connection, package_id, row[1], now
                     )
-                    connection.execute(
-                        """
-                        UPDATE package_outbox
-                        SET send_state = 'rejected', last_error = 'unreadable payload'
-                        WHERE package_id = ?
-                        """,
-                        (package_id,),
-                    )
-                    continue
-                derived = derive_install_id(install_id, salt)
+                    if derived is None:
+                        # Unusable row, already marked rejected. Signal the
+                        # caller to continue rather than stop.
+                        return {"package_id": package_id, "skip": True}
+
                 connection.execute(
-                    "UPDATE package_outbox SET sent_install_id = ? WHERE package_id = ?",
-                    (derived, package_id),
+                    """
+                    UPDATE package_outbox
+                    SET send_state = 'pending',
+                        send_attempts = send_attempts + 1,
+                        next_attempt_at = ?
+                    WHERE package_id = ?
+                    """,
+                    # Lease INTO THE FUTURE: selection requires
+                    # next_attempt_at <= now, so no other process can take
+                    # this row while it is in flight. Success or a real
+                    # backoff overwrites it; if this process dies, it expires.
+                    (_isoformat(lease_until), package_id),
                 )
-            connection.execute(
-                """
-                UPDATE package_outbox
-                SET send_state = 'pending',
-                    send_attempts = send_attempts + 1,
-                    next_attempt_at = ?
-                WHERE package_id = ?
-                """,
-                # Lease the row INTO THE FUTURE. Selection above requires
-                # next_attempt_at <= now, so for the length of the lease no
-                # other process can claim this package. Writing `now` here (as
-                # an earlier revision did) claimed nothing: a concurrent pass
-                # matched the same predicate immediately and sent a duplicate.
-                # Success or a real backoff overwrites this below; if this
-                # process dies mid-pass, the lease simply expires.
-                (_isoformat(lease_until), package_id),
-            )
-            claimed.append(
-                {
+                return {
                     "package_id": package_id,
                     "payload_json": str(row[1]),
                     "derived": str(derived),
+                    "skip": False,
                 }
+
+    def _freeze_identity(
+        self,
+        connection: sqlite3.Connection,
+        package_id: str,
+        payload_json,
+        now: datetime,
+    ) -> str | None:
+        """Derive and persist the transmitted id, or reject an unusable row.
+
+        Returns None when the package can never be sent. Rejecting rather than
+        raising matters: an exception here rolls back the claim transaction
+        and blocks every healthy package behind this one.
+        """
+        reason = None
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, ValueError):
+            reason = "unreadable payload"
+        else:
+            # Valid JSON is not enough: a top-level array, string, number or
+            # null parses cleanly and then has no .get().
+            if not isinstance(payload, dict):
+                reason = f"payload is {type(payload).__name__}, expected object"
+            else:
+                install_id = payload.get("install_id")
+                if not isinstance(install_id, str) or not install_id.strip():
+                    reason = "payload has no usable install_id"
+
+        if reason is not None:
+            logger.warning(
+                "Shared-metrics package %s cannot be sent (%s)", package_id, reason
             )
-        return claimed
+            connection.execute(
+                """
+                UPDATE package_outbox
+                SET send_state = 'rejected', last_error = ?
+                WHERE package_id = ?
+                """,
+                (reason, package_id),
+            )
+            return None
+
+        salt = current_salt(connection, now=now)
+        derived = derive_install_id(payload["install_id"], salt)
+        connection.execute(
+            "UPDATE package_outbox SET sent_install_id = ? WHERE package_id = ?",
+            (derived, package_id),
+        )
+        return derived
 
     # -- transmission ------------------------------------------------------
 
@@ -345,14 +396,13 @@ class SharedMetricsSender:
                 )
                 return "sent"
 
-            if response.status == 400 or (
-                400 <= response.status < 500 and response.status != 429
-            ):
-                # The contract only names 400, but every other 4xx is equally
-                # permanent for an unauthenticated fire-and-forget sender: a
-                # wrong path (404), an edge rejection (403), or an oversized
-                # body (413) will not fix itself by being retried every 15
-                # minutes until local retention prunes the package.
+            if response.status in _PERMANENT_STATUSES:
+                # Only statuses the contract (or the envelope schema) makes
+                # terminal. Everything else retries: 403 in particular is the
+                # ingest service's origin guard, which returns 403 during an
+                # edge/Transform-Rule misconfiguration — treating that as
+                # permanent would discard every package sent during the
+                # incident instead of retrying after recovery.
                 logger.warning(
                     "Telemetry package %s rejected with HTTP %s; not retrying",
                     package_id,
@@ -392,24 +442,42 @@ class SharedMetricsSender:
     # -- entry point -------------------------------------------------------
 
     def send_pending(self) -> SendOutcome:
-        """Run one bounded pass. Never raises."""
-        outcome = SendOutcome()
-        try:
-            now = self._now()
-            with self._store._connection() as connection:
-                with write_txn(connection):
-                    claimed = self._claim(connection, now)
-        except Exception:
-            logger.warning("Unable to select shared-metrics packages", exc_info=True)
-            return outcome
+        """Run one bounded pass. Never raises.
 
-        for package in claimed:
+        Claims and sends ONE package at a time so each row's lease only has to
+        cover its own transmission, and re-checks consent before every send so
+        revoking `send` mid-pass stops the remaining packages.
+        """
+        outcome = SendOutcome()
+        seen: set[str] = set()
+
+        for _ in range(MAX_PACKAGES_PER_PASS):
+            if not self._still_consented():
+                # The user turned sending off while this pass was running.
+                # Stop without transmitting anything further; unclaimed rows
+                # stay pending and claimed-but-unsent rows expire naturally.
+                logger.info("Shared-metrics sending disabled mid-pass; stopping")
+                break
+            try:
+                package = self._claim_next(self._now(), seen)
+            except Exception:
+                logger.warning(
+                    "Unable to select shared-metrics packages", exc_info=True
+                )
+                break
+            if package is None:
+                break
+
+            seen.add(package["package_id"])
+            if package.get("skip"):
+                # Unusable row already marked rejected during the claim.
+                outcome.rejected += 1
+                continue
+
             try:
                 result = self._send_one(package)
             except Exception:
-                logger.warning(
-                    "Unable to send shared-metrics package", exc_info=True
-                )
+                logger.warning("Unable to send shared-metrics package", exc_info=True)
                 outcome.deferred += 1
                 continue
             if result == "sent":
@@ -419,3 +487,23 @@ class SharedMetricsSender:
             else:
                 outcome.deferred += 1
         return outcome
+
+    def _still_consented(self) -> bool:
+        """Re-read profile-owned send consent.
+
+        Consent is a boundary, not cached configuration: the documentation
+        promises that setting `send: false` stops transmission immediately,
+        and a pass can run for minutes. Injected senders (tests, the staging
+        E2E) opt out by passing consent_check=None.
+        """
+        if self._consent_check is None:
+            return True
+        try:
+            return bool(self._consent_check())
+        except Exception:
+            # Fail CLOSED: if consent cannot be established, do not transmit.
+            logger.warning(
+                "Unable to confirm shared-metrics send consent; stopping",
+                exc_info=True,
+            )
+            return False

@@ -33,7 +33,6 @@ import {
   reportPrimaryGatewayState,
   setPrimaryGateway,
   setPrimaryGatewayConnection,
-  setPrimaryGatewayConnectionId,
   touchSecondaryGateways
 } from '@/store/gateway'
 import { registerGatewayReconnect } from '@/store/gateway-reconnect'
@@ -191,7 +190,6 @@ export function useGatewayBoot({
             }
           : null
       )
-      setPrimaryGatewayConnectionId(next?.connectionId)
     }
 
     if (!desktop) {

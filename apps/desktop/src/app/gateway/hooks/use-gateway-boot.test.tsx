@@ -652,6 +652,12 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewaySwitching.get()).toBe(false)
     // The switch committed: the registry remembers the new source as last-used.
     expect(setLastUsed).toHaveBeenCalledWith('coder-remote')
+
+    // Publishing the secondary must not relabel the primary socket. Returning
+    // to its source should reuse that socket, not dial the secondary endpoint.
+    const socketsAfterSwitch = FakeWebSocket.instances.length
+    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
+    expect(FakeWebSocket.instances).toHaveLength(socketsAfterSwitch)
   })
 
   it('a Settings switch superseded while reading its descriptor cannot publish over a newer Sessions switch', async () => {

@@ -733,6 +733,20 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata["artifacts"] = merged
             else:
                 metadata["artifacts"] = artifacts
+    terminal_result = args.get("terminal_result")
+    if terminal_result is not None:
+        if not isinstance(terminal_result, dict):
+            return tool_error(
+                f"terminal_result must be an object/dict, got "
+                f"{type(terminal_result).__name__}"
+            )
+        if metadata is None:
+            metadata = {}
+        elif not isinstance(metadata, dict):
+            return tool_error(
+                f"metadata must be an object/dict, got {type(metadata).__name__}"
+            )
+        metadata.setdefault("terminal_result", terminal_result)
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -798,6 +812,11 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"Retry kanban_complete with the same summary/metadata "
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
+                )
+            except kb.kci.CompletionIntegrityError as integrity_err:
+                return tool_error(
+                    f"kanban_complete blocked ({integrity_err.code}): {integrity_err}. "
+                    f"The task is not done. Downstream dependents stay blocked."
                 )
             if not ok:
                 return tool_error(
@@ -1461,6 +1480,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                completion_contract=args.get("completion_contract"),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1654,7 +1674,12 @@ def _handle_link(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                semantic_gate=args.get("semantic_gate"),
+            )
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
             conn.close()
@@ -1848,6 +1873,17 @@ KANBAN_COMPLETE_SCHEMA = {
                     "workspace are copied to durable task attachments before "
                     "cleanup; a missing declared scratch artifact keeps the "
                     "task in-flight so you can fix the path and retry."
+                ),
+            },
+            "terminal_result": {
+                "type": "object",
+                "description": (
+                    "Controller-verifiable terminal result for an opt-in "
+                    "completion contract. Bind attempt_id (from the claim), "
+                    "repository/worktree, full commit_sha, and for review "
+                    "tasks a verdict of APPROVED/PASS or REJECTED/"
+                    "CHANGES_REQUIRED/FAIL. Narrative-only completion of a "
+                    "revision-required task is not done."
                 ),
             },
             "board": _board_schema_prop(),
@@ -2213,6 +2249,19 @@ KANBAN_CREATE_SCHEMA = {
                     "task id), instead of a random branch."
                 ),
             },
+            "completion_contract": {
+                "type": "object",
+                "description": (
+                    "Optional opt-in completion contract. Use "
+                    "{\"schema_version\": 1, \"type\": \"git_revision\", "
+                    "\"repository\": \"/abs/repo\", \"expected_base\": "
+                    "\"<full-sha>\"} for Engineer revision evidence, "
+                    "{\"type\": \"review\", ...} for Reviewer verdict+SHA "
+                    "evidence, or {\"type\": \"historian_certify\", "
+                    "\"required_sha\": \"<full-sha>\"} for immutable "
+                    "Historian certification. Omit for legacy ungated tasks."
+                ),
+            },
             "triage": {
                 "type": "boolean",
                 "description": (
@@ -2342,6 +2391,16 @@ KANBAN_LINK_SCHEMA = {
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "semantic_gate": {
+                "type": "object",
+                "description": (
+                    "Optional typed review_approved gate. Required shape: "
+                    "{\"schema_version\": 1, \"type\": \"review_approved\", "
+                    "\"reviewed_sha\": \"<full 40-char SHA>\"}. The child "
+                    "stays blocked until the parent is a controller-verified "
+                    "review with verdict APPROVED or PASS for that exact SHA."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],

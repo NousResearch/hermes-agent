@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli import kanban_completion_integrity as kci
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -101,6 +102,20 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+
+
+def _parse_optional_json_object(raw: Any) -> Optional[dict]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -1141,6 +1156,17 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Opt-in Phase 1A completion contract and controller-owned verification.
+    completion_contract: Optional[dict] = None
+    attempt_id: Optional[str] = None
+    terminal_result: Optional[dict] = None
+    terminal_result_hash: Optional[str] = None
+    verification_status: Optional[str] = None
+    verification_code: Optional[str] = None
+    verified_revision: Optional[str] = None
+    verified_verdict: Optional[str] = None
+    awaiting_verification: bool = False
+    needs_reconciliation: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1235,6 +1261,46 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            completion_contract=_parse_optional_json_object(
+                row["completion_contract"] if "completion_contract" in keys else None
+            ),
+            attempt_id=(
+                row["attempt_id"] if "attempt_id" in keys and row["attempt_id"] else None
+            ),
+            terminal_result=_parse_optional_json_object(
+                row["terminal_result"] if "terminal_result" in keys else None
+            ),
+            terminal_result_hash=(
+                row["terminal_result_hash"]
+                if "terminal_result_hash" in keys and row["terminal_result_hash"]
+                else None
+            ),
+            verification_status=(
+                row["verification_status"]
+                if "verification_status" in keys and row["verification_status"]
+                else None
+            ),
+            verification_code=(
+                row["verification_code"]
+                if "verification_code" in keys and row["verification_code"]
+                else None
+            ),
+            verified_revision=(
+                row["verified_revision"]
+                if "verified_revision" in keys and row["verified_revision"]
+                else None
+            ),
+            verified_verdict=(
+                row["verified_verdict"]
+                if "verified_verdict" in keys and row["verified_verdict"]
+                else None
+            ),
+            awaiting_verification=bool(
+                row["awaiting_verification"]
+            ) if "awaiting_verification" in keys and row["awaiting_verification"] else False,
+            needs_reconciliation=bool(
+                row["needs_reconciliation"]
+            ) if "needs_reconciliation" in keys and row["needs_reconciliation"] else False,
         )
 
 
@@ -1422,12 +1488,31 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Opt-in Phase 1A completion contract (JSON). NULL = legacy task.
+    completion_contract  TEXT,
+    -- Controller-issued attempt identity for the current run.
+    attempt_id           TEXT,
+    -- First immutable terminal-result payload for the current attempt.
+    terminal_result      TEXT,
+    -- Canonical hash of terminal_result.
+    terminal_result_hash TEXT,
+    -- verified | verification_rejected | verification_error | awaiting_verification | needs_reconciliation
+    verification_status  TEXT,
+    -- Structured reason code from the last verification or gate evaluation.
+    verification_code    TEXT,
+    -- Controller-verified full commit SHA, when applicable.
+    verified_revision    TEXT,
+    -- Controller-normalized review verdict, when applicable.
+    verified_verdict     TEXT,
+    awaiting_verification INTEGER NOT NULL DEFAULT 0,
+    needs_reconciliation INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
-    parent_id  TEXT NOT NULL,
-    child_id   TEXT NOT NULL,
+    parent_id      TEXT NOT NULL,
+    child_id       TEXT NOT NULL,
+    semantic_gate  TEXT,
     PRIMARY KEY (parent_id, child_id)
 );
 
@@ -2679,6 +2764,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    for col, decl in (
+        ("completion_contract", "completion_contract TEXT"),
+        ("attempt_id", "attempt_id TEXT"),
+        ("terminal_result", "terminal_result TEXT"),
+        ("terminal_result_hash", "terminal_result_hash TEXT"),
+        ("verification_status", "verification_status TEXT"),
+        ("verification_code", "verification_code TEXT"),
+        ("verified_revision", "verified_revision TEXT"),
+        ("verified_verdict", "verified_verdict TEXT"),
+        ("awaiting_verification", "awaiting_verification INTEGER NOT NULL DEFAULT 0"),
+        ("needs_reconciliation", "needs_reconciliation INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if col not in cols:
+            _add_column_if_missing(conn, "tasks", col, decl)
+
+    link_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_links'"
+    ).fetchone() is not None
+    if link_exists:
+        link_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_links)")}
+        if "semantic_gate" not in link_cols:
+            _add_column_if_missing(conn, "task_links", "semantic_gate", "semantic_gate TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3183,6 +3291,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    completion_contract: Optional[Any] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3228,6 +3337,9 @@ def create_task(
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
+    contract_obj = None
+    if completion_contract is not None:
+        contract_obj = kci.normalize_completion_contract(completion_contract)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -3455,13 +3567,21 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # If any parent is not yet structurally and semantically
+                        # satisfied, the child stays in todo.
+                        if any(
+                            not _parent_row_satisfied(conn, r)
+                            for r in conn.execute(
+                                "SELECT t.id, t.status, t.completion_contract, "
+                                "t.verification_status, t.verified_revision, "
+                                "t.verified_verdict, t.needs_reconciliation, "
+                                "NULL AS semantic_gate "
+                                "FROM tasks t WHERE t.id IN ("
+                                + ",".join("?" * len(parents))
+                                + ")",
+                                parents,
+                            ).fetchall()
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -3497,8 +3617,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        completion_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3645,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        kci.persist_json(contract_obj),
                     ),
                 )
                 for pid in parents:
@@ -3826,9 +3948,17 @@ def set_reasoning_effort(
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    semantic_gate: Optional[Any] = None,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    gate_obj = None
+    if semantic_gate is not None:
+        gate_obj = kci.normalize_semantic_gate(semantic_gate)
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -3841,18 +3971,26 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        if gate_obj is not None:
+            conn.execute(
+                "UPDATE task_links SET semantic_gate = ? "
+                "WHERE parent_id = ? AND child_id = ?",
+                (kci.persist_json(gate_obj), parent_id, child_id),
+            )
+        # If child was ready but parent is not yet structurally and
+        # semantically satisfied, demote child to todo.
+        if not _parent_edge_satisfied(conn, parent_id, child_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {
+                "parent": parent_id,
+                "child": child_id,
+                "semantic_gate": gate_obj,
+            },
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
 
@@ -4556,13 +4694,7 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -4604,14 +4736,140 @@ def recompute_ready(
 # ---------------------------------------------------------------------------
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+    """Return whether every direct parent is terminal AND semantically satisfied."""
+    return _unsatisfied_parent_eval(conn, task_id) is None
+
+
+def _parent_edge_satisfied(
+    conn: sqlite3.Connection, parent_id: str, child_id: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT t.id, t.status, t.completion_contract, "
+        "t.verification_status, t.verified_revision, t.verified_verdict, "
+        "t.needs_reconciliation, l.semantic_gate "
+        "FROM tasks t JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.parent_id = ? AND l.child_id = ?",
+        (parent_id, child_id),
+    ).fetchone()
+    if row is None:
+        parent = conn.execute(
+            "SELECT id, status, completion_contract, verification_status, "
+            "verified_revision, verified_verdict, needs_reconciliation "
+            "FROM tasks WHERE id = ?",
+            (parent_id,),
+        ).fetchone()
+        if parent is None:
+            return False
+        return _parent_row_satisfied(conn, parent)
+    return _parent_row_satisfied(conn, row)
+
+
+def _unsatisfied_parent_eval(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[kci.GateEvaluation]:
+    parents = conn.execute(
+        "SELECT t.id, t.status, t.completion_contract, "
+        "t.verification_status, t.verified_revision, t.verified_verdict, "
+        "t.needs_reconciliation, l.semantic_gate "
+        "FROM tasks t JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ?",
         (task_id,),
-    ).fetchone() is None
+    ).fetchall()
+    for parent in parents:
+        evaluation = _evaluate_parent_row(conn, parent)
+        if not evaluation.satisfied:
+            return evaluation
+    return None
+
+
+def _parent_row_satisfied(conn: sqlite3.Connection, parent: Mapping[str, Any]) -> bool:
+    return _evaluate_parent_row(conn, parent).satisfied
+
+
+def _evaluate_parent_row(
+    conn: sqlite3.Connection, parent: Mapping[str, Any],
+) -> kci.GateEvaluation:
+    parent_status = parent["status"]
+    if parent_status not in ("done", "archived"):
+        return kci.GateEvaluation(
+            kci.REASON_UNSATISFIED,
+            kci.REASON_PARENT_NOT_TERMINAL,
+            "parent is not terminal",
+            {"parent_id": parent["id"], "parent_status": parent_status},
+        )
+    if parent["needs_reconciliation"]:
+        return kci.GateEvaluation(
+            kci.REASON_UNSATISFIED,
+            kci.REASON_NEEDS_RECONCILIATION,
+            "parent needs reconciliation",
+            {"parent_id": parent["id"]},
+        )
+    contract = kci.load_task_contract(parent)
+    if contract and contract.get("type") == "__invalid__":
+        return kci.GateEvaluation(
+            kci.REASON_INVALID,
+            kci.REASON_INVALID,
+            "parent completion contract is malformed",
+            {"parent_id": parent["id"]},
+        )
+    if kci.contract_requires_revision(contract):
+        status = parent["verification_status"]
+        if status == kci.STATUS_ERROR:
+            return kci.GateEvaluation(
+                kci.REASON_UNSATISFIED,
+                kci.REASON_VERIFICATION_ERROR,
+                "parent verification error",
+                {"parent_id": parent["id"]},
+            )
+        if status == kci.STATUS_REJECTED:
+            return kci.GateEvaluation(
+                kci.REASON_UNSATISFIED,
+                kci.REASON_VERIFICATION_REJECTED,
+                "parent verification was rejected",
+                {"parent_id": parent["id"]},
+            )
+        if status != kci.STATUS_VERIFIED:
+            return kci.GateEvaluation(
+                kci.REASON_UNSATISFIED,
+                kci.REASON_UNSATISFIED,
+                "parent completion is not controller-verified",
+                {"parent_id": parent["id"], "verification_status": status},
+            )
+
+    raw_gate = parent["semantic_gate"] if "semantic_gate" in parent.keys() else None
+    if not raw_gate:
+        return kci.GateEvaluation(
+            kci.REASON_SATISFIED,
+            kci.REASON_SATISFIED,
+            "ungated parent is structurally and verification-satisfied",
+            {"parent_id": parent["id"]},
+        )
+    try:
+        gate = kci.normalize_semantic_gate(raw_gate)
+    except kci.CompletionIntegrityError as exc:
+        return kci.GateEvaluation(
+            kci.REASON_INVALID,
+            exc.code,
+            str(exc),
+            {"parent_id": parent["id"], **exc.details},
+        )
+    if gate is None:
+        return kci.GateEvaluation(
+            kci.REASON_SATISFIED,
+            kci.REASON_SATISFIED,
+            "empty semantic gate is treated as ungated",
+            {"parent_id": parent["id"]},
+        )
+    parent_contract_type = contract.get("type") if contract else None
+    return kci.evaluate_review_approved_gate(
+        required_sha=gate["reviewed_sha"],
+        parent_status=parent_status,
+        parent_verification_status=parent["verification_status"],
+        parent_verified_revision=parent["verified_revision"],
+        parent_verdict=parent["verified_verdict"],
+        parent_needs_reconciliation=bool(parent["needs_reconciliation"]),
+        parent_contract_type=parent_contract_type,
+    )
 
 
 def claim_task(
@@ -4638,13 +4896,8 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        unsatisfied = _unsatisfied_parent_eval(conn, task_id)
+        if unsatisfied is not None:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -4652,7 +4905,12 @@ def claim_task(
             )
             _append_event(
                 conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
+                {
+                    "reason": unsatisfied.code,
+                    "message": unsatisfied.message,
+                    "details": unsatisfied.details,
+                    "state": unsatisfied.state,
+                },
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -4716,13 +4974,20 @@ def claim_task(
             ),
         )
         run_id = run_cur.lastrowid
+        attempt_id = kci.mint_attempt_id(task_id, run_id)
         conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
+            "UPDATE tasks SET current_run_id = ?, attempt_id = ?, "
+            "terminal_result = NULL, terminal_result_hash = NULL, "
+            "verification_status = NULL, verification_code = NULL, "
+            "verified_revision = NULL, verified_verdict = NULL, "
+            "awaiting_verification = 0, needs_reconciliation = 0 "
+            "WHERE id = ?",
+            (run_id, attempt_id, task_id),
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"lock": lock, "expires": expires, "run_id": run_id,
+             "attempt_id": attempt_id},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -4814,14 +5079,20 @@ def claim_review_task(
             ),
         )
         run_id = run_cur.lastrowid
+        attempt_id = kci.mint_attempt_id(task_id, run_id)
         conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
+            "UPDATE tasks SET current_run_id = ?, attempt_id = ?, "
+            "terminal_result = NULL, terminal_result_hash = NULL, "
+            "verification_status = NULL, verification_code = NULL, "
+            "verified_revision = NULL, verified_verdict = NULL, "
+            "awaiting_verification = 0, needs_reconciliation = 0 "
+            "WHERE id = ?",
+            (run_id, attempt_id, task_id),
         )
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": "review", "attempt_id": attempt_id},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -5349,6 +5620,396 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _controller_attempt_id(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT attempt_id, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["attempt_id"]:
+        return row["attempt_id"]
+    if row["current_run_id"] is not None:
+        return kci.mint_attempt_id(task_id, row["current_run_id"])
+    return None
+
+
+def _record_integrity_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: dict,
+) -> None:
+    _append_event(conn, task_id, kind, payload)
+
+
+def _apply_opt_in_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+    metadata: Optional[dict],
+    transition: str,
+) -> Optional[dict]:
+    """Verify an opt-in completion contract. Return verified fields or raise.
+
+    Legacy tasks (no contract) return None and keep existing behaviour.
+    """
+    row = conn.execute(
+        "SELECT completion_contract, attempt_id, current_run_id, "
+        "terminal_result, terminal_result_hash, verification_status, "
+        "verified_revision, verified_verdict, needs_reconciliation, "
+        "workspace_path, status "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise kci.CompletionIntegrityError(
+            kci.REASON_INVALID, f"unknown task {task_id}"
+        )
+    try:
+        contract = kci.normalize_completion_contract(row["completion_contract"])
+    except kci.CompletionIntegrityError as exc:
+        _record_integrity_event(
+            conn, task_id, "completion_integrity_invalid",
+            {"code": exc.code, "message": str(exc), "details": exc.details,
+             "transition": transition},
+        )
+        raise
+    if contract is None:
+        return None
+    with write_txn(conn, allow_nested=True):
+        outcome = _apply_opt_in_completion_locked(
+            conn, task_id, row, contract,
+            result=result, summary=summary, metadata=metadata,
+            transition=transition,
+        )
+    if outcome.get("error"):
+        raise kci.CompletionIntegrityError(
+            outcome["error"]["code"],
+            outcome["error"]["message"],
+            details=outcome["error"].get("details") or {},
+        )
+    return outcome.get("value")
+
+
+def _apply_opt_in_completion_locked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    row: sqlite3.Row,
+    contract: dict,
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+    metadata: Optional[dict],
+    transition: str,
+) -> Optional[dict]:
+    claimed = kci.extract_terminal_result(
+        metadata=metadata, result=result, summary=summary,
+    )
+    if claimed is None:
+        code = (
+            kci.REASON_NARRATIVE_ONLY
+            if (summary or result)
+            else kci.REASON_MISSING_TERMINAL_RESULT
+        )
+        conn.execute(
+            "UPDATE tasks SET verification_status = ?, verification_code = ?, "
+            "awaiting_verification = 1 WHERE id = ?",
+            (kci.STATUS_AWAITING, code, task_id),
+        )
+        _record_integrity_event(
+            conn, task_id, "completion_integrity_blocked",
+            {"code": code, "transition": transition},
+        )
+        return {
+            "error": {
+                "code": code,
+                "message": (
+                    "opt-in completion contract requires a controller-verifiable "
+                    "terminal result; narrative-only completion is not done"
+                ),
+                "details": {"transition": transition},
+            }
+        }
+
+    attempt_id = row["attempt_id"] or (
+        kci.mint_attempt_id(task_id, row["current_run_id"])
+        if row["current_run_id"] is not None
+        else kci.mint_attempt_id(task_id, 0)
+    )
+    claimed_attempt = claimed.get("attempt_id")
+    if claimed_attempt and claimed_attempt != attempt_id:
+        _record_integrity_event(
+            conn, task_id, "completion_integrity_blocked",
+            {
+                "code": kci.REASON_WRONG_ATTEMPT,
+                "controller_attempt_id": attempt_id,
+                "claimed_attempt_id": claimed_attempt,
+                "transition": transition,
+            },
+        )
+        return {
+            "error": {
+                "code": kci.REASON_WRONG_ATTEMPT,
+                "message": (
+                    "terminal result attempt_id does not match the "
+                    "controller-issued attempt"
+                ),
+                "details": {
+                    "controller_attempt_id": attempt_id,
+                    "claimed_attempt_id": claimed_attempt,
+                },
+            }
+        }
+    claimed["attempt_id"] = attempt_id
+    claimed_hash = kci.result_hash(claimed)
+
+    existing_raw = row["terminal_result"]
+    existing_hash = row["terminal_result_hash"]
+    existing_verified = row["verification_status"] == kci.STATUS_VERIFIED
+    if existing_raw and existing_verified:
+        if existing_hash == claimed_hash:
+            _record_integrity_event(
+                conn, task_id, "terminal_result_duplicate",
+                {
+                    "attempt_id": attempt_id,
+                    "result_hash": claimed_hash,
+                    "idempotent": True,
+                    "transition": transition,
+                },
+            )
+            if row["needs_reconciliation"]:
+                return {
+                    "error": {
+                        "code": kci.REASON_NEEDS_RECONCILIATION,
+                        "message": (
+                            "task already needs reconciliation; first terminal "
+                            "result remains authoritative"
+                        ),
+                        "details": {"attempt_id": attempt_id},
+                    }
+                }
+            if row["verification_status"] == kci.STATUS_VERIFIED:
+                return {
+                    "value": {
+                        "attempt_id": attempt_id,
+                        "terminal_result": kci.parse_json_object(
+                            existing_raw, field="terminal_result"
+                        ),
+                        "terminal_result_hash": existing_hash,
+                        "verification_status": row["verification_status"],
+                        "verified_revision": row["verified_revision"],
+                        "verified_verdict": row["verified_verdict"],
+                        "idempotent": True,
+                    }
+                }
+        else:
+            conn.execute(
+                "UPDATE tasks SET needs_reconciliation = 1, "
+                "verification_code = ? WHERE id = ?",
+                (kci.REASON_CONFLICTING_RESULT, task_id),
+            )
+            _record_integrity_event(
+                conn, task_id, "needs_reconciliation",
+                {
+                    "attempt_id": attempt_id,
+                    "existing_hash": existing_hash,
+                    "conflicting_hash": claimed_hash,
+                    "transition": transition,
+                },
+            )
+            # Fail closed: a conflict must not leave previously released
+            # descendants runnable. Demote ready/review children to todo.
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id IN (SELECT child_id FROM task_links WHERE parent_id = ?) "
+                "AND status IN ('ready', 'review') AND claim_lock IS NULL",
+                (task_id,),
+            )
+            return {
+                "error": {
+                    "code": kci.REASON_CONFLICTING_RESULT,
+                    "message": (
+                        "conflicting terminal result for the same attempt; "
+                        "the first result remains authoritative"
+                    ),
+                    "details": {"attempt_id": attempt_id},
+                }
+            }
+
+    verification = _verify_claimed_contract(
+        contract=contract,
+        claimed=claimed,
+        workspace_path=row["workspace_path"],
+    )
+    awaiting = 0 if verification.status == kci.STATUS_VERIFIED else 1
+    if verification.status == kci.STATUS_VERIFIED:
+        conn.execute(
+            "UPDATE tasks SET attempt_id = ?, terminal_result = ?, "
+            "terminal_result_hash = ?, verification_status = ?, "
+            "verification_code = ?, verified_revision = ?, verified_verdict = ?, "
+            "awaiting_verification = ?, needs_reconciliation = 0 "
+            "WHERE id = ?",
+            (
+                attempt_id,
+                kci.persist_json(claimed),
+                claimed_hash,
+                verification.status,
+                verification.code,
+                claimed.get("commit_sha"),
+                claimed.get("verdict"),
+                awaiting,
+                task_id,
+            ),
+        )
+    else:
+        # A rejected/error claim is recorded, but it is not the immutable
+        # first result. A later valid result for this attempt may still land.
+        conn.execute(
+            "UPDATE tasks SET attempt_id = ?, verification_status = ?, "
+            "verification_code = ?, awaiting_verification = 1 "
+            "WHERE id = ?",
+            (attempt_id, verification.status, verification.code, task_id),
+        )
+    _record_integrity_event(
+        conn, task_id,
+        "terminal_result_recorded" if verification.status == kci.STATUS_VERIFIED
+        else "completion_integrity_blocked",
+        {
+            "attempt_id": attempt_id,
+            "result_hash": claimed_hash,
+            "status": verification.status,
+            "code": verification.code,
+            "message": verification.message,
+            "details": verification.details,
+            "transition": transition,
+        },
+    )
+    if verification.status != kci.STATUS_VERIFIED:
+        return {
+            "error": {
+                "code": verification.code,
+                "message": verification.message,
+                "details": verification.details,
+            }
+        }
+    return {
+        "value": {
+            "attempt_id": attempt_id,
+            "terminal_result": claimed,
+            "terminal_result_hash": claimed_hash,
+            "verification_status": verification.status,
+            "verified_revision": claimed.get("commit_sha"),
+            "verified_verdict": claimed.get("verdict"),
+            "idempotent": False,
+        }
+    }
+
+
+def certify_historian_revision(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    repository: Optional[str] = None,
+    commit_sha: Optional[str] = None,
+) -> kci.GitVerification:
+    """Bounded Historian consumer: certify an approved SHA from Git objects.
+
+    HEAD equality is not required. The mutable checkout may have moved.
+    """
+    row = conn.execute(
+        "SELECT completion_contract, verified_revision, workspace_path "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return kci.GitVerification(
+            kci.STATUS_ERROR,
+            kci.REASON_INVALID,
+            f"unknown historian task {task_id}",
+            {},
+        )
+    contract = kci.normalize_completion_contract(row["completion_contract"]) or {}
+    sha = commit_sha or contract.get("required_sha") or row["verified_revision"]
+    repo = repository or contract.get("repository") or row["workspace_path"]
+    result = kci.certify_immutable_revision(
+        repository=repo,
+        commit_sha=sha,
+        expected_base=contract.get("expected_base"),
+        git_common_dir=contract.get("git_common_dir"),
+        max_commits=contract.get("max_commits"),
+    )
+    with write_txn(conn, allow_nested=True):
+        _append_event(
+            conn, task_id, "historian_certified" if result.ok else "historian_blocked",
+            {
+                "status": result.status,
+                "code": result.code,
+                "message": result.message,
+                "details": result.details,
+                "commit_sha": sha,
+            },
+        )
+    return result
+
+
+def _verify_claimed_contract(
+    *,
+    contract: Mapping[str, Any],
+    claimed: Mapping[str, Any],
+    workspace_path: Optional[str],
+) -> kci.GitVerification:
+    ctype = contract.get("type")
+    if ctype == kci.CONTRACT_REVIEW:
+        verdict, verdict_err = kci.normalize_verdict(claimed.get("verdict"))
+        if verdict_err:
+            return kci.GitVerification(
+                kci.STATUS_REJECTED,
+                verdict_err,
+                "review terminal result is missing or has an unrecognized verdict",
+                {"verdict": claimed.get("verdict")},
+            )
+        claimed_sha = claimed.get("reviewed_sha") or claimed.get("commit_sha")
+        git = kci.verify_git_revision(
+            claimed_sha=claimed_sha,
+            contract=contract,
+            claimed_repository=claimed.get("repository"),
+            claimed_worktree=claimed.get("worktree") or workspace_path,
+            require_head_match=False,
+        )
+        if not git.ok:
+            return git
+        if isinstance(claimed, dict):
+            claimed["verdict"] = verdict
+            claimed["commit_sha"] = claimed_sha
+            claimed["reviewed_sha"] = claimed_sha
+        required = contract.get("required_sha")
+        if required and required != claimed_sha:
+            return kci.GitVerification(
+                kci.STATUS_REJECTED,
+                kci.REASON_SHA_MISMATCH,
+                "review approval SHA does not match the required revision",
+                {"required_sha": required, "claimed_sha": claimed_sha},
+            )
+        return git
+    if ctype in {kci.CONTRACT_GIT_REVISION, kci.CONTRACT_HISTORIAN_CERTIFY}:
+        return kci.verify_git_revision(
+            claimed_sha=claimed.get("commit_sha"),
+            contract=contract,
+            claimed_repository=claimed.get("repository"),
+            claimed_worktree=claimed.get("worktree") or workspace_path,
+            require_head_match=False,
+        )
+    return kci.GitVerification(
+        kci.STATUS_REJECTED,
+        kci.REASON_INVALID,
+        "unsupported completion contract type",
+        {"type": ctype},
+    )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5397,6 +6058,27 @@ def complete_task(
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+
+    # Opt-in completion contract is applied in its own committed txn so a
+    # refused completion still records awaiting_verification / rejection /
+    # needs_reconciliation instead of looking like an ordinary wait.
+    _apply_opt_in_completion(
+        conn, task_id,
+        result=result, summary=summary, metadata=metadata,
+        transition="complete_task",
+    )
+
+    existing = conn.execute(
+        "SELECT status, needs_reconciliation FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if existing and existing["status"] == "done":
+        if existing["needs_reconciliation"]:
+            raise kci.CompletionIntegrityError(
+                kci.REASON_NEEDS_RECONCILIATION,
+                "task needs reconciliation; first terminal result remains authoritative",
+            )
+        return True
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -6523,6 +7205,14 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    try:
+        _apply_opt_in_completion(
+            conn, task_id,
+            result=None, summary=summary, metadata=metadata,
+            transition="request_review",
+        )
+    except kci.CompletionIntegrityError as exc:
+        return _ret(False, f"{exc.code}: {exc}")
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
@@ -6800,22 +7490,12 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
-        unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
-        ]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
+    unsatisfied = _unsatisfied_parent_eval(conn, task_id)
+    if unsatisfied is not None:
+        return False, (
+            f"unsatisfied parent dependencies: {unsatisfied.code} "
+            f"({unsatisfied.message})"
+        )
 
     if dry_run:
         return True, None
@@ -6867,7 +7547,8 @@ def _reclaim_dangling_run(
 
 
 def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str:
-    """Return ``'todo'`` if any parent isn't ``done`` yet, else ``'ready'``.
+    """Return ``'todo'`` if any parent isn't structurally and semantically
+    satisfied, else ``'ready'``.
 
     The parent-completion re-gate shared by :func:`unblock_task` and
     :func:`reopen_review_task`: flipping straight to ``ready`` would bypass the
@@ -6877,14 +7558,7 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md. Kept in one place
     so the two transitions can't drift.
     """
-    undone_parents = conn.execute(
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    return "todo" if undone_parents else "ready"
+    return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:

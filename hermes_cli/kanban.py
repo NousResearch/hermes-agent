@@ -49,6 +49,15 @@ def _fmt_ts(ts: Optional[int]) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
+def _parse_optional_json_flag(raw: Optional[str], flag: str) -> Optional[Any]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"{flag}: {exc}") from exc
+
+
 def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
@@ -400,6 +409,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_create.add_argument(
+        "--completion-contract",
+        default=None,
+        help="JSON opt-in completion contract "
+             '(e.g. \'{"schema_version":1,"type":"git_revision","repository":"/abs/repo"}\')',
+    )
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -550,6 +565,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--semantic-gate",
+        default=None,
+        help="JSON typed review_approved gate "
+             '(e.g. \'{"schema_version":1,"type":"review_approved","reviewed_sha":"<sha>"}\')',
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -600,6 +621,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--terminal-result",
+        default=None,
+        help="JSON terminal result for an opt-in completion contract "
+             '(attempt_id, commit_sha, repository, verdict).',
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -1562,31 +1589,43 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect_closing() as conn:
-        task_id = kb.create_task(
-            conn,
-            title=args.title,
-            body=args.body,
-            assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind,
-            workspace_path=ws_path,
-            branch_name=branch_name,
-            project_id=getattr(args, "project", None),
-            tenant=args.tenant,
-            priority=args.priority,
-            parents=tuple(args.parent or ()),
-            triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime,
-            skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries,
-            model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            initial_status=getattr(args, "initial_status", "running"),
+    try:
+        completion_contract = _parse_optional_json_flag(
+            getattr(args, "completion_contract", None), "--completion-contract"
         )
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        try:
+            task_id = kb.create_task(
+                conn,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+                project_id=getattr(args, "project", None),
+                tenant=args.tenant,
+                priority=args.priority,
+                parents=tuple(args.parent or ()),
+                triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+                model_override=getattr(args, "model_override", None),
+                provider_override=getattr(args, "provider_override", None),
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                initial_status=getattr(args, "initial_status", "running"),
+                completion_contract=completion_contract,
+            )
+        except kb.kci.CompletionIntegrityError as exc:
+            print(f"kanban: {exc.code}: {exc}", file=sys.stderr)
+            return 2
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
@@ -2067,8 +2106,15 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
+    try:
+        gate = _parse_optional_json_flag(
+            getattr(args, "semantic_gate", None), "--semantic-gate"
+        )
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        kb.link_tasks(conn, args.parent_id, args.child_id, semantic_gate=gate)
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
@@ -2272,6 +2318,18 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    raw_terminal = getattr(args, "terminal_result", None)
+    if raw_terminal:
+        try:
+            terminal_result = json.loads(raw_terminal)
+            if not isinstance(terminal_result, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --terminal-result: {exc}", file=sys.stderr)
+            return 2
+        if metadata is None:
+            metadata = {}
+        metadata.setdefault("terminal_result", terminal_result)
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -2292,17 +2350,21 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                if not kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                ):
+                    failed.append(tid)
+                    print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
+                else:
+                    print(f"Completed {tid}")
+            except kb.kci.CompletionIntegrityError as exc:
                 failed.append(tid)
-                print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
-            else:
-                print(f"Completed {tid}")
+                print(f"cannot complete {tid} ({exc.code}): {exc}", file=sys.stderr)
     return 0 if not failed else 1
 
 

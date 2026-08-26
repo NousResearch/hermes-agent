@@ -281,6 +281,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Herstel na kontrolepunt {hash}: {reason}\n'n Voor-terugrol-momentopname is outomaties gestoor."
     kept_user_edits:       "↷ Jou handwysigings is behou: {files}\nGebruik /rollback <N> --all om dié ook te herstel."
     kept_oversize:         "↷ Behou (te groot vir kontrolepunte, geen gestoorde kopie om na terug te keer nie): {files}"
+    failed_deletes:        "⚠️ Kon nie verwyder nie (in plek gelaat): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

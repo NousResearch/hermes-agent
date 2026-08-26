@@ -170,6 +170,11 @@ class CLICommandsMixin:
                 shown = ", ".join(oversize[:5])
                 more = f" (+{len(oversize) - 5} more)" if len(oversize) > 5 else ""
                 print(f"  ↷ Kept (too large for checkpoints, no stored copy to revert to): {shown}{more}")
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5} more)" if len(failed) > 5 else ""
+                print(f"  ⚠️ Could not remove (left in place): {shown}{more}")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context

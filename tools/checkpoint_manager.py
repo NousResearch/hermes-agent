@@ -1098,7 +1098,10 @@ class CheckpointManager:
         With ``safe=True`` (full-directory restores only), files the user
         hand-edited after Hermes' last write — per the agent-write ledger —
         are left untouched, and only Hermes-authored changes are reverted.
-        The result gains ``skipped_user_edits`` listing the preserved paths.
+        The result gains ``skipped_user_edits`` listing the preserved paths,
+        ``skipped_oversize`` listing paths kept because the size cap excluded
+        them from every checkpoint, and — only when a delete failed —
+        ``failed_deletes`` listing paths that could not be removed.
         """
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -1146,6 +1149,7 @@ class CheckpointManager:
                         "directory": abs_dir,
                         "restored_files": [],
                         "skipped_user_edits": skipped_user_edits,
+                        "skipped_oversize": [],
                     }
 
         # Take a pre-rollback snapshot so you can undo the undo.

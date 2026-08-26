@@ -281,6 +281,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Ripristinato al checkpoint {hash}: {reason}\nUno snapshot pre-rollback è stato salvato automaticamente."
     kept_user_edits:       "↷ Le tue modifiche manuali sono state conservate: {files}\nUsa /rollback <N> --all per ripristinare anche quelle."
     kept_oversize:         "↷ Conservato (troppo grande per i checkpoint, nessuna copia salvata a cui tornare): {files}"
+    failed_deletes:        "⚠️ Impossibile rimuovere (lasciato al suo posto): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

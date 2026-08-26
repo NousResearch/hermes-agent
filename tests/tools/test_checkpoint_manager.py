@@ -527,6 +527,7 @@ class TestSafeRestore:
         assert not scratch.exists()
         assert "scratch.txt" in result["restored_files"]
         assert result["skipped_oversize"] == []
+        assert "failed_deletes" not in result
 
     def test_safe_restore_does_not_report_a_failed_delete_as_restored(
         self, mgr, work_dir, monkeypatch,
@@ -554,6 +555,7 @@ class TestSafeRestore:
         assert result["success"] is True
         assert stubborn.exists()
         assert "stubborn.txt" not in result["restored_files"]
+        assert result["failed_deletes"] == ["stubborn.txt"]
 
     def test_unsafe_restore_overwrites_everything(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)

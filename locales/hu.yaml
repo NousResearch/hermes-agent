@@ -281,6 +281,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
     kept_user_edits:       "↷ A kézi szerkesztéseid megmaradtak: {files}\nHasználd a /rollback <N> --all parancsot, hogy azokat is visszaállítsd."
     kept_oversize:         "↷ Megtartva (túl nagy az ellenőrzőpontokhoz, nincs tárolt másolat, amire vissza lehetne állni): {files}"
+    failed_deletes:        "⚠️ Nem sikerült eltávolítani (a helyén maradt): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

@@ -281,6 +281,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Auf Checkpoint {hash} wiederhergestellt: {reason}\nEin Pre-Rollback-Snapshot wurde automatisch gespeichert."
     kept_user_edits:       "↷ Deine manuellen Änderungen wurden behalten: {files}\nNutze /rollback <N> --all, um auch diese wiederherzustellen."
     kept_oversize:         "↷ Behalten (zu groß für Checkpoints, keine gespeicherte Kopie zum Zurücksetzen): {files}"
+    failed_deletes:        "⚠️ Konnte nicht entfernt werden (an Ort und Stelle belassen): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

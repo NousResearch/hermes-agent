@@ -120,6 +120,7 @@ test('bootstrap installer Info.plist explains microphone usage', () => {
     string,
     unknown
   >
+
   assert.equal(
     typeof info.NSMicrophoneUsageDescription,
     'string',

@@ -239,3 +239,67 @@ class TestClaimHelperBounded:
         adapter = _make_adapter(delivered)
         adapter._remember_processed_message_ts("")
         assert adapter._processed_message_ts == {}
+
+
+class TestClaimReleasedOnFailure:
+    """A claim made by an invocation that raises must not swallow the turn.
+
+    Trade-off pinned here: the entry-claim closes the unfurl race, but if the
+    handler dies mid-enrichment while holding a fresh claim, a Slack retry or
+    a user edit must still be able to re-drive the message. The wrapper in
+    ``_handle_slack_message`` releases only claims taken by the failed
+    invocation itself.
+    """
+
+    def test_failed_first_copy_releases_claim_so_edit_can_redrive(self):
+        delivered = []
+        adapter = _make_adapter(delivered)
+        calls = {"n": 0}
+
+        async def _flaky_user_name_resolve(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("slack api died mid-enrichment")
+            return "richard"
+
+        adapter._resolve_user_name = _flaky_user_name_resolve
+
+        edit = _unfurl_event()
+        edit["message"]["text"] = "<@U0BCLP7DB7B> edited text"
+        edit["message"]["edited"] = {"user": USER, "ts": "1787365412.000000"}
+
+        async def scenario():
+            with pytest.raises(RuntimeError):
+                await adapter._handle_slack_message(_original_event(), _body())
+            # The failed invocation must not leave the ts claimed...
+            assert ORIGINAL_TS not in adapter._processed_message_ts
+            # ...so a user edit of the unanswered message still summons the bot.
+            await adapter._handle_slack_message(edit, _body())
+
+        asyncio.run(scenario())
+        assert len(delivered) == 1
+
+    def test_failure_does_not_release_a_preexisting_claim(self):
+        """Sequential suppression survives a later failing duplicate."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+
+        async def scenario():
+            await adapter._handle_slack_message(_original_event(), _body())
+            assert ORIGINAL_TS in adapter._processed_message_ts
+            # A later invocation for the same ts that fails must not strip
+            # the claim the successful turn already holds.
+            adapter._resolve_user_name = AsyncMock(
+                side_effect=RuntimeError("boom")
+            )
+            second = _original_event()
+            second["client_msg_id"] = "cmid-replay"
+            try:
+                await adapter._handle_slack_message(second, _body())
+            except RuntimeError:
+                pass
+            assert ORIGINAL_TS in adapter._processed_message_ts
+
+        asyncio.run(scenario())
+        assert len(delivered) == 1

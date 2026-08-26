@@ -5947,6 +5947,35 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slack_message(
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
+        """Handle an incoming Slack message event.
+
+        Thin guard around :meth:`_handle_slack_message_impl`: the impl claims
+        the message ts on entry (before the slow enrichment awaits) so a link
+        unfurl arriving mid-flight can't become a second turn — but a claim
+        held by an invocation that then RAISES would permanently swallow the
+        message: neither a Slack retry nor a user edit could ever re-drive it.
+        So if this invocation newly claimed the ts and then failed, release
+        the claim before re-raising. A ts that was already claimed before we
+        started (the sequential-suppression case) is left untouched.
+        """
+        _ts = str((event or {}).get("ts") or "")
+        _was_claimed = bool(_ts) and _ts in self._processed_message_ts
+        try:
+            return await self._handle_slack_message_impl(event, payload)
+        except BaseException:
+            if _ts and not _was_claimed and _ts in self._processed_message_ts:
+                self._processed_message_ts.pop(_ts, None)
+                logger.warning(
+                    "[%s] handler failed after claiming ts=%s; claim released "
+                    "so a retry or edit can re-drive the turn",
+                    self.name,
+                    _ts,
+                )
+            raise
+
+    async def _handle_slack_message_impl(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> None:
         """Handle an incoming Slack message event."""
         # DEBUG entry log — fires BEFORE any filtering so users debugging
         # bot-to-bot interop, allow_bots config, or SLACK_ALLOWED_USERS

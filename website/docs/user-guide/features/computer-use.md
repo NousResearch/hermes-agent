@@ -217,6 +217,15 @@ Hermes run declares a public cua-driver **session name** (something like
 concurrent runs and subagents get distinct cursors. The MCP transport owns the
 private lifecycle session inside the runtime; the public name does not.
 
+The overlay cursor is cosmetic — captures, clicks, and typing all work
+without it. Hermes disables it automatically where it is a known failure
+mode: macOS (idle CPU burn), headless Linux / WSL2 / containers, and
+**Linux X11 desktops** (the overlay is a fullscreen always-on-top window
+that can get stuck over every workspace after an unclean session end,
+wedging desktop input). Linux Wayland and Windows keep the overlay. Set
+`computer_use.no_overlay: false` in `config.yaml` to force the cursor on
+(or `true` to force it off) on any platform.
+
 Tune the cursor with `cua-driver`'s CLI flags or the runtime
 `set_agent_cursor_style` MCP tool — see
 [cua.ai/docs/how-to-guides/driver/personalize-cursor](https://cua.ai/docs/how-to-guides/driver/personalize-cursor)

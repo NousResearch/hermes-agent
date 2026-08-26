@@ -5798,7 +5798,26 @@ function createCanonicalChat(owner, { kickoff = false } = {}) {
       try {
         await requestForBot(bot, 'session.title', { session_id: runtime, title: CANONICAL_CHAT_TITLE })
         titled = true
-      } catch {
+      } catch (error) {
+        // ADOPT-BEFORE-MINT: a title-uniqueness rejection is not an old
+        // gateway — it means another writer took the canonical title between
+        // our registry miss and this write (peer dm minting server-side, a
+        // second machine, cross-connection sync). Falling through to the
+        // compat path would prompt into OUR stray session and fork the
+        // forever chat. Re-consult the registry and adopt the winner; the
+        // stray lazy session holds zero messages and is simply abandoned
+        // (the gateway prunes it).
+        if (/already in use/i.test(String(error?.message || ''))) {
+          const winner = await findExistingCanonicalChat(owner)
+
+          if (winner?.id) {
+            if (typeof host.openSession === 'function') {
+              await openStoredBotChat(owner, winner.resolved_id || winner.id, winner)
+            }
+
+            return winner.id
+          }
+        }
         /* compatibility fallback: prompt.submit will persist the lazy row */
       }
     }

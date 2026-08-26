@@ -146,19 +146,44 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string
+  scopeProfile?: null | string,
+  options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
 
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
-  const result =
+  const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
     scopeProfile == null
-      ? await setModelAssignment({ ...request, scope: 'main' })
-      : await setModelAssignment({ ...request, scope: 'main' }, scopeProfile)
+      ? setModelAssignment({ ...body, scope: 'main' })
+      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
 
-  if (result.ok !== true) {
+  let result = await assign(request)
+
+  // Backend demands an explicit ack before persisting a model that trips a
+  // selection guard (expensive / data-training tiers like *-contributor).
+  // Settings used to throw confirm_message as a red error, so Apply could
+  // never persist. Prompt, then retry with confirm_expensive_model.
+  if (result.confirm_required) {
+    if (request.confirm_expensive_model || options?.skipConfirmPrompt) {
+      // Already acked, or headless onboarding (nothing mounted to click).
+      // Fail closed instead of recursing / dangling a prompt.
+      throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
+    }
+
+    const accepted = await confirmModelWarning(result.confirm_message?.trim() ?? '')
+
+    if (!accepted) {
+      throw new Error(translateNow('cron.modelImpact.declined'))
+    }
+
+    result = await assign({ ...request, confirm_expensive_model: true })
+
+    if (result.confirm_required || result.ok !== true) {
+      throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
+    }
+  } else if (result.ok !== true) {
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
 
@@ -199,3 +224,38 @@ export function invalidateCronModelImpactScope(options: { clearNotification?: bo
 // Scope changes originating outside this module (profile/backend switches)
 // clear any warning that belongs to the old runtime.
 onCronModelImpactScopeInvalidated(() => dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID))
+
+/**
+ * Selection-guard warning as a confirm toast. Resolves true on Confirm, false
+ * on dismiss. The desktop has no blocking confirm API; this is the same
+ * notify-with-action pattern the in-session model picker uses.
+ */
+function confirmModelWarning(message: string): Promise<boolean> {
+  const id = `model-warning-confirm-${Date.now()}`
+
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      dismissNotification(id)
+      resolve(value)
+    }
+
+    notify({
+      id,
+      kind: 'warning',
+      title: translateNow('cron.modelImpact.confirmTitle'),
+      message: message || translateNow('cron.modelImpact.confirmDetail'),
+      detail: translateNow('cron.modelImpact.confirmDetail'),
+      action: {
+        label: translateNow('cron.modelImpact.confirmAction'),
+        onClick: () => finish(true)
+      },
+      onDismiss: () => finish(false)
+    })
+  })
+}

@@ -324,9 +324,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # exception below is swallowed, and stale refs get compared against
         # HEAD — silently degrading the passive check until a human removes
         # the lock (git never self-heals these).
-        from hermes_cli.gitlock import clear_stale_git_locks
+        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
 
         clear_stale_git_locks(repo_dir)
+        # The passive check is the main tmp_pack GENERATOR on flaky lines
+        # (several aborted fetches per day) — it must also be the janitor,
+        # or debris accumulates unbounded between manual updates (#93732).
+        clear_stale_tmp_packs(repo_dir)
 
         # Scope the fetch to the one branch the behind-count compares against.
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400

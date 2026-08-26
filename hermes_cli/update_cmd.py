@@ -3398,11 +3398,17 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # lock file) behind; every later fetch then fails with "File exists" and
     # the check reports a hard failure (or, in the banner path, silently
     # compares stale refs). Self-heal abandoned locks before fetching.
-    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
 
     cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
     for lock_path in cleared:
         print(f"  (removed stale git lock: {lock_path})")
+    # Aborted fetches on flaky lines also strand tmp_pack_* debris in
+    # .git/objects/pack — unchecked it reached 6 GB and corrupted the pack
+    # dir outright (#93732). Same age+process safety contract as the locks.
+    swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
+    if swept:
+        print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
@@ -6439,11 +6445,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # crashed fetch) before the fetch — otherwise the update fails with
         # "Unable to create .../shallow.lock: File exists" and never reaches
         # the network.
-        from hermes_cli.gitlock import clear_stale_git_locks
+        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
 
         cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
         if cleared:
             print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
+        swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
+        if swept:
+            print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

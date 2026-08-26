@@ -5885,6 +5885,190 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
     return warning.message if warning is not None else None
 
 
+def _tui_compression_config_signature(cfg: dict | None) -> tuple:
+    """Stable snapshot of compression/context keys that must apply next turn.
+
+    Reuses the messaging-gateway cache-busting extract so Desktop/TUI and
+    messaging stay on the same key set. Adds ``idle_compact_after_seconds``
+    and ``tail_mode``, which affect live TUI sessions but are not in the
+    gateway tuple today.
+    """
+    from gateway.run import GatewayRunner
+
+    keys = GatewayRunner._extract_cache_busting_config(cfg)
+    picked = {
+        key: value
+        for key, value in keys.items()
+        if key.startswith("compression.") or key == "model.context_length"
+    }
+    compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
+    for extra in ("idle_compact_after_seconds", "tail_mode"):
+        picked[f"compression.{extra}"] = compression.get(extra)
+    return tuple(sorted(picked.items()))
+
+
+def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
+    """Update a live session's compressor from current config.yaml.
+
+    Preserves the agent object, session identity, history, and callbacks.
+    Recomputes the trigger from the ratio-based threshold and then applies
+    ``compression.threshold_tokens`` so raising, lowering, or clearing the
+    cap all take effect on the next preflight.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+    enabled_raw = compression.get("enabled", True)
+    if isinstance(enabled_raw, bool):
+        agent.compression_enabled = enabled_raw
+    else:
+        agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
+
+    idle_raw = compression.get(
+        "idle_compact_after_seconds",
+        getattr(agent, "compression_idle_compact_after_seconds", 0),
+    )
+    try:
+        agent.compression_idle_compact_after_seconds = max(0, int(idle_raw or 0))
+    except (TypeError, ValueError):
+        pass
+
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None:
+        return
+
+    if "tail_mode" in compression:
+        mode = str(compression.get("tail_mode") or "legacy").strip().lower()
+        cc.tail_mode = mode if mode in ("legacy", "lean") else "legacy"
+
+    def _assign_int(key: str, attr: str, default: int, min_value: int = 0) -> None:
+        if key not in compression:
+            return
+        try:
+            raw = compression.get(key)
+            value = default if raw is None else int(raw)
+            setattr(cc, attr, max(min_value, value))
+        except (TypeError, ValueError):
+            return
+
+    _assign_int("proactive_prune_tokens", "proactive_prune_tokens", 0)
+    _assign_int("proactive_prune_min_result_chars", "proactive_prune_min_result_chars", 8000)
+    _assign_int("proactive_prune_min_reclaim_tokens", "proactive_prune_min_reclaim_tokens", 0)
+    _assign_int("protect_last_n", "protect_last_n", 20)
+    _assign_int("min_tail_user_messages", "min_tail_user_messages", 1, min_value=1)
+
+    if "target_ratio" in compression:
+        try:
+            cc.summary_target_ratio = max(0.10, min(float(compression["target_ratio"]), 0.80))
+        except (TypeError, ValueError):
+            pass
+
+    raw_thresholds = compression.get("model_thresholds")
+    if isinstance(raw_thresholds, dict):
+        cc.model_thresholds = {
+            str(k): float(v)
+            for k, v in raw_thresholds.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+
+    if "threshold" in compression:
+        try:
+            pct = float(compression["threshold"])
+            cc._config_threshold_percent = pct
+            cc._configured_threshold_percent = pct
+            base = pct
+            model_thresholds = getattr(cc, "model_thresholds", None) or {}
+            if model_thresholds:
+                from agent.context_compressor import resolve_model_threshold
+
+                base = resolve_model_threshold(
+                    getattr(agent, "model", "") or "",
+                    model_thresholds,
+                    pct,
+                )
+            cc._base_threshold_percent = base
+            if hasattr(cc, "_effective_threshold_percent"):
+                try:
+                    cc.threshold_percent = cc._effective_threshold_percent(
+                        cc.context_length, base
+                    )
+                except Exception:
+                    cc.threshold_percent = pct
+            else:
+                cc.threshold_percent = pct
+        except (TypeError, ValueError):
+            pass
+
+    raw_ctx = model_cfg.get("context_length")
+    if raw_ctx is not None:
+        try:
+            new_ctx = int(raw_ctx)
+        except (TypeError, ValueError):
+            new_ctx = 0
+        if new_ctx > 0:
+            cc._config_context_length = new_ctx
+            try:
+                cc.context_length = new_ctx
+            except Exception:
+                pass
+
+    coerce_cap = getattr(cc, "_coerce_threshold_tokens_cap", None)
+    if callable(coerce_cap):
+        cc.threshold_tokens_cap = coerce_cap(compression.get("threshold_tokens"))
+    elif "threshold_tokens" in compression:
+        try:
+            cap = int(compression.get("threshold_tokens"))
+            cc.threshold_tokens_cap = cap if cap > 0 else None
+        except (TypeError, ValueError):
+            cc.threshold_tokens_cap = None
+
+    # Invalidate cached trigger so the next preflight re-derives from the
+    # current percent/window and then applies the (possibly new) cap.
+    if hasattr(cc, "_threshold_tokens"):
+        cc._threshold_tokens = None
+        if hasattr(cc, "_tail_token_budget"):
+            cc._tail_token_budget = None
+    elif hasattr(cc, "_apply_threshold_tokens_cap"):
+        compute = getattr(cc, "_compute_threshold_tokens", None)
+        if callable(compute):
+            cc.threshold_tokens = compute(
+                getattr(cc, "context_length", 0) or 0,
+                getattr(cc, "threshold_percent", 0.5),
+                getattr(cc, "max_tokens", None),
+            )
+        cc._apply_threshold_tokens_cap()
+    else:
+        cap = getattr(cc, "threshold_tokens_cap", None)
+        current = getattr(cc, "threshold_tokens", None)
+        if cap and current:
+            cc.threshold_tokens = min(int(current), int(cap))
+
+
+def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
+    """Adopt compression.* / model.context_length edits at turn start.
+
+    Messaging gateways already rebuild a cached agent when these keys change.
+    Desktop/TUI only synced the model; the live compressor kept the threshold
+    captured at agent creation (#95151).
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    cfg = _load_cfg() or {}
+    signature = _tui_compression_config_signature(cfg)
+    seen = session.get("config_compression_seen")
+    session["config_compression_seen"] = signature
+    if signature == seen:
+        return
+    try:
+        _apply_live_compression_config(agent, cfg)
+    except Exception as e:
+        logger.warning(
+            "Could not apply live compression config for %s: %s", sid, e
+        )
+
+
 def _apply_pending_model_switch(sid: str, session: dict) -> None:
     """Apply a model switch queued while a turn was running.
 
@@ -11568,6 +11752,7 @@ def _run_prompt_submit(
                 # config sync so an explicit pick wins over a config.yaml change.
                 _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
+                _sync_agent_compression_with_config(sid, session)
             # Bot Chat capability sync — adopt Settings→Capabilities edits
             # (skills/toolsets/MCP/SOUL) into the eternal bot session before
             # the turn runs. No-op for every other session shape.

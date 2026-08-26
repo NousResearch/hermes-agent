@@ -56,6 +56,74 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
+class TestIdleWatchdogCountsUpdateLogGrowth:
+    """The idle watchdog must count logs/update.log growth as progress.
+
+    Real updates are stdout-silent for 40+ minutes: ``hermes update`` captures
+    the (very loud) Electron/vite build into ``logs/update.log`` — NOT the
+    child's stdout (``hermes_cli/update_cmd.py``, the update-log tee) — so the
+    step's pipes go quiet for the whole build while the update is demonstrably
+    progressing. A no-output ceiling that watches only stdout/stderr would
+    kill every healthy large update at ``StepIdleTimeoutSeconds`` and mark it
+    exit 124.
+
+    These are source-contract assertions (the executable proof is the
+    ``logstall`` arm of ``-SelfTestPipeDrain``, ``windows_only`` below):
+    Linux CI cannot run the PowerShell hand-off, but it CAN pin that the
+    drain loop consults update-log growth before terminating the tree.
+    Sabotage-proof: removing the ``Get-StepProgressLogStamp`` consult from
+    the stall branch, dropping the ``logstall`` self-test arm, or dropping
+    the ``HERMES_UPDATE_STEP_IDLE_SECONDS`` override each fails a test here.
+    """
+
+    def _src(self) -> str:
+        return WINDOWS_PS1.read_text(encoding="utf-8")
+
+    def test_progress_log_default_is_update_log(self):
+        src = self._src()
+        assert '$script:StepProgressLogPath = Join-Path $LogDir "update.log"' in src
+
+    def test_progress_log_overridable_for_self_test(self):
+        assert "HERMES_UPDATE_PROGRESS_LOG" in self._src()
+
+    def test_idle_override_env_retained(self):
+        # The user/test-facing idle override must survive the amendment.
+        assert "HERMES_UPDATE_STEP_IDLE_SECONDS" in self._src()
+
+    def test_stall_branch_consults_log_growth_before_terminating(self):
+        src = self._src()
+        assert "function Get-StepProgressLogStamp" in src
+        # The consult must sit inside the idle-ceiling branch, upstream of
+        # TerminateAndWait: growth resets the progress clock instead of
+        # cancelling the tree. Pin the exact consult + compare + reset shape
+        # so an inert consult (or a removed one) fails here.
+        msg = (
+            "the idle watchdog no longer checks logs/update.log growth "
+            "before declaring a stall -- a healthy 40+ min build whose "
+            "output goes to update.log would be killed at the idle ceiling"
+        )
+        assert "$currentLogStamp = Get-StepProgressLogStamp" in src, msg
+        assert "if ($currentLogStamp -ne $progressLogStamp)" in src, msg
+        # The growth check must gate the termination: compare-and-reset
+        # appears before the 124 tree-termination inside the drain loop.
+        consult = src.index("if ($currentLogStamp -ne $progressLogStamp)")
+        terminate = src.index("TerminateAndWait($job, 124")
+        assert consult < terminate, msg
+        # And the clock actually resets on growth.
+        growth_block = src[consult:terminate]
+        assert "$progressLogStamp = $currentLogStamp" in growth_block, msg
+        assert "$lastProgressAt = Get-Date" in growth_block, msg
+
+    def test_self_test_has_silent_but_logging_arm(self):
+        src = self._src()
+        assert "logstall" in src, (
+            "-SelfTestPipeDrain lost its silent-but-logging arm: the fixture "
+            "no longer proves that a step which is quiet on its pipes but "
+            "growing update.log is NOT killed by the idle watchdog"
+        )
+        assert "silent but logging" in src
+
+
 @pytest.mark.windows_only
 def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     tmp_path: Path,
@@ -82,6 +150,13 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     must then terminate the whole tree with timeout sentinel (124), preserve
     output, and report quiescence only after both processes are gone. This is the
     invariant that permits retry.
+
+    *logstall* -- a step that is silent on its pipes but appends to the
+    progress log (pointed at the fixture's own file) every second, exiting 3.
+    This is the shape of every real ``hermes update`` build: output streams to
+    ``logs/update.log``, not stdout, for 40+ minutes. The idle watchdog must
+    count that growth as progress and let the step run to its natural exit
+    instead of killing it at the ceiling with 124.
 
     The existing leak/flood arms retain their measured Windows 11 / PowerShell
     5.1 budgets; the stall arm uses the same real runner and process table.

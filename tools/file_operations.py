@@ -2174,6 +2174,100 @@ class ShellFileOperations(FileOperations):
     # WRITE Implementation
     # =========================================================================
 
+    def _write_probe_cmd(self, path: str, sentinel: str, body: Optional[str]) -> str:
+        """One shell command for the on-disk questions ``write_file`` asks.
+
+        Two segments closed by a ``sentinel`` line: base64 of the first three
+        bytes (BOM detection at the byte layer, the same on-disk truth as
+        ``_file_has_bom``), then ``body``: ``"cat"`` for the full text when
+        pre-content is wanted, ``"sample"`` for the 4 KB line-ending sample,
+        or ``None`` for nothing. Gated on ``[ -f ]`` so a FIFO or device never
+        reaches ``head``/``cat``; a missing path echoes ``MISSING_SENTINEL``.
+        """
+        arg = self._escape_shell_arg(path)
+        if body == "cat":
+            body_cmd = f"cat {arg} 2>/dev/null"
+        elif body == "sample":
+            body_cmd = f"head -c 4096 {arg} 2>/dev/null"
+        else:
+            body_cmd = ":"
+        return (
+            f"if [ -f {arg} ]; then "
+            f"head -c 3 {arg} 2>/dev/null | base64 2>/dev/null; echo {sentinel}; "
+            f"{body_cmd}; "
+            f"else echo {MISSING_SENTINEL}; fi"
+        )
+
+    def _probe_write_target(
+        self, path: str, pre_content: Optional[str], want_pre: bool,
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Return ``(has_bom, pre_content, original_line_ending)`` for ``path``.
+
+        Replaces three probes (``cat`` when pre-content is wanted, a
+        ``head -c 4096`` line-ending sample, a ``head -c 3`` BOM check) with
+        one round-trip. Semantics are unchanged: pre-content is only read
+        when wanted and not supplied; the line ending comes from pre-content
+        when there is any, else from the sample; the BOM always comes from
+        the bytes on disk. A reply that cannot be parsed falls back to the
+        separate probes.
+        """
+        if want_pre and pre_content is None:
+            body_mode: Optional[str] = "cat"
+        elif not pre_content:
+            body_mode = "sample"
+        else:
+            body_mode = None
+
+        sentinel = _new_sentinel(_WRITE_SENTINEL_PREFIX)
+        probe = self._exec(self._write_probe_cmd(path, sentinel, body_mode))
+        output = probe.stdout or ""
+
+        if sentinel not in output:
+            if _strip_terminal_fence_leaks(output).strip() == MISSING_SENTINEL:
+                ending = _detect_line_ending(pre_content) if pre_content else None
+                return False, pre_content, ending
+            return self._probe_write_target_sequential(path, pre_content, want_pre)
+
+        segments = _split_segments(output, sentinel)
+        if probe.exit_code != 0 or len(segments) != 2:
+            return self._probe_write_target_sequential(path, pre_content, want_pre)
+        head_seg, body = segments
+
+        head_bytes = self._decode_base64_sample(head_seg)
+        if head_bytes is None:
+            # No clean base64 on this shell; ask the way we used to.
+            has_bom = self._file_has_bom(path, pre_content)
+        else:
+            has_bom = head_bytes.startswith(_UTF8_BOM.encode("utf-8"))
+
+        if body_mode == "cat" and body:
+            pre_content = body
+
+        if pre_content:
+            ending = _detect_line_ending(pre_content)
+        elif body_mode == "sample" and body:
+            ending = _detect_line_ending(body)
+        else:
+            ending = None
+        return has_bom, pre_content, ending
+
+    def _probe_write_target_sequential(
+        self, path: str, pre_content: Optional[str], want_pre: bool,
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """The pre-compound form of ``_probe_write_target``: one exec per question."""
+        if want_pre and pre_content is None:
+            # Best-effort read; failure (file missing, permission) leaves
+            # pre_content as None which makes both downstream consumers
+            # degrade gracefully (lint reports all errors; LSP skips the
+            # shift map).
+            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_result = self._exec(read_cmd)
+            if read_result.exit_code == 0 and read_result.stdout:
+                pre_content = read_result.stdout
+        ending = self._detect_file_line_ending(path, pre_content)
+        has_bom = self._file_has_bom(path, pre_content)
+        return has_bom, pre_content, ending
+
     def write_file(self, path: str, content: str,
                    pre_content: Optional[str] = None) -> WriteResult:
         """
@@ -2293,29 +2387,20 @@ class ShellFileOperations(FileOperations):
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
-        if want_pre:
-            if pre_content is not None:
-                # Caller already has file content (e.g. patch_replace read it
-                # for fuzzy matching) — reuse directly, skip redundant cat.
-                pass
-            else:
-                # Best-effort read; failure (file missing, permission) leaves
-                # pre_content as None which makes both downstream consumers
-                # degrade gracefully (lint reports all errors; LSP skips the
-                # shift map).
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-                read_result = self._exec(read_cmd)
-                if read_result.exit_code == 0 and read_result.stdout:
-                    pre_content = read_result.stdout
+        # One shell round-trip answers every on-disk question the write
+        # needs (pre-content when wanted, line endings, BOM); see
+        # _probe_write_target. A caller that already has the file content
+        # (e.g. patch_replace read it for fuzzy matching) skips the read;
+        # the BOM is still taken from disk, never from pre_content.
+        has_bom, pre_content, original_ending = self._probe_write_target(
+            path, pre_content, want_pre
+        )
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
         # If the file existed with CRLF endings and the agent's content
         # has bare LFs, convert to CRLF before writing.  Otherwise the
         # write silently normalizes a Windows-line-ending file (and patch
         # produces mixed endings when only a substituted region changes).
-        # Detect from a small head sample to avoid reading the full file
-        # for line-ending purposes alone.
-        original_ending = self._detect_file_line_ending(path, pre_content)
         if original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
 
@@ -2328,7 +2413,7 @@ class ShellFileOperations(FileOperations):
         # toolchains key on it). Only prepend when the original had a BOM
         # and the new content doesn't already carry one (guards against
         # double-BOM if a caller passed raw bytes).
-        if self._file_has_bom(path, pre_content) and not _has_bom(content):
+        if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
 
         # Snapshot LSP diagnostics for this file (best-effort) so the

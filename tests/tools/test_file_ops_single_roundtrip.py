@@ -186,6 +186,78 @@ class TestReadFileNonTextPaths:
         assert len(calls) == 1
 
 
+class TestWriteFileRoundTrips:
+    """write_file: one probe, one atomic write, one hash check (three calls)."""
+
+    @staticmethod
+    def _execs(calls):
+        return [c for c in calls]
+
+    def test_new_text_file_is_three_round_trips(self, shell, tmp_path):
+        ops, calls = shell
+        p = str(tmp_path / "new.txt")
+        r = ops.write_file(p, "line one\nline two\n")
+        assert r.error is None and r.verified is True
+        assert len(calls) == 3
+        assert "__HERMES_WF_" in calls[0]          # probe
+        assert "mv -f" in calls[1]                  # atomic write
+        assert calls[2].startswith("sha256sum ")   # verify
+        assert (tmp_path / "new.txt").read_bytes() == b"line one\nline two\n"
+
+    def test_crlf_file_keeps_crlf_from_the_probe(self, shell, tmp_path):
+        ops, calls = shell
+        p = tmp_path / "crlf.txt"
+        p.write_bytes(b"a\r\nb\r\n")
+        r = ops.write_file(str(p), "x\ny\n")
+        assert r.error is None and len(calls) == 3
+        assert p.read_bytes() == b"x\r\ny\r\n"
+
+    def test_bom_is_read_from_disk_and_preserved(self, shell, tmp_path):
+        ops, calls = shell
+        p = tmp_path / "bom.txt"
+        p.write_bytes("﻿old\n".encode("utf-8"))
+        r = ops.write_file(str(p), "new\n")
+        assert r.error is None and len(calls) == 3
+        assert p.read_bytes() == "﻿new\n".encode("utf-8")
+
+    def test_pre_content_read_rides_the_same_probe(self, shell, tmp_path):
+        """A lintable extension wants the old text (lint delta); it comes
+        back in the probe reply instead of a separate ``cat``."""
+        ops, calls = shell
+        p = tmp_path / "code.py"
+        p.write_bytes(b"x = 1\r\ny = 2\r\n")
+        r = ops.write_file(str(p), "x = 1\ny = 3\n")
+        assert r.error is None
+        probes = [c for c in calls if "__HERMES_WF_" in c]
+        assert len(probes) == 1 and "cat " in probes[0]
+        assert not any(c.startswith("cat ") for c in calls)
+        assert p.read_bytes() == b"x = 1\r\ny = 3\r\n"
+
+    def test_missing_file_probe_does_not_block_the_write(self, shell, tmp_path):
+        ops, calls = shell
+        p = tmp_path / "deep" / "er" / "new.md"
+        r = ops.write_file(str(p), "hi\n")
+        assert r.error is None and r.dirs_created is True
+        assert len(calls) == 3
+        assert p.read_bytes() == b"hi\n"
+
+    def test_unparseable_probe_reply_falls_back_to_separate_probes(self, shell, tmp_path):
+        ops, calls = shell
+        p = tmp_path / "crlf.txt"
+        p.write_bytes(b"a\r\nb\r\n")
+        real_exec = ops._exec
+
+        def garbled(command, *args, **kwargs):
+            if "__HERMES_WF_" in command:
+                return ExecuteResult(stdout="[Command timed out after 1s]\n", exit_code=124)
+            return real_exec(command, *args, **kwargs)
+
+        with patch.object(ops, "_exec", side_effect=garbled):
+            r = ops.write_file(str(p), "x\ny\n")
+        assert r.error is None
+        assert p.read_bytes() == b"x\r\ny\r\n"
+
+
 class TestCompoundFallback:
     def test_unparseable_reply_falls_back_to_sequential_probes(self, shell, tmp_path):
         ops, calls = shell

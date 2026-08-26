@@ -4,6 +4,7 @@ import { atom } from 'nanostores'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 
@@ -487,11 +488,25 @@ async function openSecondary(entry: Secondary): Promise<void> {
     }
 
     // Registry-scoped entries dial through getConnectionFor when the bridge has
-    // it. Local/legacy entries retain the existing getConnection path.
+    // it. Local/legacy entries retain the existing getConnection path. Both are
+    // IPC round-trips into the main process with no timeout of their own
+    // (#93454) — a wedged main-process round-trip otherwise hangs this await
+    // forever, latching entry.connectPromise so every routed action against
+    // this secondary (SSH terminal, messaging DELETE, session send, …) never
+    // settles either. Bound the same way use-gateway-boot.ts bounds the
+    // primary's equivalent awaits.
     const conn =
       entry.connectionId && desktop.getConnectionFor
-        ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
-        : await desktop.getConnection(entry.profile)
+        ? await withTimeout(
+            desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile }),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${entry.profile}"`
+          )
+        : await withTimeout(
+            desktop.getConnection(entry.profile),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${entry.profile}"`
+          )
 
     entry.connection = conn
 
@@ -505,7 +520,11 @@ async function openSecondary(entry: Secondary): Promise<void> {
           ? {}
           : desktop
 
-    const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
+    const wsUrl = await withTimeout(
+      resolveGatewayWsUrl(wsDeps, conn),
+      RECONNECT_ATTEMPT_TIMEOUT_MS,
+      `Timed out re-minting the gateway WebSocket URL for profile "${entry.profile}"`
+    )
 
     try {
       await entry.gateway.connect(wsUrl)
@@ -696,7 +715,15 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 
   try {
-    const conn = await desktop.getConnection(profile)
+    // Unbounded IPC round-trip into main (#93454) — a wedge here must reject
+    // like any other failure, not hang the route decision forever, since
+    // every caller (gatewayForProfile → requestGatewayForProfile/Agent) awaits
+    // this before it can fall back to dialing a secondary.
+    const conn = await withTimeout(
+      desktop.getConnection(profile),
+      RECONNECT_ATTEMPT_TIMEOUT_MS,
+      `Timed out resolving the shared-primary route for profile "${profile}"`
+    )
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
   } catch {

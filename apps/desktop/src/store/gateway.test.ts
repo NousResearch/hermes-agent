@@ -234,3 +234,75 @@ describe('profile switch mid-WS-handshake (#92434 close-candidate pin)', () => {
     expect(gatewayMocks.instances).toHaveLength(1)
   })
 })
+
+describe('secondary connection timeout (#93454)', () => {
+  it("rejects instead of hanging forever when openSecondary's getConnection() wedges", async () => {
+    // Repro: desktop.getConnection is an IPC round-trip into the main process
+    // with no timeout of its own. A wedged main-process round-trip (e.g. a
+    // stuck revalidation) hangs this await forever, latching
+    // entry.connectPromise so every routed action against this secondary
+    // (SSH terminal, messaging DELETE, session send, …) never settles either.
+    vi.useFakeTimers()
+
+    let callCount = 0
+    const getConnection = vi.fn(({ profile }: { profile: string }) => {
+      callCount += 1
+
+      // First call is sharedPrimaryRoute's probe — resolves fast, not the
+      // shared primary. Every call after (openSecondary's actual dial) wedges.
+      if (callCount === 1) {
+        return Promise.resolve({ sharedPrimary: false })
+      }
+
+      return new Promise(() => undefined)
+    })
+
+    installDesktop({ getConnection })
+
+    const pending = expect(ensureGatewayForProfile('work')).rejects.toThrow('Timed out connecting to profile "work"')
+
+    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
+    // await must reject instead of hanging forever.
+    await vi.advanceTimersByTimeAsync(20_000)
+    await pending
+  })
+
+  it('does not let a wedged shared-primary-route probe block the secondary dial forever', async () => {
+    // Same unbounded-IPC hazard as above, but for sharedPrimaryRoute's own
+    // getConnection() probe, which runs BEFORE openSecondary on every route —
+    // a wedge there must resolve to "not the shared primary" and fall through
+    // to the ordinary secondary dial instead of hanging the whole route
+    // decision forever.
+    vi.useFakeTimers()
+
+    let callCount = 0
+    const getConnection = vi.fn(({ profile }: { profile: string }) => {
+      callCount += 1
+
+      if (callCount === 1) {
+        return new Promise(() => undefined)
+      }
+
+      return Promise.resolve({
+        authMode: 'token',
+        baseUrl: `https://${profile}.invalid`,
+        mode: 'local',
+        profile,
+        token: 'fake-test-token',
+        wsUrl: `wss://${profile}.invalid/ws`
+      })
+    })
+
+    installDesktop({ getConnection })
+
+    const pending = ensureGatewayForProfile('work')
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    await pending
+
+    // The probe's own bound (not just openSecondary's) is what let this
+    // resolve after a single 20s timeout instead of two stacked ones.
+    expect(callCount).toBe(2)
+    expect(activeGateway()).toBe(gatewayMocks.instances[0])
+  })
+})

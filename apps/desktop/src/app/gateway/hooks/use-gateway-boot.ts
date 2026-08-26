@@ -7,7 +7,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -113,18 +113,12 @@ const BOOT_RETRY_MAX_ATTEMPTS = 5
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
 const BOOT_RETRY_BASE_DELAY_MS = 2_000
 
-// desktop.revalidateConnection() / getConnection() / resolveGatewayWsUrl() are
-// IPC round-trips into the main process with no timeout of their own (#93454).
-// A remote backend that looks alive to a fresh probe but leaves the
-// main-process reconnect path stuck (e.g. a wedged revalidation after a
-// liveness-probe trip) hangs these awaits forever. While any is pending,
-// `reconnecting` never clears, so scheduleReconnect()/attemptReconnect()
-// early-return permanently and the backoff loop is latched — the UI stays
-// "reconnecting" until the app is restarted even though the gateway is
-// reachable again. Bound all three so a stall rejects instead, letting the
-// existing catch/finally clear the guard and resume backoff. gateway.connect()
-// already has its own connect timeout.
-const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
+// While any of the RECONNECT_ATTEMPT_TIMEOUT_MS-bounded awaits below is
+// pending, `reconnecting` never clears, so scheduleReconnect()/
+// attemptReconnect() early-return permanently and the backoff loop is
+// latched — the UI stays "reconnecting" until the app is restarted even
+// though the gateway is reachable again. gateway.connect() already has its
+// own connect timeout.
 
 /** Registry identity whose runtimes died with the primary connection. */
 export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'connectionId' | 'mode'>): null | string {

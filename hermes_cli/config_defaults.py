@@ -88,6 +88,27 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 600,
         # Per-member LLM call timeout in seconds.
         "member_timeout_seconds": 180,
+        # ------------------------------------------------------------------
+        # Additive council features (all default OFF — existing 3-phase
+        # behaviour is unchanged unless explicitly enabled).
+        # ------------------------------------------------------------------
+        # Phase 0: dynamically assemble diverse advisor personas.
+        "compose": False,
+        # Insert a cross-examination round between Phase 1 and Phase 2.
+        "cross_examination": False,
+        # Insert a skeptic cascade-breaker between Phase 2 and Phase 3.
+        "cascade_breaker": False,
+        # Lowest-confidence member writes a minority report after Phase 3.
+        "minority_report": False,
+        # Phase 1 reviewers tag every claim with its evidence type.
+        "evidence_labels": False,
+        # Emit a standalone council-report.html alongside the verdict.
+        "html_report": False,
+        # Deliberation protocol. Only "deliberate" (and the vote/synthesize
+        # subsets) are implemented; others raise NotImplementedError.
+        "protocol": "deliberate",
+        # Convergence-based early stopping for future multi-round debate.
+        "adaptive_stopping": False,
     },
 
     "pipeline": {

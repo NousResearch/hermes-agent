@@ -1247,10 +1247,7 @@ exit 0
 param([int]$Hold, [string]$ProgressLog)
 Write-Output "silent but logging"
 [Console]::Out.Flush()
-for ($i = 0; $i -lt $Hold; $i++) {
-    Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i)
-    Start-Sleep -Seconds 1
-}
+for ($i = 0; $i -lt $Hold; $i++) { Add-Content -LiteralPath $ProgressLog -Value ("build tick {0}" -f $i); Start-Sleep -Seconds 1 }
 exit 3
 '@
     [System.IO.File]::WriteAllText($childPs1, $childSource)

@@ -1409,8 +1409,7 @@ class CheckpointManager:
         Lets the agent keep snapshotting source code while refusing to
         swallow generated assets (datasets, model weights, logs, videos).
         """
-        cap = self.max_file_size_mb * 1024 * 1024
-        if cap <= 0:
+        if self.max_file_size_mb <= 0:
             return
         ok, stdout, _ = _run_git(
             ["ls-files", "--cached", "-z"],
@@ -1422,14 +1421,13 @@ class CheckpointManager:
         # whitespace but that leaves NULs alone; rebuild list.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
-        oversize: List[str] = []
-        for rel in paths:
-            try:
-                size = (abs_workdir / rel).stat().st_size
-            except OSError:
-                continue
-            if size > cap:
-                oversize.append(rel)
+        # Same predicate safe restore consults, called rather than restated:
+        # a threshold that drifted between the two would make a file both
+        # absent from the checkpoint and not recognised as capped at restore,
+        # which is precisely the deletion this change exists to prevent.
+        oversize = [
+            rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
+        ]
         if not oversize:
             return
         logger.debug(

@@ -472,6 +472,45 @@ class TestSafeRestore:
         assert "grew.txt" in result["restored_files"]
         assert "grew.txt" not in result.get("skipped_oversize", [])
 
+    def test_the_cap_boundary_is_the_same_on_both_sides_of_the_round_trip(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """One threshold, checked from both ends.
+
+        The checkpoint decides what to store and safe restore decides what may
+        be deleted, and the safety of the pair rests on the two agreeing. A file
+        at exactly the cap is stored (the test is strictly greater-than), so it
+        must revert; one byte more is excluded, so it must be kept. Were the
+        checkpoint side to drift to ``>=`` while restore kept ``>``, the at-cap
+        file would be stored nowhere and recognised as capped nowhere — the
+        exact gap that deletes it — and this fails.
+        """
+        cap = 1024 * 1024
+        m = self._capped_mgr(checkpoint_base, monkeypatch, cap_mb=1)
+
+        at_cap = work_dir / "at_cap.bin"
+        over_cap = work_dir / "over_cap.bin"
+        at_cap.write_bytes(b"o" * cap)
+        over_cap.write_bytes(b"o" * (cap + 1))
+        base = self._checkpoint(m, work_dir)
+
+        at_cap.write_bytes(b"a" * cap)
+        over_cap.write_bytes(b"a" * (cap + 1))
+        m.record_agent_write(str(at_cap))
+        m.record_agent_write(str(over_cap))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        # Stored, therefore recoverable, therefore reverted.
+        assert at_cap.read_bytes() == b"o" * cap
+        assert "at_cap.bin" in result["restored_files"]
+        assert "at_cap.bin" not in result.get("skipped_oversize", [])
+        # Never stored, therefore unrecoverable, therefore left alone.
+        assert over_cap.read_bytes() == b"a" * (cap + 1)
+        assert "over_cap.bin" in result.get("skipped_oversize", [])
+        assert "over_cap.bin" not in result["restored_files"]
+
     def test_safe_restore_still_deletes_a_small_agent_created_file(
         self, work_dir, checkpoint_base, monkeypatch,
     ):

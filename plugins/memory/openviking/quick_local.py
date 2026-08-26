@@ -40,7 +40,11 @@ _MODEL_CACHE_DIRNAME = "models"
 _DEFAULT_PORT = 1933
 _PORT_ATTEMPTS = 20
 _MODEL_DOWNLOAD_SIZE = "approximately 46 MiB"
-_HEALTH_TIMEOUT_SECONDS = 60.0
+# OpenViking downloads the built-in model while its server lifespan starts.
+# Give a slow first download a bounded ten minutes, then leave another minute
+# for model loading and service initialization.
+_MODEL_PREPARATION_TIMEOUT_SECONDS = 600.0
+_HEALTH_TIMEOUT_SECONDS = _MODEL_PREPARATION_TIMEOUT_SECONDS + 60.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.5
 _PROCESS_STOP_TIMEOUT_SECONDS = 10.0
 
@@ -93,6 +97,7 @@ class QuickLocalSetupResult:
     paths: QuickLocalPaths
     endpoint: str
     reused: bool
+    server_restart_required: bool = False
 
 
 class QuickLocalSetupError(RuntimeError):
@@ -194,7 +199,7 @@ def resolve_hermes_vlm_config() -> dict[str, Any]:
     api_base = _clean_value(runtime.get("base_url"))
     api_key = _clean_value(runtime.get("api_key"))
 
-    if _uses_noncopyable_credentials(provider, source, api_key):
+    if not _has_copyable_static_credentials(provider, source, api_key):
         raise QuickLocalSetupError(
             "Hermes is using refreshed OAuth, cloud-native, or external-process "
             "credentials that cannot be copied safely into OpenViking. Configure "
@@ -295,11 +300,33 @@ class QuickLocalSetup:
             raise QuickLocalSetupError(
                 "Quick Local preflight belongs to a different Hermes profile."
             )
-        reusable_endpoint = find_reusable_endpoint(
-            preflight.paths,
-            self._health_check,
-        )
+        vlm = resolve_hermes_vlm_config()
+        self._ensure_openviking_installed(preflight.paths)
+
+        reusable_endpoint = find_reusable_endpoint(preflight.paths, self._health_check)
         if reusable_endpoint:
+            port = _endpoint_port(reusable_endpoint)
+            if port is None:
+                raise QuickLocalSetupError(
+                    "Quick Local's saved endpoint does not contain a valid port."
+                )
+            server_config = build_server_config(preflight.paths, vlm, port=port)
+            server_restart_required = not _stored_server_config_matches(
+                preflight.paths, server_config
+            )
+            if server_restart_required:
+                _prepare_private_directory(preflight.paths.root)
+                atomic_json_write(
+                    preflight.paths.server_config,
+                    server_config,
+                    mode=0o600,
+                )
+                _write_ovcli_profile(preflight.paths.ovcli_config, reusable_endpoint)
+                self._emit(
+                    QuickLocalStage.WRITE_CONFIG,
+                    "Updated Quick Local's saved Hermes LLM settings; the running "
+                    "server must be restarted before it can use them.",
+                )
             self._emit(
                 QuickLocalStage.COMPLETE,
                 "Existing Quick Local server is reachable; reusing it.",
@@ -308,10 +335,8 @@ class QuickLocalSetup:
                 paths=preflight.paths,
                 endpoint=reusable_endpoint,
                 reused=True,
+                server_restart_required=server_restart_required,
             )
-
-        vlm = resolve_hermes_vlm_config()
-        self._ensure_openviking_installed(preflight.paths)
 
         port = find_available_port(
             preferred_endpoint=_configured_endpoint(preflight.paths)
@@ -441,17 +466,34 @@ class QuickLocalSetup:
                 paths.root.parent,
                 paths.server_command,
             )
+            primary_error: BaseException | None = None
             try:
-                if not _wait_for_health(endpoint, self._health_check):
+                if not _wait_for_health(
+                    endpoint,
+                    self._health_check,
+                    process=process,
+                ):
+                    returncode = process.poll()
+                    if returncode is not None:
+                        raise QuickLocalSetupError(
+                            "OpenViking exited before becoming reachable "
+                            f"(status {returncode}). Review the server log at "
+                            f"{_server_log_path(paths.root.parent)} and retry."
+                        )
                     raise QuickLocalSetupError(
-                        "OpenViking did not become reachable. Review the server "
-                        f"log at {_server_log_path(paths.root.parent)} and retry."
+                        "OpenViking did not become reachable before the local model "
+                        "preparation timeout. Review the server log at "
+                        f"{_server_log_path(paths.root.parent)} and retry."
                     )
+            except BaseException as exc:
+                primary_error = exc
+                raise
             finally:
                 if not _stop_process(process):
-                    raise QuickLocalSetupError(
-                        "The temporary OpenViking validation server could not be stopped."
-                    )
+                    message = "The temporary OpenViking validation server could not be stopped."
+                    if primary_error is None:
+                        raise QuickLocalSetupError(message)
+                    primary_error.add_note(message)
 
     def _emit(self, stage: QuickLocalStage, message: str) -> None:
         self._progress(QuickLocalProgress(stage=stage, message=message))
@@ -496,13 +538,19 @@ def find_available_port(
             *(port for port in candidates if port != preferred_port),
         ]
     for port in candidates:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
-                candidate.bind(("127.0.0.1", port))
+        if _can_bind_local_port("127.0.0.1", port):
             return port
-        except OSError:
-            continue
     return None
+
+
+def _can_bind_local_port(host: str, port: int) -> bool:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as candidate:
+            candidate.bind((host, port))
+        return True
+    except OSError:
+        return False
 
 
 def find_reusable_endpoint(
@@ -556,6 +604,11 @@ def _start_validation_server(
         )
     command = str(server_command)
     host, port = _endpoint_bind(endpoint)
+    if not _can_bind_local_port(host, port):
+        raise QuickLocalSetupError(
+            f"Local port {host}:{port} became unavailable before OpenViking "
+            "could start. Retry Quick Local setup."
+        )
     log_path = _server_log_path(hermes_home)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child_env = os.environ.copy()
@@ -609,6 +662,7 @@ def _wait_for_health(
     endpoint: str,
     health_check: HealthCheck,
     *,
+    process: Optional[subprocess.Popen] = None,
     timeout_seconds: float = _HEALTH_TIMEOUT_SECONDS,
 ) -> bool:
     deadline = time.monotonic() + timeout_seconds
@@ -616,6 +670,8 @@ def _wait_for_health(
         healthy, _message = health_check(endpoint)
         if healthy:
             return True
+        if process is not None and process.poll() is not None:
+            return False
         time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
     return False
 
@@ -639,24 +695,60 @@ def _stop_process(process: subprocess.Popen) -> bool:
         return False
 
 
-def _uses_noncopyable_credentials(provider: str, source: str, api_key: str) -> bool:
-    return (
-        "oauth" in source
-        or "key_cmd" in source
-        or provider
-        in {
-            "bedrock",
-            "copilot-acp",
-            "minimax-oauth",
-            "nous",
-            "openai-codex",
-            "qwen-oauth",
-            "vertex",
-            "xai-oauth",
-        }
-        or api_key.startswith("sk-ant-oat")
-        or api_key == "aws-sdk"
-    )
+def _has_copyable_static_credentials(
+    provider: str,
+    source: str,
+    api_key: str,
+) -> bool:
+    """Return whether Hermes explicitly classifies this credential as static."""
+
+    if not api_key or api_key.startswith("sk-ant-oat") or api_key == "aws-sdk":
+        return False
+
+    if provider == "custom":
+        return source in {"direct-alias", "env/config"} or source.startswith((
+            "custom_provider:",
+            "pool:",
+        ))
+    if provider == "openrouter":
+        return source == "env/config" or source.startswith((
+            "credential_pool:",
+            "env:",
+            "manual:",
+            "pool:",
+        ))
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    provider_config = PROVIDER_REGISTRY.get(provider)
+    if (
+        provider == "copilot"
+        or provider_config is None
+        or provider_config.auth_type != "api_key"
+    ):
+        return False
+
+    if source in {"config", "default", "env", "local-offline"}:
+        return True
+    api_key_sources = {value.lower() for value in provider_config.api_key_env_vars}
+    if source in api_key_sources:
+        return True
+    if source.startswith("env:"):
+        return source.removeprefix("env:") in api_key_sources
+    if source.startswith("credential_pool:"):
+        return source.removeprefix("credential_pool:") == provider
+    return source.startswith("manual:")
+
+
+def _stored_server_config_matches(
+    paths: QuickLocalPaths,
+    expected: Mapping[str, Any],
+) -> bool:
+    try:
+        saved = json.loads(paths.server_config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return saved == expected
 
 
 def _prepare_private_directory(path: Path) -> None:

@@ -112,7 +112,7 @@ def test_resolve_vlm_maps_anthropic_transport(monkeypatch):
             "api_mode": "anthropic_messages",
             "base_url": "https://api.anthropic.com",
             "api_key": "secret",
-            "source": "environment",
+            "source": "env",
             "model": "claude-sonnet",
         },
     )
@@ -180,11 +180,31 @@ def test_resolve_vlm_accepts_structured_persisted_default(monkeypatch):
         ),
         (
             {
-                "provider": "openai",
+                "provider": "copilot",
+                "api_mode": "chat_completions",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key": "short-lived-exchanged-token",
+                "source": "GH_TOKEN",
+            },
+            "cannot be copied safely",
+        ),
+        (
+            {
+                "provider": "future-oauth-provider",
+                "api_mode": "chat_completions",
+                "base_url": "https://llm.example/v1",
+                "api_key": "short-lived",
+                "source": "future-credential-store",
+            },
+            "cannot be copied safely",
+        ),
+        (
+            {
+                "provider": "openai-api",
                 "api_mode": "codex_responses",
                 "base_url": "https://api.openai.com/v1",
                 "api_key": "secret",
-                "source": "environment",
+                "source": "OPENAI_API_KEY",
             },
             "transport is not supported",
         ),
@@ -327,6 +347,7 @@ def test_validation_server_does_not_inherit_stdin(tmp_path, monkeypatch):
     process = MagicMock()
     popen = MagicMock(return_value=process)
     monkeypatch.setattr(quick_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(quick_local, "_can_bind_local_port", lambda *_args: True)
 
     result = quick_local._start_validation_server(
         "http://127.0.0.1:1933",
@@ -337,6 +358,71 @@ def test_validation_server_does_not_inherit_stdin(tmp_path, monkeypatch):
 
     assert result is process
     assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+
+def test_validation_server_rechecks_selected_port_before_start(tmp_path, monkeypatch):
+    server_command = tmp_path / "openviking-server"
+    server_command.write_text("", encoding="utf-8")
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text("{}", encoding="utf-8")
+    popen = MagicMock()
+    monkeypatch.setattr(quick_local.subprocess, "Popen", popen)
+    monkeypatch.setattr(quick_local, "_can_bind_local_port", lambda *_args: False)
+
+    with pytest.raises(quick_local.QuickLocalSetupError, match="became unavailable"):
+        quick_local._start_validation_server(
+            "http://127.0.0.1:1933",
+            config_path,
+            tmp_path,
+            server_command,
+        )
+
+    popen.assert_not_called()
+
+
+def test_reuse_rechecks_runtime_and_refreshes_saved_vlm(tmp_path, monkeypatch):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    old_vlm = {
+        "provider": "openai",
+        "model": "old-model",
+        "api_key": "old-secret",
+        "api_base": "https://old.example/v1",
+    }
+    quick_local.atomic_json_write(
+        paths.server_config,
+        quick_local.build_server_config(paths, old_vlm, port=1938),
+        mode=0o600,
+    )
+    quick_local.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1938", "actor_peer_id": "hermes"},
+        mode=0o600,
+    )
+    new_vlm = {
+        "provider": "openai",
+        "model": "new-model",
+        "api_key": "new-secret",
+        "api_base": "https://new.example/v1",
+    }
+    resolve = MagicMock(return_value=new_vlm)
+    monkeypatch.setattr(quick_local, "resolve_hermes_vlm_config", resolve)
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+    ensure_runtime = MagicMock()
+    monkeypatch.setattr(setup, "_ensure_openviking_installed", ensure_runtime)
+
+    result = setup.provision(hermes_home=tmp_path)
+
+    assert result.reused is True
+    assert result.endpoint == "http://127.0.0.1:1938"
+    assert result.server_restart_required is True
+    assert json.loads(paths.server_config.read_text(encoding="utf-8")) == (
+        quick_local.build_server_config(paths, new_vlm, port=1938)
+    )
+    resolve.assert_called_once_with()
+    ensure_runtime.assert_called_once_with(paths)
 
 
 def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkeypatch):
@@ -413,6 +499,7 @@ def test_failed_validation_stops_child_and_leaves_profile_inactive(
     tmp_path, monkeypatch
 ):
     process = MagicMock()
+    process.poll.return_value = None
     setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (False, "down"))
     monkeypatch.setattr(
         quick_local,
@@ -447,6 +534,46 @@ def test_failed_validation_stops_child_and_leaves_profile_inactive(
     assert not paths.server_config.exists()
     assert not paths.ovcli_config.exists()
     stop.assert_called_once_with(process)
+
+
+def test_validation_preserves_primary_error_when_cleanup_also_fails(
+    tmp_path, monkeypatch
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    process = MagicMock()
+    process.poll.return_value = None
+    setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (False, "down"))
+    monkeypatch.setattr(
+        quick_local,
+        "_start_validation_server",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(quick_local, "_wait_for_health", lambda *args, **kwargs: False)
+    monkeypatch.setattr(quick_local, "_stop_process", lambda _process: False)
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match="did not become reachable",
+    ) as exc_info:
+        setup._validate_generated_config(
+            paths=paths,
+            endpoint="http://127.0.0.1:1933",
+            server_config=quick_local.build_server_config(
+                paths,
+                {
+                    "provider": "openai",
+                    "model": "model-1",
+                    "api_key": "secret",
+                    "api_base": "https://llm.example/v1",
+                },
+            ),
+        )
+
+    assert any(
+        "could not be stopped" in note
+        for note in getattr(exc_info.value, "__notes__", [])
+    )
 
 
 def test_preflight_reuses_only_healthy_profile_with_managed_workspace(tmp_path):
@@ -514,6 +641,31 @@ def test_validation_stop_force_kills_only_after_graceful_timeout():
 
     process.terminate.assert_called_once_with()
     process.kill.assert_called_once_with()
+
+
+def test_health_wait_budget_covers_openviking_model_download():
+    assert (
+        quick_local._HEALTH_TIMEOUT_SECONDS
+        > quick_local._MODEL_PREPARATION_TIMEOUT_SECONDS
+    )
+
+
+def test_health_wait_stops_as_soon_as_validation_process_exits():
+    process = MagicMock()
+    process.poll.return_value = 1
+    health = MagicMock(return_value=(False, "down"))
+
+    assert (
+        quick_local._wait_for_health(
+            "http://127.0.0.1:1933",
+            health,
+            process=process,
+            timeout_seconds=60,
+        )
+        is False
+    )
+
+    health.assert_called_once_with("http://127.0.0.1:1933")
 
 
 def test_setup_menu_keeps_cloud_custom_paths_and_adds_quick_local(
@@ -603,6 +755,48 @@ def test_quick_local_cli_links_private_profile_and_runtime_config(
         "server_config_path": str(paths.server_config),
         "server_command_path": str(paths.server_command),
     }
+
+
+def test_quick_local_cli_reports_when_running_server_needs_restart(
+    tmp_path, monkeypatch, capsys
+):
+    paths = quick_local.managed_paths(tmp_path)
+
+    class FakeSetup:
+        def __init__(self, **_kwargs):
+            pass
+
+        def preflight(self, _home):
+            return quick_local.QuickLocalPreflight(
+                paths=paths,
+                reusable_endpoint="http://127.0.0.1:1933",
+            )
+
+        def provision(self, **_kwargs):
+            return quick_local.QuickLocalSetupResult(
+                paths=paths,
+                endpoint="http://127.0.0.1:1933",
+                reused=True,
+                server_restart_required=True,
+            )
+
+    monkeypatch.setattr(quick_local, "QuickLocalSetup", FakeSetup)
+
+    assert (
+        openviking_module._run_quick_local_setup(
+            config={"memory": {}},
+            provider_config={},
+            env_path=tmp_path / ".env",
+        )
+        is True
+    )
+
+    output = capsys.readouterr().out
+    assert "Quick Local settings were updated" in output
+    assert "still using the previous Hermes LLM settings" in output
+    assert "Stop the Quick Local server at http://127.0.0.1:1933" in output
+    assert "Hermes will restart it with the updated settings" in output
+    assert "OpenViking memory is ready" not in output
 
 
 def test_linking_a_self_managed_profile_clears_quick_local_runtime_settings(tmp_path):

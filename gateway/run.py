@@ -7274,6 +7274,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+        # One-shot: log the "platform owns the suspend" notice once, not per tick.
+        self._scale_to_zero_no_suspend_logged: bool = False
 
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
@@ -8919,8 +8921,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wakes the machine, the preserved reconnect supervisor re-dials, and the
         connector drains the buffered backlog. After driving dormant we set a
         re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
-        Off-Fly (no flaps socket / machine identity) the suspend step is skipped:
-        dormancy still happens, the process just stays running — fail-awake.
+        Off-Fly (no flaps socket / machine identity) the watcher does not quiesce
+        at all: the platform suspends on its own timer, so the gateway stays
+        connected and serving until the freeze lands.
         """
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
@@ -8937,6 +8940,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 go_dormant = getattr(adapter, "go_dormant", None)
                 if not callable(go_dormant):
+                    continue
+                # Quiesce only when a suspend can follow it. Off-Fly the platform
+                # owns the freeze on its own timer, so this does not bring it any
+                # closer, and go_dormant()'s socket close arms the reconnect
+                # supervisor: it re-dials ~1.4s later and the drain clears the
+                # flip, every cooldown. The destination is then unflipped when the
+                # freeze lands, and inbound is dropped instead of buffered. Stay
+                # connected and let the connector's orphan detection adopt the
+                # destination once the platform freezes us.
+                from gateway.scale_to_zero import self_suspend_available
+
+                if not self_suspend_available():
+                    if not self._scale_to_zero_no_suspend_logged:
+                        self._scale_to_zero_no_suspend_logged = True
+                        logger.info(
+                            "scale-to-zero: idle, but this platform suspends on "
+                            "its own timer (no in-machine suspend API); staying "
+                            "connected rather than quiescing"
+                        )
                     continue
                 logger.info(
                     "scale-to-zero: gateway idle for >= %.0fs — going dormant "

@@ -167,9 +167,32 @@ async function withRetry(makeAttempt, options: any = {}) {
   throw lastError
 }
 
+/**
+ * The one error shape the REST helpers throw for an HTTP >= 400 response.
+ *
+ * `statusCode` is the structured contract every downstream classifier reads —
+ * isGatewayAuthRejection (401/403 → reauth, never retried), isServerSideHttpError
+ * (502/503/504 → Cloud-down), ensureNativeAccessToken's dead-refresh-token
+ * check — and the "<status>: <body>" message keeps the legacy prefix readers
+ * working. fetchJson used to build a bare Error here, so a native-bearer 401
+ * reached the boot path as an anonymous transport failure: it was retried,
+ * then classified as transient, and the renderer's boot-retry loop flickered
+ * the Sign in overlay away (#95701). Shared by fetchJson, fetchPublicJson and
+ * the OAuth-session fetch so the three paths cannot drift apart again.
+ */
+function httpStatusError(statusCode, text, statusMessage?) {
+  const status = Number.isInteger(statusCode) && statusCode > 0 ? statusCode : 500
+  const detail = String(text || statusMessage || '')
+  const error: any = new Error(`${status}: ${detail}`)
+  error.statusCode = status
+
+  return error
+}
+
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,

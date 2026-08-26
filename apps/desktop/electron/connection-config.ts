@@ -132,6 +132,15 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
+    // A rejected ticket mint is a CONFIRMED reauth failure, not a hint. The
+    // cookie path only sees a 401/403 after the gateway's transparent AT/RT
+    // rotation has already failed, and the native-bearer path only after
+    // mintGatewayWsTicket's forced /auth/native/refresh has. Nothing will
+    // change until the user signs in, so tag it the way startHermes latches
+    // (isReauthRequiredError): the boot is marked non-retryable and the
+    // overlay's Sign in button stops flickering away under the renderer's
+    // transient-boot retry loop (#95701).
+    ;(err as any).isReauthRequired = true
   }
 
   // Preserve structured HTTP context when the source error carried an integer

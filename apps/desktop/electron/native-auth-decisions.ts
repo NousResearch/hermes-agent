@@ -233,3 +233,24 @@ export function oauthGuardMayHardFail(providers: unknown): boolean {
 
   return !named.every(provider => provider.supportsPassword)
 }
+
+/**
+ * Whether a rejected native-bearer request should try ONE forced token
+ * rotation before the rejection counts as confirmed.
+ *
+ * The gateway gate never rotates a native access token server-side — only
+ * cookie sessions get the transparent AT-from-RT refresh; the native flow is
+ * told to call `/auth/native/refresh` itself (dashboard_auth/middleware.py).
+ * So a 401 on a bearer the desktop still considers unexpired is ambiguous
+ * until that refresh has had its say: a live refresh token yields a fresh
+ * bearer, a dead one confirms the session is gone (#95701). Only a structured
+ * 401 qualifies. A 403 is a policy refusal for an identity the gate DID
+ * recognize, and a rotated token for the same identity cannot change it; a
+ * transport failure or an anonymous message-only error says nothing about
+ * the credential and must keep its transient classification.
+ */
+export function shouldRotateNativeTokenAfterRejection(error: unknown): boolean {
+  const statusCode = Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
+
+  return statusCode === 401
+}

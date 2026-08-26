@@ -4881,10 +4881,22 @@ def _timestamped_stderr_gateway_command(
     ``hermes update`` sees the flag on the live grandchild argv and hands
     the process back to launchd instead of starting a detached watcher
     (#86893 / #87005). The detached nohup fallback stays unmarked.
+
+    Supervised starts also drop ``--replace`` (issue #79048): a launchd
+    service is respawned by KeepAlive, so takeover authority would be
+    re-armed on every respawn — two profiles legitimately sharing one
+    platform token would each terminate the sibling, and launchd would
+    revive the victim forever. Bounded replacement is the lifecycle
+    commands' job (``launchctl kickstart -k``, drain in
+    ``launchd_restart()``, bootout+bootstrap in install/refresh), which
+    run before supervision resumes. Mirrors ``generate_systemd_unit``,
+    whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
     inner = _gateway_run_command()
     if external_supervisor and "--external-supervisor" not in inner:
         inner = [*inner, "--external-supervisor"]
+    if external_supervisor and "--replace" in inner:
+        inner = [part for part in inner if part != "--replace"]
     return [
         get_python_path(),
         "-m",

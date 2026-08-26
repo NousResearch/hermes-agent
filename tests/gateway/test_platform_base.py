@@ -10,6 +10,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
@@ -1254,6 +1255,7 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
+
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).
@@ -1386,3 +1388,101 @@ class TestDockerProfileSandboxMediaTranslation:
             "did not resolve" in r.message and f"session_key={self.SESSION_KEY}" in r.message
             for r in caplog.records
         )
+
+class _LockGovernanceProbeAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for platform-lock takeover governance tests."""
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, *args, **kwargs) -> SendResult:
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id: str) -> dict:
+        return {"name": "probe", "type": "dm"}
+
+
+class TestPlatformLockTakeoverGovernance:
+    """A supervised (non-``--replace``) gateway must never evict a live holder.
+
+    Regression for #79048: launchd services with ``KeepAlive=true`` used to be
+    generated with ``--replace``, re-arming takeover authority on every
+    respawn. Two profiles sharing one platform token (e.g. the same Discord
+    bot) would then terminate each other in an endless mutual-eviction loop.
+    The runtime guard is the adapter's ``_platform_lock_takeover_allowed``
+    bit — only an explicit ``gateway run --replace`` startup arms it. Without
+    that authority a live cross-home holder must be left alone and reported
+    as a retryable failure, never terminated.
+    """
+
+    def _make_adapter(self, *, takeover_allowed: bool):
+        from gateway.config import Platform, PlatformConfig
+
+        adapter = _LockGovernanceProbeAdapter(
+            config=PlatformConfig(), platform=Platform.DISCORD
+        )
+        adapter._platform_lock_takeover_allowed = takeover_allowed
+        return adapter
+
+    def test_no_takeover_without_replace_authority(self, tmp_path, monkeypatch):
+        from gateway import status
+
+        existing = {
+            "pid": 4242,
+            "start_time": 123,
+            "home": str(tmp_path / "other-profile-home"),
+        }
+        monkeypatch.setattr(
+            status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, existing),
+        )
+        takeover_calls = []
+        monkeypatch.setattr(
+            status,
+            "take_over_scoped_lock_holder",
+            lambda existing: takeover_calls.append(existing) or 4242,
+        )
+        monkeypatch.setattr(status, "write_runtime_status", lambda **kw: None)
+
+        adapter = self._make_adapter(takeover_allowed=False)
+        # Ordinary (supervised) start: the live cross-home holder must be
+        # left untouched — the gateway fails retryably instead of killing it.
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert takeover_calls == []
+        assert adapter.fatal_error_retryable is True
+        assert adapter._fatal_error_code == "discord-token_lock"
+
+    def test_takeover_authority_consumed_once(self, tmp_path, monkeypatch):
+        from gateway import status
+
+        existing = {
+            "pid": 4242,
+            "start_time": 123,
+            "home": str(tmp_path / "other-profile-home"),
+        }
+        monkeypatch.setattr(
+            status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, existing),
+        )
+        takeover_calls = []
+        monkeypatch.setattr(
+            status,
+            "take_over_scoped_lock_holder",
+            lambda existing: takeover_calls.append(existing) or 4242,
+        )
+        monkeypatch.setattr(status, "write_runtime_status", lambda **kw: None)
+
+        adapter = self._make_adapter(takeover_allowed=True)
+        # An explicit --replace start may attempt exactly one takeover...
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert len(takeover_calls) == 1
+        # ...but the authority is consumed, so a reconnect can never evict a
+        # healthy holder (this is what stops the supervised respawn loop).
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert len(takeover_calls) == 1
+        assert adapter._platform_lock_takeover_attempted is True

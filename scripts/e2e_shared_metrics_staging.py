@@ -36,7 +36,8 @@ def main() -> int:
         "  shared_metrics:\n"
         "    enabled: true\n"
         "    send: true\n"
-        f"    endpoint: {STAGING}\n"
+        f"    endpoint: {STAGING}\n",
+        encoding="utf-8",
     )
 
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
@@ -49,7 +50,7 @@ def main() -> int:
     import yaml
 
     resolved = resolve_send_config(
-        yaml.safe_load((scratch / "config.yaml").read_text())
+        yaml.safe_load((scratch / "config.yaml").read_text(encoding="utf-8"))
     )
     if not resolved.send or resolved.endpoint != STAGING:
         print(f"FAIL: config did not resolve to staging: {resolved}")

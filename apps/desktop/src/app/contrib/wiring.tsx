@@ -71,6 +71,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
+  requestSessionResume,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
@@ -990,7 +991,26 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
     // otherwise load it into main. Same door every other session link uses.
-    onResumeSession: sessionId => openSession(sessionId, navigate),
+    // The clicked ROW is the identity, not its bare id: two profiles can hold
+    // twins with the same stored id (#92454), and an id-only resume resolves
+    // against whichever cached row is found first — the user clicks a row
+    // previewing profile A and the resume dials profile B. Pin the row's own
+    // (connection, profile) as the resume owner before navigating; untagged
+    // rows (single-profile installs, legacy pages) keep the id-only path.
+    onResumeSession: (sessionId, session) => {
+      const rowProfile = session?.profile?.trim()
+
+      if (rowProfile) {
+        requestSessionResume(sessionId, {
+          connectionId: session?.connection_id?.trim() || 'local',
+          ...(session?.connection_id?.trim() ? {} : { mode: 'local' as const }),
+          profile: rowProfile,
+          targetProfile: rowProfile
+        })
+      }
+
+      openSession(sessionId, navigate)
+    },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,

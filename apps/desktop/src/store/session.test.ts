@@ -328,6 +328,40 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, [])[0]).toBe(incoming[0])
   })
 
+  it('never stitches one profile twin onto another: same id in two profiles stays two sessions (#92454)', () => {
+    // Two profiles can hold sessions with the SAME stored id (restored
+    // backups, copied state.dbs). Keyed by bare id these collapsed into one
+    // row whose title/activity carry crossed profiles — the visible seed of
+    // the cross-profile transcript/route mixups.
+    const previous = [session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })]
+
+    const incoming = [
+      session({ id: 'twin', last_active: 10, profile: 'quietbot' }),
+      session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    // Both twins survive as distinct rows…
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+    // …and testbot's title/activity is NOT stitched onto quietbot's row.
+    const quiet = merged.find(s => s.profile === 'quietbot')
+    expect(quiet?.title ?? null).toBeNull()
+    expect(quiet?.last_active).toBe(10)
+  })
+
+  it('a kept twin in another profile survives the incoming page dedupe (#92454)', () => {
+    // The incoming page carries only ONE profile's copy; the other profile's
+    // twin was in the previous list and pinned via keep. Bare-id dedupe
+    // treated the ids as equal and dropped the kept twin.
+    const previous = [session({ id: 'twin', profile: 'quietbot' })]
+    const incoming = [session({ id: 'twin', message_count: 2, profile: 'testbot' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['twin'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+  })
+
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]

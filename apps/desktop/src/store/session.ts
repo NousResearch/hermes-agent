@@ -484,18 +484,34 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
+  // Rows are identified by (profile, id), never bare id: two profiles can
+  // hold sessions with the SAME stored id (restored backups, copied
+  // state.dbs, cross-profile imports — #92454). Keyed by bare id, the twins
+  // collapse into one sidebar row whose title/preview carry can stitch one
+  // profile's content onto the other profile's route — the user clicks a row
+  // previewing profile A and the resume dials profile B. Same-profile rows
+  // (including untagged ones, which normalize together) keep the exact
+  // carry behavior below.
+  // (Local normalize: importing @/store/profile here would be circular —
+  // same '' → 'default' rule as normalizeProfileKey.)
+  const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim() || 'default'
+  const identity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
+
+  const lineageIdentity = (session: SessionInfo) =>
+    `${profileKeyOf(session)}::${session._lineage_root_id ?? session.id}`
+
   // Carry a known title onto a row that arrives title-less, so a freshly
   // submitted session (e.g. a branch draft) holds its placeholder instead of
   // flashing its raw message preview in the gap between persist and the async
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
-  const prevById = new Map(previous.map(session => [session.id, session]))
+  const prevById = new Map(previous.map(session => [identity(session), session]))
   // Tip rotation changes the live id — carry activity/title across the lineage
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
-  const prevByLineage = new Map(previous.map(session => [session._lineage_root_id ?? session.id, session]))
+  const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
   const merged = incoming.map(session => {
-    const prev = prevById.get(session.id) ?? prevByLineage.get(session._lineage_root_id ?? session.id)
+    const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
     // User-send stamps last_active before the DB flushes the user row
     // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
     const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
@@ -519,18 +535,20 @@ export function mergeSessionPage(
     return merged
   }
 
-  const incomingIds = new Set(merged.map(session => session.id))
+  const incomingIds = new Set(merged.map(identity))
 
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
-  // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
+  // rows survive as separate sidebar entries (fixes #43483). Lineage keys are
+  // profile-qualified for the same reason as identity above — a twin id in
+  // another profile is a DIFFERENT session and must survive the dedupe.
+  const incomingLineageKeys = new Set(merged.map(lineageIdentity))
 
   const survivors = previous.filter(
     session =>
-      !incomingIds.has(session.id) &&
-      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
+      !incomingIds.has(identity(session)) &&
+      !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

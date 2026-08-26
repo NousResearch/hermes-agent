@@ -8921,8 +8921,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wakes the machine, the preserved reconnect supervisor re-dials, and the
         connector drains the buffered backlog. After driving dormant we set a
         re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
-        Off-Fly (no flaps socket / machine identity) the suspend step is skipped:
-        dormancy still happens, the process just stays running — fail-awake.
+        Off-Fly (no flaps socket / machine identity) the watcher does not quiesce
+        at all: the platform suspends on its own timer, so the gateway stays
+        connected and serving until the freeze lands.
         """
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:

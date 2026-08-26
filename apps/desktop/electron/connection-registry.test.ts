@@ -28,8 +28,8 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
-  rememberSshEnumeration,
   registrySourceOwnsPrimaryBackend,
+  rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
@@ -250,6 +250,7 @@ test('registry primary reuses a matching primary backend descriptor', () => {
       { id: 'hermes-vps', kind: 'ssh', label: 'Hermes VPS', host: 'hermes-vps' }
     ]
   })
+
   const descriptor = {
     connectionId: 'hermes-vps',
     mode: 'remote' as const,

@@ -329,6 +329,39 @@ def test_worker_log_stream_redacts_secret_split_across_chunk_boundary():
     assert "tail line" in text
 
 
+@pytest.mark.parametrize("prefix", [b"sk-", b"ghp_"])
+def test_worker_log_stream_redacts_long_prefixed_secret_split_across_chunks(prefix):
+    secret = prefix + b"A" * 70000
+    source = _ChunkedReader([b"token=" + secret[:65530], secret[65530:] + b"\n"])
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    assert secret not in target.getvalue()
+
+
+def test_worker_log_stream_redacts_long_authorization_header_split_across_chunks():
+    value = b"A" * 70000
+    header = b"Authorization: Bearer " + value
+    source = _ChunkedReader([header[:65536], header[65536:] + b"\n"])
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    assert value not in target.getvalue()
+
+
+def test_worker_log_stream_redacts_when_global_redaction_is_disabled(monkeypatch):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    secret = b"sk-" + b"B" * 70000
+    source = _ChunkedReader([secret[:65536], secret[65536:] + b"\n"])
+    target = io.BytesIO()
+
+    kanban_worker_log.copy_redacted_worker_log_stream(source, target)
+
+    assert secret not in target.getvalue()
+
+
 def test_worker_log_stream_redacts_unterminated_private_key_block_across_chunks():
     chunks = [
         b"noise line\n-----BEGIN PRIVATE KEY-----\nMIIfake",

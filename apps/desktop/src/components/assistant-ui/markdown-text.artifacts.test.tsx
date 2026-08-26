@@ -65,6 +65,14 @@ describe('MarkdownTextContent artifacts', () => {
     expect(artifactsForSession('session-artifacts')).toHaveLength(0)
   })
 
+  it('keeps the code-block copy control visible without hover', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('js', SMALL_SNIPPET)} />)
+
+    const copy = await screen.findByRole('button', { name: 'Copy code' })
+
+    expect(copy.className.split(/\s+/)).not.toContain('opacity-0')
+  })
+
   it('does not register while the message is still streaming', async () => {
     render(<MarkdownTextContent isRunning text={fenced('html', HTML_DOC)} />)
 

@@ -149,7 +149,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   return (
     <>
       <Tip label={attachment.path || attachment.detail || attachment.label}>
-        <div className="group/attachment relative min-w-0 shrink-0">
+        <div className="relative min-w-0 shrink-0">
           <button
             aria-busy={isUploading || undefined}
             aria-label={canPreview ? c.previewLabel(attachment.label) : attachment.label}
@@ -204,11 +204,11 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
           {onRemove && (
             <button
               aria-label={c.removeAttachment(attachment.label)}
-              className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
+              className="absolute -right-1 -top-1 z-10 grid size-4 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground shadow-xs transition hover:bg-accent hover:text-foreground"
               onClick={() => onRemove(attachment.id)}
               type="button"
             >
-              <Codicon name="close" size="0.625rem" />
+              <Codicon name="close" size="0.7rem" />
             </button>
           )}
         </div>

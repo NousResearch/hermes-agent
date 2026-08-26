@@ -5045,6 +5045,27 @@ class SlackAdapter(BasePlatformAdapter):
             "user_id": user_id,
         }
 
+    def _remember_processed_message_ts(self, ts: str) -> None:
+        """Mark a Slack message ts as claimed by this handler.
+
+        Used by the ``message_changed`` guard to tell "we already took this
+        message" from "this is new". Called on ENTRY (so an unfurl arriving
+        mid-flight is suppressed) and again after successful construction
+        (refreshing recency so the LRU keeps genuinely active messages).
+
+        Bounded by ``_PROCESSED_MESSAGE_TS_MAX``: oldest entries are evicted
+        first so a busy workspace cannot grow this map without limit.
+        """
+        if not ts:
+            return
+        self._processed_message_ts[ts] = time.time()
+        if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
+            newest_items = sorted(
+                self._processed_message_ts.items(),
+                key=lambda item: item[1],
+            )[-self._PROCESSED_MESSAGE_TS_MAX :]
+            self._processed_message_ts = dict(newest_items)
+
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from an event plus Bolt's outer payload.
@@ -6416,6 +6437,38 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     return
 
+        # Claim the underlying message ts now that this event is known to be a
+        # real, deliverable turn — not at the end of the coroutine.
+        #
+        # A link unfurl (or any edit) makes Slack emit `message_changed` for
+        # the SAME message, carrying a DIFFERENT event ts. That different ts
+        # misses the `_dedup` check above by design, so the only thing that
+        # stops it becoming a second user turn is the `_processed_message_ts`
+        # guard at the top of the `message_changed` branch.
+        #
+        # That guard used to be satisfied only after the first copy had walked
+        # the entire handler — thread context, permalink resolution, file
+        # downloads: several awaits and hundreds of ms of Slack API latency. An
+        # unfurl arriving inside that window found the guard still empty and
+        # was promoted to a duplicate turn, producing a spurious "Interrupting
+        # current task" plus the same answer twice.
+        #
+        # Observed 2026-08-22 02:23:30-31Z: original ts 1787365409.908499 was
+        # still resolving two permalinks when the unfurl's `message_changed`
+        # (event ts 1787365411.012100) arrived 957ms later.
+        #
+        # Placement matters in BOTH directions. Claiming right after the dedup
+        # check also claims messages the handler then discards (ignored
+        # channel, bot sender, unauthorized user, no mention). That breaks
+        # editing "@bot" INTO a previously ignored message to summon the bot
+        # (test_message_edit_with_new_mention_processed): the ignored original
+        # would claim the ts and the summoning edit would be dropped. So the
+        # claim belongs here — after every filter has passed, before the slow
+        # enrichment awaits that open the race.
+        _claim_ts = str(event.get("ts") or "")
+        if _claim_ts:
+            self._remember_processed_message_ts(_claim_ts)
+
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
@@ -7010,13 +7063,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         if ts:
-            self._processed_message_ts[ts] = time.time()
-            if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
-                newest_items = sorted(
-                    self._processed_message_ts.items(),
-                    key=lambda item: item[1],
-                )[-self._PROCESSED_MESSAGE_TS_MAX :]
-                self._processed_message_ts = dict(newest_items)
+            self._remember_processed_message_ts(ts)
 
         await self.handle_message(msg_event)
 

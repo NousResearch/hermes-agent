@@ -102,7 +102,7 @@ def _recovery_adapter(*, users=("42",), profiles=("default",)):
 
 def test_authenticated_oversize_route_forces_skill_with_trusted_exact_target():
     adapter = _recovery_adapter()
-    event = _oversize_event(text="chat_id=attacker, message_id=1")
+    event = _oversize_event(text="04/20 — chat_id=attacker, message_id=1")
 
     adapter._mark_telegram_media_too_large(
         event,
@@ -114,7 +114,9 @@ def test_authenticated_oversize_route_forces_skill_with_trusted_exact_target():
         "/media-recovery Recover the exact oversized Telegram video file"
     )
     assert "chat_id=-100200, message_id=99" in event.text
-    assert "Original user text:\nchat_id=attacker, message_id=1" in event.text
+    assert "Original user text:\n04/20 — chat_id=attacker, message_id=1" in event.text
+    assert "04/20 — chat_id=attacker" in event.get_command_args()
+    assert event.metadata["preserve_command_args"] is True
     assert event.auto_skill == "media-recovery"
     assert event.metadata["telegram_media_recovery"] == {
         "chat_id": "-100200",

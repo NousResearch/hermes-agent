@@ -1576,8 +1576,12 @@ class MessageEvent:
             return self.text
         parts = (self.text or "").lstrip().split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
-        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
-        return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash).
+        # Adapter-generated skill commands may carry verbatim user content after
+        # a trusted transport envelope; preserve that content byte-for-byte.
+        if not self.metadata.get("preserve_command_args"):
+            args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args
 
 
 @dataclass

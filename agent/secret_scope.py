@@ -185,14 +185,58 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
+def _is_process_default_home(home: Path) -> bool:
+    """Return True when ``home`` is the home the process was launched under.
+
+    That home's credentials are exactly what the deployment injected into
+    ``os.environ`` (docker ``environment:``, systemd ``Environment=``, ``op
+    run``, plain exports), so reading them back is not a cross-profile leak.
+    Resolved via ``get_process_hermes_home`` so the context-local per-task
+    profile override never makes a secondary profile look like the default.
+    """
+    try:
+        from hermes_constants import get_process_hermes_home
+
+        return home.expanduser().resolve() == get_process_hermes_home().expanduser().resolve()
+    except Exception:
+        return False
+
+
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from ``<home>/.env`` plus its external
-    secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
-    secrets = load_env_file(Path(hermes_home) / ".env")
+    """Build a profile's secret mapping from ``<home>/.env`` plus external secret sources.
+
+    Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
+    global vars are intentionally NOT copied in — ``get_secret`` reads those
+    from ``os.environ`` directly, so the scope holds only profile secrets.
+
+    The **default** profile additionally inherits the process environment. It
+    owns that environment by construction: the deployment provisioned the
+    process for it, and every non-multiplexed call site resolved credentials
+    from ``os.environ`` before multiplexing existed. Secondary profiles are
+    deliberately NOT seeded, so the fail-closed isolation guarantee that
+    multiplexing exists to provide is untouched — profile B still cannot see
+    profile A's keys. Without this, flipping ``gateway.multiplex_profiles`` on
+    silently strips every process-env credential from the default profile,
+    while ``<home>/.env``-based deployments keep working; the symptom is
+    provider resolution failing with "No usable credentials found" even though
+    the variable is plainly present in the process environment.
+    """
+    home = Path(hermes_home)
+    secrets: Dict[str, str] = {}
+
+    if _is_process_default_home(home):
+        for key, value in os.environ.items():
+            if _is_global_env(key):
+                continue
+            secrets[key] = value
+
+    # ``<home>/.env`` is more specific than the process environment and wins,
+    # matching the pre-multiplex lookup order in ``get_secret`` (scope first,
+    # then ``os.environ``).
+    secrets.update(load_env_file(home / ".env"))
     try:
         from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(Path(hermes_home))
+        external_secrets = get_secret_source_values(home)
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))

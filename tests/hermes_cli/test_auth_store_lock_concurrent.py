@@ -39,6 +39,7 @@ def hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.mark.windows_only
 def test_many_concurrent_lock_acquisitions_do_not_raise_permission_error(hermes_home):
     """CONCURRENCY threads race to acquire/release the same auth-store lock.
 

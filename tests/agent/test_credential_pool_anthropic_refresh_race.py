@@ -1,7 +1,7 @@
 """Regression tests for cross-process races refreshing Anthropic OAuth tokens.
 
 ``CredentialPool._refresh_entry`` explicitly documents (see the comment
-above the ``if self.provider in ("openai-codex", "xai-oauth"):`` branch in
+above the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in
 ``agent/credential_pool.py``) that single-use OAuth refresh tokens require
 the whole sync -> POST -> write-back sequence to be serialized across
 Hermes *processes* via the cross-process ``_auth_store_lock`` flock,
@@ -11,18 +11,21 @@ it, and the loser gets ``refresh_token_reused``".
 Anthropic's OAuth refresh tokens have the identical single-use property --
 ``agent.anthropic_adapter._refresh_oauth_token`` says so explicitly:
 "Claude Code's OAuth refresh tokens are single-use: a successful refresh
-rotates the pair and invalidates the old refresh token." Yet
-``"anthropic"`` is absent from the ``("openai-codex", "xai-oauth")`` tuple
-that gets the cross-process flock, and the *only* on-failure recovery path
-(``CredentialPool._sync_anthropic_entry_from_credentials_file``) is
-hard-scoped to ``entry.source == "claude_code"`` -- entries sourced from
-Hermes's own PKCE login (``hermes_pkce`` / ``manual:dashboard_pkce``) get
-no recovery at all and are marked exhausted on any lost race, even though
-a fresh, valid token pair exists on disk (written by the winner).
+rotates the pair and invalidates the old refresh token." Before the PR, ``"anthropic"`` was absent from the
+``("openai-codex", "xai-oauth")`` tuple that gets the cross-process flock,
+and the *only* on-failure recovery path
+(``CredentialPool._sync_anthropic_entry_from_credentials_file``) was
+hard-scoped to ``entry.source == "claude_code"``. Entries sourced from
+Hermes's own PKCE login (``manual:hermes_pkce`` / ``hermes_pkce``) got no
+recovery at all and were marked exhausted on a lost race, even though a
+fresh, valid token pair existed on disk (written by the winner). The old
+dashboard source ``manual:dashboard_pkce`` is now retired with the removed
+dashboard flow.
 
 These tests reproduce that race deterministically with a fake OAuth server
-that enforces single-use refresh tokens, run two "process-local" pools
-concurrently against it, and assert the (currently absent) protection.
+that enforces single-use refresh tokens, run concurrent pool instances against
+it, and assert the current protection. The process-level, cross-profile
+Claude Code witness lives in ``test_anthropic_oauth_stress.py``.
 """
 
 from __future__ import annotations

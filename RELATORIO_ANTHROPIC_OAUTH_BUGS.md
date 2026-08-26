@@ -1,15 +1,17 @@
 # Relatório de Investigação — Bugs no fluxo OAuth da Anthropic (hermes-agent)
 
-> **Atualização (review do PR #87891):** o fluxo de login OAuth do **dashboard web** (`_start_anthropic_pkce` / `_submit_anthropic_pkce` / `_save_anthropic_oauth_creds` em `hermes_cli/web_server.py`) foi **removido por completo**, em vez de mantido com os patches dos bugs 1, 2 e 4 descritos abaixo. Um endpoint HTTP não-supervisionado emitindo tokens de assinatura Claude Pro/Max fora do cliente oficial da Anthropic esbarra nas políticas de uso da Anthropic para credenciais OAuth. O catálogo de providers do dashboard agora marca `anthropic` como `flow: "external"`, apontando para `hermes auth add anthropic` (fluxo PKCE via terminal, fora do escopo desta mudança). Os testes `tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py` e `tests/hermes_cli/test_web_server_oauth_write.py` foram removidos por testarem exclusivamente código agora inexistente. Bugs 3 e 5 (race condition no refresh cross-processo e o `PermissionError` no lock do Windows) seguem corrigidos como descrito abaixo — afetam o fluxo de login `claude_code`/CLI, que permanece.
+> **Estado atual do PR #87891:** este arquivo preserva os achados contra a implementação anterior. O fluxo de login OAuth do **dashboard web** (`_start_anthropic_pkce` / `_submit_anthropic_pkce` / `_save_anthropic_oauth_creds`) foi removido por completo, em vez de mantido com patches de CSRF ou de shadowing. Um endpoint HTTP não-supervisionado emitindo tokens de assinatura Claude Pro/Max fora do cliente oficial da Anthropic fica fora da política aceita para este produto. O catálogo marca `anthropic` como `flow: "external"`, e as rotas `start`/`submit` rejeitam esse fluxo. O fluxo PKCE interativo de terminal (`hermes auth add anthropic`) permanece explicitamente fora do escopo desta remoção.
+>
+> Os testes `tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py` e `tests/hermes_cli/test_web_server_oauth_write.py` foram removidos por testarem exclusivamente código inexistente na cabeça atual. Bugs 3 e 5 continuam cobertos: refresh Anthropic com lock cross-processo, lock adicional para o arquivo compartilhado `claude_code` (inclusive no resolver direto), write-through de `hermes_pkce`, e cobertura nativa Windows.
 
-**Data:** 2026-08-16
-**Branch:** `fix/update-orphan-history-guard-87694`
+**Data do achado original:** 2026-08-16
+**Branch do PR:** `fix/anthropic-oauth-csrf-race-apikey-shadow`
 **Escopo investigado:** `agent/anthropic_adapter.py`, `agent/credential_pool.py`, `hermes_cli/auth.py`, `hermes_cli/auth_commands.py`, `hermes_cli/web_server.py`
-**Testes novos:** `tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py`, `tests/agent/test_credential_pool_anthropic_refresh_race.py`
+**Cobertura atual:** `tests/hermes_cli/test_web_oauth_dispatch.py`, `tests/agent/test_credential_pool_anthropic_refresh_race.py`, `tests/agent/test_anthropic_oauth_stress.py`, `tests/agent/test_credential_pool_oauth_writethrough.py`, `tests/agent/test_anthropic_keychain.py`, `tests/hermes_cli/test_auth_store_lock_concurrent.py` e `web/src/lib/api.test.ts`
 
 ## Resumo executivo
 
-Foram encontrados **dois bugs reais e reproduzíveis** no fluxo OAuth da Anthropic, ambos confirmados por testes automatizados que falham contra o código atual (evidência objetiva, não especulação):
+Foram encontrados **dois bugs reais e reproduzíveis** na implementação anterior do fluxo OAuth da Anthropic, ambos confirmados por testes automatizados que falhavam contra aquela versão (evidência objetiva, não especulação):
 
 | # | Bug | Categoria | Severidade |
 |---|-----|-----------|------------|
@@ -21,7 +23,7 @@ Não foi encontrada evidência de **zombie processes** no fluxo Anthropic especi
 
 ---
 
-## 1. Bug de segurança — PKCE `code_verifier` vazado como `state` (dashboard web)
+## 1. Bug histórico de segurança — PKCE `code_verifier` vazado como `state` (dashboard web)
 
 ### Onde
 
@@ -88,7 +90,7 @@ params = {..., "state": oauth_state}
 
 ---
 
-## 2. Bug de segurança — ausência total de validação de `state` no callback do dashboard
+## 2. Bug histórico de segurança — ausência total de validação de `state` no callback do dashboard
 
 ### Onde
 
@@ -148,7 +150,9 @@ if not state_from_callback or state_from_callback != sess["state"]:
 
 ### Onde
 
-`agent/credential_pool.py`, método `CredentialPool._refresh_entry()` (~linha 1307-1344):
+`agent/credential_pool.py`, método `CredentialPool._refresh_entry()` (implementação anterior; as linhas atuais mudaram):
+
+O trecho abaixo registra a condição **antes** do PR e não descreve o código atual:
 
 ```python
 # Codex and xAI OAuth refresh tokens are single-use. The
@@ -164,7 +168,7 @@ if self.provider in ("openai-codex", "xai-oauth"):
 return self._refresh_entry_impl(entry, force=force)   # <- anthropic cai aqui, SEM lock
 ```
 
-O próprio comentário do código explica a razão de existir o lock: refresh tokens single-use não podem ser disputados por dois processos Hermes ao mesmo tempo. Só que **`"anthropic"` não está na tupla `("openai-codex", "xai-oauth")`** — mesmo o refresh da Anthropic sendo, pela documentação do próprio arquivo `agent/anthropic_adapter.py::_refresh_oauth_token`, também single-use:
+O próprio comentário do código explica a razão de existir o lock: refresh tokens single-use não podem ser disputados por dois processos Hermes ao mesmo tempo. Na implementação anterior, **`"anthropic"` não estava na tupla `("openai-codex", "xai-oauth")`** — mesmo o refresh da Anthropic sendo, pela documentação do próprio arquivo `agent/anthropic_adapter.py::_refresh_oauth_token`, também single-use:
 
 > "Claude Code's OAuth refresh tokens are single-use: a successful refresh rotates the pair and invalidates the old refresh token."
 
@@ -185,7 +189,7 @@ if self.provider != "anthropic" or entry.source != "claude_code":
     return entry
 ```
 
-Ou seja: **só funciona para credenciais que vieram do Claude Code CLI** (`~/.claude/.credentials.json`). Credenciais originadas do login OAuth nativo do próprio Hermes (`hermes_pkce`, gravadas em `~/.hermes/.anthropic_oauth.json`, e também as emitidas pelo dashboard — `manual:dashboard_pkce`) **não têm nenhuma rota de recuperação**. Ao perder a corrida, o processo cai direto em `self._mark_exhausted(entry, None)` (linha 1705), mesmo que uma credencial válida já exista em disco (escrita pelo processo vencedor).
+Ou seja: **só funcionava para credenciais que vieram do Claude Code CLI** (`~/.claude/.credentials.json`). Credenciais originadas do login OAuth nativo do próprio Hermes (`manual:hermes_pkce`, gravadas em `~/.hermes/.anthropic_oauth.json`, e também as antigas emitidas pelo dashboard — `manual:dashboard_pkce`) **não tinham nenhuma rota de recuperação**. Ao perder a corrida, o processo caía direto em `self._mark_exhausted(entry, None)`, mesmo que uma credencial válida já existisse em disco (escrita pelo processo vencedor).
 
 ### Cenário concreto de exploração / impacto
 
@@ -197,7 +201,7 @@ Isso não exige ataque — acontece em uso normal: múltiplos processos Hermes c
 
 ### Evidência de teste
 
-`tests/agent/test_credential_pool_anthropic_refresh_race.py` — 3 testes:
+Os testes abaixo são a evidência histórica da regressão na implementação anterior:
 
 ```
 FAILED test_anthropic_refresh_is_not_protected_by_cross_process_lock
@@ -210,7 +214,7 @@ PASSED test_concurrent_claude_code_refresh_recovers_via_credentials_file
    # contraste: fonte 'claude_code' SE recupera — prova a assimetria
 ```
 
-O teste usa um servidor OAuth fake que impõe corretamente a semântica "single-use" (primeiro a chegar ganha, segundo recebe `invalid_grant`), exatamente como o comportamento real documentado da Anthropic, e dispara dois `CredentialPool._refresh_entry()` concorrentes via `threading.Thread` simulando dois processos Hermes distintos.
+O teste original usava um servidor OAuth fake que impunha corretamente a semântica "single-use" (primeiro a chegar ganha, segundo recebe `invalid_grant`) e disparava dois `CredentialPool._refresh_entry()` concorrentes via `threading.Thread`. A cobertura atual acrescenta processo independente, perfis distintos e contagem exata do POST; ver a seção 5.
 
 ### Correção recomendada
 
@@ -229,34 +233,35 @@ Verificado especificamente para OAuth da Anthropic:
 
 ---
 
-## 5. Como rodar os testes
+## 5. Como validar a implementação atual
 
 ```bash
-python -m pytest tests/hermes_cli/test_anthropic_dashboard_pkce_csrf.py tests/agent/test_credential_pool_anthropic_refresh_race.py -v
+scripts/run_tests.sh tests/hermes_cli/test_web_oauth_dispatch.py tests/agent/test_credential_pool_anthropic_refresh_race.py tests/agent/test_anthropic_oauth_stress.py tests/agent/test_credential_pool_oauth_writethrough.py tests/hermes_cli/test_auth_store_lock_concurrent.py -q
 ```
 
-Resultado atual (código não corrigido): **7 failed, 1 passed** — as 7 falhas são a evidência dos bugs 1, 2 e 3; o único teste que passa (`test_concurrent_claude_code_refresh_recovers_via_credentials_file`) prova a assimetria descrita no Bug 3 (fonte `claude_code` se recupera, `hermes_pkce`/dashboard não).
+O teste `test_distinct_profiles_share_one_claude_refresh_without_duplicate_post` usa dois processos independentes e exige um único POST de `stale-rt`; `test_hermes_pkce_refresh_writes_back_to_singleton` confirma que a rotação sobrevive a um `load_pool()` novo; `test_concurrent_refreshes_use_one_shared_credentials_lock` cobre o resolver direto; e os testes marcados `windows_only` exercitam a implementação `msvcrt` no host Windows. A cobertura frontend correspondente é `web/src/lib/api.test.ts`.
 
 ## 6. Arquivos e linhas de referência
 
 | Arquivo | Linhas relevantes |
 |---|---|
-| `hermes_cli/web_server.py` | 10637-10661 (`_start_anthropic_pkce`), 10664-10728 (`_submit_anthropic_pkce`) |
-| `agent/credential_pool.py` | 1307-1344 (`_refresh_entry`), 855-905 (`_sync_anthropic_entry_from_credentials_file`), 1442-1483 (fallback de recuperação), 1705 (`_mark_exhausted`) |
-| `agent/anthropic_adapter.py` | 1125-1186 (`refresh_anthropic_oauth_pure`), 1189-1239 (`_refresh_oauth_token`, docstring sobre single-use), 1531-1658 (`run_hermes_oauth_login_pure`, fluxo CLI correto) |
-| `tests/agent/test_anthropic_oauth_pkce.py` | Regressão histórica do bug 1/2 no fluxo CLI (já corrigido lá) |
+| `hermes_cli/web_server.py` | Catálogo `anthropic` como `flow: "external"`; dispatcher rejeita `start`/`submit` |
+| `agent/credential_pool.py` | `_refresh_entry`, `_sync_anthropic_entry_from_pool_store`, lock compartilhado Claude Code e recuperação |
+| `agent/anthropic_adapter.py` | `claude_code_credentials_path`, refresh puro e fluxo CLI PKCE separado |
+| `web/src/lib/api.ts` | `/api/providers/oauth` incluído no escopo de perfil |
 
 ---
 
 ## 7. Validação manual pós-fix (2026-08-17)
 
-Além da suíte automatizada (seção 5), o fix do Bug 3 (API-key shadowing) foi
-validado manualmente com um teste A/B real — mesma cena, duas versões do
-código, sem mocks:
+Antes da remoção do fluxo dashboard, o shadowing de API key foi validado
+manualmente com um teste A/B real — mesma cena, duas versões do código, sem
+mocks. Este registro é histórico e não deve ser interpretado como prova de
+que o endpoint dashboard ainda existe:
 
 1. `.env` de teste com `ANTHROPIC_API_KEY` obsoleta (simulando um setup antigo
-   esquecido) + chamada real a `_save_anthropic_oauth_creds` (a função
-   disparada pelo login OAuth do dashboard), em `HERMES_HOME` isolado.
+   esquecido) + chamada real a `_save_anthropic_oauth_creds` (a função que
+   existia no login OAuth do dashboard), em `HERMES_HOME` isolado.
 2. **Sem o fix** (`main` @ `8c8d55b`, app instalado do usuário): depois do
    login OAuth, o `.env` continuou com a key obsoleta e
    `resolve_anthropic_token()` seguiu retornando a API key
@@ -266,12 +271,7 @@ código, sem mocks:
    `resolve_anthropic_token()` passou a retornar o token OAuth
    (`sk-ant-oat...`, `is_oauth_token=True`).
 
-Em seguida, o usuário rodou o `hermes chat` real no terminal (CLI, não
-dashboard) com o binário instalado apontando para esta branch via
-`PYTHONPATH`, contra seu `HERMES_HOME` real, e confirmou visualmente que o
-app sobe e opera normalmente sob o código corrigido.
-
-**Ação pendente:** o app instalado do usuário (`%LOCALAPPDATA%\hermes\hermes-agent`)
-ainda está em `main` sem este commit — precisa dar merge no PR #87891 e
-atualizar (`hermes update`) para o fix valer em produção, não só na branch de
-teste.
+O fluxo dashboard foi removido depois dessa validação. O que permanece
+verificável localmente é o fluxo de terminal e a ausência das rotas dashboard;
+uma validação em uma instalação publicada não foi executada nesta revisão e
+depende de distribuir uma versão que contenha a cabeça final do PR.

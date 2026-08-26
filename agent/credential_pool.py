@@ -1548,6 +1548,24 @@ class CredentialPool:
                         )
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
+                # Same rationale for the singleton source hermes_pkce:
+                # _seed_from_singletons() reads ~/.hermes/.anthropic_oauth.json
+                # on every load_pool() and will re-seed the pre-refresh (and
+                # already-consumed, single-use) token pair over this fresh one
+                # unless the singleton is updated in step with the pool entry.
+                # Do not use endswith here: manual:hermes_pkce is already
+                # pool-owned, and creating a singleton for it would introduce
+                # a second authority for the same refresh-token family.
+                elif entry.source == "hermes_pkce":
+                    try:
+                        from agent.anthropic_adapter import _write_hermes_oauth_credentials
+                        _write_hermes_oauth_credentials(
+                            refreshed["access_token"],
+                            refreshed["refresh_token"],
+                            refreshed["expires_at_ms"],
+                        )
+                    except Exception as wexc:
+                        logger.debug("Failed to write refreshed token to Hermes OAuth file: %s", wexc)
             elif self.provider == "openai-codex":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Hermes

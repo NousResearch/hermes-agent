@@ -1254,41 +1254,66 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     Only fall back to refreshing ourselves when no fresh credential is found.
     """
     # Claude Code may have already refreshed — adopt its token rather than
-    # racing it with our (possibly already-rotated) refresh token. Only adopt
-    # when the live re-read produced a DIFFERENT token with a real future
-    # expiry: re-adopting the same credential we were just handed would be a
-    # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
-    # (see is_claude_code_token_valid) which must NOT be treated as a fresh
-    # refresh here.
-    current = read_claude_code_credentials()
-    if current:
-        current_token = current.get("accessToken", "")
-        current_exp = current.get("expiresAt", 0) or 0
-        if (
-            current_token
-            and current_token != creds.get("accessToken", "")
-            and current_exp > 0
-            and is_claude_code_token_valid(current)
-        ):
-            logger.debug("Adopted Claude Code's already-refreshed OAuth token")
-            return current_token
-
-    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
-    if not refresh_token:
-        logger.debug("No refresh token available — cannot refresh")
-        return None
-
+    # racing it with our (possibly already-rotated) refresh token. The read,
+    # decision, POST, and write-back all belong to the shared credentials
+    # source, so hold the same path-keyed cross-process lock used by the pool.
+    # Without this direct resolver path, two profiles can still spend one
+    # single-use refresh token even though CredentialPool is serialized.
     try:
-        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
-        _write_claude_code_credentials(
-            refreshed["access_token"],
-            refreshed["refresh_token"],
-            refreshed["expires_at_ms"],
+        from hermes_cli.auth import AUTH_LOCK_TIMEOUT_SECONDS, _auth_store_lock, env_float
+
+        refresh_timeout_seconds = env_float(
+            "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS", 20
         )
-        logger.debug("Successfully refreshed Claude Code OAuth token")
-        return refreshed["access_token"]
+        lock_timeout_seconds = max(
+            float(AUTH_LOCK_TIMEOUT_SECONDS),
+            float(refresh_timeout_seconds) + 5.0,
+        )
+        with _auth_store_lock(
+            timeout_seconds=lock_timeout_seconds,
+            target_path=claude_code_credentials_path(),
+        ):
+            # Only adopt when the live re-read produced a DIFFERENT token with
+            # a real future expiry: re-adopting the same credential we were
+            # just handed would be a no-op, and a 0/absent ``expiresAt`` means
+            # "managed key / unknown expiry" (see is_claude_code_token_valid).
+            current = read_claude_code_credentials()
+            if current:
+                current_token = current.get("accessToken", "")
+                current_exp = current.get("expiresAt", 0) or 0
+                if (
+                    current_token
+                    and current_token != creds.get("accessToken", "")
+                    and current_exp > 0
+                    and is_claude_code_token_valid(current)
+                ):
+                    logger.debug("Adopted Claude Code's already-refreshed OAuth token")
+                    return current_token
+
+            refresh_token = (
+                (current or {}).get("refreshToken", "")
+                or creds.get("refreshToken", "")
+            )
+            if not refresh_token:
+                logger.debug("No refresh token available — cannot refresh")
+                return None
+
+            try:
+                refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+                _write_claude_code_credentials(
+                    refreshed["access_token"],
+                    refreshed["refresh_token"],
+                    refreshed["expires_at_ms"],
+                )
+                logger.debug("Successfully refreshed Claude Code OAuth token")
+                return refreshed["access_token"]
+            except Exception as e:
+                logger.debug("Failed to refresh Claude Code token: %s", e)
+                return None
     except Exception as e:
-        logger.debug("Failed to refresh Claude Code token: %s", e)
+        # Lock acquisition/read failures should preserve the resolver's
+        # existing fail-soft contract rather than taking down agent startup.
+        logger.debug("Failed to acquire Claude Code refresh lock: %s", e)
         return None
 
 
@@ -1722,6 +1747,49 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read Hermes OAuth credentials: %s", e)
     return None
+
+
+def _write_hermes_oauth_credentials(
+    access_token: str,
+    refresh_token: Optional[str],
+    expires_at_ms: Optional[int],
+) -> None:
+    """Write refreshed hermes_pkce tokens back to ~/.hermes/.anthropic_oauth.json.
+
+    Without this, a successful pool-level refresh of a ``hermes_pkce``-sourced
+    entry is invisible to this singleton file. The next ``load_pool()`` call
+    runs ``_seed_from_singletons()``, which reads the stale file and
+    overwrites the freshly-rotated pool entry with the pre-refresh (and, for
+    single-use Anthropic refresh tokens, already-consumed) token pair.
+    """
+    oauth_file = _get_hermes_oauth_file()
+    try:
+        oauth_data = {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at_ms,
+        }
+        oauth_file.parent.mkdir(parents=True, exist_ok=True)
+        _tmp_oauth = oauth_file.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            fd = os.open(
+                str(_tmp_oauth),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(oauth_data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(_tmp_oauth, oauth_file)
+        except OSError:
+            try:
+                _tmp_oauth.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+    except (OSError, IOError) as e:
+        logger.debug("Failed to write refreshed Hermes OAuth credentials: %s", e)
 
 
 # ---------------------------------------------------------------------------

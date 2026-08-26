@@ -348,17 +348,7 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
   const code = String(children).replace(/\n$/, '')
 
   const highlighted = (
-    <ShikiHighlighter
-      addDefaultStyles={false}
-      as="div"
-      defaultColor="light-dark()"
-      delay={80}
-      language={language}
-      showLanguage={false}
-      theme={SHIKI_THEME}
-    >
-      {code}
-    </ShikiHighlighter>
+    <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
   )
 
   // ```mermaid / ```svg fences route to the shared lazy renderers (same
@@ -661,17 +651,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
               })}
             </div>
             <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                defaultColor="light-dark()"
-                delay={80}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {chunk.text}
-              </ShikiHighlighter>
+              <ShikiHighlighter code={chunk.text} language={language || 'text'} theme={SHIKI_THEME} />
             </div>
           </Fragment>
         ))}

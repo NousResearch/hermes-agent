@@ -157,6 +157,7 @@ import {
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   patchSessionWorkspace,
+  preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
@@ -1372,26 +1373,37 @@ export function useSessionActions({
 
               const activatedState = updateSessionState(
                 cachedRuntimeId,
-                state => ({
-                  ...state,
-                  messages: visibleActivatedMessages,
-                  transcriptProvenance:
-                    acceptedPersistedDisplayTranscript || hasValidProvenance
-                      ? (expectedProvenance ?? undefined)
-                      : undefined,
-                  ...(pendingClarifyProjection
-                    ? {
-                        awaitingResponse: false,
-                        sawAssistantPayload: true,
-                        streamId: pendingClarifyProjection.streamId
-                      }
-                    : {}),
-                  ...(clearedClarifyProjection
-                    ? {
-                        streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
-                      }
-                    : {})
-                }),
+                state => {
+                  // #95595: the reconcilers above always produce fresh
+                  // message objects, so an unconditional publish replaces the
+                  // warm-cached array with new-object equivalents and every
+                  // visible row re-normalizes + remounts (markdown re-parse +
+                  // shiki re-highlight per row, seconds of main-thread work).
+                  // Keep the existing array when the content is unchanged —
+                  // same guard the cold-resume path uses below.
+                  const messages = preserveEquivalentTranscript(state.messages, visibleActivatedMessages)
+
+                  return {
+                    ...state,
+                    messages,
+                    transcriptProvenance:
+                      acceptedPersistedDisplayTranscript || hasValidProvenance
+                        ? (expectedProvenance ?? undefined)
+                        : undefined,
+                    ...(pendingClarifyProjection
+                      ? {
+                          awaitingResponse: false,
+                          sawAssistantPayload: true,
+                          streamId: pendingClarifyProjection.streamId
+                        }
+                      : {}),
+                    ...(clearedClarifyProjection
+                      ? {
+                          streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                        }
+                      : {})
+                  }
+                },
                 storedSessionId
               )
 

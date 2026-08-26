@@ -261,11 +261,19 @@ The gate binds to every compaction authority, not just the Hermes
 summarizer: server-side native compaction (`compression.codex_responses_native`)
 is suppressed while the gate is armed, post-turn micro-compaction
 (`compression.micro_compact`) is forced off at agent init (it absorbs old
-exchanges into a rolling summary with no checkpoint hook in its path), and
+exchanges into a rolling summary with no checkpoint hook in its path), the
+proactive tool-result prune (`compression.proactive_prune_tokens`) is
+suppressed at its call site (off by default, so a default install has nothing
+to suppress there), a plugin context engine that may compact outside
+`compress()` is refused at agent init and has its `on_turn_complete` hook
+withheld per turn (see [Context Engine
+Plugins](./context-engine-plugin.md), "Compaction authority"), and
 the `codex_app_server` API mode is refused at agent init — the codex agent
 compacts its own thread with no truthful pre-compaction boundary, so a
 required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
-compressor stays the only lossy authority.
+compressor stays the only lossy authority on every path the host can intercept
+or prove safe by hook inference; an engine with its own scheduler and a false
+declaration remain trust boundaries.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the

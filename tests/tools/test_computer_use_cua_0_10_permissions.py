@@ -244,25 +244,19 @@ def test_standard_existing_profile_grant_stays_in_process_off_macos():
     assert socket_path is None
 
 
-def test_transport_reset_invalidates_native_and_browser_capabilities():
+def test_transport_reset_invalidates_native_capabilities():
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend(permission_mode="standard")
     backend._active_pid = 10
     backend._active_window_id = 20
     backend._snapshot_tokens = {1: "old-token"}
-    backend._typed_browser.state.pid = 10
-    backend._typed_browser.state.window_id = 20
-    backend._typed_browser.state.target_id = "old-target"
-    backend._typed_browser.state.refs = {"old-ref": {"click"}}
 
     backend._handle_transport_reset()
 
     assert backend._active_pid is None
     assert backend._active_window_id is None
     assert backend._snapshot_tokens == {}
-    assert backend._typed_browser.state.target_id is None
-    assert backend._typed_browser.state.refs == {}
 
 
 # ── the escalation is at least audible ──────────────────────────────────

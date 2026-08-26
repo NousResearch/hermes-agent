@@ -138,6 +138,7 @@ class TestEveryImportSiteIsGuarded:
         assert clobbering_import == [
             "hindsight",
             "hindsight_embed.daemon_embed_manager",
+            "sentence_transformers",
         ]
         _assert_profile_env_intact()
 

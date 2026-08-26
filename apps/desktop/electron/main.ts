@@ -61,6 +61,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -3469,43 +3470,59 @@ async function releaseBackendLock(updateRoot, tag) {
 
   const hermesProcess = backendConnectionState.getProcess()
 
+  // Seed the release gate with every PID we are about to signal: the
+  // supervised primary backend and all pool backends. The gate waits for
+  // these to actually LEAVE the process table, not just for the shim to
+  // unlock — the shim probe only covers venv\Scripts\hermes.exe, but the
+  // backend is `python.exe -m hermes_cli.main serve`, which need not hold
+  // the shim at all (#74805 first-attempt race).
+  const initialPids = []
+
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    initialPids.push(hermesProcess.pid)
+  }
+
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) {
+      initialPids.push(entry.process.pid)
+    }
+  }
+
   stopBackendTreesForUpdate(hermesProcess, {
     forceKillProcessTree,
     stopAllPoolBackends
   })
 
   const shim = venvHermesShimPath(updateRoot)
-  const deadlineMs = Date.now() + 15000
 
-  while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
-      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
+  const gate = await waitForBackendRelease(initialPids, {
+    isShimLocked: () => Boolean(isShimLocked(shim)),
+    isPidAlive: isPidAliveWindows,
+    collectStragglerPids: () => {
+      const stragglers = []
 
-      return { unlocked: true }
-    }
+      const currentHermesProcess = backendConnectionState.getProcess()
 
-    // A supervised backend can respawn between kill and check (grandchildren,
-    // pool entries registered mid-teardown). Re-collect and re-kill each pass
-    // instead of trusting the initial sweep.
-    const stragglers = []
-
-    const currentHermesProcess = backendConnectionState.getProcess()
-
-    if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
-      stragglers.push(currentHermesProcess.pid)
-    }
-
-    for (const entry of backendPool.values()) {
-      if (entry.process && Number.isInteger(entry.process.pid)) {
-        stragglers.push(entry.process.pid)
+      if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
+        stragglers.push(currentHermesProcess.pid)
       }
-    }
 
-    for (const pid of stragglers) {
-      forceKillProcessTree(pid)
-    }
+      for (const entry of backendPool.values()) {
+        if (entry.process && Number.isInteger(entry.process.pid)) {
+          stragglers.push(entry.process.pid)
+        }
+      }
 
-    await new Promise(r => setTimeout(r, 300))
+      return stragglers
+    },
+    killProcessTree: forceKillProcessTree,
+    sleep: (ms: number) => new Promise(r => setTimeout(r, ms)),
+    now: () => Date.now(),
+    log: rememberLog
+  }, tag)
+
+  if (gate.unlocked) {
+    return { unlocked: true }
   }
 
   // Do NOT proceed past a held lock: handing off to the updater while another
@@ -3679,6 +3696,23 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         // Let verified process-tree termination finish unwinding wrapper shells,
         // then make the scanner — not the stale renderer payload — authoritative.
         await new Promise(resolve => setTimeout(resolve, 300))
+        scanOutcome = await scanVenvBlockers(updateRoot)
+      }
+
+      // Re-scan before aborting on 'blocked' (#74805). Process-table teardown
+      // is asynchronous on Windows: even after releaseBackendLock's PID-exit
+      // wait, a grandchild the desktop never tracked (or a process an AV /
+      // NTFS filter driver is holding in teardown) can stay enumerable for a
+      // few more seconds and read as a holder. Each scan already costs
+      // seconds (spawns a venv python + psutil sweep), so two retries with a
+      // short dwell give the table time to settle without meaningfully
+      // delaying the abort path when a REAL holder (a user terminal, second
+      // window) is present — that holder is still there on the third scan.
+      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
+        rememberLog(
+          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning after settle (attempt ${attempt + 2}/3)`
+        )
+        await new Promise(resolve => setTimeout(resolve, 1500))
         scanOutcome = await scanVenvBlockers(updateRoot)
       }
 

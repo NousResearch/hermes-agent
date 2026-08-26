@@ -378,6 +378,157 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return _detect_default_linux()
 
 
+# ---------------------------------------------------------------------------
+# Real-profile SNAPSHOT launch
+#
+# The consent path (``browser.use_real_profile``) never drives the live
+# default user-data-dir. Chromium ≥136 (Google-branded builds) refuses
+# remote debugging on the default dir no matter who launches it, and the
+# live dir is usually held by the user's running browser (SingletonLock).
+# Instead we snapshot the real profile into ``~/.hermes/browser-profile/``
+# — a non-default dir Chrome will happily debug, that never contends with
+# the user's browser — launch the user's real binary on the copy with a
+# devtools port, and hand the CDP URL to whichever browser lane is active
+# (Browser Use CLI or the built-in tools). We launch the browser ourselves
+# precisely so NO mock-keychain/basic-store switches are added: cookies
+# encrypted with the OS keyring (gnome-keyring / kwallet / macOS Keychain)
+# decrypt exactly like they do in the user's own browser.
+# ---------------------------------------------------------------------------
+
+# Directory names excluded from the profile snapshot: caches/telemetry AND the
+# heavy, replay-prone state that hangs a fresh Chromium's renderer (extensions
+# and their service workers spin up on launch and wedge JS eval; IndexedDB /
+# GPUCache add hundreds of MB for nothing). We keep ONLY auth/login state
+# (cookies, Login Data, Web Data, Preferences, Local State) — the point of the
+# feature — which turns a multi-hundred-MB profile into a few MB.
+_SNAPSHOT_IGNORES = (
+    "*Cache*",          # Cache, Code Cache, GPUCache, GrShaderCache, ShaderCache, GraphiteDawnCache, component_crx_cache, ...
+    "Extensions",       # wallets/etc.: 100s of MB, and hang the renderer headless
+    "Extension*",       # Extension State, Extension Rules, Extension Scripts
+    "Local Extension Settings",
+    "Service Worker",   # replays on launch → wedges the renderer
+    "IndexedDB",
+    "Crash Reports",
+    "Crashpad",
+    "BrowserMetrics*",
+    "Snapshots",
+    "OptimizationGuide*",
+    "optimization_guide_model_store",
+    "Safe Browsing",
+    "SafetyTips",
+    "OnDeviceHeadSuggestModel",
+    "segmentation_platform",
+    "Sync Data",
+    "Shared Dictionary",
+    "History*",         # large; not needed for auth
+    "Favicons*",
+    "Singleton*",       # live-instance symlinks; never valid in a copy
+    "RunningChromeVersion",
+    "SingletonSocket",
+    "*.tmp",
+    "BrowserMetrics-spare.pma",
+)
+
+# Small, auth-bearing files re-synced from the live profile on EVERY consented
+# launch (the full tree is only copied when the snapshot doesn't exist yet).
+# Paths are relative to the user-data-dir; <profile> expands per profile dir.
+_AUTH_REFRESH_FILES = (
+    "Local State",
+    "<profile>/Cookies",
+    "<profile>/Cookies-journal",
+    "<profile>/Network/Cookies",
+    "<profile>/Network/Cookies-journal",
+    "<profile>/Login Data",
+    "<profile>/Login Data-journal",
+    "<profile>/Login Data For Account",
+    "<profile>/Web Data",
+    "<profile>/Web Data-journal",
+    "<profile>/Preferences",
+)
+
+def real_profile_copy_dir(browser: str) -> str:
+    """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
+    return str(get_hermes_home() / "browser-profile" / browser)
+
+
+def _profile_subdirs(src: str) -> list[str]:
+    """Names of per-profile dirs (Default, Profile 1, ...) inside a data dir."""
+    out = []
+    try:
+        for name in os.listdir(src):
+            if name == "Default" or name.startswith("Profile "):
+                if os.path.isdir(os.path.join(src, name)):
+                    out.append(name)
+    except OSError:
+        pass
+    return out or ["Default"]
+
+
+def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
+    """Snapshot ``browser``'s real profile into the hermes copy dir.
+
+    Full copy (minus caches) when the copy doesn't exist; otherwise only the
+    auth-bearing files (cookies, login data, preferences) are re-synced so
+    fresh logins from the user's own browsing show up in the agent session.
+    Locked-file copy errors are tolerated best-effort: SQLite journals make a
+    mid-write copy readable, and a stale cookie jar beats a failed launch.
+
+    Returns ``(copy_dir, None)`` on success, ``(None, error)`` on failure.
+    """
+    src = src or real_profile_data_dir(browser)
+    if not src or not os.path.isdir(src):
+        return None, (
+            f"profile directory for '{browser}' was not found ({src!r}). "
+            "Launch that browser at least once, or turn browser.use_real_profile off."
+        )
+    dst = real_profile_copy_dir(browser)
+    fresh = not os.path.isdir(os.path.join(dst, "Default"))
+    try:
+        if fresh:
+            os.makedirs(dst, exist_ok=True)
+            try:
+                shutil.copytree(
+                    src,
+                    dst,
+                    dirs_exist_ok=True,
+                    symlinks=False,
+                    ignore=shutil.ignore_patterns(*_SNAPSHOT_IGNORES),
+                    ignore_dangling_symlinks=True,
+                )
+            except shutil.Error as multi:
+                # Per-file failures (browser mid-write) are non-fatal.
+                logger.info(
+                    "real-profile snapshot: %d file(s) skipped while copying %s",
+                    len(multi.args[0]) if multi.args else 0, src,
+                )
+        else:
+            profiles = _profile_subdirs(src)
+            for rel in _AUTH_REFRESH_FILES:
+                rels = (
+                    [rel.replace("<profile>", p) for p in profiles]
+                    if "<profile>" in rel else [rel]
+                )
+                for r in rels:
+                    s = os.path.join(src, r)
+                    if not os.path.isfile(s):
+                        continue
+                    d = os.path.join(dst, r)
+                    try:
+                        os.makedirs(os.path.dirname(d), exist_ok=True)
+                        shutil.copy2(s, d)
+                    except OSError as e:
+                        logger.debug("real-profile refresh: skipped %s: %s", r, e)
+        # Never carry live-instance leftovers into the copy.
+        for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            try:
+                os.unlink(os.path.join(dst, leftover))
+            except OSError:
+                pass
+    except OSError as e:
+        return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
+    return dst, None
+
+
 def get_chrome_debug_candidates(system: str) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()

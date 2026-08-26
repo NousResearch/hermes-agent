@@ -599,11 +599,87 @@ def _resolve_backend_cdp(
     return None
 
 
+def _real_profile_consented() -> bool:
+    """Whether the user opted in to real-profile local browsing (config read)."""
+    try:
+        from tools.browser_tool import _use_real_profile
+
+        return _use_real_profile()
+    except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+        logger.debug("real-profile consent lookup failed: %s", e)
+        return False
+
+
+def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+    """Point the harness at the user's real-profile copy-browser when consented.
+
+    With ``browser.use_real_profile`` on, local browsing must mean the user's
+    default Chromium with their logins — a browser Hermes launches on a
+    SNAPSHOT of their real profile (see hermes_cli.browser_connect). Two ways
+    in:
+
+    - the effective backend is already local (no cloud provider, no CDP
+      override, no legacy Browser Use cloud config): every local attach
+      upgrades to the real profile, silently — this is requirement one; or
+    - ``force_local`` (the consent-gated ``local`` tool arg): the model was
+      asked to drive the user's actual browser even though a cloud backend
+      is configured. The cloud backend keeps serving everything else.
+
+    Explicit operator overrides (BU_CDP_WS/BU_CDP_URL env, /browser connect,
+    ``browser.cdp_url``) own the session either way, matching the built-in
+    lane's precedence.
+
+    Sets BU_CDP_URL/BU_CDP_WS on success. Returns an error string when the
+    real-profile launch fails (fail closed — a consented user is never
+    silently downgraded to a throwaway browser), else None.
+    """
+    if not _real_profile_consented():
+        return None
+    if env.get("BU_CDP_WS") or env.get("BU_CDP_URL"):
+        return None
+
+    try:
+        from tools.browser_tool import (
+            _get_cdp_override_raw,
+            _get_cloud_provider,
+            _real_profile_cdp,
+        )
+    except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+        logger.debug("real-profile backend resolution unavailable: %s", e)
+        return None
+
+    try:
+        if _get_cdp_override_raw():
+            return None
+    except Exception:
+        pass
+
+    if not force_local:
+        # Only auto-upgrade genuinely-local attaches; any cloud path (provider
+        # or legacy Browser Use cloud config) stays on its backend unless the
+        # model passes local=true.
+        try:
+            if _get_cloud_provider() is not None:
+                return None
+        except Exception:
+            return None
+        if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+            return None
+
+    cdp, err = _real_profile_cdp()
+    if err:
+        return err
+    if cdp:
+        env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+    return None
+
+
 def browser_exec(
     code: str,
     session: str = "",
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
+    local: bool = False,
 ):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
@@ -632,6 +708,24 @@ def browser_exec(
                 "dashes, or underscores (e.g. 'r7k2')."
             )
         env["BU_NAME"] = session
+    # Real-profile consent: on a local backend this upgrades the attach to
+    # the user's default browser (profile snapshot, logins included); with
+    # local=True it forces that even under a cloud backend. Runs BEFORE
+    # provider resolution so a real-profile hit short-circuits the cloud
+    # path via the BU_CDP_* env contract.
+    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local))
+    if rp_err:
+        return tool_error(rp_err)
+    if local and not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
+        # local=True is only served by the real-profile route; anything else
+        # (consent off — schema normally hidden, but be explicit; or an
+        # operator CDP override owning the session) must not pretend.
+        if not _real_profile_consented():
+            return tool_error(
+                "local=true was requested but browser.use_real_profile is off. "
+                "Enable it in config.yaml (browser.use_real_profile: true) or "
+                "the desktop Settings → Browser section, then retry."
+            )
     # Route through the configured browser backend (Browserbase, Firecrawl,
     # Nous gateway, CDP override, local Chrome, …). Named sessions compose
     # with the backend: BU_NAME namespaces the harness daemon (its IPC
@@ -831,7 +925,28 @@ def _cli_skill_text() -> str:
 
 
 def _dynamic_schema_overrides() -> dict:
-    return {"description": _description_header() + _HELPERS_DIGEST}
+    overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
+    # The ``local`` argument exists ONLY when the user consented to
+    # real-profile browsing — everyone else's schema carries zero extra
+    # surface. get_definitions() applies this at schema-build time, and the
+    # caller memoizes on config.yaml mtime, so toggling consent changes the
+    # schema on the next session rather than mid-conversation.
+    if _real_profile_consented():
+        props = dict(BROWSER_EXEC_SCHEMA["parameters"]["properties"])
+        props["local"] = {
+            "type": "boolean",
+            "description": (
+                "Drive the user's own local browser (a Hermes-managed copy of "
+                "their real default-Chromium profile, logins/cookies included) "
+                "instead of the configured cloud browser backend. Use when the "
+                "user asks to act as themselves — their accounts, their "
+                "sessions. No-op when the backend is already local. Default "
+                "false."
+            ),
+            "default": False,
+        }
+        overrides["parameters"] = {**BROWSER_EXEC_SCHEMA["parameters"], "properties": props}
+    return overrides
 
 
 BROWSER_EXEC_SCHEMA = {
@@ -879,6 +994,7 @@ registry.register(
         session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
         task_id=kw.get("task_id"),
+        local=bool(args.get("local", False)),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

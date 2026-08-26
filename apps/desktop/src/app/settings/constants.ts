@@ -558,7 +558,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   browser: {
     useRealProfile:
-      "Local browser use drives your real default browser profile — its logins, cookies, and history. Backend-independent: applies whenever a local Chromium is used, and lets the agent choose a local real-profile session even under a cloud backend. Only Chromium browsers (Chrome, Edge, Brave, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
   },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',

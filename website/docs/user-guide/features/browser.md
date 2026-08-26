@@ -158,6 +158,41 @@ auto-installs it). Post-navigation redirects from a public URL onto a private
 address are still blocked (you can't use a redirect-to-internal trick to reach
 your LAN through the public path).
 
+### Real profile browsing (use your own logins)
+
+By default, local browsing runs in a clean, throwaway profile — the agent is
+logged into nothing. Turn on **real profile browsing** to let the agent browse
+as *you*, with your existing logins and cookies:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+```
+
+When enabled, Hermes copies your default browser's profile — cookies, saved
+logins, and preferences — into a managed snapshot under
+`~/.hermes/browser-profile/<browser>/`, then drives that snapshot with its
+packaged Chromium. Your live browser profile is **never opened directly**: the
+snapshot is a separate directory, so it doesn't fight your running browser for
+the profile lock and it sidesteps Chrome 136+'s block on remote-debugging the
+default profile directory. The auth files (cookies/logins/preferences) are
+re-synced from your real profile on every launch, so logins you do in your own
+browser show up in the agent's session.
+
+- **Supported browsers:** Chrome, Edge, Brave, Chromium (whichever is your OS
+  default). A non-Chromium default (e.g. Firefox) fails closed with a clear
+  message rather than guessing.
+- **Works on any backend.** On a local backend it's automatic once the toggle
+  is on. Under a **cloud** browser backend, the agent can still open a
+  real-profile local session on demand via the `browser_exec` tool's `local`
+  argument (the tool only exposes that argument when this toggle is on) — the
+  cloud backend keeps serving everything else.
+- **Security framing:** this is a consent-gated convenience, not an isolation
+  boundary. A page the agent visits runs with your real logins, so only enable
+  it when you want the agent acting as you. Off by default.
+- **Desktop:** toggle it in **Settings → Browser → Use My Real Browser Profile**.
+
 ### Camofox local mode
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.

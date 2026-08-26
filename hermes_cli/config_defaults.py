@@ -575,16 +575,19 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        # Consent to drive the user's REAL default-Chromium profile in local
-        # mode. When true, any local Chromium launch (built-in tools, or a
-        # local sidecar spawned under a cloud backend) uses the default
-        # browser's real user-data-dir — exposing that profile's live logins,
-        # cookies, and history to automation. Backend-independent. Only
-        # Chromium-family default browsers are supported (Chrome, Edge, Brave,
-        # Chromium); a non-Chromium default (e.g. Firefox) fails closed with a
-        # clear message. Default false. Also gates the browser tools'
-        # ``local_browser`` argument. Toggle in the desktop Settings → Browser
-        # section.
+        # Consent to browse with the user's REAL logins for local browsing.
+        # When true, local browsing (the Browser Use CLI, or the built-in
+        # browser tools) runs on a Hermes-managed SNAPSHOT of the user's
+        # default-Chromium profile — cookies, logins and preferences copied in,
+        # re-synced from the real profile on each launch — driven by Hermes'
+        # packaged Chromium. The snapshot is a non-default dir, so it sidesteps
+        # Chrome 136+'s block on debugging the default profile and never
+        # contends with the user's running browser. Only Chromium-family
+        # default browsers are supported (Chrome, Edge, Brave, Chromium); a
+        # non-Chromium default (e.g. Firefox) fails closed with a clear
+        # message. Default false. Also gates the browser_exec ``local``
+        # argument, which forces a real-profile local session even under a
+        # cloud browser backend. Toggle in the desktop Settings → Browser section.
         "use_real_profile": False,
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)

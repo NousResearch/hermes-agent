@@ -1025,9 +1025,6 @@ def _is_local_backend() -> bool:
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
 
-_use_real_profile_resolved = False
-_cached_use_real_profile: bool = False
-
 
 def _get_browser_engine() -> str:
     """Return the configured browser engine (``auto``, ``lightpanda``, or ``chrome``).
@@ -1433,65 +1430,220 @@ def _auto_local_for_private_urls() -> bool:
 def _use_real_profile() -> bool:
     """Return whether the user consented to real-profile local browsing.
 
-    Reads ``browser.use_real_profile`` (default False) once and caches it. When
-    True, local Chromium launches point agent-browser at the user's REAL
-    default-browser profile, and the browser tools' ``local_browser`` argument
-    is honored.
+    Reads ``browser.use_real_profile`` (default False) on EVERY call — it is a
+    consent switch, so flipping it off must take effect without a restart, and
+    in a multiplexed gateway each profile's config must decide for itself.
+    The read is one YAML load per local session creation (not per command),
+    so there is no hot-path cost to keeping it uncached.
     """
-    global _use_real_profile_resolved, _cached_use_real_profile
-    if _use_real_profile_resolved:
-        return _cached_use_real_profile
-
-    _use_real_profile_resolved = True
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict) and "use_real_profile" in browser_cfg:
-            _cached_use_real_profile = bool(browser_cfg.get("use_real_profile"))
+        if isinstance(browser_cfg, dict):
+            return bool(browser_cfg.get("use_real_profile", False))
     except Exception as e:
         logger.debug("Could not read use_real_profile from config: %s", e)
-    return _cached_use_real_profile
+    return False
 
 
-def _real_profile_launch_args() -> tuple:
-    """Resolve (profile_args, error) for a real-profile local launch.
+# Session name for the single shared real-profile copy-browser. All consented
+# local browsing attaches to this one agent-browser session so concurrent
+# tasks reuse the same copy-browser instead of each launching a rival Chromium
+# on the same copied user-data-dir.
+_REAL_PROFILE_SESSION = "hermes-real-profile"
+_real_profile_cdp_lock = threading.Lock()
+_real_profile_cdp_cache: dict = {}
 
-    Returns ``(["--profile", <data_dir>, "--executable-path", <bin>], None)``
-    when consent is on and the default browser is a resolvable Chromium.
-    Returns ``([], <message>)`` when the default browser is non-Chromium or its
-    profile/binary cannot be located, so the caller can fail closed with a
-    clear reason. Returns ``([], None)`` when consent is off (no-op).
+
+def _agent_browser_argv(browser_cmd: str) -> list:
+    """Command prefix to invoke agent-browser (binary or npx sentinel)."""
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _npx_bin = _resolve_npx_bin() or "npx"
+        return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+    return [browser_cmd]
+
+
+def _cdp_http_ready(http_cdp: str) -> bool:
+    """True when an ``http://host:port`` CDP discovery root answers."""
+    try:
+        from hermes_cli.browser_connect import is_browser_debug_ready
+
+        return is_browser_debug_ready(http_cdp, timeout=1.0)
+    except Exception:
+        return False
+
+
+def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
+    """Return the HTTP CDP endpoint of an agent-browser session, or None.
+
+    agent-browser prints ``ws://127.0.0.1:<port>/devtools/browser/<id>`` for
+    ``get cdp-url``; the browser-use harness wants the HTTP discovery root
+    (``http://127.0.0.1:<port>``), so we convert. None when the session isn't
+    running or the port can't be parsed.
+    """
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError:
+        return None
+    try:
+        proc = subprocess.run(
+            [*_agent_browser_argv(browser_cmd), "--session", session_name, "get", "cdp-url"],
+            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("real-profile get cdp-url failed: %s", e)
+        return None
+    out = (proc.stdout or "").strip()
+    m = re.search(r"ws://127\.0\.0\.1:(\d+)/", out)
+    if not m:
+        return None
+    return f"http://127.0.0.1:{m.group(1)}"
+
+
+def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
+    """True when the CDP endpoint's browser is running on ``data_dir``.
+
+    agent-browser's launched Chrome writes ``DevToolsActivePort`` into its
+    user-data-dir with the live debug port on the first line. Matching that
+    port against the CDP endpoint's port confirms the running browser is our
+    profile copy — not a throwaway temp dir a raced/stale launch fell back to.
+    """
+    m = re.search(r":(\d+)", http_cdp or "")
+    if not m:
+        return False
+    try:
+        with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+            port_line = fh.readline().strip()
+        return port_line == m.group(1)
+    except OSError:
+        return False
+
+
+def _agent_browser_close_session(session_name: str) -> None:
+    """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError:
+        return
+    try:
+        subprocess.run(
+            [*_agent_browser_argv(browser_cmd), "--session", session_name, "close"],
+            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("real-profile session close failed: %s", e)
+
+
+def _real_profile_cdp() -> tuple:
+    """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
+
+    Snapshots the user's default-Chromium profile into a hermes-owned copy
+    (auth/login state only), then has agent-browser launch its packaged
+    Chromium on that copy and returns the HTTP CDP endpoint for the browser-use
+    harness to attach to. The copy is a non-default dir, so it sidesteps the
+    Chrome ≥136 default-profile remote-debugging block and never contends with
+    the user's running browser; agent-browser launches the packaged Chromium
+    with no mock-keychain switches, so keyring-encrypted cookies decrypt.
+
+    A single shared agent-browser session is reused across calls (its CDP URL
+    is cached and re-validated). Returns ``(None, message)`` fail-closed when
+    the default browser is non-Chromium or the snapshot/launch fails;
+    ``(None, None)`` when consent is off.
     """
     if not _use_real_profile():
-        return [], None
+        return None, None
+
     from hermes_cli.browser_connect import (
-        chromium_executable,
         detect_default_chromium,
-        real_profile_data_dir,
+        snapshot_real_profile,
     )
 
-    browser = detect_default_chromium()
-    if browser is None:
-        return [], (
-            "browser.use_real_profile is on, but your default browser is not a "
-            "supported Chromium browser (Chrome, Edge, Brave, Chromium). "
-            "Real-profile browsing requires a Chromium default; set one or turn "
-            "the toggle off."
-        )
-    data_dir = real_profile_data_dir(browser)
-    if not data_dir or not os.path.isdir(data_dir):
-        return [], (
-            f"browser.use_real_profile is on and your default browser is "
-            f"'{browser}', but its profile directory was not found "
-            f"({data_dir!r}). Launch that browser at least once, or turn the "
-            "toggle off."
-        )
-    args = ["--profile", data_dir]
-    exe = chromium_executable(browser)
-    if exe:
-        args += ["--executable-path", exe]
-    return args, None
+    with _real_profile_cdp_lock:
+        # Reuse a live copy-browser from an earlier call this process made.
+        cached = _real_profile_cdp_cache.get("cdp")
+        if cached and _cdp_http_ready(cached):
+            return cached, None
+        _real_profile_cdp_cache.pop("cdp", None)
+
+        browser = detect_default_chromium()
+        if browser is None:
+            return None, (
+                "browser.use_real_profile is on, but your default browser is not a "
+                "supported Chromium browser (Chrome, Edge, Brave, Chromium). "
+                "Real-profile browsing requires a Chromium default; set one or turn "
+                "the toggle off."
+            )
+        copy_dir, err = snapshot_real_profile(browser)
+        if err or not copy_dir:
+            return None, f"browser.use_real_profile is on, but {err}"
+
+        # A shared session may already be up from a previous hermes process,
+        # but ONLY reuse it when it is actually driving our copy dir — a stale
+        # session from an earlier/failed launch can be attached to a throwaway
+        # temp profile (agent-browser falls back to one when a launch races),
+        # which would serve zero real cookies. Verify, else close and relaunch.
+        existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
+        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+            _real_profile_cdp_cache["cdp"] = existing
+            return existing, None
+        if existing:
+            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+
+        # Launch agent-browser's packaged Chromium on the profile COPY. This is
+        # the same launch path Hermes' built-in local browsing already uses,
+        # just pointed at the copied user-data-dir — no bespoke Chrome launch.
+        try:
+            browser_cmd = _find_agent_browser()
+        except FileNotFoundError as e:
+            return None, (
+                "browser.use_real_profile is on, but the local browser engine "
+                f"(agent-browser) is not installed: {e}"
+            )
+        argv = [
+            *_agent_browser_argv(browser_cmd),
+            "--session", _REAL_PROFILE_SESSION,
+            "--profile", copy_dir,
+        ]
+        # Do NOT pass agent-browser's ``--headless``: it maps to Chrome's legacy
+        # headless mode, which uses a SEPARATE cookie store and loads none of the
+        # copied profile's cookies (verified: --headless → 0 cookies, default →
+        # full jar). agent-browser's default already runs windowless on a
+        # server (no DISPLAY) while reading the real cookie store, which is
+        # exactly what real-profile browsing needs. Headed mode is a superset
+        # (visible window) and equally fine, so no flag either way.
+        argv += ["open", "about:blank"]
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True,
+                timeout=_get_open_command_timeout(first_open=True),
+                env=_build_browser_env(),
+            )
+        except subprocess.TimeoutExpired:
+            return None, (
+                "browser.use_real_profile is on, but the real-profile browser "
+                "took too long to start. Retry, or turn the toggle off."
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            return None, f"browser.use_real_profile is on, but the launch failed: {e}"
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+            reason = tail[-1] if tail else f"exit {proc.returncode}"
+            return None, (
+                f"browser.use_real_profile is on, but the real-profile browser "
+                f"failed to start: {reason}"
+            )
+
+        cdp = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
+        if not cdp:
+            return None, (
+                "browser.use_real_profile is on, but the real-profile browser "
+                "started without exposing a devtools endpoint. Retry, or turn "
+                "the toggle off."
+            )
+        _real_profile_cdp_cache["cdp"] = cdp
+        logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+        return cdp, None
 
 
 def _url_is_private(url: str) -> bool:
@@ -1557,7 +1709,7 @@ def _url_is_private(url: str) -> bool:
         return False
 
 
-def _navigation_session_key(task_id: str, url: str, local_browser: bool = False) -> str:
+def _navigation_session_key(task_id: str, url: str) -> str:
     """Pick the session key that should handle ``url`` for ``task_id``.
 
     Returns the bare task_id unless ALL of these are true:
@@ -1570,17 +1722,11 @@ def _navigation_session_key(task_id: str, url: str, local_browser: bool = False)
 
     When all are true, returns ``f"{task_id}::local"`` so the hybrid-routing
     path spawns a local Chromium sidecar while the cloud session (if any)
-    continues to serve public URLs.
-
-    ``local_browser=True`` (the model-facing arg) forces the ``::local`` sidecar
-    for the backend choice — but ONLY when the user consented to real-profile
-    browsing (``browser.use_real_profile``). Without consent the flag is ignored
-    (the caller surfaces a note); it never silently routes to the real profile.
-    It does not override the private-URL policy: a private URL is still routed
-    exactly as ``browser.auto_local_for_private_urls`` says. Without a cloud
-    provider the bare session is already local (and already carries the real
-    profile when consented), so the flag adds nothing there. A CDP override or
-    Camofox mode still owns the session and is not overridden.
+    continues to serve public URLs. With ``browser.use_real_profile`` consent,
+    local sessions (bare or sidecar) attach to the user's real-profile
+    copy-browser via ``_create_local_session``; forcing a local session from
+    the model side is the Browser Use lane's ``local`` argument, not a
+    built-in-tools argument.
     """
     if task_id is None:
         task_id = "default"
@@ -1589,17 +1735,7 @@ def _navigation_session_key(task_id: str, url: str, local_browser: bool = False)
     if _is_camofox_mode():
         return task_id
     if _get_cloud_provider() is None:
-        # Already local. A second ``::local`` session for the same task would
-        # contend with the bare one for the same user-data-dir.
         return task_id
-    if local_browser and _use_real_profile():
-        # Every private-URL gate in browser_navigate keys off the sidecar
-        # key, so honouring the flag for a private URL while the user opted
-        # out of auto-local routing would turn a model-supplied argument
-        # into a LAN policy override.
-        if _url_is_private(url) and not _auto_local_for_private_urls():
-            return task_id
-        return f"{task_id}{_LOCAL_SUFFIX}"
     if not _auto_local_for_private_urls():
         return task_id
     if not _url_is_private(url):
@@ -2284,11 +2420,6 @@ BROWSER_TOOL_SCHEMAS = [
                 "url": {
                     "type": "string",
                     "description": "The URL to navigate to (e.g., 'https://example.com')"
-                },
-                "local_browser": {
-                    "type": "boolean",
-                    "description": "Use the user's real local browser profile (their logins/cookies) via a local Chromium session, even if a cloud backend is configured. Only honored when the user has consented (browser.use_real_profile); otherwise ignored.",
-                    "default": False
                 }
             },
             "required": ["url"]
@@ -2435,6 +2566,27 @@ BROWSER_TOOL_SCHEMAS = [
 
 def _create_local_session(task_id: str) -> Dict[str, str]:
     import uuid
+
+    # Real-profile consent: instead of an agent-browser-managed throwaway
+    # Chromium, attach this local session (via CDP) to the user's default
+    # browser running on a hermes-owned SNAPSHOT of their real profile —
+    # live logins/cookies included. Fail closed on resolver/launch errors:
+    # a consented user must never be silently downgraded to a throwaway.
+    cdp_url, err = _real_profile_cdp()
+    if err:
+        raise RuntimeError(err)
+    if cdp_url:
+        session_name = f"rp_{uuid.uuid4().hex[:10]}"
+        logger.info(
+            "Created real-profile local session %s for task %s", session_name, task_id
+        )
+        return {
+            "session_name": session_name,
+            "bb_session_id": None,
+            "cdp_url": _resolve_cdp_override(cdp_url),
+            "features": {"local": True, "real_profile": True},
+        }
+
     session_name = f"h_{uuid.uuid4().hex[:10]}"
     logger.info("Created local browser session %s for task %s",
                 session_name, task_id)
@@ -3004,15 +3156,6 @@ def _run_browser_command(
         backend_args = ["--session", session_info["session_name"]]
         if _is_headed_mode():
             backend_args.append("--headed")
-        # Real-profile consent: point agent-browser at the user's real default
-        # Chromium profile so their live logins/cookies are available. Fails
-        # closed (returns an error) if the default browser is non-Chromium or
-        # its profile can't be located, rather than silently using a throwaway.
-        _profile_args, _profile_err = _real_profile_launch_args()
-        if _profile_err:
-            return {"success": False, "error": _profile_err}
-        if _profile_args:
-            backend_args += _profile_args
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
@@ -3408,17 +3551,13 @@ def evaluate_url_safety(url: str) -> Optional[dict]:
     return None
 
 
-def browser_navigate(url: str, task_id: Optional[str] = None, local_browser: bool = False) -> str:
+def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
 
     Args:
         url: The URL to navigate to
         task_id: Task identifier for session isolation
-        local_browser: Force a local Chromium session using the user's real
-            default-browser profile, even when a cloud backend is configured.
-            Honored only if the user consented via ``browser.use_real_profile``;
-            ignored (with a note) otherwise.
 
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
@@ -3454,18 +3593,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None, local_browser: boo
     # cloud provider never sees the URL in that case.  Can also be opted
     # out globally via ``browser.allow_private_urls`` in config.
     effective_task_id = task_id or "default"
-    # local_browser is honored only with real-profile consent; note when the
-    # agent asked for it but consent is off so the behavior isn't silently lost.
-    real_profile_note = None
-    if local_browser and not _use_real_profile():
-        real_profile_note = (
-            "local_browser was requested but browser.use_real_profile is off; "
-            "using the default browser backend. Enable real-profile browsing in "
-            "Settings → Browser to honor this."
-        )
-    nav_session_key = _navigation_session_key(
-        effective_task_id, url, local_browser=local_browser
-    )
+    nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
     sensitive_query_key = _sensitive_query_param_name(url)
@@ -3589,8 +3717,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None, local_browser: boo
             "url": final_url,
             "title": title
         }
-        if real_profile_note:
-            response["note"] = real_profile_note
+        # Auditability: stamp navigations that ran on the user's real-profile
+        # copy-browser so usage is visible in the tool result.
+        try:
+            if (session_info.get("features") or {}).get("real_profile"):
+                response["used_real_profile"] = True
+        except Exception:
+            pass
         # Remember only a successful, non-blocked navigation as the task owner.
         # Failed opens and blocked redirects must not retarget follow-up clicks
         # or snapshots to a newly-created but irrelevant session.
@@ -5593,7 +5726,7 @@ registry.register(
     handler=lambda args, **kw: routed_browser_handler(
         "browser_navigate",
         args,
-        fallback=lambda: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id"), local_browser=bool(args.get("local_browser", False))),
+        fallback=lambda: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
     check_fn=check_browser_navigate_requirements,

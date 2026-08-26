@@ -3212,6 +3212,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # the attach_to_session/mirror opt-in.
         origin_user_id = origin.get("user_id") if origin_target else None
 
+        # DM shape of this target, needed by BOTH the in_channel flatten gate
+        # below and the seed/_seed_cron_channel_session chat_type further down:
+        # a 1:1 DM keys as ``dm`` (Slack DM channel ids start with "D"; or the
+        # origin says so), everything else as ``group``.
+        origin_chat_type = str(origin.get("chat_type") or "").lower()
+        is_dm_target = origin_chat_type == "dm" or (
+            not origin_chat_type and str(chat_id).startswith("D")
+        )
+
+        # Shared continuable-target gate for the in_channel surface. The
+        # thread-flatten and the flat-session seed MUST use the SAME gate —
+        # if they drift, the brief and its continuation session land in
+        # different places (the split-surface bug the flatten exists to
+        # prevent). Origin targets qualify unconditionally (independent of the
+        # attach_to_session / mirror opt-in — see 3c52d3589f); non-origin
+        # mirror-eligible targets (origin_fallback / opted-in explicit)
+        # qualify only when the seed can actually create a resolvable session
+        # (_inchannel_seed_allowed: DM-shaped, or a known user_id for
+        # user-isolated group keys).
+        inchannel_continuable = origin_target or (
+            mirror_this_target
+            and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id)
+        )
+
         # Built-in names resolve to their enum member; plugin platform names
         # create dynamic members via Platform._missing_().
         try:
@@ -3311,7 +3335,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
                 in_channel_surface = False
 
-        if in_channel_surface and origin_target and live_adapter_ready:
+        if in_channel_surface and inchannel_continuable and live_adapter_ready:
             # Force flat delivery (D2): the continuable-channel target must
             # ignore any inherited origin/target thread_id, or the flat
             # continuable session seeded below (thread_id=None, via
@@ -3320,8 +3344,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # reads `thread_id` and would otherwise route into the origin
             # thread instead of flat into the channel.
             #
-            # Gated on `origin_target`, NOT `mirror_this_target`: the seed
-            # below fires on origin-match alone (in_channel is the
+            # Gated on `inchannel_continuable` (the SAME gate as the seed
+            # below), NOT `mirror_this_target` alone: for origin targets the
+            # seed fires on origin-match alone (in_channel is the
             # continuation surface, independent of the attach_to_session /
             # mirror opt-in), so the flatten must use the SAME gate — with
             # the default knobs off, a mirror-gated flatten kept delivering
@@ -3349,15 +3374,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
         # session, and the flat channel row is otherwise absent for a
-        # chat_postMessage delivery). ``is_dm`` selects the session chat_type so
-        # the seeded key matches the inbound reply's key: a 1:1 DM keys as
-        # ``dm`` (Slack DM channel ids start with "D"; or the origin says so),
-        # everything else as ``group`` (shared channel). ``inchannel_seeded``
-        # suppresses the generic mirror below so the brief is not double-written.
-        origin_chat_type = str(origin.get("chat_type") or "").lower()
-        is_dm_target = origin_chat_type == "dm" or (
-            not origin_chat_type and str(chat_id).startswith("D")
-        )
+        # chat_postMessage delivery). ``is_dm_target`` (computed above with
+        # origin_user_id) selects the session chat_type so the seeded key
+        # matches the inbound reply's key. ``inchannel_seeded`` suppresses the
+        # generic mirror below so the brief is not double-written.
         inchannel_seeded = False
 
         # Continuable cron (thread-preferred): when mirroring is enabled for the
@@ -3678,28 +3698,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
                     # chat_postMessage delivery, so the brief would be lost).
-                    # Gated on ORIGIN-match without requiring the mirror
-                    # opt-in: in_channel IS the continuation surface — a
-                    # continuable flat cron without its seed is a brief the
+                    # Gated on `inchannel_continuable` — the SHARED gate with
+                    # the thread-flatten above (they must not drift, or the
+                    # brief and its continuation session land in different
+                    # places). Origin targets seed without requiring the
+                    # mirror opt-in: in_channel IS the continuation surface —
+                    # a continuable flat cron without its seed is a brief the
                     # next reply can't see (the bug Victor hit live
                     # 2026-08-19: agent had "no idea about the delivery
-                    # message"). attach_to_session remains the knob for the
-                    # SEPARATE thread/default-surface mirror behavior; it must
-                    # not be required for origin targets.
-                    # Mirror-eligible NON-origin targets (origin_fallback /
-                    # opted-in explicit — see _target_mirror_eligible) also
-                    # seed, guarded by _inchannel_seed_allowed: group-channel
+                    # message"). Mirror-eligible NON-origin targets
+                    # (origin_fallback / opted-in explicit — see
+                    # _target_mirror_eligible) also seed, guarded by
+                    # _inchannel_seed_allowed inside the gate: group-channel
                     # keys are user-isolated, so a seed without a user_id
                     # (origin-less managed cron into a shared channel) would
                     # create an orphan session no reply resolves to — those
                     # fall back to the plain mirror instead.
-                    _seed_this_target = origin_target or (
-                        mirror_this_target
-                        and _inchannel_seed_allowed(
-                            is_dm=is_dm_target, user_id=origin_user_id,
-                        )
-                    )
-                    if in_channel_surface and _seed_this_target and not thread_seeded:
+                    if in_channel_surface and inchannel_continuable and not thread_seeded:
                         inchannel_seeded = _seed_cron_channel_session(
                             job, runtime_adapter, platform_name, chat_id,
                             mirror_text, is_dm=is_dm_target,

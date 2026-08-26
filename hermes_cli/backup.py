@@ -635,6 +635,52 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
     return True
 
 
+def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+    """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
+
+    Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
+    kernel's ``(deleted)`` suffix so an already-unlinked sidecar generation —
+    the #90950 split-brain fingerprint — still counts as held. Returns
+    ``None`` when the scan is unavailable (non-Linux, or /proc unreadable);
+    callers must treat ``None`` as "unknown", not as "no holders".
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+
+    def _canonical(path: str) -> str:
+        return os.path.normcase(
+            os.path.abspath(path.removesuffix(" (deleted)"))
+        )
+
+    canonical_db = _canonical(os.fspath(db_path))
+    watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
+    pids: List[int] = []
+    try:
+        own_pid = os.getpid()
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == own_pid:
+                continue
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if _canonical(target) in watched:
+                    pids.append(pid)
+                    break
+    except OSError:
+        return None
+    return pids
+
+
 def _safe_restore_db(src: Path, dst: Path) -> bool:
     """Restore a SQLite database from snapshot *src* into live *dst*.
 
@@ -686,6 +732,20 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
         try:
+            holders = _foreign_db_holder_pids(dst)
+            if holders:
+                # Replacing the inode under a live holder is the #90950
+                # corruption class: the holder keeps writing through a
+                # deleted-inode fd (split brain), and removing its sidecars
+                # detaches the WAL index it is checkpointing through. The
+                # backup-API path above is the live-safe route; if it failed,
+                # fail closed rather than corrupt.
+                logger.error(
+                    "Refusing unlink+move restore of %s: process(es) %s still "
+                    "hold the database or its WAL open. Stop them and retry.",
+                    dst, holders,
+                )
+                return False
             tmp = dst.parent / f".{dst.name}.snap_restore"
             shutil.copy2(src, tmp)
             dst.unlink(missing_ok=True)

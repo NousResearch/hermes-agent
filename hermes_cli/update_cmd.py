@@ -1524,11 +1524,27 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     restored image cannot be silently overwritten by the corrupt database's WAL
     replay — see :func:`_clear_stale_sqlite_sidecars`.
 
+    Refuses (returns ``False``) while another process still holds the database
+    or its sidecars open: copying a snapshot over a live writer's inode makes
+    the writer's page cache and WAL index disagree with the file bytes, and
+    its next checkpoint writes pages at offsets that no longer mean what it
+    thinks — the #90950 page-1 clobber. ``None`` (scan unavailable) proceeds:
+    the updater has already drained gateways, and refusing on "unknown" would
+    disable auto-restore on every non-Linux host.
+
     Returns ``True`` when the restored file passes an integrity check. Raises
     ``OSError`` if the copy itself fails, which callers already report.
     """
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup import _foreign_db_holder_pids, verify_sqlite_integrity
 
+    holders = _foreign_db_holder_pids(state_path)
+    if holders:
+        print(
+            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
+            "state.db or its WAL open. Stop them (hermes gateway stop), "
+            "then restore manually with /snapshot restore."
+        )
+        return False
     _clear_stale_sqlite_sidecars(state_path)
     shutil.copy2(snap_state, state_path)
     restored = verify_sqlite_integrity(

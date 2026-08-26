@@ -108,6 +108,11 @@ const EXPECTED_USAGE_DESCRIPTIONS: UsageDescriptionRow[] = [
     reason: 'Audio capture backs the voice conversation pipeline.'
   },
   {
+    key: 'NSCameraUsageDescription',
+    requiredSubstring: 'camera',
+    reason: 'Camera access is requested by plugins/features the user enables.'
+  },
+  {
     key: 'NSAppleMusicUsageDescription',
     requiredSubstring: 'Music',
     reason:
@@ -115,6 +120,38 @@ const EXPECTED_USAGE_DESCRIPTIONS: UsageDescriptionRow[] = [
       'surface a misleading Apple Music permission prompt ' +
       '(kTCCServiceMediaLibrary) when the renderer initializes audio for ' +
       'completion chimes, TTS, or voice.'
+  },
+  {
+    key: 'NSCalendarsUsageDescription',
+    requiredSubstring: 'Calendar',
+    reason: 'Calendar access backs meeting and scheduling support (#64571).'
+  },
+  {
+    key: 'NSCalendarsFullAccessUsageDescription',
+    requiredSubstring: 'Calendar',
+    reason: 'macOS 14+ full-access variant of the calendar declaration.'
+  },
+  {
+    key: 'NSRemindersUsageDescription',
+    requiredSubstring: 'Reminders',
+    reason: 'Reminders access backs personal-assistant scheduling (#64571).'
+  },
+  {
+    key: 'NSRemindersFullAccessUsageDescription',
+    requiredSubstring: 'Reminders',
+    reason: 'macOS 14+ full-access variant of the reminders declaration.'
+  },
+  {
+    key: 'NSScreenCaptureUsageDescription',
+    requiredSubstring: 'screen',
+    reason: 'macOS 15+ periodic screen-recording re-prompts show this copy.'
+  },
+  {
+    key: 'NSLocalNetworkUsageDescription',
+    requiredSubstring: 'local network',
+    reason:
+      'macOS 15+ Local Network Privacy silently denies undeclared apps ' +
+      '(#81563); declaration is required for the prompt to appear at all.'
   }
 ]
 

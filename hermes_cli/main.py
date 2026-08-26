@@ -1998,16 +1998,18 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset({"dev", "devOptional", "ideallyInert", "peer"})
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
 (per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
 on dev-dependencies that are *also* declared as peers — the canonical
 ``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
+them. npm also drops or reclassifies ``dev`` / ``devOptional`` in the hidden
+lock depending on the installed workspace set. None of these keys represents a
+real skew between what was declared and what was installed, so we exclude them
+from the comparison in :func:`_tui_need_npm_install` to avoid false-positive
+reinstalls that would dirty an immutable Ares release on TUI launch.
 """
 
 

@@ -65,3 +65,14 @@ def test_current_checkout_completion_is_verified_before_success(capsys, monkeypa
     assert complete is False
     assert "Already up to date" not in out
     assert "SQLite 3.46.1" in out
+
+
+def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
+    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
+
+    complete = update_cmd._repair_node_deps_on_current_checkout(
+        lambda _message: False
+    )
+
+    assert complete is False

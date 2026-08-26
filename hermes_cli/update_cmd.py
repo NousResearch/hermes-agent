@@ -4044,7 +4044,7 @@ def _repair_node_deps_on_current_checkout(
     gateway_mode: bool = False,
     pre_update_snapshot_id: str | None = None,
     completion_message: str = "✓ Already up to date!",
-) -> None:
+) -> bool:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
     A current checkout does not imply healthy Node deps: a previous npm
@@ -4064,7 +4064,7 @@ def _repair_node_deps_on_current_checkout(
         print_completion(
             "⚠ Checkout is current, but Node.js dependencies could not be repaired."
         )
-        return
+        return False
     # Pair the refresh with the web build like every other
     # _update_node_dependencies call site; it staleness-checks internally,
     # so this is a no-op when nothing changed.
@@ -4074,7 +4074,7 @@ def _repair_node_deps_on_current_checkout(
         gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
     )
-    print_completion(completion_message)
+    return bool(print_completion(completion_message))
 
 
 def _update_node_dependencies() -> list[str]:
@@ -8612,6 +8612,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # "Already up to date!" and exits without doing the one job it
             # was spawned for.
             handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+            current_checkout_complete = True
             if handed_off_sync:
                 print("→ Finishing the dependency install handed off by hermes.exe...")
             elif not healthy:
@@ -8687,7 +8688,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _repair_node_deps_on_current_checkout(
+                current_checkout_complete = _repair_node_deps_on_current_checkout(
                     _print_verified_update_completion,
                     assume_yes=assume_yes,
                     gateway_mode=gateway_mode,
@@ -8709,6 +8710,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            if not current_checkout_complete:
+                if gateway_mode:
+                    _write_gateway_update_exit_code(False)
+                try:
+                    from hermes_cli.update_receipt import finalize_update_receipt
+
+                    finalize_update_receipt("partial")
+                except Exception as _receipt_exc:
+                    logger.debug(
+                        "Update receipt finalize (current checkout) failed: %s",
+                        _receipt_exc,
+                    )
+                sys.exit(1)
             # Git is current, but a prior pull may still owe the fleet a
             # restart (#95294). Catch up even on the "Already up to date"
             # path — that early return is what left the gateway on stale

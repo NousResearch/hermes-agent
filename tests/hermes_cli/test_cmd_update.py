@@ -355,6 +355,42 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_current_checkout_verification_failure_is_durable(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """A failed runtime check must fail receipts and gateway automation."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_repair_node_deps_on_current_checkout",
+            return_value=False,
+        ), patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
         self, mock_run, _mock_which, mock_args, capsys
     ):

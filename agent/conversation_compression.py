@@ -953,11 +953,18 @@ def _retry_compression_on_fallback_chain(
         try:
             retry_fence = new_fence()
         except Exception:
-            logger.debug(
-                "compression stall-fallback fence factory failed",
+            logger.warning(
+                "compression stall-fallback fence factory failed; the retry "
+                "will run on an unpublished fence (a /stop mid-retry cannot "
+                "serialize against its commit boundary)",
                 exc_info=True,
             )
     if not isinstance(retry_fence, CompressionCommitFence):
+        logger.warning(
+            "compression stall-fallback retry running on an unpublished fence; "
+            "hard-interrupt admission will read the aborted attempt's fence "
+            "rather than the retry's commit boundary",
+        )
         retry_fence = CompressionCommitFence()
     idle = float(route.get("timeout") or idle_timeout_seconds)
     ceiling = max(float(total_ceiling_seconds), idle)

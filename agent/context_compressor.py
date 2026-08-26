@@ -72,6 +72,16 @@ def _safe_int(value: Any) -> int | None:
 # with it. Context is copied per worker (``propagate_context_to_thread``), so
 # the pin reaches the retry's whole synchronous call chain and cannot leak
 # into the stalled attempt or any unrelated auxiliary call.
+#
+# Coverage is the single ``_generate_summary`` LLM call only. That is one call
+# per compression run (its only non-recursive call site is the compress path;
+# the two recursive calls are the deliberate main-model retry that must NOT
+# re-issue the pin). Lean ``tail_mode`` additionally runs
+# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly
+# and never consults the pin — during a stall-fallback retry those digests
+# still target the stalled primary and degrade to per-segment placeholders.
+# Deliberate: the digest path is a best-effort augmentation, not the summary,
+# and pinning it would require weakening the single-use contract below.
 _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )

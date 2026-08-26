@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 
 // #95089 — iPadOS Safari hardware-keyboard contact AutoFill bar.
@@ -21,9 +22,13 @@ function extractEditorBlock(src: string): string {
   // The visible editor's opening tag runs from its aria-disabled anchor to
   // the contentEditable prop — capture everything WebKit sees on that div.
   const start = src.indexOf("aria-disabled={inputDisabled ? true : undefined}")
-  if (start === -1) throw new Error('composer editor anchor missing')
+  if (start === -1) {
+    new Error('composer editor anchor missing')
+  }
   const end = src.indexOf('contentEditable={', start)
-  if (end === -1 || end <= start) throw new Error('editor block end missing')
+  if (end === -1 || end <= start) {
+    new Error('editor block end missing')
+  }
 
   return src.slice(start, end)
 }
@@ -40,7 +45,9 @@ describe('rich composer AutoFill suppression (#95089)', () => {
 
   it('opts the composer form out of autocomplete (form default overrides field hints in Safari)', () => {
     const rootIdx = src.indexOf('<ComposerPrimitive.Root')
-    if (rootIdx === -1) throw new Error('composer form primitive missing')
+    if (rootIdx === -1) {
+      new Error('composer form primitive missing')
+    }
 
     expect(src.slice(rootIdx, rootIdx + 600)).toMatch(/autoComplete="off"/)
   })

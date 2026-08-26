@@ -399,4 +399,50 @@ describe('ModelMenuPanel provider collapse', () => {
     expect($collapsedProviders.get()).toContain('google')
     expect($collapsedProviders.get()).toContain('deepseek')
   })
+
+  it('switches the session model when Refresh Models drops the current pick', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        model: 'glm-4.5-air',
+        provider: 'zhipu',
+        providers: [{ models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' }, MOA_PROVIDER]
+      })
+      .mockResolvedValueOnce({
+        model: 'glm-4.5-air',
+        provider: 'zhipu',
+        providers: [DEEPSEEK_PROVIDER, MOA_PROVIDER]
+      })
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText(/Glm 4\.5 Air/i)
+
+    fireEvent.click(await content.findByText('Refresh Models'))
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'deepseek-v4-pro',
+        provider: 'deepseek',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('does not switch when Refresh Models still lists the current pick', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText(/Deepseek V4 Pro/i)
+    fireEvent.click(await content.findByText('Refresh Models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
 })

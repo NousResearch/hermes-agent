@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, reconcileSelectionAfterCatalogRefresh, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
@@ -105,6 +105,15 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       })
 
       queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+
+      // Group / credential swaps can return a catalog that no longer contains
+      // the session's current model. The store + currentPickerSelection would
+      // otherwise keep painting the stale id (it is not in the new list).
+      const switchTo = reconcileSelectionAfterCatalogRefresh(optionsModel, next.providers)
+
+      if (switchTo) {
+        await onSelectModel({ ...switchTo, sessionId: activeSessionId || null })
+      }
     } catch {
       // Network/backend hiccup — fall back to a plain invalidate so the next
       // open re-fetches (still cached, but no worse than before).

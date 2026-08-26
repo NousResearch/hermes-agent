@@ -506,11 +506,27 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
       ).trim()
 
       void result
-    } catch (cause) {
-      const error: any = new Error('Could not terminate the stale SSH backend.')
-      error.kind = 'transient-transport-error'
-      error.cause = cause
-      throw error
+    } catch {
+      // A backend mid-turn (in-flight LLM call, live MCP children) can ride
+      // out SIGTERM past the 5s graceful wait — and before-quit races this
+      // whole teardown against 6s before closing SSH, so giving up here
+      // reparents the still-running serve to pid 1: the #91668 leak, now on
+      // the quit-during-active-turn path. Escalate to SIGKILL and require a
+      // confirmed exit before treating the record as reclaimed.
+      try {
+        await ssh.exec(
+          `kill -9 ${Number(lock.pid)} 2>/dev/null; ` +
+            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+            `i=$((i+1)); [ "$i" -ge 20 ] && exit 1; sleep 0.1; done`
+        )
+      } catch (cause) {
+        // Even SIGKILL could not confirm death (D-state, permissions). Keep
+        // the lockfile so the next connect's reap pass retries.
+        const error: any = new Error('Could not terminate the stale SSH backend.')
+        error.kind = 'transient-transport-error'
+        error.cause = cause
+        throw error
+      }
     }
   }
 

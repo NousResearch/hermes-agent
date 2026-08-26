@@ -85,13 +85,32 @@ def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     Omitting a key preserves Slack's existing default.  Passing ``False``
     suppresses only the automatic preview while leaving the link text and URL
     in the message untouched.
+
+    String booleans are coerced the same way as the relay plane's
+    ``_slack_unfurl_hints``: ``hermes config set`` and Railway persist YAML
+    ``"true"``/``"false"`` as strings, and a silently dropped string would
+    make the knob a no-op on the native plane only. Unrecognized values are
+    dropped (NOT coerced to False) so junk config keeps Slack's default
+    instead of accidentally suppressing previews.
     """
     settings = extra or {}
-    return {
-        key: settings[key]
-        for key in ("unfurl_links", "unfurl_media")
-        if isinstance(settings.get(key), bool)
-    }
+    kwargs: Dict[str, bool] = {}
+    for key in ("unfurl_links", "unfurl_media"):
+        val = settings.get(key)
+        if isinstance(val, bool):
+            kwargs[key] = val
+        elif isinstance(val, str) and val.strip().lower() in {
+            "1",
+            "0",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+        }:
+            kwargs[key] = val.strip().lower() in {"1", "true", "yes", "on"}
+    return kwargs
 
 
 async def _read_error_text_limited(

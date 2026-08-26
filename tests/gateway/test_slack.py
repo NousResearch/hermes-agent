@@ -3520,6 +3520,36 @@ class TestMessageSplitting:
         assert "unfurl_media" not in kwargs
 
     @pytest.mark.asyncio
+    async def test_send_coerces_string_unfurl_options(self, adapter):
+        """`hermes config set` / Railway persist YAML booleans as strings.
+
+        Relay-plane parity: string "false"/"true" must coerce instead of
+        being silently dropped (which would leave previews on with no error).
+        """
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = "true"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_junk_unfurl_values(self, adapter):
+        """Unrecognized values keep Slack's default rather than suppressing."""
+        adapter.config.extra["unfurl_links"] = "maybe"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
         adapter.config.extra["unfurl_links"] = False
         adapter.config.extra["unfurl_media"] = False
@@ -3531,18 +3561,6 @@ class TestMessageSplitting:
         for call in adapter._app.client.chat_postMessage.call_args_list:
             assert call.kwargs["unfurl_links"] is False
             assert call.kwargs["unfurl_media"] is False
-
-    @pytest.mark.asyncio
-    async def test_send_ignores_non_boolean_unfurl_options(self, adapter):
-        adapter.config.extra["unfurl_links"] = "false"
-        adapter.config.extra["unfurl_media"] = 0
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
-
-        await adapter.send("C123", "https://example.com")
-
-        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        assert "unfurl_links" not in kwargs
-        assert "unfurl_media" not in kwargs
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):

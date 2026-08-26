@@ -345,6 +345,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
+        # Mental model injection
+        self._mental_model_id = ""
+        self._mental_model_content = ""
+
     @property
     def name(self) -> str:
         return "hindsight"
@@ -702,6 +706,34 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if self._mode == "local_embedded":
             self._start_embedded_daemon()
+        if self._mode == "disabled":
+            return
+
+        # Mental model: fetch content at init when configured.
+        # Embedded startup is initiated first; thread startup alone does not
+        # guarantee daemon readiness. Keep the operation wrapper for event-loop
+        # safety and existing embedded connection recovery.
+        self._mental_model_id = str(self._config.get("mental_model_id") or "").strip()
+        if self._mental_model_id:
+            try:
+                resp = self._run_hindsight_operation(
+                    lambda client: client.mental_models.get_mental_model(
+                        self._bank_id, self._mental_model_id, detail="content",
+                        _request_timeout=5.0,
+                    )
+                )
+                content = str(getattr(resp, "content", None) or "")
+            except Exception as exc:
+                logger.debug("Hindsight mental model fetch failed (%s/%s): %s",
+                             self._bank_id, self._mental_model_id, exc)
+                content = ""
+            if content:
+                self._mental_model_content = content
+                logger.info("Hindsight mental model '%s' loaded (%d chars)",
+                            self._mental_model_id, len(content))
+            else:
+                logger.warning("Hindsight mental model '%s' configured but returned no content",
+                               self._mental_model_id)
 
     def _apply_connection_settings(self, cfg: dict) -> None:
         """Endpoint, bank and mode selectors from *cfg* (env fallbacks where documented)."""
@@ -829,9 +861,19 @@ class HindsightMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"
         label = "" if mode == "hybrid" else f" ({mode} mode)"
-        return f"# Hindsight Memory\nActive{label}. Bank: {self._bank_id}, budget: {self._budget}.\n{_SYSTEM_PROMPT_TAILS[mode]}"
+        header = f"# Hindsight Memory\nActive{label}. Bank: {self._bank_id}, budget: {self._budget}.\n{_SYSTEM_PROMPT_TAILS[mode]}"
+        if self._mental_model_id and self._mental_model_content:
+            header += (
+                f"\n\n<memory-context>\n"
+                f"# Hindsight Mental Model (synthesized cross-session context)\n"
+                f"ID: {self._mental_model_id}\n\n"
+                f"{self._mental_model_content}\n"
+                f"</memory-context>"
+            )
+        return header
 
-    # -- recall ------------------------------------------------------------------
+    # Recall
+
 
     def _recall_disabled(self) -> bool:
         """Guards shared by the async and synchronous recall paths."""

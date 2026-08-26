@@ -89,6 +89,17 @@ class TestUvStoreDetection:
         )
         assert tcc._is_uv_macos_store(path)
 
+    def test_matches_hermes_runtime_repair_generation(self):
+        # repair_vulnerable_runtime() rebuilds the venv against a generation
+        # store under .hermes-runtime/python/ — no /uv/python/ segment. The
+        # anchor must recognize it or every SQLite CVE repair silently
+        # un-anchors the interpreter (issue #82427 integration).
+        path = (
+            "/Users/u/hermes-agent/.hermes-runtime/python/"
+            "generation-a1b2c3/cpython-3.11.15-macos-aarch64-none/bin/python3.11"
+        )
+        assert tcc._is_uv_macos_store(path)
+
     def test_rejects_homebrew_interpreter(self):
         path = (
             "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/"
@@ -115,6 +126,54 @@ class TestEnsureTccAnchor:
 
         assert tcc.ensure_tcc_anchor(root) is None
         assert venv_py.is_symlink()  # untouched
+
+    def test_install_signs_the_anchor_copy(self, tmp_path, monkeypatch):
+        """The anchor copy gets identifier-DR signing before going live —
+        without it every refresh changes the stored csreq (cdhash-based for
+        ad-hoc source builds) and orphans the grant despite the stable path."""
+        _darwin(monkeypatch)
+        signed = []
+        import hermes_cli.managed_uv as managed_uv
+
+        monkeypatch.setattr(
+            managed_uv, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
+        )
+        store_bin = _build_store(tmp_path)
+        root = _build_checkout(tmp_path, store_bin=store_bin)
+
+        anchored = tcc.ensure_tcc_anchor(root)
+
+        assert anchored is not None
+        # Signing ran on the temp copy inside the venv bin dir (pre-rename).
+        assert len(signed) == 1
+        assert signed[0].parent == anchored.parent
+
+    def test_anchors_repair_generation_interpreter(self, tmp_path, monkeypatch):
+        """A venv re-created against a .hermes-runtime CVE-repair generation
+        store must anchor too (issue #82427 integration)."""
+        _darwin(monkeypatch)
+        store = (
+            tmp_path
+            / "checkout"
+            / ".hermes-runtime"
+            / "python"
+            / "generation-a1b2c3"
+            / "cpython-3.11.15-macos-aarch64-none"
+        )
+        store_bin = store / "bin"
+        store_bin.mkdir(parents=True)
+        store_py = store_bin / "python3.11"
+        store_py.write_bytes(b"#!fake generation interpreter")
+        store_py.chmod(0o755)
+        root = _build_checkout(tmp_path, store_bin=store_bin)
+        venv_py = venv_python_path(root / ".venv")
+        assert venv_py.is_symlink()
+
+        anchored = tcc.ensure_tcc_anchor(root)
+
+        assert anchored == venv_py
+        assert not venv_py.is_symlink()
+        assert venv_py.read_bytes() == store_py.read_bytes()
 
     def test_anchors_uv_managed_interpreter(self, tmp_path, monkeypatch):
         _darwin(monkeypatch)

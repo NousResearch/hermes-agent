@@ -72,9 +72,18 @@ def _store_bin_names() -> tuple[str, ...]:
     return (f"python3.{_sys.version_info.minor}", "python3", "python")
 
 
-# Path fragments that identify a uv-managed macOS CPython store layout:
-# ``.../uv/python/cpython-<version>-macos-<arch>/bin/python*``.
-_UV_STORE_MARKERS = ("/uv/python/", "cpython-", "-macos-")
+# Path fragments that identify a MANAGED macOS CPython store layout — a
+# store whose path changes across updates, orphaning path-keyed TCC grants.
+# Two roots qualify:
+#   - uv store patch bumps:      .../uv/python/cpython-<ver>-macos-*/bin/...
+#   - CVE-repair generations:    .../.hermes-runtime/python/generation-*/
+#                                cpython-<ver>-macos-*/bin/...
+# (repair_vulnerable_runtime() rebuilds the venv against a generation store,
+# replacing the anchored bin/python with a fresh symlink — without the second
+# root the anchor would read 'not uv-managed' after every SQLite CVE repair
+# and never re-anchor, issue #82427.)
+_STORE_COMMON_MARKERS = ("cpython-", "-macos-")
+_STORE_ROOT_MARKERS = ("/uv/python/", "/.hermes-runtime/python/")
 
 
 def is_macos() -> bool:
@@ -83,9 +92,11 @@ def is_macos() -> bool:
 
 
 def _is_uv_macos_store(path: str | Path) -> bool:
-    """True when *path* lives inside a uv-managed macOS CPython store."""
+    """True when *path* lives inside a managed macOS CPython store."""
     text = str(path).replace("\\", "/")
-    return all(marker in text for marker in _UV_STORE_MARKERS)
+    if not all(marker in text for marker in _STORE_COMMON_MARKERS):
+        return False
+    return any(root in text for root in _STORE_ROOT_MARKERS)
 
 
 def _venv_dir(project_root: Path | None = None) -> Path | None:
@@ -225,6 +236,21 @@ def _install_anchor(venv_dir: Path, source_file: Path) -> None:
     try:
         shutil.copy2(source_file, tmp_path)
         os.chmod(tmp_path, source_file.stat().st_mode | 0o111)
+        # Give the anchor copy a stable identifier-pinned signature BEFORE it
+        # goes live. copy2 carries over the source build's signature, whose
+        # designated requirement is cdhash-based for ad-hoc/linker-signed
+        # python-build-standalone binaries — meaning every anchor REFRESH
+        # (patch bump, CVE repair) would still change the stored csreq and
+        # orphan the grant despite the stable path. Identifier-DR signing
+        # (same mechanism as managed_uv's generation signing, #82427) keeps
+        # the csreq constant across refreshes. Best-effort: a failed sign
+        # leaves the copy usable, just without refresh-stable signing.
+        try:
+            from hermes_cli.managed_uv import _macos_sign_managed_python
+
+            _macos_sign_managed_python(tmp_path)
+        except Exception:  # pragma: no cover - never block the anchor
+            logger.debug("anchor copy signing skipped", exc_info=True)
         os.replace(tmp_path, venv_py)
         _anchor_marker(venv_bin).write_text(str(source_file), encoding="utf-8")
         _repoint_aliases(venv_bin, venv_py)

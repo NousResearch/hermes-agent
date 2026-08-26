@@ -390,3 +390,121 @@ class TestNavigationRouting:
              patch.object(bt, "_url_is_private", return_value=False):
             key = bt._navigation_session_key("t1", "https://example.com")
         assert key == "t1"
+
+
+class TestChannelIdentity:
+    """#95549 invariant: pre-release channels must NOT normalize to stable.
+
+    Swallowing Beta/Dev/Canary into the stable family drives a different
+    profile/account — a wrong-principal bug. Detection must flag the channel
+    (UNSUPPORTED_CHANNEL) so the caller fails closed, never returning 'chrome'
+    for a Beta default.
+    """
+
+    def test_linux_beta_not_normalized_to_stable(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc.subprocess, "run",
+                          return_value=Mock(stdout="google-chrome-beta.desktop\n")):
+            assert bc._detect_default_linux() == bc.UNSUPPORTED_CHANNEL
+
+    def test_linux_stable_still_resolves(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc.subprocess, "run",
+                          return_value=Mock(stdout="google-chrome.desktop\n")):
+            assert bc._detect_default_linux() == "chrome"
+
+    def test_linux_flatpak_beta_not_stable(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc.subprocess, "run",
+                          return_value=Mock(stdout="com.google.chrome.beta.desktop\n")):
+            assert bc._detect_default_linux() == bc.UNSUPPORTED_CHANNEL
+
+    def test_darwin_canary_not_normalized(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc, "_launchservices_https_handler",
+                          return_value="com.google.chrome.canary"):
+            with patch.object(bc.subprocess, "run", return_value=Mock(stdout="")):
+                assert bc._detect_default_darwin() == bc.UNSUPPORTED_CHANNEL
+
+    def test_darwin_stable_exact_match(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc, "_launchservices_https_handler",
+                          return_value="com.google.chrome"):
+            with patch.object(bc.subprocess, "run", return_value=Mock(stdout="")):
+                assert bc._detect_default_darwin() == "chrome"
+
+    def test_windows_progid_maps(self):
+        import hermes_cli.browser_connect as bc
+        # Stable ProgIds → family; channel ProgIds are in the channel set.
+        assert dict(bc._WINDOWS_PROGID_MAP)["chromehtml"] == "chrome"
+        assert "chromebhtml" in bc._WINDOWS_CHANNEL_PROGIDS   # Beta
+        assert "msedgebhtml" in bc._WINDOWS_CHANNEL_PROGIDS   # Edge Beta
+        # A channel ProgId must not be a prefix hit for any stable entry.
+        for chan in bc._WINDOWS_CHANNEL_PROGIDS:
+            assert not any(chan.startswith(p) for p, _ in bc._WINDOWS_PROGID_MAP)
+
+    def test_channel_sentinel_fails_closed_in_cdp(self):
+        """A channel default → _real_profile_cdp fails closed, never launches."""
+        import tools.browser_tool as bt
+        import hermes_cli.browser_connect as bc
+        bt._real_profile_cdp_cache.clear()
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium",
+                   return_value=bc.UNSUPPORTED_CHANNEL), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None
+        assert err and "pre-release" in err.lower()
+        snap.assert_not_called()  # never even snapshotted a stable profile
+        bt._real_profile_cdp_cache.clear()
+
+    def test_data_dir_rejects_sentinel(self):
+        import hermes_cli.browser_connect as bc
+        assert bc.real_profile_data_dir(bc.UNSUPPORTED_CHANNEL, "Linux") is None
+        assert bc.chromium_executable(bc.UNSUPPORTED_CHANNEL, "Linux") is None
+
+
+class TestSnapshotIsCredentialStore:
+    """The copied Cookies/Login Data must live inside Hermes' secret lifecycle."""
+
+    def test_excluded_from_backup(self):
+        import hermes_cli.backup as bk
+        # Exact-component match (both singular and plural browser dirs).
+        assert "browser-profile" in bk._EXCLUDED_DIRS
+        assert bk._should_exclude(
+            __import__("pathlib").Path("browser-profile/chrome/Default/Cookies")
+        )
+
+    def test_read_guard_blocks_snapshot(self, tmp_path, monkeypatch):
+        import agent.file_safety as fs
+        home = tmp_path / ".hermes"
+        (home / "browser-profile" / "chrome" / "Default").mkdir(parents=True)
+        cookies = home / "browser-profile" / "chrome" / "Default" / "Cookies"
+        cookies.write_text("secret-cookie-db")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        err = fs.get_read_block_error(str(cookies))
+        assert err and "snapshot" in err.lower()
+
+    def test_read_guard_allows_normal_file(self, tmp_path, monkeypatch):
+        import agent.file_safety as fs
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        normal = tmp_path / "notes.txt"
+        normal.write_text("hello")
+        assert fs.get_read_block_error(str(normal)) is None
+
+    def test_snapshot_dir_secured(self, tmp_path, monkeypatch):
+        """snapshot_real_profile locks the dir via the canonical _secure_dir."""
+        import hermes_cli.browser_connect as bc
+        src = tmp_path / "real" / "Default"
+        src.mkdir(parents=True)
+        (tmp_path / "real" / "Local State").write_text("{}")
+        (src / "Cookies").write_text("db")
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        called = {}
+        with patch("hermes_cli.config._secure_dir",
+                   side_effect=lambda p: called.__setitem__("p", p)):
+            dst, err = bc.snapshot_real_profile("chrome", src=str(tmp_path / "real"))
+        assert err is None
+        assert called.get("p") == dst  # secured through the canonical owner

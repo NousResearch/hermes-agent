@@ -1555,6 +1555,7 @@ def _real_profile_cdp() -> tuple:
         return None, None
 
     from hermes_cli.browser_connect import (
+        UNSUPPORTED_CHANNEL,
         detect_default_chromium,
         snapshot_real_profile,
     )
@@ -1573,6 +1574,18 @@ def _real_profile_cdp() -> tuple:
                 "supported Chromium browser (Chrome, Edge, Brave, Chromium). "
                 "Real-profile browsing requires a Chromium default; set one or turn "
                 "the toggle off."
+            )
+        if browser == UNSUPPORTED_CHANNEL:
+            # A recognized pre-release channel (Beta/Dev/Canary) is the OS
+            # default. Its profile lives in a channel-specific directory we
+            # don't resolve, and normalizing it to the stable family would
+            # drive a DIFFERENT profile/account — a wrong-principal bug. Fail
+            # closed rather than guess (#95549 invariant).
+            return None, (
+                "browser.use_real_profile is on, but your default browser is a "
+                "pre-release Chromium channel (Beta / Dev / Canary), which "
+                "real-profile browsing does not support. Set your default to a "
+                "stable Chrome / Edge / Brave / Chromium, or turn the toggle off."
             )
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:

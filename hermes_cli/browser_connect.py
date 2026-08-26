@@ -94,8 +94,11 @@ _LINUX_INSTALL_PATHS = tuple(path for _, paths in _LINUX_BROWSER_GROUPS for path
 _CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
 
 # Windows UserChoice ProgId prefixes → canonical browser key. Matched
-# case-insensitively by prefix so channel/version suffixes (e.g.
-# ``ChromeHTML.X``, ``MSEdgeHTM``) still resolve.
+# case-insensitively by prefix so version suffixes (e.g. ``ChromeHTML.X``)
+# still resolve to STABLE. Pre-release channels have their own ProgIds and
+# MUST be matched first (see _WINDOWS_CHANNEL_PROGIDS) so they are never
+# swallowed into the stable family — driving the wrong profile is a
+# wrong-principal bug (#95549 invariant).
 _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"),
     ("msedgehtm", "edge"),
@@ -103,9 +106,22 @@ _WINDOWS_PROGID_MAP = (
     ("chromiumhtm", "chromium"),
 )
 
-# Linux xdg default-web-browser .desktop name fragments → canonical key.
+# Pre-release ProgId prefixes we recognize but do NOT support (their profiles
+# live in channel-specific dirs the resolver tables don't carry). Matched
+# BEFORE the stable map; a hit fails closed rather than resolving to stable.
+# ``ChromeBHTML`` = Beta, ``ChromeDHTML`` = Dev, ``ChromeSSHTML`` = Canary
+# (SxS); ``MSEdgeBHTML`` / ``MSEdgeDHTML`` / ``MSEdgeCHTML`` = Edge channels.
+_WINDOWS_CHANNEL_PROGIDS = (
+    "chromebhtml", "chromedhtml", "chromesshtml", "chromecanaryhtml",
+    "msedgebhtml", "msedgedhtml", "msedgechtml",
+    "bravebetahtml", "bravenightlyhtml",
+)
+
+# Linux xdg default-web-browser .desktop name fragments → canonical STABLE key.
 # Includes the Flatpak application ids (``com.google.Chrome.desktop`` etc.),
-# which share none of the native package name fragments.
+# which share none of the native package name fragments. Anchored so a channel
+# .desktop (``google-chrome-beta``, ``com.google.chrome.beta``) does NOT match
+# the stable fragment — channels are caught by _LINUX_CHANNEL_FRAGMENTS first.
 _LINUX_DESKTOP_MAP = (
     ("google-chrome", "chrome"),
     ("com.google.chrome", "chrome"),
@@ -114,6 +130,15 @@ _LINUX_DESKTOP_MAP = (
     ("microsoft-edge", "edge"),
     ("com.microsoft.edge", "edge"),
     ("msedge", "edge"),
+)
+
+# Non-stable Linux channel .desktop fragments — recognized, unsupported.
+# Checked before the stable map; a hit fails closed.
+_LINUX_CHANNEL_FRAGMENTS = (
+    "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
+    "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
+    "microsoft-edge-beta", "microsoft-edge-dev", "microsoft-edge-canary",
+    "brave-browser-beta", "brave-browser-nightly", "brave-browser-dev",
 )
 
 # Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
@@ -128,13 +153,27 @@ _LINUX_SNAP_PROFILE_PARTS = {
     "brave": ("snap", "brave", "current", ".config", "BraveSoftware", "Brave-Browser"),
 }
 
-# macOS LaunchServices bundle-id fragments → canonical key.
+# macOS LaunchServices bundle-id → canonical STABLE key. EXACT match (not
+# prefix): ``com.google.chrome.beta`` must not be read as ``com.google.chrome``.
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"),
     ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"),
     ("org.chromium.chromium", "chromium"),
 )
+
+# Non-stable macOS channel bundle ids — recognized, unsupported. Checked first.
+_DARWIN_CHANNEL_BUNDLES = (
+    "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
+    "com.microsoft.edgemac.beta", "com.microsoft.edgemac.dev", "com.microsoft.edgemac.canary",
+    "com.brave.browser.beta", "com.brave.browser.nightly",
+)
+
+# Sentinel returned when the OS default is a recognized-but-unsupported
+# Chromium CHANNEL (Beta/Dev/Canary). Distinct from None (non-Chromium) so the
+# caller fails closed with a channel-specific message instead of driving the
+# stable profile of a different account.
+UNSUPPORTED_CHANNEL = "__unsupported_channel__"
 
 
 def _real_profile_relparts(browser: str) -> tuple:
@@ -269,6 +308,11 @@ def _detect_default_windows() -> str | None:
     except Exception:
         return None
     low = str(prog_id or "").lower()
+    # Channels first: a recognized Beta/Dev/Canary ProgId must fail closed, not
+    # fall through to a stable prefix match and drive the stable profile.
+    for chan in _WINDOWS_CHANNEL_PROGIDS:
+        if low.startswith(chan):
+            return UNSUPPORTED_CHANNEL
     for prefix, browser in _WINDOWS_PROGID_MAP:
         if low.startswith(prefix):
             return browser
@@ -337,12 +381,16 @@ def _detect_default_darwin() -> str | None:
     bundle = _launchservices_https_handler(out)
     if not bundle:
         return None
+    b = bundle.lower()
+    # Channels first (exact): a Beta/Dev/Canary bundle must fail closed.
+    if b in _DARWIN_CHANNEL_BUNDLES:
+        return UNSUPPORTED_CHANNEL
     for frag, browser in _DARWIN_BUNDLE_MAP:
-        if bundle.startswith(frag):
+        if b == frag:
             return browser
-    # A non-Chromium https handler (Safari, Firefox, Arc, …): fail closed.
-    # No "first installed Chromium wins" fallback — that would drive a
-    # browser the user never made their default.
+    # A non-Chromium https handler (Safari, Firefox, Arc, …) or an unknown
+    # channel bundle: fail closed. No "first installed Chromium wins" fallback
+    # — that would drive a browser the user never made their default.
     return None
 
 
@@ -358,6 +406,12 @@ def _detect_default_linux() -> str | None:
         ).stdout.strip().lower()
     except Exception:
         out = ""
+    # Channels first: ``google-chrome-beta.desktop`` contains the stable
+    # ``google-chrome`` fragment, so a substring match would drive stable.
+    # Catch recognized channels and fail closed instead.
+    for frag in _LINUX_CHANNEL_FRAGMENTS:
+        if frag in out:
+            return UNSUPPORTED_CHANNEL
     for frag, browser in _LINUX_DESKTOP_MAP:
         if frag in out:
             return browser
@@ -451,6 +505,23 @@ def real_profile_copy_dir(browser: str) -> str:
     return str(get_hermes_home() / "browser-profile" / browser)
 
 
+def _secure_snapshot_root(path: str) -> None:
+    """Lock down the snapshot dir through Hermes' canonical secret-store policy.
+
+    The snapshot holds copies of the user's Cookies / Login Data, so it is a
+    credential store and must get the same owner-only permissions (and
+    managed-mode / NixOS group-share carve-out, HERMES_UID/GID ownership) as
+    every other Hermes secret dir — via ``hermes_cli.config._secure_dir``,
+    not a bespoke chmod. Deferred import avoids a config↔browser import cycle.
+    """
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(path)
+    except Exception as e:  # never block a launch on a permissions best-effort
+        logger.debug("could not secure real-profile snapshot dir %s: %s", path, e)
+
+
 def _profile_subdirs(src: str) -> list[str]:
     """Names of per-profile dirs (Default, Profile 1, ...) inside a data dir."""
     out = []
@@ -486,6 +557,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     try:
         if fresh:
             os.makedirs(dst, exist_ok=True)
+            _secure_snapshot_root(dst)
             try:
                 shutil.copytree(
                     src,

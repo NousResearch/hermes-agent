@@ -169,35 +169,6 @@ export function knownSessionOwner(
 }
 
 /**
- * The exact owner a session-scoped RPC should use, preserving registry
- * connection identity when the session was discovered through a named remote
- * connection. Falling back to only the profile is safe solely when no exact
- * route hint exists.
- */
-export function knownSessionOwner(
-  sessions: readonly SessionInfo[],
-  sessionId: null | string
-): SessionProfileRoute | string | undefined {
-  if (!sessionId) {
-    return undefined
-  }
-
-  const session = sessions.find(candidate => sessionMatchesStoredId(candidate, sessionId))
-  const connectionId = session?.connection_id?.trim()
-
-  if (connectionId) {
-    return {
-      connectionId,
-      profile: session?.profile?.trim() || 'default'
-    }
-  }
-
-  const hint = getSessionOwnerHint(sessionId)
-
-  return hint ?? (session?.profile?.trim() || undefined)
-}
-
-/**
  * The profile a routed session belongs to, for keying the remembered id and
  * other PRESENTATION uses (which profile's sidebar/navigation this session sits
  * under). Falls back to the active gateway profile when the owner is unknown.

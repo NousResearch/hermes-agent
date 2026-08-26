@@ -478,6 +478,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-flash",
     ],
     "tencent-tokenhub": [
+        "hy4-preview",
+        "hy3",
+        "hy3-preview",
+    ],
+    "tencent-tokenplan": [
+        "hy4-preview",
+        "hy3",
         "hy3-preview",
     ],
     "arcee": [
@@ -1234,7 +1241,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
-    ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)"),
+    ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
+    ProviderEntry("tencent-tokenplan", "Tencent TokenPlan",     "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
@@ -1317,6 +1325,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
+    "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
@@ -1464,6 +1473,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "tokenplan": "tencent-tokenplan",
+    "tencent-lkeap": "tencent-tokenplan",
     "aws": "bedrock",
     "aws-bedrock": "bedrock",
     "amazon-bedrock": "bedrock",

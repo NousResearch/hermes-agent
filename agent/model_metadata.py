@@ -583,6 +583,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "hy3-preview": 262144,
     # Tencent — Hy3 (GA successor to Hy3 Preview), same 256K window.
     "hy3": 262144,
+    # Tencent — Hy4 preview (Hunyuan) with 1M context window.
+    "hy4-preview": 1024000,
     # OpenCode Zen — "Ox Alpha" stealth model (x-preview-f-free). 1M context
     # per OpenCode's launch announcement (2026-08-20); free, ZDR.
     "x-preview-f": 1_048_576,
@@ -765,6 +767,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.gmi-serving.com": "gmi",
     "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
+    "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
     "ollama.com": "ollama-cloud",
 }
 

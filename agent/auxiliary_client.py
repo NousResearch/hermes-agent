@@ -710,6 +710,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "tokenplan": "tencent-tokenplan",
+    "tencent-lkeap": "tencent-tokenplan",
 }
 
 
@@ -1080,7 +1082,8 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3.6-flash",
     "ollama-cloud": "nemotron-3-nano:30b",
-    "tencent-tokenhub": "hy3-preview",
+    "tencent-tokenhub": "hy4-preview",
+    "tencent-tokenplan": "hy4-preview",
     # NB: no "deepinfra" entry — its aux model lives on the ProviderProfile
     # (plugins/model-providers/deepinfra: default_aux_model), which
     # _get_aux_model_for_provider() reads first. Duplicating it here would be

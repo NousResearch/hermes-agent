@@ -249,7 +249,6 @@ import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
-  registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'

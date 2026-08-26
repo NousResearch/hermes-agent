@@ -1272,8 +1272,25 @@ class CredentialPool:
         fails with "no available entries (all exhausted or empty)".
 
         Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device-code-sourced entries; env/API-key-sourced entries have no
+        ``device_code``-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
+
+        Applies to both ``device_code`` and ``manual:device_code`` entries.
+        The manual case was added in 7380b48589 after the narrow guard
+        caused a confirmed fleet outage (follow-up to #70111): ``hermes auth
+        add openai-codex`` produces ``manual:device_code``, so excluding it
+        made the refresh-token adoption unreachable for the recommended
+        quarantine-safe configuration.
+
+        Note the residual sharp edge, which this PR does not change: the
+        adopt decision keys off token difference alone, so it cannot tell a
+        legacy singleton-alias ``manual:device_code`` entry from an
+        independent account added separately. ``_save_codex_tokens``
+        addresses the same ambiguity on the write path by comparing against
+        the *previous* singleton tokens (#39236). Profile-local healing
+        below deliberately avoids the question entirely by matching on
+        pool-entry ``id``, which is a per-entry uuid4 and therefore cannot
+        cross-wire distinct accounts.
         """
         if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
             return entry

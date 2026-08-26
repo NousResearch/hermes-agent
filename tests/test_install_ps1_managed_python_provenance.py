@@ -45,6 +45,7 @@ def _run_venv_stage(
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 
@@ -138,6 +139,34 @@ def test_fallback_minor_is_reported_from_resolved_managed_interpreter(
         check=True,
     )
     assert version.stdout.strip() == "Python 3.12.13"
+
+
+def test_python_find_drains_large_stderr_without_deadlock(tmp_path: Path) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    hermes_home = tmp_path / "hermes-home"
+    install_dir = tmp_path / "install"
+    managed_python = (
+        install_dir / ".hermes-runtime" / "python" / "cpython-3.11" / "python.exe"
+    )
+    uv = hermes_home / "bin" / "uv.exe"
+    uv.parent.mkdir(parents=True)
+    managed_python.parent.mkdir(parents=True)
+    compile_fake_uv(powershell, uv)
+    shutil.copy2(uv, managed_python)
+    env = {
+        **os.environ,
+        "FAKE_UV_LOG": str(tmp_path / "uv.log"),
+        "FAKE_MANAGED_PYTHON": str(managed_python),
+        "FAKE_UV_FIND_STDERR_BYTES": str(1024 * 1024),
+    }
+
+    run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "Creating virtual environment with Python 3.11" in run.stdout
 
 
 def test_venv_failure_fails_stage_and_restores_existing_environment(

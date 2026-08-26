@@ -391,6 +391,7 @@ $PythonVersion = "3.11"
 # are eligible. Single source of truth shared by Test-Python's fallback and
 # Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
@@ -1187,9 +1188,9 @@ function Initialize-ManagedPythonEnvironment {
 }
 
 function Resolve-AvailablePythonVersion {
-    # Return the absolute path of the first Hermes-managed interpreter uv can
-    # find, preferring the requested version and then fallback minors. System
-    # and application-owned interpreters are deliberately ineligible.
+    # Return the path and minor version of the first Hermes-managed interpreter
+    # uv can find, preferring the requested version and then fallback minors.
+    # System and application-owned interpreters are deliberately ineligible.
     #
     # Under Hermes-Setup.exe each stage runs in a fresh powershell.exe. The
     # venv stage therefore re-resolves both version and provenance rather than
@@ -1217,19 +1218,28 @@ function Resolve-AvailablePythonVersion {
             $startInfo.RedirectStandardError = $true
             $process.StartInfo = $startInfo
             if (-not $process.Start()) { continue }
-            $stdout = $process.StandardOutput.ReadToEnd()
-            $process.StandardError.ReadToEnd() | Out-Null
-            $process.WaitForExit()
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($PythonFindTimeoutMs)) {
+                try { $process.Kill() } catch { }
+                $process.WaitForExit()
+                throw "uv python find $ver timed out after $PythonFindTimeoutMs ms"
+            }
+            $stdout = $stdoutTask.Result
+            $stderrTask.Result | Out-Null
             if ($process.ExitCode -ne 0) { continue }
             [string]$foundPath = ($stdout.Trim() -split "`r?`n") | Select-Object -Last 1
             if ($foundPath) {
                 $absolute = [System.IO.Path]::GetFullPath($foundPath)
                 if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    $script:PythonVersion = $ver
-                    return $absolute
+                    return [PSCustomObject]@{
+                        Path = $absolute
+                        Version = $ver
+                    }
                 }
             }
         } catch {
+            throw "Failed to resolve Hermes-managed Python $ver`: $_"
         } finally {
             if ($process) { $process.Dispose() }
         }
@@ -1243,9 +1253,9 @@ function Test-Python {
 
     # Only a checkout-private uv-managed interpreter satisfies this stage.
     try {
-        $pythonPath = Resolve-AvailablePythonVersion
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python found: $ver"
             return $true
         }
@@ -1274,9 +1284,9 @@ function Test-Python {
 
         # Check if Python is now available (more reliable than exit code
         # since uv may return non-zero due to "already installed" etc.)
-        $pythonPath = Resolve-AvailablePythonVersion
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python installed: $ver"
             return $true
         }
@@ -1302,9 +1312,9 @@ function Test-Python {
             $ErrorActionPreference = "Continue"
             & $UvCmd python install $fallbackVer --no-bin --no-registry --no-config 2>&1 | Out-Null
             $ErrorActionPreference = $previousFallbackEAP
-            $pythonPath = Resolve-AvailablePythonVersion
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
+            $resolvedPython = Resolve-AvailablePythonVersion
+            if ($resolvedPython) {
+                $ver = & $resolvedPython.Path --version 2>$null
                 Write-Success "Python fallback installed: $ver"
                 return $true
             }
@@ -2557,7 +2567,7 @@ function Install-Venv {
         throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
     }
 
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating virtual environment with Python $($resolvedPython.Version)..."
     
     Push-Location $InstallDir
 
@@ -2684,7 +2694,7 @@ function Install-Venv {
     try {
         $venvStartInfo = New-Object System.Diagnostics.ProcessStartInfo
         $venvStartInfo.FileName = $UvCmd
-        $venvStartInfo.Arguments = "venv venv --python `"$resolvedPython`" --managed-python --no-python-downloads --no-config"
+        $venvStartInfo.Arguments = "venv venv --python `"$($resolvedPython.Path)`" --managed-python --no-python-downloads --no-config"
         $venvStartInfo.WorkingDirectory = $InstallDir
         $venvStartInfo.UseShellExecute = $false
         $venvStartInfo.CreateNoWindow = $true
@@ -2799,7 +2809,7 @@ function Install-Venv {
         }
     }
 
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
 }
 
 function Get-PendingVenvBackup {

@@ -24,6 +24,11 @@ public static class FakeUv {
             string.Join(" ", args) + Environment.NewLine);
 
         if (args.Length >= 2 && args[0] == "python" && args[1] == "find") {
+            string stderrBytes = Environment.GetEnvironmentVariable(
+                "FAKE_UV_FIND_STDERR_BYTES");
+            if (!string.IsNullOrEmpty(stderrBytes)) {
+                Console.Error.Write(new string('x', int.Parse(stderrBytes)));
+            }
             bool managed = args.Contains("--managed-python");
             string availableVersion = Environment.GetEnvironmentVariable(
                 "FAKE_MANAGED_PYTHON_VERSION");

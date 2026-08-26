@@ -131,7 +131,7 @@ class TruncationVerdict:
     result: Optional[Dict[str, Any]]
     messages: List[Dict[str, Any]]
     length_continue_retries: int
-    truncated_response_parts: List[str]
+    truncated_response_parts: List[Any]
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
@@ -257,7 +257,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)
-        st.truncated_response_parts.append(_interim_content)
+        st.truncated_response_parts.append((_interim_content, st.is_stub))
 
     filled = st.window_filled
     if n < 4 and filled is None:
@@ -360,7 +360,7 @@ def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
     messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
-    truncated_response_parts: List[str], truncated_tool_call_retries: int, retry_count: int,
+    truncated_response_parts: List[Any], truncated_tool_call_retries: int, retry_count: int,
     compression_attempts: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and

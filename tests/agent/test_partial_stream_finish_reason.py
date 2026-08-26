@@ -366,16 +366,16 @@ class TestLengthContinuationAssembly:
         )
 
         joined = _join_truncated_parts([
-            f"Investigation details.\n\n{conclusion}",
-            conclusion,
+            (f"Investigation details.\n\n{conclusion}", True),
+            (conclusion, False),
         ])
 
         assert joined.count(conclusion) == 1
 
     def test_distinct_continuation_is_preserved(self):
         assert _join_truncated_parts([
-            "The first half ends here",
-            "and the second half adds new information.",
+            ("The first half ends here", True),
+            ("and the second half adds new information.", False),
         ]) == (
             "The first half ends here\n"
             "and the second half adds new information."
@@ -385,8 +385,8 @@ class TestLengthContinuationAssembly:
         repeated = "A sufficiently long repeated transition sentence ends here."
 
         assert _join_truncated_parts([
-            f"Existing answer. {repeated}",
-            f"{repeated} New inbound details remain visible.",
+            (f"Existing answer. {repeated}", True),
+            (f"{repeated} New inbound details remain visible.", False),
         ]) == (
             f"Existing answer. {repeated} New inbound details remain visible."
         )
@@ -490,6 +490,26 @@ class TestConversationLoopPartialStreamContinuation:
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
         assert result["final_response"].count(repeated_tail) == 1
+
+    def test_output_limit_continuation_preserves_intentional_repetition(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_response
+
+        repeated = "This intentionally repeated sentence is longer than thirty-two characters."
+        first = _mock_response(
+            content=f"First copy: {repeated}", finish_reason=FINISH_REASON_LENGTH,
+        )
+        continuation = _mock_response(content=repeated, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [first, continuation]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("repeat this sentence twice")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"].count(repeated) == 2
 
 
 class TestContentFilterStallActivatesFallback:

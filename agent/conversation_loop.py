@@ -288,15 +288,20 @@ def _continuation_overlap_length(previous: str, continuation: str) -> int:
     return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
 
 
-def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments without repeating a recovered tail."""
+def _join_truncated_parts(parts: List[str | tuple[str, bool]]) -> str:
+    """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
-    for part in parts:
-        if joined and part:
+    previous_was_partial_stub = False
+    for fragment in parts:
+        part, is_partial_stub = (
+            fragment if isinstance(fragment, tuple) else (fragment, False)
+        )
+        if previous_was_partial_stub and joined and part:
             part = part[_continuation_overlap_length(joined, part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part
+        previous_was_partial_stub = is_partial_stub
     return joined
 
 
@@ -1377,7 +1382,7 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: List[str] = field(default_factory=list)
+    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after

@@ -229,7 +229,7 @@ def finish_text_response(
     codex_ack_continuations = 0
 
     if truncated_response_parts:
-        final_response = _join_truncated_parts([*truncated_response_parts, final_response])
+        final_response = _join_truncated_parts([*truncated_response_parts, (final_response, False)])
         truncated_response_parts = []
         length_continue_retries = 0
         # The continuation recovered, so the fragments stay in the transcript.

@@ -1430,6 +1430,41 @@ class TestQuickSnapshot:
             f"(expected 1); the extra row 's2' should have been reverted."
         )
 
+    def test_restore_returns_false_when_safe_restore_refuses(
+        self, hermes_home, monkeypatch
+    ):
+        """#95531 leftover: _safe_restore_db False must not look like success.
+
+        The update helper already prints a refusal. /snapshot restore used
+        to ignore that False, increment restored, and print
+        'Restored state from:'.
+        """
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        import hermes_cli.backup as backup_mod
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is False
+
+    def test_snapshot_restore_command_prints_refuse_not_success(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli.backup import create_quick_snapshot
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(
+            "hermes_cli.backup.restore_quick_snapshot", lambda *a, **k: False
+        )
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: hermes_home
+        )
+        CLICommandsMixin()._handle_snapshot_command(f"/snapshot restore {snap_id}")
+        out = capsys.readouterr().out
+        assert "Restored state from" not in out
+        assert "Restore refused" in out
+        assert "Snapshot not found" not in out
+
     def test_restore_refuses_destructive_fallback_when_holder_scan_is_unavailable(
         self, tmp_path, monkeypatch
     ):

@@ -838,7 +838,15 @@ class CLICommandsMixin:
             _pr(f"  Restored state from: {snap_id}",
                 "  Restart recommended for gateway/dashboard processes to pick up state.db changes.")
         else:
-            print(f"  Snapshot not found: {snap_id}")
+            from hermes_constants import get_hermes_home
+            snap_dir = get_hermes_home() / "state-snapshots" / snap_id
+            if snap_dir.is_dir():
+                print(
+                    "  Restore refused: another process still holds state.db "
+                    "or its WAL. Stop the gateway or dashboard and retry."
+                )
+            else:
+                print(f"  Snapshot not found: {snap_id}")
 
     def _snapshot_prune(self, parts) -> None:
         from hermes_cli.backup import prune_quick_snapshots

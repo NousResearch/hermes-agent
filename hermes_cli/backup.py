@@ -1279,7 +1279,7 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
                 if not _safe_restore_db(src, dst):
                     # Refused (live holder) or failed: destination untouched — a failure, not a restore.
                     logger.error("Failed to restore %s: live-safe restore refused", rel)
-                    continue
+                    return False
             else:
                 shutil.copy2(src, dst)
             restored += 1

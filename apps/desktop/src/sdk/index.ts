@@ -91,6 +91,7 @@ import {
   $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
+  focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -1184,6 +1185,15 @@ export const host = {
 
     window.location.hash = '#/'
   },
+
+  /** Front the tab a Bot Mode owner already has open — the tile that owner's
+   *  zone last had active, else its most recent — and return that stored id;
+   *  `null` when the owner has nothing open. A roster click asks this before
+   *  resolving the canonical chat, so the tabs the user left (and the ones
+   *  they closed) are respected. Presentation only: no gateway activation,
+   *  no session create. Feature-detect on older desktops. */
+  focusOpenWorkspaceSession: (workspaceOwnerKey: string): null | string =>
+    focusWorkspaceOwnerSessionTile(workspaceOwnerKey),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

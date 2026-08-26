@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T20:49:36Z",
+  "updated_at": "2026-08-26T13:57:32Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -154,10 +154,6 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "stealth/ox-alpha",
-          "description": "free"
-        },
-        {
           "id": "openrouter/elephant-alpha",
           "description": "free"
         },
@@ -286,9 +282,6 @@
         },
         {
           "id": "sakana/fugu-ultra"
-        },
-        {
-          "id": "stealth/ox-alpha"
         }
       ]
     }

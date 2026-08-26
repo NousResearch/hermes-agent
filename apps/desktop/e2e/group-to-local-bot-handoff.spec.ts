@@ -1,6 +1,5 @@
-import { expect, test } from './test'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
+import { expect, test } from './test'
 
 let fixture: MockBackendFixture | null = null
 
@@ -44,9 +43,11 @@ test('local bot replaces an open group main workspace', async () => {
   await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
 
   const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
+
   for (const title of ['Programmer', 'Reviewer']) {
     await dialog.getByText(title, { exact: true }).locator('xpath=ancestor::label').getByRole('checkbox').click()
   }
+
   await dialog.getByRole('textbox', { name: 'Group name' }).fill('Programmer, Reviewer')
   await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
 

@@ -88,8 +88,16 @@ class TestUnfurlHints:
         a = _slack_adapter({"slack": {}})
         assert a._slack_unfurl_hints("slack") is None
 
-    def test_non_bool_values_dropped(self):
-        a = _slack_adapter({"slack": {"unfurl_links": "false", "unfurl_media": 0}})
+    def test_string_bools_from_config_set_are_coerced(self):
+        # Railway knobs / `hermes config set` persist YAML strings.
+        a = _slack_adapter({"slack": {"unfurl_links": "true", "unfurl_media": "false"}})
+        assert a._slack_unfurl_hints("slack") == {
+            "unfurl_links": True,
+            "unfurl_media": False,
+        }
+
+    def test_junk_values_dropped(self):
+        a = _slack_adapter({"slack": {"unfurl_links": "maybe", "unfurl_media": 0}})
         assert a._slack_unfurl_hints("slack") is None
 
     def test_flat_legacy_key_fallback(self):
@@ -155,3 +163,40 @@ class TestSendForPlatformStampsUnfurl:
         await a.send_for_platform(P.SLACK, "C123", "brief")
         assert "unfurl_links" not in a._transport.sent["metadata"]
         assert "unfurl_media" not in a._transport.sent["metadata"]
+
+class TestUnfurlDisablesDraftStreaming:
+    def test_explicit_unfurl_disables_slack_draft_stream(self):
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(
+                platform="slack",
+                supports_draft_streaming=True,
+                supported_ops=("send", "draft"),
+            ),
+            transport=_CaptureTransport(),
+        )
+        assert a.supports_draft_streaming() is False
+
+    def test_omitted_unfurl_keeps_slack_draft_stream(self):
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {}}),
+            make_desc(
+                platform="slack",
+                supports_draft_streaming=True,
+                supported_ops=("send", "draft"),
+            ),
+            transport=_CaptureTransport(),
+        )
+        assert a.supports_draft_streaming() is True
+
+    def test_string_true_also_disables_stream(self):
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": "true"}}),
+            make_desc(
+                platform="slack",
+                supports_draft_streaming=True,
+                supported_ops=("send", "draft"),
+            ),
+            transport=_CaptureTransport(),
+        )
+        assert a.supports_draft_streaming() is False

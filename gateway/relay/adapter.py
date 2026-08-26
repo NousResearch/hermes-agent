@@ -317,10 +317,23 @@ class RelayAdapter(BasePlatformAdapter):
             if chat_id is not None
             else self.descriptor
         )
-        return (
+        if not (
             desc.supports_draft_streaming
             and "draft" in (desc.supported_ops or ())
-        )
+        ):
+            return False
+        # Slack chat.*Stream has no unfurl_links / unfurl_media. Native
+        # SlackAdapter already refuses streaming when those knobs are set
+        # so chat.postMessage can carry them. Mirror that here or a
+        # configured true never reaches Slack (bot default = no preview).
+        platform = None
+        if chat_id is not None:
+            platform = self._platform_by_chat.get(str(chat_id))
+        if platform is None:
+            platform = getattr(desc, "platform", None)
+        if self._slack_unfurl_hints(platform):
+            return False
+        return True
 
     def stream_is_message_for_chat(self, chat_id: str) -> bool:
         """Per-chat stream-is-the-message semantic (review r2, finding 2).
@@ -1098,8 +1111,27 @@ class RelayAdapter(BasePlatformAdapter):
         hints: Dict[str, bool] = {}
         for knob in ("unfurl_links", "unfurl_media"):
             val = extra.get(knob)
+            if val is None:
+                continue
+            # Railway / `hermes config set` write YAML strings ("true"/"false").
+            # A Slack bot that omits the fields does NOT get human-default
+            # previews — so a string "true" that we drop looks like
+            # suppression. Coerce the same way as reply_in_thread; still drop
+            # junk (empty, 0, "maybe") so omitted stays omitted.
             if isinstance(val, bool):
                 hints[knob] = val
+                continue
+            if isinstance(val, str) and val.strip().lower() in {
+                "1",
+                "0",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "on",
+                "off",
+            }:
+                hints[knob] = val.strip().lower() in {"1", "true", "yes", "on"}
         return hints or None
 
     def _stamp_slack_session_thread(self, event) -> None:

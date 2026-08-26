@@ -9096,6 +9096,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         TITLE_SOURCE_USER: 2,
     }
 
+    # Bot Mode's forever-chat registry: the session titled exactly this, on a
+    # bot's profile, IS the bot's canonical chat — resolved by exact-title
+    # lookup on every open (no session-id pointer exists). The title is the
+    # identity, which is why _set_session_title refuses user renames of a
+    # hidden row holding it (#92473).
+    CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
+
     @classmethod
     def _title_rank(cls, source: Optional[str]) -> int:
         """Rank a stored title_source. NULL means a pre-provenance row.
@@ -9222,11 +9229,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             current = conn.execute(
-                "SELECT title, title_source FROM sessions WHERE id = ?",
+                "SELECT title, title_source, hidden FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
             if current is None:
                 return 0
+            # The canonical Bot Chat's NAME is its identity: Bot Mode resolves
+            # the forever-chat by exact-title lookup on every open, so renaming
+            # the row orphans the entire conversation — the next click mints an
+            # empty replacement and UNIQUE(title) then blocks ever renaming
+            # back (#92473). Refuse the rename at the single write path every
+            # surface funnels through (gateway session.title, /title, CLI
+            # rename, REST). Hidden is the discriminator: canonical chats are
+            # born hidden; an ordinary visible session a user happens to call
+            # "Bot Chat" stays freely renameable.
+            if (
+                is_user
+                and (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
+                and bool(current["hidden"])
+                and title != self.CANONICAL_BOT_CHAT_TITLE
+            ):
+                raise ValueError(
+                    "This is the bot's canonical Bot Chat — its name is its "
+                    "identity, and renaming it would orphan the conversation. "
+                    "To start fresh, create a new bot instead."
+                )
             if not is_user and current["title"] is not None:
                 if self._title_rank(current["title_source"]) >= new_rank:
                     return 0

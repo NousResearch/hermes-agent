@@ -14,6 +14,7 @@ from ares_runtime.local_runtime import (
     AresLocalRuntime,
     AresLocalRuntimeError,
     _desktop_launch_arguments,
+    _desktop_disable_gpu_policy,
     _parser,
     main,
 )
@@ -287,6 +288,44 @@ def test_desktop_launch_uses_xwayland_only_when_available() -> None:
     assert _desktop_launch_arguments(executable, platform="linux", environment={"XDG_SESSION_TYPE": "wayland"}) == [str(executable)]
     assert _desktop_launch_arguments(executable, platform="linux", environment={"DISPLAY": ":0"}) == [str(executable)]
     assert _desktop_launch_arguments(executable, platform="darwin", environment={"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}) == [str(executable)]
+
+
+def test_desktop_gpu_policy_reads_the_ares_scoped_config(tmp_path: Path) -> None:
+    home = tmp_path / "ares-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("desktop:\n  disable_gpu: true\n", encoding="utf-8")
+
+    assert _desktop_disable_gpu_policy(home) == "1"
+
+
+def test_desktop_launch_bridges_configured_gpu_policy_without_overriding_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "a" * 40
+    source = _release(runtime, revision)
+    runtime._activate(revision)
+    runtime.paths.agent_home.mkdir()
+    (runtime.paths.agent_home / "config.yaml").write_text("desktop:\n  disable_gpu: true\n", encoding="utf-8")
+    executable = source / "Ares"
+    executable.write_text("desktop", encoding="utf-8")
+    captured: list[dict[str, str]] = []
+
+    def fake_popen(_arguments, **kwargs):
+        captured.append(kwargs["env"])
+        return SimpleNamespace()
+
+    monkeypatch.setattr(runtime, "_desktop_binary", lambda _source: executable)
+    monkeypatch.setattr("ares_runtime.local_runtime.subprocess.Popen", fake_popen)
+
+    runtime.desktop(rebuild=False)
+
+    assert captured[-1]["HERMES_DESKTOP_DISABLE_GPU"] == "1"
+
+    monkeypatch.setenv("HERMES_DESKTOP_DISABLE_GPU", "0")
+    runtime.desktop(rebuild=False)
+
+    assert captured[-1]["HERMES_DESKTOP_DISABLE_GPU"] == "0"
 
 
 def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> None:

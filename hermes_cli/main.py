@@ -7796,17 +7796,9 @@ def _desktop_launch_options() -> tuple[list[str], str, str]:
     elif isinstance(raw_flags, (list, tuple)):
         flags = [str(f) for f in raw_flags if str(f).strip()]
 
-    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
-    if isinstance(raw_gpu, bool):
-        disable_gpu = "1" if raw_gpu else "0"
-    elif isinstance(raw_gpu, str):
-        low = raw_gpu.strip().lower()
-        if low in ("1", "true", "yes", "on"):
-            disable_gpu = "1"
-        elif low in ("0", "false", "no", "off"):
-            disable_gpu = "0"
-        else:
-            disable_gpu = "auto"
+    from hermes_cli.desktop_launch_options import normalize_desktop_disable_gpu
+
+    disable_gpu = normalize_desktop_disable_gpu(desktop_cfg.get("disable_gpu", "auto"))
 
     raw_store = desktop_cfg.get("password_store", "auto")
     if isinstance(raw_store, str):

@@ -53,6 +53,22 @@ def _desktop_launch_arguments(
     return arguments
 
 
+def _desktop_disable_gpu_policy(agent_home: Path) -> str:
+    """Read the Ares-scoped Desktop GPU policy without borrowing another home."""
+
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.desktop_launch_options import normalize_desktop_disable_gpu
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(agent_home)
+    try:
+        desktop_config = (load_config_readonly() or {}).get("desktop") or {}
+    finally:
+        reset_hermes_home_override(token)
+
+    return normalize_desktop_disable_gpu(desktop_config.get("disable_gpu", "auto"))
+
+
 @dataclass(frozen=True)
 class AresLocalPaths:
     """All state owned by the local Ares runtime controller."""
@@ -1240,6 +1256,14 @@ print(json.dumps({'enabled': enabled, 'probed': sorted(probed), 'missing': missi
         environment["HERMES_DESKTOP_HERMES_ROOT"] = str(source)
         environment["HERMES_DESKTOP_PYTHON"] = str(self._python_for(source))
         environment["HERMES_DESKTOP_APP_NAME"] = "Ares"
+        # The Ares runtime launches Electron directly rather than through
+        # ``hermes desktop``. Bridge the same profile-scoped GPU policy here so
+        # an operator's documented config works for both launch paths. An
+        # explicit process environment remains the highest-precedence override.
+        if "HERMES_DESKTOP_DISABLE_GPU" not in environment:
+            disable_gpu = _desktop_disable_gpu_policy(self.paths.agent_home)
+            if disable_gpu != "auto":
+                environment["HERMES_DESKTOP_DISABLE_GPU"] = disable_gpu
         subprocess.Popen(
             _desktop_launch_arguments(executable, platform=sys.platform, environment=environment),
             cwd=source,

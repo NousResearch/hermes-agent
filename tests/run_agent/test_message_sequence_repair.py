@@ -832,32 +832,28 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
 # such turns on the per-call copy so the session recovers itself in memory.
 
 
-def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
-    """When dedup removes ALL tool_calls from an assistant message,
-    the key is dropped instead of writing tool_calls: [].
+def test_sanitize_interrupted_call_stubbed_and_replay_kept():
+    """A crash/resume glitch replays the SAME assistant call while the first
+    occurrence is still positionally unanswered.
 
-    DeepSeek v4 and newer OpenAI reject empty tool_calls with HTTP 400.
-    The dedup pass introduced by #58327 can produce this state when
-    all tool_call_ids are duplicates of earlier messages in a long
-    history. The fix (#64335) drops the key entirely rather than
-    writing an empty array.
+    With the positional pairing pass (#94704), the interrupted first call is
+    no longer a dedup candidate: it gets a synthetic unavailable-result stub
+    at the end of its (empty) tool run, and the replayed call — now with its
+    own immediate result — is a legitimate new round. This supersedes the
+    pre-positional shape where the dedup pass removed the replay's tool_calls
+    (the #64335 empty-key guard is still exercised by
+    ``test_sanitize_drops_empty_tool_calls_array``).
     """
     from agent.agent_runtime_helpers import sanitize_api_messages
 
-    # Simulate a crash/resume glitch or compression-window re-emission that
-    # replays the SAME assistant call while the first is still outstanding
-    # (no tool result has answered it yet). That is a true duplicate: the
-    # first occurrence is kept, the replay is removed. NOTE: a reuse AFTER
-    # the call was answered is NOT a duplicate — servers with per-turn or
-    # constant ids (llama.cpp, Kimi K3) legitimately re-issue ids across
-    # turns (#70724), which outstanding-call semantics now preserve.
+    # Simulate a crash/resume glitch that replays the SAME assistant call
+    # while the first is still outstanding (no tool result has answered it
+    # yet, and a second assistant turn interrupts the run).
     messages = [
         {"role": "user", "content": "step 1"},
         {"role": "assistant", "content": "running",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
-        # Replayed assistant call BEFORE the result answers call_A —
-        # a duplicate of a still-outstanding call, so it must be removed.
         {"role": "assistant", "content": "retrying",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
@@ -866,18 +862,18 @@ def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
 
     out = sanitize_api_messages(list(messages))
 
-    # First assistant should keep tool_calls (first occurrence)
-    assistant1 = [m for m in out if m.get("role") == "assistant"][0]
-    assert "tool_calls" in assistant1
-    assert len(assistant1["tool_calls"]) == 1
-    assert assistant1["tool_calls"][0]["id"] == "call_A"
-
-    # Second assistant should have tool_calls key DROPPED
-    # (all tool_calls were deduped as duplicates of call_A)
-    assistant2 = [m for m in out if m.get("role") == "assistant"][1]
-    assert "tool_calls" not in assistant2
-    # Content should be preserved
-    assert assistant2["content"] == "retrying"
+    # Both assistant turns survive; the interrupted one is answered by a
+    # stub inserted before the replay, the replay by its real result.
+    assert [m["role"] for m in out] == [
+        "user", "assistant", "tool", "assistant", "tool",
+    ]
+    assert out[2]["role"] == "tool"
+    assert out[2]["tool_call_id"] == "call_A"
+    assert "Result unavailable" in out[2]["content"]
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert all("tool_calls" in a for a in assistants)
+    assert [a["tool_calls"][0]["id"] for a in assistants] == ["call_A", "call_A"]
+    assert out[4]["content"] == "result 1"
 
 
 def test_repair_drops_duplicate_tool_result_keyed_on_sibling_id():
@@ -1301,4 +1297,94 @@ def test_sanitize_positional_pairing_untouched_valid_transcript():
         "user", "assistant", "tool", "assistant", "tool", "assistant",
     ]
     assert all("Result unavailable" not in str(m.get("content", "")) for m in out)
+
+
+def test_sanitize_stubs_replayed_call_masked_by_historical_result():
+    """Issue #94704 acceptance shape: a historical result masks a later
+    replayed call with no immediate result.
+
+    ```text
+    user
+    assistant(tool_calls=[call_old])                # first declaration, answered
+    tool(call_old)                                  # historical completed call
+    user
+    assistant(tool_calls=[call_old, call_new])      # call_old REPLAYED
+      tool(call_new)                                # call_old unanswered here
+    ```
+
+    The global presence check sees ``call_old`` answered somewhere and
+    injects no stub; DeepSeek v4 rejects the payload because the second
+    declaration's contiguous tool run covers only ``call_new``. The
+    positional pass must stub ``call_old`` at the end of the second run
+    while keeping the historical result and the fresh result intact.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "step 1"},
+        _assistant_with_call("call_old", content=""),
+        _tool_result("call_old", content="historical result"),
+        {"role": "user", "content": "step 2"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_old", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+                {"id": "call_new", "type": "function",
+                 "function": {"name": "g", "arguments": "{}"}},
+            ],
+        },
+        _tool_result("call_new", content="fresh result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    # The second run ends with a stub for the replayed call_old, inserted
+    # right after the fresh result and BEFORE any user turn.
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user", "assistant",
+                     "tool", "tool"]
+    second_run = out[4:]
+    assert [m["tool_call_id"] for m in second_run if m["role"] == "tool"] == [
+        "call_new", "call_old",
+    ]
+    stub = second_run[2]
+    assert stub["role"] == "tool"
+    assert stub["tool_call_id"] == "call_old"
+    assert "Result unavailable" in stub["content"]
+    # Historical + fresh results both survive untouched.
+    contents = [m.get("content", "") for m in out]
+    assert "historical result" in contents
+    assert "fresh result" in contents
+
+
+def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
+    """Production shape (session 7d57a602b83d): an interrupted turn persists
+    an assistant tool_call with NO result (next message is user); on resume
+    the SAME call is re-issued and persisted again WITH its result. Each id
+    therefore exists twice — the first occurrence must be stubbed so the
+    positional invariant holds, while the replayed pair stays untouched.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),   # interrupted: no result
+        {"role": "user", "content": "resumed"},
+        _assistant_with_call("call_A", content=""),   # replay: paired
+        _tool_result("call_A", content="real result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user", "assistant", "tool"]
+    # Stub inserted for the interrupted first occurrence, before the user turn.
+    assert out[2]["role"] == "tool"
+    assert out[2]["tool_call_id"] == "call_A"
+    assert "Result unavailable" in out[2]["content"]
+    # Replayed pair keeps the REAL result, not a stub.
+    assert out[5]["content"] == "real result"
+
 

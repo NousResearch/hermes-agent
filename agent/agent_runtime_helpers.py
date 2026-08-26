@@ -817,8 +817,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # displaced-but-present result masks (see sanitize_api_messages) —
     # so the durable history must not keep replaying the poisoned turn
     # either. Enforce the positional invariant here: a tool_call is only
-    # legitimate when a result for ANY of its ids (``id`` / ``call_id``,
-    # same superset as Pass 1) appears in the run of tool messages
+    # legitimate when a result for ANY of its id variants (``id`` /
+    # ``call_id`` / ``response_item_id`` / composite bridge — the same
+    # unified alias policy as Pass 1, via ``tool_call_id_variants`` /
+    # ``tool_result_id_variants``) appears in the run of tool messages
     # IMMEDIATELY following the declaring assistant message — before any
     # user turn or further assistant turn. Unanswered calls are pruned;
     # if the message then carries no other payload (no content,
@@ -850,15 +852,13 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         ):
             tid = (filtered[j].get("tool_call_id") or "").strip()
             if tid:
-                answered.add(tid)
+                answered.update(tool_result_id_variants(tid))
             j += 1
         kept_calls: List[Dict] = []
         dropped_calls = 0
         for tc in msg.get("tool_calls") or []:
-            tc_ids = []
-            if isinstance(tc, dict):
-                tc_ids = [x for x in (tc.get("id"), tc.get("call_id")) if x]
-            if tc_ids and any(x in answered for x in tc_ids):
+            variants = tool_call_id_variants(tc)
+            if variants and (variants & answered):
                 kept_calls.append(tc)
             else:
                 dropped_calls += 1

@@ -1881,12 +1881,49 @@ KANBAN_COMPLETE_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Controller-verifiable terminal result for an opt-in "
-                    "completion contract. Bind attempt_id (from the claim), "
-                    "repository/worktree, full commit_sha, and for review "
-                    "tasks a verdict of APPROVED/PASS or REJECTED/"
-                    "CHANGES_REQUIRED/FAIL. Narrative-only completion of a "
-                    "revision-required task is not done."
+                    "completion contract. Must include the current "
+                    "controller-issued attempt_id. Narrative-only completion "
+                    "of a revision-required task is not done."
                 ),
+                "properties": {
+                    "attempt_id": {
+                        "type": "string",
+                        "description": (
+                            "Exact current controller-issued attempt_id from "
+                            "the claim. Missing or stale values are rejected."
+                        ),
+                    },
+                    "commit_sha": {
+                        "type": "string",
+                        "description": "Full 40-character commit SHA being claimed.",
+                    },
+                    "reviewed_sha": {
+                        "type": "string",
+                        "description": (
+                            "Full reviewed commit SHA. For review tasks this "
+                            "is the SHA the verdict applies to."
+                        ),
+                    },
+                    "repository": {
+                        "type": "string",
+                        "description": (
+                            "Claimed repository path. Evidence only; the "
+                            "controller-authorized contract identity is the "
+                            "trust root."
+                        ),
+                    },
+                    "worktree": {
+                        "type": "string",
+                        "description": "Claimed worktree path. Evidence only.",
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "description": (
+                            "Required for review tasks: APPROVED/PASS or "
+                            "REJECTED/CHANGES_REQUIRED/FAIL."
+                        ),
+                    },
+                },
             },
             "board": _board_schema_prop(),
         },
@@ -2255,12 +2292,13 @@ KANBAN_CREATE_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Optional opt-in completion contract. Use "
-                    "{\"schema_version\": 1, \"type\": \"git_revision\", "
-                    "\"repository\": \"/abs/repo\", \"expected_base\": "
-                    "\"<full-sha>\"} for Engineer revision evidence, "
-                    "{\"type\": \"review\", ...} for Reviewer verdict+SHA "
-                    "evidence, or {\"type\": \"historian_certify\", "
-                    "\"required_sha\": \"<full-sha>\"} for immutable "
+                    '{"schema_version": 1, "type": "git_revision", '
+                    '"repository": "/abs/repo", "expected_base": '
+                    '"<full-sha>"} for Engineer revision evidence, '
+                    '{"type": "review", ...} for Reviewer verdict+SHA '
+                    "evidence, or "
+                    '{"type": "historian_certify", "repository": "/abs/repo", '
+                    '"required_sha": "<full-sha>"} for immutable '
                     "Historian certification. Omit for legacy ungated tasks."
                 ),
             },

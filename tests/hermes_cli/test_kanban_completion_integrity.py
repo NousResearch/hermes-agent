@@ -708,6 +708,65 @@ def test_negative_path_orchestration_certification(kanban_home, tmp_path):
         receipt["steps"].append({"step": "legacy", "child": _status(conn, legacy_child)})
         assert _status(conn, legacy_child) == "ready"
 
+        structural = kb.create_task(conn, title="force-structural", assignee="worker")
+        force_child = kb.create_task(
+            conn, title="force-child", assignee="worker",
+            parents=[structural, engineer],
+        )
+        _link_in_order(conn, force_child, [structural, engineer])
+        ok, err = kb.promote_task(conn, force_child, actor="operator", force=True)
+        receipt["steps"].append({
+            "step": "multi_parent_force",
+            "ok": ok,
+            "error": err,
+            "status": _status(conn, force_child),
+        })
+        assert ok is False
+        assert _status(conn, force_child) == "todo"
+
+        mid = kb.create_task(
+            conn, title="archive-mid", assignee="worker",
+            completion_contract=_git_contract(repo, sha_c),
+        )
+        leaf = kb.create_task(conn, title="archive-leaf", assignee="worker", parents=[mid])
+        assert kb.archive_task(conn, mid) is True
+        kb.recompute_ready(conn)
+        receipt["steps"].append({
+            "step": "archive_unexecuted_intermediate",
+            "leaf": _status(conn, leaf),
+        })
+        assert _status(conn, leaf) == "todo"
+
+        replay, replay_a = _create_and_claim(
+            conn, "replay", contract=_git_contract(repo, sha_c),
+        )
+        assert kb.reclaim_task(conn, replay, reason="retry") is True
+        claimed = kb.claim_task(conn, replay)
+        assert claimed is not None
+        replay_task = kb.get_task(conn, replay)
+        assert replay_task is not None
+        replay_b = replay_task.attempt_id
+        assert replay_b != replay_a
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(conn, replay, attempt_id=replay_a, repo=repo, sha=sha_c)
+        receipt["steps"].append({"step": "stale_attempt_replay", "code": exc.value.code})
+        assert exc.value.code == kci.REASON_WRONG_ATTEMPT
+
+        rec_child = kb.create_task(conn, title="rec-child", assignee="worker", parents=[engineer2])
+        rec_grand = kb.create_task(conn, title="rec-grand", assignee="worker", parents=[rec_child])
+        kb.recompute_ready(conn)
+        kb.claim_task(conn, rec_child)
+        assert kb.complete_task(conn, rec_child, summary="rec child done")
+        kb.recompute_ready(conn)
+        assert _status(conn, rec_grand) == "ready"
+        with pytest.raises(kci.CompletionIntegrityError):
+            _complete_revision(conn, engineer2, attempt_id=e2_attempt, repo=repo, sha=sha_b)
+        receipt["steps"].append({
+            "step": "reconciliation_invalidates_grandchild",
+            "grandchild": _status(conn, rec_grand),
+        })
+        assert _status(conn, rec_grand) == "todo"
+
     receipt_path = tmp_path / "kanban-completion-integrity-certification.json"
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     assert receipt["steps"]
@@ -836,13 +895,20 @@ def test_sol3_stale_attempt_id_replay_is_rejected(kanban_home, tmp_path):
     base = _init_repo(repo)
     sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
     with kb.connect() as conn:
-        engineer, attempt = _create_and_claim(
+        engineer, attempt_a = _create_and_claim(
             conn, "engineer", contract=_git_contract(repo, base),
         )
-        stale = f"{attempt}-replay"
+        assert kb.reclaim_task(conn, engineer, reason="retry") is True
+        claimed = kb.claim_task(conn, engineer)
+        assert claimed is not None
+        task_b = kb.get_task(conn, engineer)
+        assert task_b is not None
+        attempt_b = task_b.attempt_id
+        assert attempt_b
+        assert attempt_b != attempt_a
         with pytest.raises(kci.CompletionIntegrityError) as exc:
             _complete_revision(
-                conn, engineer, attempt_id=stale, repo=repo, sha=sha_b,
+                conn, engineer, attempt_id=attempt_a, repo=repo, sha=sha_b,
             )
         assert exc.value.code == kci.REASON_WRONG_ATTEMPT
         assert _status(conn, engineer) != "done"
@@ -969,7 +1035,7 @@ def test_sol5_worker_context_exposes_governance_evidence(kanban_home, tmp_path):
         assert "git_revision" in ctx
 
 
-def test_sol5_cli_and_tool_surfaces_expose_governance_fields(kanban_home, tmp_path):
+def test_sol5_cli_and_tool_surfaces_expose_governance_fields(kanban_home, tmp_path, monkeypatch):
     from hermes_cli.kanban import _task_to_dict
     from tools import kanban_tools as kt
 
@@ -986,8 +1052,7 @@ def test_sol5_cli_and_tool_surfaces_expose_governance_fields(kanban_home, tmp_pa
         assert "terminal_result" in cli_payload
         assert "verified_verdict" in cli_payload
 
-    monkeypatch_env = os.environ
-    monkeypatch_env["HERMES_KANBAN_TASK"] = engineer
+    monkeypatch.setenv("HERMES_KANBAN_TASK", engineer)
     shown = json.loads(kt._handle_show({"task_id": engineer}))
     assert shown["task"]["attempt_id"] == attempt
     assert shown["task"]["completion_contract"]["type"] == "git_revision"
@@ -1101,3 +1166,234 @@ def test_sol6_force_cannot_bypass_reconciliation(kanban_home, tmp_path):
         assert ok is False
         assert err is not None
         assert _status(conn, child) == "todo"
+
+
+# ---------------------------------------------------------------------------
+# Second-round Sol corrections
+# ---------------------------------------------------------------------------
+
+
+def _link_in_order(conn, child: str, parents: list[str]) -> None:
+    """Force parent evaluation order by deleting and reinserting links."""
+    conn.execute("DELETE FROM task_links WHERE child_id = ?", (child,))
+    for parent in parents:
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent, child),
+        )
+
+
+def test_sol7_force_structural_first_reconciliation_second_is_blocked(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        structural = kb.create_task(conn, title="structural", assignee="worker")
+        governed, attempt = _create_and_claim(
+            conn, "governed", contract=_git_contract(repo, base),
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="worker", parents=[structural, governed],
+        )
+        _complete_revision(conn, governed, attempt_id=attempt, repo=repo, sha=sha_b)
+        with pytest.raises(kci.CompletionIntegrityError):
+            _complete_revision(conn, governed, attempt_id=attempt, repo=repo, sha=sha_c)
+        _link_in_order(conn, child, [structural, governed])
+        ok, err = kb.promote_task(conn, child, actor="operator", force=True)
+        assert ok is False
+        assert err is not None
+        assert "NEEDS_RECONCILIATION" in err or "reconciliation" in err.lower()
+        assert _status(conn, child) == "todo"
+
+
+def test_sol7_force_reconciliation_first_structural_second_is_blocked(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        structural = kb.create_task(conn, title="structural", assignee="worker")
+        governed, attempt = _create_and_claim(
+            conn, "governed", contract=_git_contract(repo, base),
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="worker", parents=[governed, structural],
+        )
+        _complete_revision(conn, governed, attempt_id=attempt, repo=repo, sha=sha_b)
+        with pytest.raises(kci.CompletionIntegrityError):
+            _complete_revision(conn, governed, attempt_id=attempt, repo=repo, sha=sha_c)
+        _link_in_order(conn, child, [governed, structural])
+        ok, err = kb.promote_task(conn, child, actor="operator", force=True)
+        assert ok is False
+        assert err is not None
+        assert "NEEDS_RECONCILIATION" in err or "reconciliation" in err.lower()
+        assert _status(conn, child) == "todo"
+
+
+def test_sol7_force_multiple_ordinary_structural_parents_still_allowed(kanban_home):
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first", assignee="worker")
+        second = kb.create_task(conn, title="second", assignee="worker")
+        child = kb.create_task(
+            conn, title="child", assignee="worker", parents=[first, second],
+        )
+        ok, err = kb.promote_task(conn, child, actor="operator", force=True)
+        assert ok is True
+        assert err is None
+        assert _status(conn, child) == "ready"
+
+
+def test_sol8_archived_unexecuted_governed_parent_does_not_release_child(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    with kb.connect() as conn:
+        parent, _ = _create_and_claim(conn, "parent", contract=_git_contract(repo, base))
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+        assert kb.archive_task(conn, parent) is True
+        kb.recompute_ready(conn)
+        assert _status(conn, parent) == "archived"
+        assert _status(conn, child) == "todo"
+        assert kb.claim_task(conn, child) is None
+
+
+def test_sol8_archived_governed_intermediate_does_not_release_leaf(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    with kb.connect() as conn:
+        parent, _ = _create_and_claim(conn, "parent", contract=_git_contract(repo, base))
+        mid = kb.create_task(
+            conn, title="mid", assignee="worker", parents=[parent],
+            completion_contract=_git_contract(repo, base),
+        )
+        leaf = kb.create_task(conn, title="leaf", assignee="worker", parents=[mid])
+        assert kb.archive_task(conn, mid) is True
+        kb.recompute_ready(conn)
+        assert _status(conn, leaf) == "todo"
+        assert kb.claim_task(conn, leaf) is None
+
+
+def test_sol8_verified_then_archived_governed_parent_still_satisfies(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    with kb.connect() as conn:
+        parent, attempt = _create_and_claim(
+            conn, "parent", contract=_git_contract(repo, base),
+        )
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+        assert _complete_revision(conn, parent, attempt_id=attempt, repo=repo, sha=sha_b)
+        assert kb.archive_task(conn, parent) is True
+        kb.recompute_ready(conn)
+        assert _status(conn, child) == "ready"
+
+
+def test_sol8_legacy_ungated_archive_still_releases_child(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="legacy-parent", assignee="worker")
+        child = kb.create_task(conn, title="legacy-child", assignee="worker", parents=[parent])
+        assert kb.archive_task(conn, parent) is True
+        kb.recompute_ready(conn)
+        assert _status(conn, child) == "ready"
+
+
+def test_sol9_reconciliation_recursively_invalidates_ready_grandchild(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        ancestor, attempt = _create_and_claim(
+            conn, "ancestor", contract=_git_contract(repo, base),
+        )
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[ancestor])
+        grandchild = kb.create_task(
+            conn, title="grandchild", assignee="worker", parents=[child],
+        )
+        assert _complete_revision(conn, ancestor, attempt_id=attempt, repo=repo, sha=sha_b)
+        kb.recompute_ready(conn)
+        kb.claim_task(conn, child)
+        assert kb.complete_task(conn, child, summary="child done") is True
+        kb.recompute_ready(conn)
+        assert _status(conn, grandchild) == "ready"
+        with pytest.raises(kci.CompletionIntegrityError):
+            _complete_revision(conn, ancestor, attempt_id=attempt, repo=repo, sha=sha_c)
+        assert _row(conn, ancestor)["needs_reconciliation"] == 1
+        assert _status(conn, child) == "done"
+        assert _status(conn, grandchild) == "todo"
+        assert kb.claim_task(conn, grandchild) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["two", "1.5", "-1", 0, True, {"n": 2}, [2], 1.5],
+)
+def test_sol10_malformed_max_commits_is_invalid_contract(kanban_home, tmp_path, raw):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    contract = _git_contract(repo, base)
+    contract["max_commits"] = raw
+    with kb.connect() as conn:
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            kb.create_task(
+                conn, title="engineer", assignee="engineer", completion_contract=contract,
+            )
+        assert exc.value.code == kci.REASON_INVALID
+
+
+def test_sol11_model_tool_schema_publishes_terminal_result_fields():
+    from tools import kanban_tools as kt
+
+    props = kt.KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]["terminal_result"]
+    assert props["type"] == "object"
+    published = props["properties"]
+    for key in ("attempt_id", "commit_sha", "reviewed_sha", "repository", "worktree", "verdict"):
+        assert key in published
+    create_desc = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]["completion_contract"]["description"]
+    assert '"type": "historian_certify"' in create_desc
+    assert '"repository": "/abs/repo"' in create_desc
+    assert '"required_sha"' in create_desc
+
+
+def test_sol11_cli_create_and_show_parse_governance_contract(kanban_home, tmp_path):
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    args = argparse.Namespace(
+        title="engineer",
+        body=None,
+        assignee="engineer",
+        created_by=None,
+        workspace="scratch",
+        branch=None,
+        project=None,
+        tenant=None,
+        priority=0,
+        parent=None,
+        triage=False,
+        idempotency_key=None,
+        max_runtime=None,
+        skills=None,
+        max_retries=None,
+        model_override=None,
+        provider_override=None,
+        goal_mode=False,
+        goal_max_turns=None,
+        initial_status="running",
+        json=True,
+        completion_contract=json.dumps(_git_contract(repo, base)),
+    )
+    rc = kc._cmd_create(args)
+    assert rc == 0
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn)
+        assert len(tasks) == 1
+        tid = tasks[0].id
+        assert tasks[0].completion_contract["type"] == "git_revision"
+    shown = json.loads(kc.run_slash(f"show {tid} --json"))
+    assert shown["task"]["completion_contract"]["type"] == "git_revision"
+    assert "attempt_id" in shown["task"]
+    assert "terminal_result" in shown["task"]

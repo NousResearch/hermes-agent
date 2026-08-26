@@ -4764,9 +4764,9 @@ def _parent_edge_satisfied(
     return _parent_row_satisfied(conn, row)
 
 
-def _unsatisfied_parent_eval(
+def _unsatisfied_parent_evals(
     conn: sqlite3.Connection, task_id: str,
-) -> Optional[kci.GateEvaluation]:
+) -> list[kci.GateEvaluation]:
     parents = conn.execute(
         "SELECT t.id, t.status, t.completion_contract, "
         "t.verification_status, t.verified_revision, t.verified_verdict, "
@@ -4775,11 +4775,18 @@ def _unsatisfied_parent_eval(
         "WHERE l.child_id = ?",
         (task_id,),
     ).fetchall()
-    for parent in parents:
-        evaluation = _evaluate_parent_row(conn, parent)
-        if not evaluation.satisfied:
-            return evaluation
-    return None
+    return [
+        evaluation
+        for evaluation in (_evaluate_parent_row(conn, parent) for parent in parents)
+        if not evaluation.satisfied
+    ]
+
+
+def _unsatisfied_parent_eval(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[kci.GateEvaluation]:
+    unsatisfied = _unsatisfied_parent_evals(conn, task_id)
+    return unsatisfied[0] if unsatisfied else None
 
 
 def _parent_row_satisfied(conn: sqlite3.Connection, parent: Mapping[str, Any]) -> bool:
@@ -4790,6 +4797,20 @@ def _evaluate_parent_row(
     conn: sqlite3.Connection, parent: Mapping[str, Any],
 ) -> kci.GateEvaluation:
     parent_status = parent["status"]
+    contract = kci.load_task_contract(parent)
+    if parent_status == "archived":
+        # Archival is not an alternate completion path. A governed parent
+        # without controller-verified terminal evidence cannot release
+        # descendants merely by being archived.
+        if kci.contract_requires_revision(contract) and (
+            parent["verification_status"] != kci.STATUS_VERIFIED
+        ):
+            return kci.GateEvaluation(
+                kci.REASON_UNSATISFIED,
+                kci.REASON_UNSATISFIED,
+                "archived parent lacks required verified completion evidence",
+                {"parent_id": parent["id"], "parent_status": parent_status},
+            )
     if parent_status not in ("done", "archived"):
         return kci.GateEvaluation(
             kci.REASON_UNSATISFIED,
@@ -4804,7 +4825,6 @@ def _evaluate_parent_row(
             "parent needs reconciliation",
             {"parent_id": parent["id"]},
         )
-    contract = kci.load_task_contract(parent)
     if contract and contract.get("type") == "__invalid__":
         return kci.GateEvaluation(
             kci.REASON_INVALID,
@@ -5838,13 +5858,13 @@ def _apply_opt_in_completion_locked(
                     "transition": transition,
                 },
             )
-            # Fail closed: a conflict must not leave previously released
-            # descendants runnable. Demote ready/review children to todo.
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' "
-                "WHERE id IN (SELECT child_id FROM task_links WHERE parent_id = ?) "
-                "AND status IN ('ready', 'review') AND claim_lock IS NULL",
-                (task_id,),
+            # Retract stale downstream eligibility recursively. Preserve
+            # already-completed descendant artifacts; do not rewrite their
+            # historical evidence into fabricated failures.
+            invalidate_descendants_for_parent_reopen(
+                conn, task_id, author="controller",
+                reason="ancestor_reconciliation",
+                preserve_completed=True,
             )
             return {
                 "error": {
@@ -7526,15 +7546,21 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    unsatisfied = _unsatisfied_parent_eval(conn, task_id)
-    if unsatisfied is not None:
-        # force=True retains legacy structural override (parent not yet
-        # terminal) but must not bypass typed semantic gates, required
-        # completion verification, or reconciliation.
-        if not (force and unsatisfied.code == kci.REASON_PARENT_NOT_TERMINAL):
+    unsatisfied = _unsatisfied_parent_evals(conn, task_id)
+    if unsatisfied:
+        # force=True may override ONLY legacy structural PARENT_NOT_TERMINAL
+        # conditions, and only when every remaining parent is otherwise
+        # governance-satisfied. Any semantic/verification/reconciliation
+        # blocker prevents promotion regardless of parent ordering.
+        governance = [
+            item for item in unsatisfied
+            if item.code != kci.REASON_PARENT_NOT_TERMINAL
+        ]
+        if governance or not force:
+            first = (governance or unsatisfied)[0]
             return False, (
-                f"unsatisfied parent dependencies: {unsatisfied.code} "
-                f"({unsatisfied.message})"
+                f"unsatisfied parent dependencies: {first.code} "
+                f"({first.message})"
             )
 
     if dry_run:
@@ -7735,6 +7761,8 @@ def invalidate_descendants_for_parent_reopen(
     task_id: str,
     *,
     author: str,
+    reason: str = "ancestor_reopened",
+    preserve_completed: bool = False,
 ) -> dict[str, Any]:
     """Retract every dispatchable/completed descendant of a reopened ancestor.
 
@@ -7749,6 +7777,11 @@ def invalidate_descendants_for_parent_reopen(
     via ``_set_status_direct``) must route through this function; keeping the
     implementation here means a future CLI or tool reopen verb inherits
     identical semantics for free.
+
+    ``preserve_completed=True`` keeps already-completed descendant artifacts
+    immutable (no fabricated failure rewrite) while still retracting
+    ready/review/running descendants further down the graph. Used when a
+    governed ancestor enters ``needs_reconciliation``.
 
     Transactionality: composes under the caller's already-open transaction
     via ``write_txn(conn, allow_nested=True)`` — the dashboard's status
@@ -7816,6 +7849,8 @@ def invalidate_descendants_for_parent_reopen(
             previous_status = row["status"]
             if previous_status not in {"ready", "review", "running", "done"}:
                 continue
+            if preserve_completed and previous_status == "done":
+                continue
             resume_status = "ready"
             run_id = None
             if previous_status == "review":
@@ -7860,7 +7895,7 @@ def invalidate_descendants_for_parent_reopen(
                 "status",
                 {
                     "status": "todo",
-                    "reason": "ancestor_reopened",
+                    "reason": reason,
                     "parent": task_id,
                     "previous_status": previous_status,
                     "resume_status": resume_status,
@@ -8243,9 +8278,24 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+        row = conn.execute(
+            "SELECT completion_contract, verification_status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        contract = kci.load_task_contract(row) if row is not None else None
+        if (
+            kci.contract_requires_revision(contract)
+            and (row is None or row["verification_status"] != kci.STATUS_VERIFIED)
+        ):
+            invalidate_descendants_for_parent_reopen(
+                conn, task_id, author="controller",
+                reason="archived_without_verified_evidence",
+                preserve_completed=True,
+            )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
-    # for a later dispatcher tick.
+    # for a later dispatcher tick. Governed parents without verified
+    # evidence still fail closed in ``_evaluate_parent_row``.
     recompute_ready(conn)
     # Reap the workspace on archive too — tasks archived without ever
     # completing previously kept their scratch dir / worktree forever.

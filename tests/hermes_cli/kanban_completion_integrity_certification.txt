@@ -1,10 +1,13 @@
 Kanban Completion Integrity negative-path orchestration receipt
-Baseline: 9dbb8868e8bdd8f2ca24c33e0a3b58ef2b605bc8
-Rejected candidate: 4269ffae4e3811c8a7251336ec8a699eea46a183
+Authorized baseline: 9dbb8868e8bdd8f2ca24c33e0a3b58ef2b605bc8
+Prior rejected candidate: 81d49502f2f64d6d1cad11db5841d9278225341a
+Earlier rejected production: 4269ffae4e3811c8a7251336ec8a699eea46a183
+Corrective parent: 81d49502f2f64d6d1cad11db5841d9278225341a
 Worktree: isolated temporary HERMES_HOME + Git repos (no production mutation)
-Suite: tests/hermes_cli/test_kanban_completion_integrity.py
-Result: 39 passed, 0 failed (23 original + 16 Sol regressions)
-Date: local engineer run against authorized corrective candidate
+Interpreter: /home/bruce-chen/.hermes/hermes-agent/.venv/bin/python
+Command: HERMES_PYTHON=/home/bruce-chen/.hermes/hermes-agent/.venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_completion_integrity.py -q --tb=short
+Result: 57 passed, 0 failed
+Identify the final candidate as the commit that contains this receipt.
 
 Observed walk (test_negative_path_orchestration_certification):
 - narrative-only completion rejected (NARRATIVE_ONLY)
@@ -15,13 +18,24 @@ Observed walk (test_negative_path_orchestration_certification):
 - Engineer correction produced C; Reviewer APPROVED exact C
 - Historian became ready and certified immutable C after HEAD moved away
 - identical duplicate terminal result was idempotent
-- conflicting duplicate set needs_reconciliation and released no dependent
+- conflicting duplicate set needs_reconciliation
 - ordinary ungated parent/child still promoted after legacy complete
+- multi-parent force (structural + reconciliation) remained blocked
+- archive of unexecuted governed intermediate left leaf todo
+- genuine stale attempt A replay after attempt B became current -> WRONG_ATTEMPT
+- ancestor reconciliation recursively invalidated ready grandchild; grandchild unclaimable
 
-Sol corrections preserved on the same walk and added:
+First-round Sol corrections preserved:
 - historian required_sha binding (ordinary complete + direct certify)
 - controller-authorized repository identity fail-closed
 - missing/stale attempt_id rejected
 - git verifier policy hardening
 - explicit governance surfaces
 - force=True structural override without semantic/verification bypass
+
+Second-round Sol corrections:
+- multi-parent force evaluates every remaining parent
+- archive is not an alternate completion path for governed unverified parents
+- needs_reconciliation reuses recursive descendant invalidation with completed artifacts preserved
+- malformed max_commits fail-closed as invalid contract
+- published terminal_result / historian_certify surfaces include required identity fields

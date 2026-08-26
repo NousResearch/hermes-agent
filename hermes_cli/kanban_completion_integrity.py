@@ -166,7 +166,7 @@ def normalize_completion_contract(raw: Any) -> Optional[dict]:
             details={"dirty_policy": dirty_policy},
         )
     expected_base = _optional_str(contract.get("expected_base"))
-    max_commits = contract.get("max_commits")
+    max_commits = _normalize_max_commits(contract.get("max_commits"))
     if max_commits is not None and not expected_base:
         raise CompletionIntegrityError(
             REASON_INVALID,
@@ -317,6 +317,47 @@ def _optional_str(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_max_commits(raw: Any) -> Optional[int]:
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool) or isinstance(raw, (dict, list, tuple)):
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "max_commits must be a positive integer",
+            details={"max_commits": raw},
+        )
+    if isinstance(raw, int):
+        if raw < 1:
+            raise CompletionIntegrityError(
+                REASON_INVALID,
+                "max_commits must be a positive integer",
+                details={"max_commits": raw},
+            )
+        return raw
+    if isinstance(raw, float):
+        if raw.is_integer() and raw >= 1:
+            return int(raw)
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "max_commits must be a positive integer",
+            details={"max_commits": raw},
+        )
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isdigit() and int(text) >= 1:
+            return int(text)
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "max_commits must be a positive integer",
+            details={"max_commits": raw},
+        )
+    raise CompletionIntegrityError(
+        REASON_INVALID,
+        "max_commits must be a positive integer",
+        details={"max_commits": raw},
+    )
 
 
 def _normalize_sha(value: Any) -> Optional[str]:
@@ -500,6 +541,15 @@ def verify_git_revision(
                 )
             max_commits = contract.get("max_commits")
             if max_commits is not None:
+                try:
+                    bound = _normalize_max_commits(max_commits)
+                except CompletionIntegrityError as exc:
+                    return GitVerification(
+                        STATUS_REJECTED,
+                        exc.code,
+                        str(exc),
+                        {**details, **exc.details},
+                    )
                 count_proc = _run_git(
                     ["rev-list", "--count", f"{base}..{claimed_sha}"],
                     cwd=repo,
@@ -521,7 +571,7 @@ def verify_git_revision(
                         details,
                     )
                 details["commit_count"] = count
-                if count < 1 or count > int(max_commits):
+                if bound is None or count < 1 or count > bound:
                     return GitVerification(
                         STATUS_REJECTED,
                         REASON_COMMIT_COUNT,

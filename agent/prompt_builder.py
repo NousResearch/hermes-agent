@@ -681,10 +681,10 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
     example_app = "Safari" if is_macos else ("Chrome" if is_windows else "Firefox")
 
     return (
-        f"# Computer Use ({os_name} background control)\n"
-        f"You have a `computer_use` tool that drives the {os_name} desktop in "
-        "the BACKGROUND — your actions do not steal the user's cursor, "
-        "keyboard "
+        f"# Computer Use ({os_name} desktop control, background-first)\n"
+        f"You have a `computer_use` tool that drives the {os_name} desktop. "
+        "Input is background-FIRST: by default your actions do not steal the "
+        "user's cursor, keyboard "
         + share_line +
         "## Preferred workflow\n"
         "1. Call `computer_use` with `action='capture'` and `mode='som'` "

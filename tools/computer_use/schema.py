@@ -16,19 +16,20 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop in the background via cua-driver — screenshots, "
-        "mouse, keyboard, scroll, drag — without stealing the user's cursor "
-        "or keyboard focus. Supported on macOS, Windows, and Linux. "
-        "Preferred workflow: call with "
-        "action='capture' (mode='som' gives numbered element overlays), "
-        "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Image captures include a "
-        "shareable `screenshot_path`; when the user asks to receive the image "
-        "and the current surface supports attachments, deliver that file using "
-        "the platform's native MEDIA attachment syntax. Do not automatically "
-        "send screenshots used only for computer control. Works on any window — "
-        "hidden, minimized, or behind another app. Requires cua-driver to "
-        "be installed."
+        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, "
+        "scroll, drag — on macOS, Windows, and Linux. Input is "
+        "background-FIRST, not background-only: the default delivery routes "
+        "to the target window without stealing the user's cursor or focus "
+        "(works even on hidden/minimized windows), and when the returned "
+        "effect signals the input did not land you escalate — pixel "
+        "coordinates, the typed browser route (cua_browser_* actions for "
+        "page content), or delivery_mode='foreground' (briefly fronts the "
+        "window; separate approval). Preferred workflow: action='capture' "
+        "(mode='som' gives numbered element overlays), then click by "
+        "`element` index. Image captures include a shareable "
+        "`screenshot_path`; deliver it via the platform's MEDIA syntax when "
+        "the user asks to see it — not for captures used only for control. "
+        "Requires cua-driver to be installed."
     ),
     "parameters": {
         "type": "object",

@@ -1448,7 +1448,17 @@ class TestReconnection:
                 self_srv.session = MagicMock()
                 self_srv._tools = []
                 self_srv._ready.set()
-                self_srv._ever_connected = True
+                # Guarded set: MCPServerTask uses __slots__, so on pre-fix
+                # code (no ``_ever_connected`` slot) a bare assignment raises
+                # AttributeError *inside this mock* while ``_ready`` is still
+                # set — which detours run() into the reconnect ladder and lets
+                # the test pass vacuously on the buggy code. The guard keeps
+                # the regression test biting: pre-fix the flag simply doesn't
+                # exist and the misclassification fires.
+                try:
+                    self_srv._ever_connected = True
+                except AttributeError:
+                    pass
                 return "reconnect"
             if run_count <= 5:
                 # Four consecutive failures on later reconnect attempts --

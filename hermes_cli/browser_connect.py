@@ -250,7 +250,14 @@ def _detect_default_darwin() -> str | None:
         ["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"],
     ):
         try:
-            out = subprocess.run(reader, capture_output=True, text=True, timeout=5).stdout.lower()
+            out = subprocess.run(
+                reader,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            ).stdout.lower()
         except Exception:
             out = ""
         for frag, browser in _DARWIN_BUNDLE_MAP:
@@ -267,7 +274,11 @@ def _detect_default_linux() -> str | None:
     try:
         out = subprocess.run(
             ["xdg-settings", "get", "default-web-browser"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         ).stdout.strip().lower()
     except Exception:
         out = ""

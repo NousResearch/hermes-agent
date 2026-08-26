@@ -64,6 +64,7 @@ interface UsageDescriptionRow {
 
 function desktopPkg(): Record<string, unknown> {
   assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
+
   return JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8'))
 }
 
@@ -78,6 +79,7 @@ function extendInfo(): Record<string, string> {
     'build.mac.extendInfo is missing or invalid in apps/desktop/package.json'
   )
   const extend = mac.extendInfo as Record<string, unknown>
+
   // Narrow to Record<string, string> with a runtime guard — the value type
   // for NS*UsageDescription is string, but electron-builder's `extendInfo`
   // accepts arbitrary plist scalars (bool, number, array, object) and we want
@@ -90,6 +92,7 @@ function extendInfo(): Record<string, string> {
       `\`${key}\` in build.mac.extendInfo must be a string (got ${typeof value})`
     )
   }
+
   return extend as Record<string, string>
 }
 
@@ -179,6 +182,7 @@ test.each(EXPECTED_USAGE_DESCRIPTIONS)(
 
 test('every extendInfo value is free of leading/trailing whitespace and newlines', () => {
   const info = extendInfo()
+
   for (const [key, value] of Object.entries(info)) {
     assert.equal(
       value,
@@ -199,6 +203,7 @@ test('every extendInfo value is free of leading/trailing whitespace and newlines
 test('every NS*UsageDescription in extendInfo is pinned in this test', () => {
   const info = extendInfo()
   const declaredKeys = new Set(EXPECTED_USAGE_DESCRIPTIONS.map((row) => row.key))
+
   // Non-privacy keys (CFBundleDisplayName etc.) are exempt — this test
   // only governs NS*UsageDescription entries.
   const privacyKeysInPlist = new Set(
@@ -206,6 +211,7 @@ test('every NS*UsageDescription in extendInfo is pinned in this test', () => {
       (k) => k.startsWith('NS') && k.endsWith('UsageDescription')
     )
   )
+
   const missing = [...privacyKeysInPlist].filter((k) => !declaredKeys.has(k))
   assert.deepEqual(
     missing,

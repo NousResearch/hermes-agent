@@ -22,8 +22,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import uuid
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
+
+from hermes_constants import get_hermes_home
+from tools.environments.base import get_sandbox_dir
+from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -240,3 +246,55 @@ def build_bwrap_args(
 
     argv += ["--chdir", tracked_cwd, "--"]
     return argv
+
+
+class BubblewrapEnvironment(LocalEnvironment):
+    """LocalEnvironment whose every spawn runs inside a bwrap sandbox.
+
+    Bash resolution, the run env, missing-cwd recovery and process-group
+    kill come from LocalEnvironment. This class adds the argv prefix, a
+    per-instance state dir for the shell snapshot and cwd file, and its
+    removal on cleanup.
+    """
+
+    def __init__(
+        self,
+        cwd: str = "",
+        timeout: int = 60,
+        env: dict | None = None,
+        *,
+        config: BubblewrapConfig | None = None,
+    ):
+        self._config = load_bubblewrap_config() if config is None else config
+        # Reject an unknown profile before anything is created on disk.
+        resolve_profile(self._config.profile)
+        self._home = os.path.expanduser("~")
+        self._hermes_home = str(get_hermes_home())
+        self._bwrap_path = shutil.which("bwrap") or "bwrap"
+        # The mount set is fixed here; only --chdir follows the tracked cwd.
+        self._initial_cwd = _resolve_local_initial_cwd(cwd)
+        # BaseEnvironment.__init__ derives the snapshot and cwd file paths
+        # from get_temp_dir() and LocalEnvironment.__init__ runs the login
+        # bootstrap straight away, so the state dir must exist first.
+        self._state_dir = str(get_sandbox_dir() / f"bwrap-{uuid.uuid4().hex[:12]}")
+        os.makedirs(self._state_dir, mode=0o700)
+        super().__init__(cwd=self._initial_cwd, timeout=timeout, env=env)
+
+    def get_temp_dir(self) -> str:
+        return self._state_dir
+
+    def _wrap_popen_args(self, args: list[str]) -> list[str]:
+        prefix = build_bwrap_args(
+            self._config,
+            self._initial_cwd,
+            self._state_dir,
+            self._home,
+            self._hermes_home,
+            self.cwd,
+            bwrap_path=self._bwrap_path,
+        )
+        return prefix + list(args)
+
+    def cleanup(self):
+        super().cleanup()
+        shutil.rmtree(self._state_dir, ignore_errors=True)

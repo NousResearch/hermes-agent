@@ -526,7 +526,7 @@ class TestSafeRestore:
 
         assert not scratch.exists()
         assert "scratch.txt" in result["restored_files"]
-        assert "skipped_oversize" not in result
+        assert result["skipped_oversize"] == []
 
     def test_safe_restore_does_not_report_a_failed_delete_as_restored(
         self, mgr, work_dir, monkeypatch,

@@ -1184,7 +1184,9 @@ class CheckpointManager:
                     if target.is_file() or target.is_symlink():
                         target.unlink()
                 except OSError as exc:
-                    logger.debug("Safe restore: could not remove %s: %s", rel, exc)
+                    logger.warning(
+                        "Safe restore: could not remove %s: %s", rel, exc,
+                    )
                     failed_deletes.append(rel)
             if not checkout_targets:
                 ok, stdout, err = True, "", ""
@@ -1229,8 +1231,9 @@ class CheckpointManager:
                 rel for rel in restore_paths if rel not in not_restored
             ]
             result["skipped_user_edits"] = skipped_user_edits
-            if kept_oversize:
-                result["skipped_oversize"] = kept_oversize
+            result["skipped_oversize"] = kept_oversize
+            if failed_deletes:
+                result["failed_deletes"] = failed_deletes
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:

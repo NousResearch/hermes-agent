@@ -809,17 +809,17 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               aria-label={copy.editMessage}
               autoCapitalize="off"
               autoCorrect="off"
-              /* WebKit AutoFill suppression (#95089) — same contract as the
-                 main composer's rich editor in chat/composer/index.tsx. */
-              data-1p-ignore=""
-              data-composer-rich-input=""
-              data-lpignore="true"
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
+              /* WebKit AutoFill suppression (#95089) — same contract as the
+                 main composer's rich editor in chat/composer/index.tsx. */
+              data-1p-ignore=""
+              data-composer-rich-input=""
+              data-lpignore="true"
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}

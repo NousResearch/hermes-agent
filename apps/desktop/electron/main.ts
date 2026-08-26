@@ -32,6 +32,7 @@ import {
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
+import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
   type BackendOutputTail,
@@ -877,14 +878,15 @@ const WINDOW_BUTTON_POSITION = {
 // Windows, where icons are full-bleed. Windows prefers the full-bleed
 // assets/icon.ico (shipped to resources/ via extraResources) and only falls
 // back to the padded PNG if the ico is missing.
-const APP_ICON_PATHS = [
-  ...(IS_WINDOWS
-    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
-    : []),
-  path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
-  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
-]
+// The ladder is BUILT once here but each window factory RE-RESOLVES through
+// resolveAppIcon (decoding probe): existence alone is not proof the bytes
+// decode, and an undecodable icon must never take the main process down.
+const APP_ICON_PATHS = appIconCandidates({
+  isWindows: IS_WINDOWS,
+  appRoot: APP_ROOT,
+  resourcesPath: process.resourcesPath,
+  unpackedPathFor
+})
 
 let rendererTitleBarTheme = null
 
@@ -6383,7 +6385,14 @@ function registerPowerResumeListeners() {
 }
 
 function getAppIconPath() {
-  return APP_ICON_PATHS.find(fileExists)
+  // Fail-soft: skip candidates that exist but don't decode (truncated PNG in a
+  // packaged app.asar previously crashed createWindow mid-session). Missing
+  // every candidate is fine — the window then uses the platform default icon.
+  try {
+    return resolveAppIcon(APP_ICON_PATHS)
+  } catch {
+    return undefined
+  }
 }
 
 function sendOpenUpdatesRequested() {

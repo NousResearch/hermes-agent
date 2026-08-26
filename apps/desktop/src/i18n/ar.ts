@@ -2793,6 +2793,7 @@ export const ar = defineLocale({
     cwdStagedTitle: 'تم تجهيز مجلد العمل',
     cwdStagedMessage: 'سيطبق مجلد العمل على الرسالة التالية.',
     modelSwitchFailed: 'فشل تبديل النموذج',
+    hydrationSyncing: (profile: string) => `جارٍ مزامنة ${profile}\u2026`,
     sessionExported: 'تم تصدير الجلسة',
     sessionExportFailed: 'فشل تصدير الجلسة',
     imageSaved: 'تم حفظ الصورة',

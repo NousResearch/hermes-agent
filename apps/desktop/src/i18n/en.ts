@@ -3396,6 +3396,7 @@ export const en: Translations = {
     cwdStagedTitle: 'Working directory staged',
     cwdStagedMessage: 'Restart the desktop backend to apply cwd changes to this active session.',
     modelSwitchFailed: 'Model switch failed',
+    hydrationSyncing: (profile: string) => `Syncing ${profile}\u2026`,
     sessionExported: 'Session exported',
     sessionExportFailed: 'Could not export session',
     imageSaved: 'Image saved',

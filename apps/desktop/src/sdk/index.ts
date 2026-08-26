@@ -57,6 +57,7 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
+  $hydrationSyncProfile,
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -346,6 +347,24 @@ export interface PluginNewChatOptions {
   workspaceOwnerKey?: string
 }
 
+// Raise the "Syncing…" affordance for a paint-first wake (#89843) and tear it
+// down as soon as the active-profile gate catches up. The listener clears ONLY
+// its own profile's badge: a newer wake may have replaced the badge with a
+// different profile, and the stale listener must not wipe the winner's.
+function beginHydrationBackgroundSync(profile: string): void {
+  $hydrationSyncProfile.set(profile)
+
+  const unlisten = $activeGatewayProfile.listen(next => {
+    if (normalizeProfileKey(next) === profile) {
+      if ($hydrationSyncProfile.get() === profile) {
+        $hydrationSyncProfile.set(null)
+      }
+
+      unlisten()
+    }
+  })
+}
+
 function waitForFocusedSessionHydration({
   expectHistory,
   generation,
@@ -432,8 +451,33 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if (profileMatches && (mainMatches || tileMatches) && hydrated) {
-        finish()
+      if ((mainMatches || tileMatches) && hydrated) {
+        if (profileMatches) {
+          finish()
+
+          return
+        }
+
+        // Paint-first completion on an unsatisfiable profile gate (#89843).
+        // On a shared-remote connection every profile is legitimately served
+        // through the primary socket, so $activeGatewayProfile can NEVER
+        // equal the bot's profile — the old gate held a fully painted
+        // transcript hostage for the whole 20s budget and then stranded the
+        // pane. When the stored history is already painted on exactly this
+        // session, that content IS the proof the surface is real: resolve
+        // now, raise the subtle "Syncing…" affordance, and let the profile
+        // gate catch up in the background.
+        //
+        // Fail closed everywhere the content is NOT its own proof: a
+        // superseded generation already rejected above (conflicting
+        // concurrent hydration never resolves paint-first), and an
+        // expected-EMPTY chat keeps waiting for the full gate — with no
+        // transcript to paint, a bound runtime on an unmatched profile is
+        // not evidence of a real surface.
+        if (expectHistory && historyPainted) {
+          beginHydrationBackgroundSync(profile)
+          finish()
+        }
       }
     }
 
@@ -745,6 +789,10 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
+
+    // A new wake owns the syncing affordance — a lingering badge from an
+    // earlier paint-first wake must not survive into this one.
+    $hydrationSyncProfile.set(null)
     const explicitRoute = options.route ? { ...options.route } : null
     const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())

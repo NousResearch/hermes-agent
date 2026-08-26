@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments.base import get_sandbox_dir
-from tools.environments.bubblewrap import BubblewrapConfig, BubblewrapEnvironment
+from tools.environments.bubblewrap import BindMount, BubblewrapConfig, BubblewrapEnvironment
 from tools.environments.local import LocalEnvironment
 
 
@@ -163,3 +163,85 @@ class TestSandboxIntegration:
             assert env.execute("echo $HERMES_BWRAP_INIT_MARK")["output"].strip() == "seen-in-sandbox"
         finally:
             env.cleanup()
+
+
+def _host_interfaces() -> set[str]:
+    lines = Path("/proc/net/dev").read_text().splitlines()[2:]
+    return {line.split(":")[0].strip() for line in lines if ":" in line}
+
+
+# /proc/net/dev reflects the network namespace of the process reading it
+# because /proc is mounted fresh per spawn. /sys/class/net does not: the
+# bind-mounted host sysfs is tagged with the host's namespace and lists the
+# host interfaces in every profile.
+INTERFACES_CMD = "tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '"
+
+
+@needs_bwrap
+class TestProfileNetworkAndWritableSet:
+    @pytest.fixture
+    def make_env(self, sandbox_root, work_dir):
+        envs = []
+
+        def factory(profile="network", binds=()):
+            env = BubblewrapEnvironment(
+                cwd=str(work_dir), timeout=30,
+                config=BubblewrapConfig(profile=profile, binds=tuple(binds)),
+            )
+            envs.append(env)
+            return env
+
+        try:
+            yield factory
+        finally:
+            for env in envs:
+                env.cleanup()
+
+    def _interfaces(self, env) -> set[str]:
+        result = env.execute(INTERFACES_CMD)
+        assert result["returncode"] == 0, result["output"]
+        return set(result["output"].split())
+
+    def test_network_profile_shares_host_interfaces(self, make_env):
+        host = _host_interfaces()
+        assert len(host) > 1, "host needs more than lo for this check to mean anything"
+        assert self._interfaces(make_env("network")) == host
+
+    @pytest.mark.parametrize("profile", ["workspace", "restricted"])
+    def test_isolated_profiles_have_only_loopback_network(self, make_env, profile):
+        assert self._interfaces(make_env(profile)) == {"lo"}
+
+    @pytest.mark.parametrize("profile", ["workspace", "network"])
+    def test_cwd_writable_under_workspace_and_network(self, make_env, work_dir, profile):
+        result = make_env(profile).execute(f"touch {work_dir}/probe-{profile}")
+        assert result["returncode"] == 0, result["output"]
+        assert (work_dir / f"probe-{profile}").exists()
+
+    def test_cwd_not_writable_under_restricted(self, make_env, work_dir):
+        env = make_env("restricted")
+        assert env.execute("pwd")["output"].strip() == str(work_dir)
+        result = env.execute(f"touch {work_dir}/probe-restricted")
+        assert result["returncode"] != 0
+        assert "ead-only" in result["output"]
+        assert not (work_dir / "probe-restricted").exists()
+
+    def test_rw_bind_entry_is_writable_inside_the_sandbox(self, make_env, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        env = make_env("workspace", binds=[BindMount(src=str(shared), dest=str(shared), readonly=False)])
+        result = env.execute(f"touch {shared}/from-sandbox")
+        assert result["returncode"] == 0, result["output"]
+        assert (shared / "from-sandbox").exists()
+
+    def test_ro_bind_entry_is_not_writable_inside_the_sandbox(self, make_env, tmp_path):
+        shared = tmp_path / "shared-ro"
+        shared.mkdir()
+        (shared / "seed").write_text("host")
+        # dest defaults to src: bwrap cannot create a new mount point on the
+        # read-only root, so a dest must already exist there (or sit under a
+        # writable mount such as /tmp).
+        env = make_env("workspace", binds=[BindMount(src=str(shared), dest=str(shared), readonly=True)])
+        assert env.execute(f"cat {shared}/seed")["output"].strip() == "host"
+        result = env.execute(f"touch {shared}/from-sandbox")
+        assert result["returncode"] != 0
+        assert "ead-only" in result["output"]

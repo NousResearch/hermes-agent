@@ -5053,11 +5053,13 @@ _LAZY_COMMAND_EXPORTS = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked",
         "_add_upstream_remote",
+        "_apply_pending_fleet_restart_catchup",
         "_atomic_replace_dir",
         "_capture_active_lazy_features",
         "_capture_active_tool_dependencies",
         "_capture_head_sha",
         "_classify_concurrent_instance",
+        "_clear_fleet_restart_pending_marker",
         "_assess_parked_branch_switch",
         "_branch_head_label",
         "_branch_head_suffix",
@@ -5078,6 +5080,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
         "_fleet_probe_expected_runtimes",
+        "_fleet_restart_pending_marker_path",
         "_filter_non_gateway_concurrent_instances",
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
@@ -5107,6 +5110,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_manifest_paths",
         "_npm_manifests_digest",
         "_orphaned_desktop_backend_pids",
+        "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
@@ -5128,6 +5132,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_restore_active_tool_dependencies",
         "_restore_stashed_changes",
         "_resume_windows_gateways_after_update",
+        "_run_pending_fleet_restart",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
         "_service_unit_supports_graceful_sigusr1_restart",
@@ -5148,8 +5153,10 @@ _LAZY_COMMAND_EXPORTS = {
         "_wait_for_windows_update_gateway_exit",
         "_warn_gateway_restart_phase_aborted",
         "_warn_incomplete_gateway_fleet_restart",
+        "_warn_pending_fleet_restart_on_startup",
         "_web_build_toolchain_ready",
         "_web_toolchain_roots",
+        "_write_fleet_restart_pending_marker",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
         "_write_update_incomplete_marker",
@@ -13127,6 +13134,15 @@ def main():
     try:
         if "update" not in sys.argv[1:]:
             _recover_from_interrupted_install()
+    except Exception:
+        pass
+
+    # Cheap hint only (#95294): an interrupted update that pulled code but
+    # never restarted the fleet. Do NOT restart here — that is ``hermes
+    # update`` catch-up work. Skip when the user is already running update.
+    try:
+        if "update" not in sys.argv[1:]:
+            _warn_pending_fleet_restart_on_startup()
     except Exception:
         pass
 

@@ -2834,6 +2834,309 @@ def _write_lazy_refresh_incomplete_marker() -> None:
     """Drop the interrupted lazy-refresh breadcrumb. Never raises."""
     _write_marker_file(_m()._lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
 
+
+# ``fleet_restart_pending`` lives under HERMES_HOME (not next to the venv).
+# The existing ``.update-incomplete`` / ``.lazy-refresh-incomplete`` markers
+# gate dependency/venv repair; this one is the fleet-restart obligation after
+# a git pull that advanced HEAD (#95294). Cleared only when the restart phase
+# completes or there were no running services to restart.
+_FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
+
+
+def _fleet_restart_pending_marker_path() -> Path:
+    """HERMES_HOME breadcrumb for a pull that has not yet restarted the fleet."""
+    return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
+
+
+def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
+    """Drop the pull→restart obligation breadcrumb. Never raises."""
+    path = _fleet_restart_pending_marker_path()
+    if _m()._pytest_owns_live_checkout(path.parent):
+        logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
+        return
+    try:
+        lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
+        if expected_sha:
+            lines.append(f"expected_sha={expected_sha}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write fleet-restart-pending marker: %s", exc)
+
+
+def _clear_fleet_restart_pending_marker() -> None:
+    """Remove the pull→restart obligation breadcrumb. Never raises."""
+    _m()._clear_marker_file(
+        _fleet_restart_pending_marker_path(), label="fleet-restart-pending"
+    )
+
+
+def _current_checkout_sha() -> str | None:
+    """Current on-disk checkout HEAD, or None if it cannot be resolved."""
+    try:
+        from hermes_cli.build_info import get_code_identity
+
+        sha = (get_code_identity(refresh=True) or {}).get("sha")
+        return str(sha) if sha else None
+    except Exception:
+        return _capture_head_sha(["git"], _m().PROJECT_ROOT)
+
+
+def _receipt_looks_unfinished(receipt: dict) -> bool:
+    """True when *receipt* is from an update that did not finish cleanly."""
+    if receipt.get("stop_reason"):
+        return True
+    exit_code = receipt.get("exit_code")
+    if exit_code not in (0, None):
+        return True
+    outcome = receipt.get("outcome")
+    if outcome in ("failed", "partial", "running"):
+        return True
+    gateway_restart = receipt.get("gateway_restart")
+    if isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"):
+        return True
+    return False
+
+
+def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
+    """True when ``update_receipts/latest.json`` records a runtime SHA skew.
+
+    ``plan.runtimes[].code_sha`` is captured *before* the pull of that run,
+    so a successful update's receipt always shows pre-update runtime SHAs.
+    Those must not retrigger a restart on the next invocation. Use the
+    post-restart ``fleet`` matrix when present; fall back to the plan only
+    for an unfinished receipt (interrupt / failed / incomplete restart) —
+    the #95294 smoking-gun shape.
+    """
+    try:
+        from hermes_cli.update_receipt import read_latest_receipt
+
+        receipt = read_latest_receipt()
+    except Exception:
+        receipt = None
+    if not isinstance(receipt, dict):
+        return False
+    if not expected_sha:
+        expected_sha = _current_checkout_sha()
+    if not expected_sha:
+        return False
+
+    def _sha_mismatch(code_sha) -> bool:
+        return bool(code_sha) and str(code_sha) != str(expected_sha)
+
+    fleet = receipt.get("fleet")
+    if isinstance(fleet, list) and fleet:
+        for entry in fleet:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("state") == "stale":
+                return True
+            if _sha_mismatch(entry.get("code_sha")):
+                return True
+        return False
+
+    if not _receipt_looks_unfinished(receipt):
+        return False
+    plan = receipt.get("plan")
+    if not isinstance(plan, dict):
+        return False
+    for runtime in plan.get("runtimes") or []:
+        if isinstance(runtime, dict) and _sha_mismatch(runtime.get("code_sha")):
+            return True
+    return False
+
+
+def _pending_fleet_restart_needed() -> bool:
+    """True when a prior pull still owes the fleet a restart (#95294)."""
+    try:
+        if _fleet_restart_pending_marker_path().is_file():
+            return True
+    except OSError:
+        pass
+    return _receipt_reports_stale_runtime()
+
+
+def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
+    """Print the specific interrupted-update fleet-restart warning."""
+    stream = sys.stderr if startup else sys.stdout
+    print(
+        "⚠ A previous `hermes update` pulled new code but did not "
+        "restart running gateways.",
+        file=stream,
+    )
+    print(
+        "  Gateways may still be serving pre-update modules (mixed sys.modules).",
+        file=stream,
+    )
+    if startup:
+        print(
+            "  Run `hermes update` or `hermes gateway restart`.",
+            file=stream,
+        )
+
+
+def _warn_pending_fleet_restart_on_startup() -> None:
+    """Cheap CLI-startup hint. Never restarts; never raises."""
+    try:
+        if not _pending_fleet_restart_needed():
+            return
+        _warn_pending_fleet_restart(startup=True)
+    except Exception:
+        pass
+
+
+def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
+    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+    for scope, scope_cmd in (
+        ("user", ["systemctl", "--user"]),
+        ("system", ["systemctl"]),
+    ):
+        try:
+            result = subprocess.run(
+                scope_cmd
+                + [
+                    "list-units",
+                    "hermes-gateway*",
+                    "hermes-serve*",
+                    "--plain",
+                    "--no-legend",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+
+        def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
+            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            if (
+                _scope == "system"
+                and hasattr(os, "geteuid")
+                and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
+            ):
+                restart_cmd = ["sudo", "-n"] + restart_cmd
+            subprocess.run(
+                restart_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+
+        def on_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
+            failed.append(svc_name)
+
+        _for_each_systemd_gateway_unit(
+            result.stdout,
+            process_unit=process_unit,
+            on_unit_timeout=on_timeout,
+        )
+
+
+def _run_pending_fleet_restart() -> bool:
+    """Catch-up restart for gateways left on pre-update code (#95294).
+
+    Returns True when restart completed or no services were running.
+    Returns False if restart was incomplete. Never raises.
+    """
+    print("→ Restarting gateways left on pre-update code...")
+    try:
+        _m()._purge_stale_hermes_modules()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.gateway import (
+            find_gateway_pids,
+            is_macos,
+            is_windows,
+            kill_gateway_processes,
+            supports_systemd_services,
+            _wait_for_gateway_exit,
+        )
+    except Exception as exc:
+        _warn_gateway_restart_phase_aborted(exc, None)
+        return False
+
+    try:
+        pids = list(find_gateway_pids(all_profiles=True))
+    except Exception as exc:
+        logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
+        pids = None
+
+    if pids == []:
+        print("  ✓ No running gateways — nothing to restart.")
+        return True
+
+    failed: list = []
+    try:
+        if supports_systemd_services():
+            _restart_systemd_gateway_units_best_effort(failed)
+        if is_macos():
+            restarted: list = []
+            try:
+                _restart_macos_launchd_gateways(restarted, failed, 45.0)
+            except Exception as exc:
+                logger.debug("Pending fleet restart: launchd failed: %s", exc)
+                failed.append("launchd")
+        if is_windows():
+            try:
+                from hermes_cli import gateway_windows
+
+                if gateway_windows.is_installed():
+                    gateway_windows.restart()
+            except Exception as exc:
+                logger.debug("Pending fleet restart: Windows failed: %s", exc)
+                failed.append("windows-gateway")
+        leftover: list = []
+        try:
+            leftover = list(find_gateway_pids(all_profiles=True))
+        except Exception:
+            leftover = list(pids or [])
+        if leftover:
+            try:
+                kill_gateway_processes(all_profiles=True)
+                _wait_for_gateway_exit(timeout=5.0, force_after=None)
+            except Exception as exc:
+                logger.debug("Pending fleet restart: PID stop failed: %s", exc)
+        if failed:
+            _warn_incomplete_gateway_fleet_restart(failed)
+            return False
+        print("  ✓ Pending fleet restart completed.")
+        return True
+    except Exception as exc:
+        surviving = None
+        try:
+            surviving = list(find_gateway_pids(all_profiles=True))
+        except Exception:
+            surviving = pids
+        _warn_gateway_restart_phase_aborted(exc, surviving)
+        return False
+
+
+def _apply_pending_fleet_restart_catchup() -> None:
+    """On an already-up-to-date ``hermes update``, finish a skipped restart.
+
+    No-op when nothing is pending. Exits 1 when the catch-up restart is
+    incomplete so automation does not treat the fleet as healthy.
+    """
+    if not _pending_fleet_restart_needed():
+        return
+    print()
+    _warn_pending_fleet_restart()
+    print("→ Running the pending fleet restart...")
+    if _run_pending_fleet_restart():
+        _clear_fleet_restart_pending_marker()
+        return
+    print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+    sys.exit(1)
+
+
 def _format_concurrent_instances_message(
     matches: list[tuple[int, str]], scripts_dir: Path
 ) -> str:
@@ -7664,6 +7967,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            # Git is current, but a prior pull may still owe the fleet a
+            # restart (#95294). Catch up even on the "Already up to date"
+            # path — that early return is what left the gateway on stale
+            # code for two days.
+            _apply_pending_fleet_restart_catchup()
             return
 
         if commit_count > 0:
@@ -7903,6 +8211,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
+
+        # #95294: HEAD advanced; running gateways still serve pre-pull
+        # modules until the restart phase below. Any interrupt between here
+        # and a completed (or no-op) restart leaves this marker so the next
+        # ``hermes update`` can catch up even when git is already up to date.
+        # Distinct from ``.update-incomplete`` (venv/install repair).
+        _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
@@ -9569,7 +9884,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Code update itself succeeded, but at least one gateway still
             # runs pre-update modules — surface that as a failed update so
             # automation / operators do not treat the fleet as healthy.
+            # Leave ``fleet_restart_pending`` in place so the next
+            # ``hermes update`` still runs the catch-up restart.
             sys.exit(1)
+        _clear_fleet_restart_pending_marker()
 
     except _shim_quarantine_error_type() as e:
         # Fail-closed shim contention (#87331): strict quarantine refused

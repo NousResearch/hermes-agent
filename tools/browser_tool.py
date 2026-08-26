@@ -1554,6 +1554,19 @@ def _real_profile_cdp() -> tuple:
     if not _use_real_profile():
         return None, None
 
+    # Lightpanda cannot load a Chromium profile — agent-browser rejects
+    # ``--profile`` outright under that engine ("Profiles are not supported
+    # with Lightpanda"). Detect it here, BEFORE default-browser detection, so
+    # even a host with no Chromium default reports the actionable conflict (the
+    # engine setting) rather than a generic launch failure.
+    if _using_lightpanda_engine():
+        return None, (
+            "browser.use_real_profile is on, but browser.engine is set to "
+            "'lightpanda', which cannot load a real Chromium profile. Set "
+            "browser.engine to 'auto' or 'chrome' to use real-profile browsing, "
+            "or turn the toggle off."
+        )
+
     from hermes_cli.browser_connect import (
         UNSUPPORTED_CHANNEL,
         detect_default_chromium,
@@ -2577,7 +2590,7 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_local_session(task_id: str) -> Dict[str, str]:
+def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict[str, str]:
     import uuid
 
     # Real-profile consent: instead of an agent-browser-managed throwaway
@@ -2585,20 +2598,30 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
     # browser running on a hermes-owned SNAPSHOT of their real profile —
     # live logins/cookies included. Fail closed on resolver/launch errors:
     # a consented user must never be silently downgraded to a throwaway.
-    cdp_url, err = _real_profile_cdp()
-    if err:
-        raise RuntimeError(err)
-    if cdp_url:
-        session_name = f"rp_{uuid.uuid4().hex[:10]}"
-        logger.info(
-            "Created real-profile local session %s for task %s", session_name, task_id
-        )
-        return {
-            "session_name": session_name,
-            "bb_session_id": None,
-            "cdp_url": _resolve_cdp_override(cdp_url),
-            "features": {"local": True, "real_profile": True},
-        }
+    #
+    # ``allow_real_profile=False`` is passed by the hybrid private-URL sidecar
+    # (``::local`` key): that path exists to keep a LAN/loopback host OFF the
+    # cloud backend, and routing the user's full authenticated cookie jar to an
+    # arbitrary internal host the model chose to visit is a strictly larger
+    # exposure than the routing rule was protecting against — and one the user
+    # never consented to for that URL. The sidecar always gets a throwaway
+    # profile. (Also keeps a real-profile resolve failure from breaking
+    # private-URL routing, which has nothing to do with the real profile.)
+    if allow_real_profile:
+        cdp_url, err = _real_profile_cdp()
+        if err:
+            raise RuntimeError(err)
+        if cdp_url:
+            session_name = f"rp_{uuid.uuid4().hex[:10]}"
+            logger.info(
+                "Created real-profile local session %s for task %s", session_name, task_id
+            )
+            return {
+                "session_name": session_name,
+                "bb_session_id": None,
+                "cdp_url": _resolve_cdp_override(cdp_url),
+                "features": {"local": True, "real_profile": True},
+            }
 
     session_name = f"h_{uuid.uuid4().hex[:10]}"
     logger.info("Created local browser session %s for task %s",
@@ -2689,7 +2712,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     if cdp_override and not force_local:
         session_info = _create_cdp_session(task_id, cdp_override)
     elif force_local:
-        session_info = _create_local_session(task_id)
+        # Hybrid private-URL sidecar: NEVER the real profile (see
+        # _create_local_session — presenting real cookies to an arbitrary LAN
+        # host the model routed here is unconsented exposure).
+        session_info = _create_local_session(task_id, allow_real_profile=False)
     else:
         provider = _get_cloud_provider()
         if provider is None:

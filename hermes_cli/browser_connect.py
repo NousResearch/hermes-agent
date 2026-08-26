@@ -357,8 +357,14 @@ def _launchservices_https_handler(dump: str) -> str | None:
         low = entry.lower()
         if not re.search(r'lshandlerurlscheme\s*=\s*"?https"?\s*;', low):
             continue
-        # The nested LSHandlerPreferredVersions block carries "-" placeholders
-        # under the same key names; the real bundle id is the first non-"-".
+        # Strip the nested LSHandlerPreferredVersions block first: on macOS 26
+        # it carries a VERSION NUMBER (e.g. LSHandlerRoleAll = "7559.97";), not
+        # the "-" placeholder older releases used. Left in, the role regex below
+        # would match that version before the real bundle id sitting at the
+        # entry's own level and return "7559.97" — which maps to no browser, so
+        # detection fails on a machine whose default IS Chrome (PR #95620 review).
+        low = re.sub(r"lshandlerpreferredversions\s*=\s*\{[^}]*\}\s*;", "", low)
+        # The real bundle id is the first non-"-" role value at this level.
         for role in re.findall(r'lshandlerrole(?:all|viewer)\s*=\s*"?([a-z0-9.\-]+)"?\s*;', low):
             if role != "-":
                 return role
@@ -485,19 +491,22 @@ _SNAPSHOT_IGNORES = (
 
 # Small, auth-bearing files re-synced from the live profile on EVERY consented
 # launch (the full tree is only copied when the snapshot doesn't exist yet).
-# Paths are relative to the user-data-dir; <profile> expands per profile dir.
-_AUTH_REFRESH_FILES = (
-    "Local State",
-    "<profile>/Cookies",
-    "<profile>/Cookies-journal",
-    "<profile>/Network/Cookies",
-    "<profile>/Network/Cookies-journal",
-    "<profile>/Login Data",
-    "<profile>/Login Data-journal",
-    "<profile>/Login Data For Account",
-    "<profile>/Web Data",
-    "<profile>/Web Data-journal",
-    "<profile>/Preferences",
+# Paths here are RELATIVE TO A PROFILE DIR (Default, "Profile 6", …) — the
+# caller resolves which source profile is active and mirrors these into the
+# copy's ``Default`` so the launched Chromium (which opens ``Default``) lands
+# on the user's real signed-in session.
+_AUTH_REFRESH_PROFILE_FILES = (
+    "Cookies",
+    "Cookies-journal",
+    "Network/Cookies",
+    "Network/Cookies-journal",
+    "Login Data",
+    "Login Data-journal",
+    "Login Data For Account",
+    "Login Data For Account-journal",
+    "Web Data",
+    "Web Data-journal",
+    "Preferences",
 )
 
 def real_profile_copy_dir(browser: str) -> str:
@@ -505,8 +514,31 @@ def real_profile_copy_dir(browser: str) -> str:
     return str(get_hermes_home() / "browser-profile" / browser)
 
 
+def _last_used_profile(src: str) -> str:
+    """Return the profile dir Chrome last used (``Local State`` → profile.last_used).
+
+    Chromium opens ``Default`` inside a user-data-dir unless told otherwise, but
+    the user's signed-in session usually lives in whichever profile they
+    actually browse (``Profile 6`` etc.). We read that here and mirror its auth
+    into the copy's ``Default`` so the launched browser is signed in. Falls back
+    to ``Default`` when Local State is missing/unreadable or names a profile
+    dir that doesn't exist.
+    """
+    import json
+
+    try:
+        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+            state = json.load(fh)
+        last = ((state.get("profile") or {}).get("last_used")) or "Default"
+    except (OSError, ValueError, AttributeError):
+        last = "Default"
+    if not isinstance(last, str) or not os.path.isdir(os.path.join(src, last)):
+        return "Default"
+    return last
+
+
 def _secure_snapshot_root(path: str) -> None:
-    """Lock down the snapshot dir through Hermes' canonical secret-store policy.
+    """Lock down a snapshot dir through Hermes' canonical secret-store policy.
 
     The snapshot holds copies of the user's Cookies / Login Data, so it is a
     credential store and must get the same owner-only permissions (and
@@ -522,17 +554,25 @@ def _secure_snapshot_root(path: str) -> None:
         logger.debug("could not secure real-profile snapshot dir %s: %s", path, e)
 
 
-def _profile_subdirs(src: str) -> list[str]:
-    """Names of per-profile dirs (Default, Profile 1, ...) inside a data dir."""
-    out = []
-    try:
-        for name in os.listdir(src):
-            if name == "Default" or name.startswith("Profile "):
-                if os.path.isdir(os.path.join(src, name)):
-                    out.append(name)
-    except OSError:
-        pass
-    return out or ["Default"]
+def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> None:
+    """Copy ``source_profile``'s auth files into the copy's ``Default`` slot.
+
+    agent-browser launches ``Default`` in the copied user-data-dir; mirroring
+    the active source profile's cookies/logins/prefs there is what makes the
+    session actually signed in (the LinkedIn/Gmail "logged out" bug when the
+    real session lives in a non-Default profile).
+    """
+    dst_default = os.path.join(dst, "Default")
+    for rel in _AUTH_REFRESH_PROFILE_FILES:
+        s = os.path.join(src, source_profile, rel)
+        if not os.path.isfile(s):
+            continue
+        d = os.path.join(dst_default, rel)
+        try:
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            shutil.copy2(s, d)
+        except OSError as e:
+            logger.debug("real-profile auth mirror: skipped %s: %s", rel, e)
 
 
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
@@ -553,11 +593,19 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             "Launch that browser at least once, or turn browser.use_real_profile off."
         )
     dst = real_profile_copy_dir(browser)
+    source_profile = _last_used_profile(src)
     fresh = not os.path.isdir(os.path.join(dst, "Default"))
     try:
+        os.makedirs(dst, exist_ok=True)
+        # Secure the snapshot dir AND its browser-profile parent on EVERY
+        # launch (not only first-create): a failed first attempt or an
+        # older-build dir must still converge to owner-only perms, and the
+        # parent enumerates every browser we hold cookies for.
+        parent = os.path.dirname(dst)
+        if parent:
+            _secure_snapshot_root(parent)
+        _secure_snapshot_root(dst)
         if fresh:
-            os.makedirs(dst, exist_ok=True)
-            _secure_snapshot_root(dst)
             try:
                 shutil.copytree(
                     src,
@@ -574,22 +622,18 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                     len(multi.args[0]) if multi.args else 0, src,
                 )
         else:
-            profiles = _profile_subdirs(src)
-            for rel in _AUTH_REFRESH_FILES:
-                rels = (
-                    [rel.replace("<profile>", p) for p in profiles]
-                    if "<profile>" in rel else [rel]
-                )
-                for r in rels:
-                    s = os.path.join(src, r)
-                    if not os.path.isfile(s):
-                        continue
-                    d = os.path.join(dst, r)
-                    try:
-                        os.makedirs(os.path.dirname(d), exist_ok=True)
-                        shutil.copy2(s, d)
-                    except OSError as e:
-                        logger.debug("real-profile refresh: skipped %s: %s", r, e)
+            # Refresh: re-sync Local State so last_used stays current.
+            ls_src = os.path.join(src, "Local State")
+            if os.path.isfile(ls_src):
+                try:
+                    shutil.copy2(ls_src, os.path.join(dst, "Local State"))
+                except OSError as e:
+                    logger.debug("real-profile refresh: skipped Local State: %s", e)
+        # Both paths: mirror the ACTIVE source profile's auth into the copy's
+        # Default so the launched browser (which opens Default) is signed in.
+        # On a fresh full copy this overwrites Default's auth with the
+        # last_used profile's; on refresh it re-syncs fresh logins.
+        _mirror_profile_auth(src, dst, source_profile)
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             try:

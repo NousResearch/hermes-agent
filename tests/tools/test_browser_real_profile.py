@@ -508,3 +508,132 @@ class TestSnapshotIsCredentialStore:
             dst, err = bc.snapshot_real_profile("chrome", src=str(tmp_path / "real"))
         assert err is None
         assert called.get("p") == dst  # secured through the canonical owner
+
+
+class TestReviewBugFixes:
+    """Regressions for the five PR #95620 review findings."""
+
+    # ── Bug 2: launch the profile the user actually browses (last_used) ──
+    def _multi_profile(self, root):
+        """Build a data-dir where the SIGNED-IN session lives in 'Profile 6'."""
+        for prof in ("Default", "Profile 6"):
+            (root / prof / "Network").mkdir(parents=True)
+        (root / "Local State").write_text(
+            '{"profile": {"last_used": "Profile 6"}}'
+        )
+        # Default is signed OUT (tracking cookies only); Profile 6 has the session.
+        (root / "Default" / "Cookies").write_text("default-tracking-only")
+        (root / "Profile 6" / "Cookies").write_text("PROFILE6-SESSION-AUTH")
+        (root / "Profile 6" / "Login Data").write_text("profile6-logins")
+        (root / "Profile 6" / "Preferences").write_text("{}")
+        return root
+
+    def test_last_used_profile_lands_in_copy_default(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi_profile(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        # The copy's Default must carry PROFILE 6's session, not Default's.
+        got = (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text()
+        assert got == "PROFILE6-SESSION-AUTH"
+        assert (home / "browser-profile" / "chrome" / "Default" / "Login Data").read_text() == "profile6-logins"
+
+    def test_last_used_falls_back_to_default(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        root = tmp_path / "d"
+        (root / "Default").mkdir(parents=True)
+        (root / "Local State").write_text('{"profile": {"last_used": "Profile 9"}}')  # not present
+        assert bc._last_used_profile(str(root)) == "Default"
+
+    def test_last_used_reads_local_state(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        root = tmp_path / "d"
+        (root / "Profile 6").mkdir(parents=True)
+        (root / "Local State").write_text('{"profile": {"last_used": "Profile 6"}}')
+        assert bc._last_used_profile(str(root)) == "Profile 6"
+
+    def test_refresh_remirrors_last_used(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi_profile(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        bc.snapshot_real_profile("chrome", src=str(src))          # fresh
+        (src / "Profile 6" / "Cookies").write_text("PROFILE6-REFRESHED")
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
+        assert err is None
+        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-REFRESHED"
+
+    # ── Bug 3: private-URL sidecar must NOT carry the real profile ──
+    def test_sidecar_never_uses_real_profile(self):
+        import tools.browser_tool as bt
+        # Even with consent resolving a real-profile CDP, the sidecar path
+        # (allow_real_profile=False) must return a throwaway session.
+        with patch.object(bt, "_real_profile_cdp",
+                          return_value=("http://127.0.0.1:9251", None)):
+            info = bt._create_local_session("t::local", allow_real_profile=False)
+        assert info["cdp_url"] is None
+        assert "real_profile" not in info["features"]
+        assert info["session_name"].startswith("h_")
+
+    def test_sidecar_ignores_real_profile_error(self):
+        """A real-profile resolve failure must not break private-URL routing."""
+        import tools.browser_tool as bt
+        with patch.object(bt, "_real_profile_cdp",
+                          return_value=(None, "non-chromium default")):
+            info = bt._create_local_session("t::local", allow_real_profile=False)
+        assert info["cdp_url"] is None  # no raise, throwaway session
+
+    def test_bare_local_still_uses_real_profile(self):
+        import tools.browser_tool as bt
+        with patch.object(bt, "_real_profile_cdp",
+                          return_value=("http://127.0.0.1:9251", None)), \
+             patch.object(bt, "_resolve_cdp_override", side_effect=lambda u: u):
+            info = bt._create_local_session("t1")  # allow_real_profile defaults True
+        assert info["features"].get("real_profile") is True
+
+    # ── Bug 1: macOS 26 LSHandlers parser ──
+    def test_macos26_parser_returns_bundle_not_version(self):
+        import hermes_cli.browser_connect as bc
+        dump = (
+            "( { LSHandlerPreferredVersions = { LSHandlerRoleAll = \"7559.97\"; }; "
+            "LSHandlerRoleAll = \"com.google.chrome\"; LSHandlerURLScheme = https; } )"
+        )
+        assert bc._launchservices_https_handler(dump) == "com.google.chrome"
+
+    def test_macos26_detect_returns_chrome(self):
+        import hermes_cli.browser_connect as bc
+        dump = (
+            "( { LSHandlerPreferredVersions = { LSHandlerRoleAll = \"7559.97\"; }; "
+            "LSHandlerRoleAll = \"com.google.chrome\"; LSHandlerURLScheme = https; } )"
+        )
+        with patch.object(bc.subprocess, "run", return_value=Mock(stdout=dump)):
+            assert bc._detect_default_darwin() == "chrome"
+
+    # ── Bug 4: permissions applied on refresh, not only fresh ──
+    def test_permissions_secured_on_refresh(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        src = self._multi_profile(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        bc.snapshot_real_profile("chrome", src=str(src))  # fresh
+        secured = []
+        with patch("hermes_cli.config._secure_dir", side_effect=secured.append):
+            bc.snapshot_real_profile("chrome", src=str(src))  # refresh
+        # Refresh still secures BOTH the snapshot dir and its browser-profile parent.
+        assert str(home / "browser-profile" / "chrome") in secured
+        assert str(home / "browser-profile") in secured
+
+    # ── Bug 5: lightpanda engine + consent fails with an actionable message ──
+    def test_lightpanda_engine_fails_actionably(self):
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.clear()
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch.object(bt, "_using_lightpanda_engine", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium") as det:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None
+        assert err and "lightpanda" in err.lower() and "browser.engine" in err.lower()
+        det.assert_not_called()  # guard fires before detection
+        bt._real_profile_cdp_cache.clear()

@@ -619,6 +619,7 @@ class CreateTaskBody(BaseModel):
     # Explicit project link; when omitted, create_task inherits the board's
     # scoped project (if any) so a project-scoped board anchors every task.
     project_id: Optional[str] = None
+    completion_contract: Optional[dict] = None
 
 
 @router.post("/tasks")
@@ -647,6 +648,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,
             project_id=payload.project_id,
+            completion_contract=payload.completion_contract,
             board=board,
         )
         task = kanban_db.get_task(conn, task_id)
@@ -839,6 +841,7 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    terminal_result: Optional[dict] = None
     # Per-task model/provider override (the board's model dropdown).
     # ``model_override=""`` clears both. ``clear_model_override=True`` is
     # the explicit clear signal — needed because Optional[str]=None means
@@ -898,12 +901,22 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
+                try:
+                    metadata = payload.metadata
+                    if payload.terminal_result is not None:
+                        metadata = dict(metadata or {})
+                        metadata.setdefault("terminal_result", payload.terminal_result)
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=metadata,
+                    )
+                except kanban_db.kci.CompletionIntegrityError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{exc.code}: {exc}",
+                    ) from exc
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
@@ -1154,19 +1167,11 @@ def _set_status_direct(
                     else "todo"
                 )
 
-        # Guard: don't allow promoting to 'ready' unless all parents are done.
-        # Prevents the dispatcher from spawning a child whose upstream work
-        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
+        # Guard: don't allow promoting to 'ready' unless all parents are
+        # structurally and semantically satisfied. A force/direct drag
+        # cannot bypass an opt-in review_approved gate.
         if effective_status == "ready":
-            parent_statuses = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if parent_statuses and not all(
-                p["status"] in {"done", "archived"} for p in parent_statuses
-            ):
+            if not kanban_db._parents_satisfied(conn, task_id):
                 return False
 
         was_running = prev["status"] == "running"
@@ -1261,6 +1266,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 class LinkBody(BaseModel):
     parent_id: str
     child_id: str
+    semantic_gate: Optional[dict] = None
 
 
 @router.post("/links")
@@ -1268,7 +1274,10 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        kanban_db.link_tasks(
+            conn, payload.parent_id, payload.child_id,
+            semantic_gate=payload.semantic_gate,
+        )
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1304,6 +1313,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    terminal_result: Optional[dict] = None
     reclaim_first: bool = False
     # Bulk model/provider override — same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
@@ -1342,11 +1352,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
+                        metadata = payload.metadata
+                        if payload.terminal_result is not None:
+                            metadata = dict(metadata or {})
+                            metadata.setdefault("terminal_result", payload.terminal_result)
                         ok = kanban_db.complete_task(
                             conn, tid,
                             result=payload.result,
                             summary=payload.summary,
-                            metadata=payload.metadata,
+                            metadata=metadata,
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)

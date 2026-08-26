@@ -1,0 +1,53 @@
+Kanban Completion Integrity negative-path orchestration receipt
+
+Authorized baseline: 9dbb8868e8bdd8f2ca24c33e0a3b58ef2b605bc8
+Prior rejected candidate: 6832e63c2ccccae91181cf97abbb7b4108a34c7c
+Corrective parent: 6832e63c2ccccae91181cf97abbb7b4108a34c7c
+Candidate identity: the single child commit of 6832e63c2ccccae91181cf97abbb7b4108a34c7c
+  on branch fix/kanban-completion-integrity-phase1a that contains this receipt.
+The final commit SHA is reported externally; this file does not embed its own
+commit hash.
+
+Worktree: isolated temporary HERMES_HOME + Git repos (no production mutation)
+Interpreter: /home/bruce-chen/.hermes/hermes-agent/.venv/bin/python
+Command:
+  HERMES_PYTHON=/home/bruce-chen/.hermes/hermes-agent/.venv/bin/python \
+    scripts/run_tests.sh \
+    tests/hermes_cli/test_kanban_completion_integrity.py \
+    tests/hermes_cli/test_kanban_review_lifecycle.py \
+    tests/hermes_cli/test_kanban_review_lifecycle_complete.py \
+    tests/hermes_cli/test_kanban_promote.py \
+    tests/hermes_cli/test_kanban_db.py \
+    tests/tools/test_kanban_tools.py \
+    tests/plugins/test_kanban_dashboard_plugin.py \
+    tests/hermes_cli/test_kanban_parent_reopen_invalidation.py \
+    -q --tb=line
+
+Result:
+  completion-integrity: 60 passed, 0 failed
+  targeted bundle: 207 passed, 0 failed, 1 skipped
+
+Integrity identifier (NOT a hash of this receipt):
+  object: tests/hermes_cli/test_kanban_completion_integrity.py
+  sha256: be58171c9d630b2bdb7c4b00fbef5f71a08cbb19f377318cc2ea860364d27260
+  git blob: 8bfa5a996f553987496ce8555990c152818780b5
+
+Observed walk (test_negative_path_orchestration_certification):
+- narrative-only completion rejected (NARRATIVE_ONLY)
+- fabricated SHA rejected (OBJECT_MISSING)
+- wrong-repository SHA rejected (WRONG_REPOSITORY or OBJECT_MISSING)
+- valid B controller-verified to Engineer done
+- Reviewer REJECTED exact B; Historian remained todo
+- Engineer correction produced C; Reviewer APPROVED exact C
+- Historian became ready and certified immutable C after HEAD moved away
+- identical duplicate terminal result was idempotent
+- conflicting duplicate set needs_reconciliation
+- ordinary ungated parent/child still promoted after legacy complete
+- multi-parent force (structural + reconciliation) remained blocked
+- archive of unexecuted governed intermediate left leaf todo
+- genuine stale attempt A replay after attempt B became current -> WRONG_ATTEMPT
+- ancestor reconciliation recursively invalidated ready grandchild; grandchild unclaimable
+
+Micro-correction:
+- max_commits accepts only an actual positive int (2).
+- "2" and 2.0 are rejected without coercion.

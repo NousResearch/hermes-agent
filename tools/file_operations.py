@@ -1562,12 +1562,17 @@ class ShellFileOperations(FileOperations):
         existence, size, binary sample, the page, line count, trailing
         newline (see ``_read_probe_cmd``). A reply that cannot be parsed
         falls back to ``_read_file_sequential``, the one-probe-per-call
-        form, so an exotic shell can never do worse than before.
+        form, so an exotic shell can never do worse than before. On a local
+        POSIX environment the read never touches the shell at all; see
+        ``_read_file_native``.
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
         offset, limit = normalize_read_pagination(offset, limit)
+
+        if self._native_read_enabled():
+            return self._read_file_native(path, offset, limit)
 
         # Images and known-binary extensions never inline content; the
         # sequential path stops at the probes for them, so nothing is gained
@@ -1644,6 +1649,137 @@ class ShellFileOperations(FileOperations):
             total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=file_ends_with_newline,
+        )
+
+    def _native_read_enabled(self) -> bool:
+        """Whether ``read_file`` may bypass the shell and read from this host.
+
+        Only on POSIX with a ``LocalEnvironment``: the file is on this
+        machine and the path is already in native form. Windows keeps the
+        shell path, since file_operations holds Git-Bash-style paths there.
+        ``HERMES_NATIVE_FILE_READ=0`` turns the fast path off.
+        """
+        flag = os.environ.get("HERMES_NATIVE_FILE_READ", "1").strip().lower()
+        if flag in ("0", "false", "no", "off"):
+            return False
+        cached = getattr(self, "_native_read_ok", None)
+        if cached is not None:
+            return cached
+        ok = False
+        if sys.platform != "win32":
+            env = getattr(self, "env", None)
+            if env is not None:
+                try:
+                    from tools.environments.local import LocalEnvironment
+                    ok = isinstance(env, LocalEnvironment)
+                except Exception:  # noqa: BLE001 - never let an import problem break a read
+                    ok = False
+        self._native_read_ok = ok
+        return ok
+
+    def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
+        """``read_file`` without a shell: the file lives on this host.
+
+        Same contract as the shell path, byte for byte. ``os.stat`` is the
+        ``[ -f ]`` guard (a stat, never an open, so FIFOs and devices are
+        refused before anything touches their contents); the first 1000
+        bytes drive the byte-layer binary check; the page is produced
+        exactly as ``sed -n 'a,bp' | cut -b1-N`` prints it (every line
+        clamped to N bytes and newline-terminated), then decoded with
+        errors="replace" like the terminal transport. One chunked pass
+        counts lines and collects the page, so neither the file nor a
+        single pathological line is ever held in memory whole.
+
+        ``path`` is already expanded and ``offset``/``limit`` normalized.
+        Anything unexpected from the OS hands over to the shell path.
+        """
+        import stat as _stat
+
+        full = path if os.path.isabs(path) else os.path.join(
+            getattr(self.env, "cwd", None) or self.cwd, path
+        )
+        try:
+            st = os.stat(full)
+        except (FileNotFoundError, NotADirectoryError):
+            return self._read_file_missing(path, offset, limit)
+        except OSError:
+            return self._read_file_sequential(path, offset, limit)
+        if not _stat.S_ISREG(st.st_mode):
+            return self._not_regular_error(path)
+        file_size = st.st_size
+
+        # Images are never inlined: redirect to the vision tool
+        if self._is_image(path):
+            return self._image_redirect_result(file_size)
+
+        from tools.tool_output_limits import get_max_line_length
+        clamp = 4 * get_max_line_length() + 1
+        end_line = offset + limit - 1
+
+        page: List[bytes] = []
+        total_lines = 0
+        lineno = 1              # the line currently being scanned
+        kept = bytearray()      # first ``clamp`` bytes of that line
+        have_partial = False    # that line has bytes but no newline yet
+        last_byte = b""
+        try:
+            with open(full, "rb") as fh:
+                sample = fh.read(1000)
+                ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+                if ext_binary or self._is_likely_binary_bytes(sample):
+                    return self._read_binary_file(path, offset, limit, file_size, sample)
+                fh.seek(0)
+                while True:
+                    chunk = fh.read(1 << 20)
+                    if not chunk:
+                        break
+                    last_byte = chunk[-1:]
+                    pos, n = 0, len(chunk)
+                    while pos < n:
+                        nl = chunk.find(b"\n", pos)
+                        in_page = offset <= lineno <= end_line
+                        if nl < 0:
+                            if in_page and len(kept) < clamp:
+                                kept += chunk[pos:pos + (clamp - len(kept))]
+                            have_partial = True
+                            break
+                        if in_page:
+                            if len(kept) < clamp:
+                                kept += chunk[pos:min(nl, pos + (clamp - len(kept)))]
+                            page.append(bytes(kept) + b"\n")
+                        kept = bytearray()
+                        have_partial = False
+                        total_lines += 1
+                        lineno += 1
+                        pos = nl + 1
+        except OSError:
+            return self._read_file_sequential(path, offset, limit)
+        if have_partial and offset <= lineno <= end_line:
+            # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
+            page.append(bytes(kept) + b"\n")
+
+        read_output = _strip_terminal_fence_leaks(
+            b"".join(page).decode("utf-8", errors="replace")
+        )
+        return self._assemble_read_result(
+            read_output,
+            offset=offset,
+            end_line=end_line,
+            total_lines=total_lines,
+            file_size=file_size,
+            file_ends_with_newline=(last_byte == b"\n") if file_size else None,
+        )
+
+    @staticmethod
+    def _image_redirect_result(file_size: int) -> ReadResult:
+        return ReadResult(
+            is_image=True,
+            is_binary=True,
+            file_size=file_size,
+            hint=(
+                "Image file detected. Automatically redirected to vision_analyze tool. "
+                "Use vision_analyze with this file path to inspect the image contents."
+            ),
         )
 
     def _read_probe_cmd(self, path: str, offset: int, end_line: int,
@@ -1749,15 +1885,7 @@ class ShellFileOperations(FileOperations):
 
         # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    "Image file detected. Automatically redirected to vision_analyze tool. "
-                    "Use vision_analyze with this file path to inspect the image contents."
-                ),
-            )
+            return self._image_redirect_result(file_size)
 
         # Read a sample to check for binary content — at the byte layer when
         # the transport allows, falling back to the legacy text heuristic.

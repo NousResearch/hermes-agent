@@ -23,21 +23,43 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell pro
 READ_PROBE_MARK = "__HERMES_RF_"
 
 
+@pytest.fixture(scope="module")
+def _local_env(tmp_path_factory):
+    """One real LocalEnvironment per module; constructing one costs ~0.8 s."""
+    return LocalEnvironment(cwd=str(tmp_path_factory.mktemp("file-ops")))
+
+
 @pytest.fixture
-def shell(tmp_path, monkeypatch):
-    """(ops, calls): file ops over a real local shell, every execute recorded."""
-    # Pin the shell path even where a native fast path exists.
-    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
-    env = LocalEnvironment(cwd=str(tmp_path))
+def _ops(_local_env, tmp_path):
+    """(ops, calls): file ops over the real local shell, every execute recorded."""
+    env = _local_env
+    env.cwd = str(tmp_path)
     calls = []
-    real_execute = env.execute
+    real_execute = type(env).execute.__get__(env, type(env))
 
     def spy(command, *args, **kwargs):
         calls.append(command)
         return real_execute(command, *args, **kwargs)
 
     env.execute = spy
-    return ShellFileOperations(env, cwd=str(tmp_path)), calls
+    try:
+        yield ShellFileOperations(env, cwd=str(tmp_path)), calls
+    finally:
+        env.__dict__.pop("execute", None)
+
+
+@pytest.fixture
+def shell(_ops, monkeypatch):
+    """Pin the shell path even where a native fast path exists."""
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+    return _ops
+
+
+@pytest.fixture
+def native(_ops, monkeypatch):
+    """Same wiring with the native fast path on."""
+    monkeypatch.delenv("HERMES_NATIVE_FILE_READ", raising=False)
+    return _ops
 
 
 def _write(tmp_path, name, data: bytes):
@@ -256,6 +278,130 @@ class TestWriteFileRoundTrips:
             r = ops.write_file(str(p), "x\ny\n")
         assert r.error is None
         assert p.read_bytes() == b"x\r\ny\r\n"
+
+
+class TestNativeRead:
+    def test_native_read_makes_no_shell_call(self, native, tmp_path):
+        ops, calls = native
+        r = ops.read_file(_write(tmp_path, "a.txt", b"one\ntwo\n"))
+        assert calls == []
+        assert r.error is None and r.content == "1|one\n2|two\n3|"
+        assert (r.total_lines, r.file_size) == (2, 8)
+
+    def test_kill_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
+        ops, calls = native
+        p = _write(tmp_path, "a.txt", b"one\n")
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        ops.read_file(p)
+        assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
+
+    def test_non_local_environment_keeps_the_shell_path(self):
+        from unittest.mock import MagicMock
+
+        env = MagicMock()
+        env.cwd = "/tmp"
+        assert ShellFileOperations(env)._native_read_enabled() is False
+
+    def test_tilde_still_expands_through_the_shell(self, native):
+        ops, calls = native
+        r = ops.read_file("~/hermes-no-such-file-7f3a.txt")
+        assert calls[0] == "echo $HOME"
+        assert r.error and "File not found" in r.error
+
+    def test_injection_lookalike_path_is_never_expanded(self, native, tmp_path):
+        ops, calls = native
+        marker = tmp_path / "pwned"
+        r = ops.read_file(f"~; echo PWNED > {marker}")
+        assert r.error and not marker.exists()
+        # The text reaches the shell only single-quoted, inside the missing-
+        # file recovery's directory listing; the tilde probe is a fixed
+        # ``echo $HOME`` that never embeds the path. Nothing else runs.
+        for c in calls:
+            assert c == "echo $HOME" or c.startswith("ls -1 '~; echo PWNED"), c
+
+    @pytest.mark.linux_only
+    def test_fifo_refused_without_a_shell_and_without_blocking(self, native, tmp_path):
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("no mkfifo")
+        ops, calls = native
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+        box = {}
+
+        def run():
+            box["r"] = ops.read_file(str(fifo))
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(20)
+        assert not t.is_alive(), "native read_file blocked on a writer-less FIFO"
+        assert "not a regular file" in box["r"].error
+        assert calls == []
+
+
+PARITY_CASES = [
+    ("plain", b"one\ntwo\nthree\n", {}),
+    ("no_trailing_newline", b"a\nb", {}),
+    ("blank_tail", b"a\n\n", {}),
+    ("crlf", b"x\r\ny\r\n", {}),
+    ("lone_cr", b"a\rb\n", {}),
+    ("bom", "﻿hello\n".encode("utf-8"), {}),
+    ("empty", b"", {}),
+    ("single_no_newline", b"solo", {}),
+    ("only_newline", b"\n", {}),
+    ("unicode", "héllo wörld\n汉字\n".encode("utf-8"), {}),
+    ("long_line", b"a" * 9000 + b"\nshort\n", {}),
+    ("multibyte_long_line", ("汉" * 4000 + "\nx\n").encode("utf-8"), {}),
+    ("multi_chunk_line", b"b" * 3_000_000 + b"\nz\n", {}),
+    ("window", b"".join(b"l%d\n" % i for i in range(1, 11)), {"offset": 3, "limit": 2}),
+    ("window_reaches_eof", b"".join(b"l%d\n" % i for i in range(1, 11)), {"offset": 9, "limit": 5}),
+    ("past_eof", b"".join(b"l%d\n" % i for i in range(1, 6)), {"offset": 50}),
+    ("nul_binary", b"\x00\x01\x02" * 20, {}),
+    ("latin1_tail", b"caf\xe9\n", {}),
+    ("sentinel_lookalike", b"x\n__HERMES_RF_" + b"ab" * 16 + b"__\ny\n", {}),
+]
+
+
+class TestNativeReadParity:
+    """The native path must be indistinguishable from the shell path."""
+
+    @pytest.mark.parametrize("name,data,kwargs", PARITY_CASES, ids=[c[0] for c in PARITY_CASES])
+    def test_shell_and_native_agree(self, native, tmp_path, monkeypatch, name, data, kwargs):
+        ops, calls = native
+        p = _write(tmp_path, f"{name}.txt", data)
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        via_shell = ops.read_file(p, **kwargs).to_dict()
+        assert calls and READ_PROBE_MARK in calls[0]
+        calls.clear()
+        monkeypatch.delenv("HERMES_NATIVE_FILE_READ")
+        via_native = ops.read_file(p, **kwargs).to_dict()
+        assert via_native == via_shell
+        # The native path touches the shell only for the UTF-16 rescue of binaries.
+        assert not any(READ_PROBE_MARK in c for c in calls)
+
+    def test_special_paths_agree(self, native, tmp_path, monkeypatch):
+        ops, calls = native
+        _write(tmp_path, "real.txt", b"target\n")
+        os.symlink(tmp_path / "real.txt", tmp_path / "link.txt")
+        os.symlink(tmp_path / "gone", tmp_path / "dangling.txt")
+        (tmp_path / "sub").mkdir()
+        _write(tmp_path, "pic.png", b"\x89PNG\r\n")
+        _write(tmp_path, "notes.txt", b"n\n")
+        for p in (
+            str(tmp_path / "link.txt"),
+            str(tmp_path / "dangling.txt"),
+            str(tmp_path / "sub"),
+            str(tmp_path / "pic.png"),
+            str(tmp_path / "note.txt"),   # missing → similar-file suggestions
+            "real.txt",                   # relative to env.cwd
+        ):
+            monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+            via_shell = ops.read_file(p).to_dict()
+            monkeypatch.delenv("HERMES_NATIVE_FILE_READ")
+            calls.clear()
+            via_native = ops.read_file(p).to_dict()
+            assert via_native == via_shell, p
+            assert not any(READ_PROBE_MARK in c for c in calls), p
 
 
 class TestCompoundFallback:

@@ -167,11 +167,13 @@ gateway:
       timed_out:           "超时，dispatcher 将重试"
       blocked:             "被阻塞，需要处理"
       review_requested:    "已交付评审；实现已完成"
+      changes_requested:   "评审要求修改（BLOCK)，实现未获批准"
       block_loop_detected: "反复阻塞后被转入待分诊，需要做出决定"
       status_default:      "状态变化"
       status_joiner:       "，"
       message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
       handoff:             "结果：{summary}"
+      review_detail:       "评审反馈: {reason}\n请检查现有卡片及其当前评审运行；将工作返回同一实现任务。不要把此 BLOCK 视为批准，也不要创建重复任务。"
       guidance:            "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
 
   personality:

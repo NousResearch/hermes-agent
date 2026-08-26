@@ -190,11 +190,13 @@ gateway:
       timed_out:           "انتهت المهلة؛ سيعيد المُوزّع المحاولة"
       blocked:             "محجوبة؛ تحتاج إلى انتباه"
       review_requested:    "أُحيلت للمراجعة؛ اكتمل التنفيذ"
+      changes_requested:   "طلبت المراجعة تغييرات (BLOCK)؛ التنفيذ غير معتمد"
       block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى قرار"
       status_default:      "تغيّرت الحالة"
       status_joiner:       "، "
       message:             "[kanban] المهمة {task_id} {status}.\nالعنوان: {title}\nالمُكلَّف: @{assignee}\nاللوحة: {board}\n\nراجع النتيجة أو قرّر الخطوة التالية."
       handoff:             "Result: {summary}"
+      review_detail:       "ملاحظات المراجعة: {reason}\nافحص البطاقة الحالية وتشغيل المراجعة الجاري؛ أعد العمل إلى مهمة التنفيذ نفسها. لا تعتبر هذا الحجب موافقة ولا تنشئ مهمة مكررة."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:

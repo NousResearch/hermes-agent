@@ -1153,11 +1153,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the internal reconnect-attempt timeout (20s) — the
+    // Advance past the shared backend-boot budget (45s) — the
     // stalled await must reject on its own so boot()'s catch runs instead of
     // waiting indefinitely on main.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(45_000)
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
@@ -1191,11 +1191,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewaySwitching.get()).toBe(true)
 
-    // Advance past the internal reconnect-attempt timeout (20s) — the
+    // Advance past the shared backend-boot budget (45s) — the
     // stalled await must reject so the `finally` clears $gatewaySwitching
     // instead of latching the switch UI frozen forever.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(45_000)
     })
 
     expect($gatewaySwitching.get()).toBe(false)

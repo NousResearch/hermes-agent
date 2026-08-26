@@ -7,7 +7,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { withTimeout } from '@/lib/with-timeout'
+import { withTimeout, BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -542,10 +542,12 @@ export function useGatewayBoot({
         // on its pinned profile's backend across a soft switch.
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // main-process round-trip must not latch $gatewaySwitching stuck —
-        // the `finally` below only runs once this promise settles.
+        // the `finally` below only runs once this promise settles. Uses the
+        // shared backend-boot budget rather than the reconnect budget because
+        // ensureBackend may cold-spawn a pooled helper backend here.
         const conn = await withTimeout(
           desktop.getConnection(windowProfileOverride() ?? undefined),
-          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
 
@@ -895,10 +897,12 @@ export function useGatewayBoot({
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Everything else keeps dialing the primary.
         // Bounded like the reconnect path (#93454): a wedged main-process
-        // round-trip must not hang "Starting Hermes…" forever.
+        // round-trip must not hang "Starting Hermes…" forever. Initial boot
+        // rides out a full backend cold spawn, so it gets the shared 45s
+        // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
           desktop.getConnection(windowProfileOverride() ?? undefined),
-          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
         )
 

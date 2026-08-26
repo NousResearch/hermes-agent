@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import { isTimeoutError, withTimeout, BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import {
   beginGatewaySwitch,
@@ -34,8 +34,9 @@ const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
 // this; anything longer means the primary is not coming and the registry
-// restore should stop waiting for it.
-const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = 45_000
+// restore should stop waiting for it. Shared constant so the boot-class
+// budgets can't drift apart (see with-timeout.ts).
+const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # managed gateway forwards everything verbatim). Enums default to None (endpoint decides), flags to False. ``durations`` is an
 # enum tuple OR a ``(min, max)`` range (2 ints with gap > 1). Extras: audio_native (always on; description line only),
 # duration_int (JSON int, default queue-API string), duration_suffix ("4s"), image_param_key (i2v key when not `image_url`),
-# image_drop_keys (i2v endpoint rejects), resolution_aliases (tool value → endpoint enum), static_payload (always required).
+# image_drop_keys (i2v endpoint rejects), audio_param_key (toggle key when not `generate_audio`), resolution_aliases (tool value → endpoint enum), static_payload (always required).
 def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> Dict[str, Any]:
     return {"display": display, "speed": speed, "price": tier, "tier": tier, "strengths": strengths, "text_endpoint": text, "image_endpoint": image,
             "aspect_ratios": None, "resolutions": None, "durations": None, "audio": False, "negative": False, "seed": False, **caps}
@@ -87,6 +87,16 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
                            "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
                            durations=(3, 15), audio=True, negative=True, seed=True),
+    # Wan 3.0: i2v takes `start_image_url`; both modalities accept aspect_ratio (schema default "adaptive" is left to the endpoint);
+    # integer duration 2-30 (None = smart duration); the audio toggle key is `audio`, not `generate_audio`; `seed` on both endpoints.
+    "wan-3.0": _family("Wan 3.0", "~60-180s", "premium", "Alibaba latest gen. 2-30s clips, native audio, up to 1080p, lip-sync.",
+                       "alibaba/wan-3.0/text-to-video", "alibaba/wan-3.0/image-to-video", image_param_key="start_image_url", duration_int=True,
+                       audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"), resolutions=("480p", "720p", "1080p"),
+                       durations=(2, 30), audio=True, seed=True),
+    "wan-3.0-prime": _family("Wan 3.0 Prime", "~60-180s", "premium", "Alibaba premium tier. Faster iteration, higher fidelity, 2-30s, native audio.",
+                             "alibaba/wan-3.0-prime/text-to-video", "alibaba/wan-3.0-prime/image-to-video", image_param_key="start_image_url",
+                             duration_int=True, audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"),
+                             resolutions=("480p", "720p", "1080p"), durations=(2, 30), audio=True, seed=True),
     "happy-horse": _family("Happy Horse 1.0", "~60-120s", "premium", "Alibaba. New model, sparse public docs — conservative defaults.",
                            "alibaba/happy-horse/text-to-video", "alibaba/happy-horse/image-to-video", audio_native=True, seed=True),
 }
@@ -155,7 +165,7 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
         (family["resolutions"] and resolved in family["resolutions"], "resolution", resolved),
         # FAL's queue API types duration as a string ("8" not 8) unless the family says int; veo3.1 also wants a unit suffix.
         (clamped is not None, "duration", clamped if family.get("duration_int") else f"{clamped}{family.get('duration_suffix', '')}"),
-        (family["audio"] and audio is not None, "generate_audio", bool(audio)),
+        (family["audio"] and audio is not None, family.get("audio_param_key") or "generate_audio", bool(audio)),  # Wan 3.0 calls it `audio`
         (family["negative"] and negative_prompt, "negative_prompt", negative_prompt),
     ) if ok}
     for key in family.get("image_drop_keys", ()) if image_url else ():  # keys the i2v endpoint rejects outright
@@ -309,7 +319,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K, Happy Horse, Grok Imagine, "
+                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> Dict[str, Any]:

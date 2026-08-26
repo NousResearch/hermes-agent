@@ -905,9 +905,18 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                     timeout=10,
                     creationflags=windows_hide_flags(),
                 )
-                major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
+                version = result.stdout.decode().strip().lstrip("v")
+                major = int(version.split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
                 return False  # broken, not outdated — the runnable probe handles it
+            # A pre-release tree counts as outdated however high its major:
+            # nodejs.org publishes a headers tarball only for final releases, so
+            # node-gyp cannot build node-pty against one. Without this, an
+            # install that adopted such a tree stays broken forever — the heal
+            # only fires below the target major, and a pre-release is above it.
+            # Mirrors node_satisfies_build() in scripts/install.sh.
+            if "-" in version:
+                return True
             return major < _HERMES_NODE_TARGET_MAJOR
     return False
 

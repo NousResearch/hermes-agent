@@ -5959,12 +5959,20 @@ class SlackAdapter(BasePlatformAdapter):
         started (the sequential-suppression case) is left untouched.
         """
         _ts = str((event or {}).get("ts") or "")
-        _was_claimed = bool(_ts) and _ts in self._processed_message_ts
+        # getattr: bare test doubles (object.__new__) may lack the map.
+        _claims = getattr(self, "_processed_message_ts", None)
+        _was_claimed = bool(_ts) and _claims is not None and _ts in _claims
         try:
             return await self._handle_slack_message_impl(event, payload)
         except BaseException:
-            if _ts and not _was_claimed and _ts in self._processed_message_ts:
-                self._processed_message_ts.pop(_ts, None)
+            _claims = getattr(self, "_processed_message_ts", None)
+            if (
+                _ts
+                and not _was_claimed
+                and _claims is not None
+                and _ts in _claims
+            ):
+                _claims.pop(_ts, None)
                 logger.warning(
                     "[%s] handler failed after claiming ts=%s; claim released "
                     "so a retry or edit can re-drive the turn",

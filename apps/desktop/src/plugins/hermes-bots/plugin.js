@@ -5648,6 +5648,24 @@ const canonicalCreations = new Map()
  *  adoption, stored-session lookups). */
 const PROFILE_SESSION_LIST_LIMIT = 200
 let botOpenGeneration = 0
+let botOpenInFlight = 0
+
+function beginBotOpen() {
+  const generation = ++botOpenGeneration
+  botOpenInFlight = generation
+  return generation
+}
+
+function finishBotOpen(generation) {
+  if (botOpenInFlight === generation) {
+    botOpenInFlight = 0
+  }
+}
+
+function cancelBotOpen() {
+  botOpenGeneration += 1
+  botOpenInFlight = 0
+}
 
 /** The one canonical title. (profile, CANONICAL_CHAT_TITLE) IS the bot's
  *  forever-chat identity — see the header above. */
@@ -6050,7 +6068,7 @@ async function ensureBotMetadata(bot) {
  *  remembers only this transient opened-view observation; it never stores or
  *  resolves a canonical-chat id. */
 async function openRosterBot(bot) {
-  const generation = ++botOpenGeneration
+  const generation = beginBotOpen()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
   // Keep the currently visible group as a fallback until this explicit action
@@ -6103,6 +6121,7 @@ async function openRosterBot(bot) {
     await prepareBotSource(bot)
   } catch (error) {
     if (generation === botOpenGeneration) {
+      finishBotOpen(generation)
       $openBotChat.set(null)
       restorePreviousGroup()
       syncBotsHomeWorkspace()
@@ -6114,6 +6133,7 @@ async function openRosterBot(bot) {
   }
 
   if (generation !== botOpenGeneration) {
+    finishBotOpen(generation)
     return false
   }
 
@@ -6121,6 +6141,7 @@ async function openRosterBot(bot) {
     const opened = await openBotCanonicalChat(bot, () => generation === botOpenGeneration)
 
     if (generation !== botOpenGeneration) {
+      finishBotOpen(generation)
       return false
     }
 
@@ -6138,11 +6159,13 @@ async function openRosterBot(bot) {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      finishBotOpen(generation)
       closeBotsHomeWorkspace()
       return true
     }
   } catch (error) {
     if (generation === botOpenGeneration) {
+      finishBotOpen(generation)
       $openBotChat.set(null)
       restorePreviousGroup()
       syncBotsHomeWorkspace()
@@ -6156,6 +6179,7 @@ async function openRosterBot(bot) {
   // An older Desktop without the profile-scoped draft API has no safe fallback:
   // do not navigate the current workspace or create a draft on the wrong owner.
   if (typeof host.newChat !== 'function') {
+    finishBotOpen(generation)
     $openBotChat.set(null)
     restorePreviousGroup()
     syncBotsHomeWorkspace()
@@ -6163,6 +6187,7 @@ async function openRosterBot(bot) {
   }
 
   $openBotChat.set({ key, openedRegistryId: '' })
+  finishBotOpen(generation)
   closeBotsHomeWorkspace()
   newBotChat(bot)
   return true
@@ -14436,6 +14461,7 @@ function botsHomeMayOpen(explicit) {
     $botsPaneVisible.get() &&
     !$groupChatWorkspace.get() &&
     !$openBotChat.get() &&
+    !botOpenInFlight &&
     (explicit || !sessionOwnsWorkspace())
   )
 }
@@ -14604,7 +14630,7 @@ function openGroupChat(group) {
   // A room selection supersedes any bot-open transition still hydrating.
   // The in-flight host navigation may complete underneath this workspace,
   // but it may not later close or visually steal the room the user chose.
-  botOpenGeneration += 1
+  cancelBotOpen()
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
@@ -15958,7 +15984,7 @@ export default {
           // workspace token too; this plugin generation prevents that expected
           // cancellation from repainting Bots home or showing an error after
           // the user deliberately returned to Sessions.
-          botOpenGeneration += 1
+          cancelBotOpen()
           host.setWorkspaceScope?.('sessions')
         }
         // A generic composer has no stored-session owner, so passive sync

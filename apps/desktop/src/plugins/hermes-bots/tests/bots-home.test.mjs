@@ -715,6 +715,51 @@ test('a failed local open cannot re-register a group tombstoned after retirement
   assert.equal(t.$openBotChat.get(), null)
 })
 
+test('switching bots does not let the home cover the current chat while the next chat opens', async () => {
+  const t = load({ focusedStoredSessionId: 'chat-alpha' })
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.$openBotChat.set({
+    key: 'local::alpha',
+    openedRegistryId: 'chat-alpha',
+    openedSessionId: 'chat-alpha'
+  })
+  t.host.request = async method => {
+    if (method === 'session.list') {
+      return { sessions: [{ id: 'chat-beta', title: 'Bot Chat', message_count: 4 }] }
+    }
+
+    return {}
+  }
+
+  let finishOpen
+  let markOpenStarted
+  const openStarted = new Promise(resolve => {
+    markOpenStarted = resolve
+  })
+  t.host.openSession = () =>
+    new Promise(resolve => {
+      finishOpen = resolve
+      markOpenStarted()
+    })
+
+  const opening = t.openRosterBot({ connectionId: 'local', name: 'beta' })
+  await openStarted
+
+  // The destination focus edge releases the old chat claim before the async
+  // open has returned its replacement claim. Passive workspace reconciliation
+  // must not use that handoff gap to put Bots home in front.
+  t.focused.set(null)
+  t.releaseStaleOpenBotChat(null)
+  t.syncBotsHomeWorkspace()
+
+  assert.equal(t.opened.some(entry => entry.id === 'hermes-bots:home'), false)
+
+  finishOpen()
+  assert.equal(await opening, true)
+  assert.equal(t.$openBotChat.get()?.openedRegistryId, 'chat-beta')
+})
+
 test('choosing a group prevents a stale canonical-chat open from closing it later', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })

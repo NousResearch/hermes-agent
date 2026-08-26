@@ -709,17 +709,87 @@ if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
 
 # A live step also needs a ceiling. The pipe-drain bound above only starts
 # after the child exits, so it cannot recover a child that completed its visible
-# work and then parks forever inside finalization (#95589). Treat a prolonged
-# absence of stdout/stderr as a stalled step, terminate the direct child, and
-# let the existing retry + finally path restore the Desktop. The retry is
-# load-bearing at an update boundary: newly-pulled updater code is only loaded
-# by the second process.
+# work and then parks forever inside finalization (#95589). Silence is only the
+# cancellation trigger, never evidence that the process tree is safe to overlap:
+# every step is assigned to a private, non-breakaway Windows job and a timed-out
+# step is retryable only after that job reports zero active processes.
 $script:StepIdleTimeoutSeconds = 300
 if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     $parsedIdle = 0
     if ([int]::TryParse($env:HERMES_UPDATE_STEP_IDLE_SECONDS, [ref]$parsedIdle) -and $parsedIdle -gt 0) {
         $script:StepIdleTimeoutSeconds = $parsedIdle
     }
+}
+
+if (-not ("HermesUpdateJob" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+public static class HermesUpdateJob {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicAccountingInformation {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr job,
+        int informationClass,
+        out BasicAccountingInformation information,
+        uint informationLength,
+        IntPtr returnLength
+    );
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static IntPtr CreateAndAssign(IntPtr process) {
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+        if (AssignProcessToJobObject(job, process)) return job;
+        CloseHandle(job);
+        return IntPtr.Zero;
+    }
+
+    public static bool TerminateAndWait(IntPtr job, uint exitCode, int timeoutMs) {
+        if (job == IntPtr.Zero || !TerminateJobObject(job, exitCode)) return false;
+        Stopwatch clock = Stopwatch.StartNew();
+        BasicAccountingInformation information;
+        do {
+            if (!QueryInformationJobObject(
+                    job, 1, out information,
+                    (uint)Marshal.SizeOf(typeof(BasicAccountingInformation)),
+                    IntPtr.Zero)) return false;
+            if (information.ActiveProcesses == 0) return true;
+            Thread.Sleep(50);
+        } while (clock.ElapsedMilliseconds < timeoutMs);
+        return false;
+    }
+
+    public static void Close(IntPtr job) {
+        if (job != IntPtr.Zero) CloseHandle(job);
+    }
+}
+'@
 }
 
 function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
@@ -791,6 +861,15 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $psi.EnvironmentVariables["PYTHONUNBUFFERED"] = "1"
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
+    # A job gives cancellation a kernel-enforced tree boundary. We deliberately
+    # do NOT set KILL_ON_JOB_CLOSE: successful updates may start detached
+    # services that are meant to outlive this pipe reader. Descendants cannot
+    # break away from a default job, but survive when its handle is closed after
+    # a normal step.
+    $job = [HermesUpdateJob]::CreateAndAssign($proc.Handle)
+    if ($job -eq [IntPtr]::Zero) {
+        Write-HandoffLog ("{0}!| could not assign pid {1} to a cancellation job; live-step timeout is disabled to prevent an unsafe partial-tree retry." -f $Tag, $proc.Id)
+    }
     $outSink = New-Object System.Text.StringBuilder
     $errSink = New-Object System.Text.StringBuilder
     $outBuffer = New-Object char[] 16384
@@ -816,15 +895,19 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 $abandoned = $true
                 break
             }
-        } elseif (-not $stalled -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
+        } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
             # The child is alive but has produced no observable progress for
-            # the whole bound. Kill only the direct update/rebuild process; a
-            # surviving descendant is handled by the post-exit pipe-drain
-            # grace above. Returning 124 enters the existing one-retry path,
-            # while the outer finally still restores Desktop if both runs stall.
-            $stalled = $true
-            Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s while pid {2} remained alive; terminating it so the hand-off can recover." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
-            try { $proc.Kill() } catch {}
+            # the whole bound. Terminate the job, not just its direct process:
+            # retrying while a descendant still mutates the checkout, venv, or
+            # release tree can overlap two installers and corrupt the install.
+            Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
+            $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+            if (-not $stalled) {
+                Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
+                $script:TreeSafeToFinalize = $false
+                [HermesUpdateJob]::Close($job)
+                throw "Unable to quiesce stalled update process tree"
+            }
         }
         # Only idle when both pipes came up empty this pass, and idle on the
         # reads themselves rather than on the clock.
@@ -870,11 +953,13 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $all = $outText
     if ($errText) { $all += "`n" + $errText }
     $code = if ($stalled) { 124 } else { $proc.ExitCode }
-    return @{ Code = $code; Output = $all }
+    [HermesUpdateJob]::Close($job)
+    return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited) }
 }
 
 $finalCode = 1
 $finalMsg = "update did not complete"
+$script:TreeSafeToFinalize = $true
 
 # ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
 # Manual QA for the Edge shell without a checkout or a real update. Exits
@@ -940,6 +1025,7 @@ if ($SelfTestPipeDrain) {
     $pidFile = Join-Path $TempDir "hermes-pipe-drain-$stamp.pid"
     $stallPs1 = Join-Path $TempDir "hermes-step-stall-$stamp.ps1"
     $stallPidFile = Join-Path $TempDir "hermes-step-stall-$stamp.pid"
+    $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -971,8 +1057,15 @@ for ($i = 0; $i -lt [Math]::Ceiling($Kb / 128); $i++) { [Console]::Out.Write($ch
 exit 5
 '@
     $stallSource = @'
-param([int]$Hold, [string]$PidFile)
+param([int]$Hold, [string]$PidFile, [string]$GrandchildPidFile)
 [System.IO.File]::WriteAllText($PidFile, [string]$PID)
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = Join-Path $PSHOME "powershell.exe"
+$psi.Arguments = "-NoProfile -Command Start-Sleep -Seconds $Hold"
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$grandchild = [System.Diagnostics.Process]::Start($psi)
+[System.IO.File]::WriteAllText($GrandchildPidFile, [string]$grandchild.Id)
 Write-Output "step entered silent finalization"
 [Console]::Out.Flush()
 Start-Sleep -Seconds $Hold
@@ -1011,7 +1104,8 @@ exit 0
     $stallSw = [System.Diagnostics.Stopwatch]::StartNew()
     $stall = Invoke-HermesStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stallPs1,
-        "-Hold", [string]$hold, "-PidFile", $stallPidFile
+        "-Hold", [string]$hold, "-PidFile", $stallPidFile,
+        "-GrandchildPidFile", $stallGrandchildPidFile
     ) "stepstall"
     $stallSw.Stop()
     $stallElapsed = [Math]::Round($stallSw.Elapsed.TotalSeconds, 2)
@@ -1021,8 +1115,14 @@ exit 0
     }
     $stallAlive = $stallPid -gt 0 -and [bool](Get-Process -Id $stallPid -ErrorAction SilentlyContinue)
     if ($stallAlive) { Stop-Process -Id $stallPid -Force -ErrorAction SilentlyContinue }
+    $stallGrandchildPid = 0
+    if (Test-Path -LiteralPath $stallGrandchildPidFile) {
+        [void][int]::TryParse((Get-Content -LiteralPath $stallGrandchildPidFile -Raw).Trim(), [ref]$stallGrandchildPid)
+    }
+    $stallGrandchildAlive = $stallGrandchildPid -gt 0 -and [bool](Get-Process -Id $stallGrandchildPid -ErrorAction SilentlyContinue)
+    if ($stallGrandchildAlive) { Stop-Process -Id $stallGrandchildPid -Force -ErrorAction SilentlyContinue }
 
-    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $pidFile, $stallPidFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $childPs1, $floodPs1, $stallPs1, $pidFile, $stallPidFile, $stallGrandchildPidFile -Force -ErrorAction SilentlyContinue
 
     # The grandchild still being alive at return is what makes this a proof
     # rather than a timing coincidence: the pipe was demonstrably still open.
@@ -1043,8 +1143,10 @@ exit 0
     if ($stall.Code -ne 124) { $problems += "stall arm exit code $($stall.Code), expected 124" }
     if ($stall.Output -notmatch "step entered silent finalization") { $problems += "stall arm step output was lost" }
     if ($stallAlive) { $problems += "stalled child pid $stallPid remained alive after Invoke-HermesStep returned" }
+    if ($stallGrandchildAlive) { $problems += "stalled descendant pid $stallGrandchildPid remained alive after Invoke-HermesStep returned" }
+    if (-not $stall.TreeQuiesced) { $problems += "stall arm returned without proving its process tree quiescent" }
 
-    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive"
+    $detail = "leak: elapsed=${elapsed}s budget=${budget}s code=$($res.Code) grandchildAlive=$leakAlive | flood: ${floodKb}KB in ${floodElapsed}s budget=${floodBudget}s bytes=$floodBytes code=$($flood.Code) | stall: elapsed=${stallElapsed}s budget=${stallBudget}s code=$($stall.Code) childAlive=$stallAlive descendantAlive=$stallGrandchildAlive quiesced=$($stall.TreeQuiesced)"
     if ($problems.Count -gt 0) {
         Write-Host "PIPE-DRAIN SELF-TEST: FAIL $detail -- $($problems -join '; ')"
         exit 1
@@ -1236,22 +1338,35 @@ try {
     #   3. only then the terminal UI state — done means "Hermes is back",
     #      manual means "it is not, reopen it", error is error (and still
     #      tries to bring the app back after showing itself).
-    Write-Result ($finalCode -eq 0) $finalCode $finalMsg
-    Remove-MarkerIfOwned
-    if ($finalCode -ne 0) {
+    if (-not $script:TreeSafeToFinalize) {
+        # A failed job termination means a mutating descendant may still own
+        # checkout/install files. Preserve the marker and do not relaunch into
+        # that unknown state. This is intentionally fail-closed; the marker's
+        # dead-owner recovery remains the next-start escape hatch.
+        $finalCode = 7
+        $finalMsg = "Update recovery could not stop every updater process. Hermes was not restarted to avoid overlapping the active install. Wait for it to finish or restart Windows, then reopen Hermes."
+        Write-Result $false $finalCode $finalMsg
+        Write-HandoffLog $finalMsg
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
-        [void](Start-DesktopRelaunch)
     } else {
-        Publish-UiProgress "Opening Hermes"
-        $cameBack = Start-DesktopRelaunch
-        if (-not $cameBack -and $RelaunchExe) {
-            # Launch was due and did not verifiably land: truthful result
-            # for the next boot, manual state held on screen now.
-            $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
-            Write-Result $true 0 $finalMsg $true
-            Show-ManualFinale $finalMsg
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+        Remove-MarkerIfOwned
+        if ($finalCode -ne 0) {
+            Show-ErrorFinale $finalMsg
+            Close-ProgressWindow
+            [void](Start-DesktopRelaunch)
+        } else {
+            Publish-UiProgress "Opening Hermes"
+            $cameBack = Start-DesktopRelaunch
+            if (-not $cameBack -and $RelaunchExe) {
+                # Launch was due and did not verifiably land: truthful result
+                # for the next boot, manual state held on screen now.
+                $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
+                Write-Result $true 0 $finalMsg $true
+                Show-ManualFinale $finalMsg
+            }
+            Close-ProgressWindow
         }
-        Close-ProgressWindow
     }
 }

@@ -76,9 +76,10 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     must complete in wall-clock far under what a sleep-per-chunk drain would
     take, and every byte must arrive.
 
-    *stall* -- a step that emits one progress line and then remains alive and
-    silent. It must be terminated with the timeout sentinel (124), preserve its
-    output, and leave no child process behind.
+    *stall* -- a step that emits one progress line, starts a descendant, and
+    then remains alive and silent. Its private Windows job must be terminated
+    with the timeout sentinel (124), preserve output, and report quiescence only
+    after both processes are gone. This is the invariant that permits retry.
 
     The existing leak/flood arms retain their measured Windows 11 / PowerShell
     5.1 budgets; the stall arm uses the same real runner and process table.

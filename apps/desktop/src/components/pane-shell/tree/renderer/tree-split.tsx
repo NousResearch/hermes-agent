@@ -31,7 +31,7 @@ import {
   setTreeSplitWeights
 } from '../store'
 
-import {
+import { MINIMIZED_TRACK,
   allFixedAbsorberIndex,
   COLLAPSED_ZONE_PX,
   computedPx,
@@ -595,7 +595,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: '0 0 auto' }
+                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields

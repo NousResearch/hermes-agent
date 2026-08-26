@@ -661,9 +661,7 @@ describe('typing-aware sessions.changed deferral', () => {
       updateSessionState: vi.fn(
         (
           _sessionId: string,
-          updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<
-            typeof createClientSessionState
-          >
+          updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
         ) => updater(createClientSessionState(ACTIVE_STORED_ID))
       )
     }

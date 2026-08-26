@@ -14,6 +14,7 @@ async function utilitiesFor(css: string): Promise<string> {
   const out = build(CANDIDATES)
   const start = out.indexOf('@layer utilities {')
   expect(start).toBeGreaterThanOrEqual(0)
+
   return out.slice(start)
 }
 

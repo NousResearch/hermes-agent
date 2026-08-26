@@ -12,11 +12,41 @@ const connections: DesktopRegistryConnection[] = [
 
 const roster: DesktopAgentRoster = {
   agents: [
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'default', handle: 'hermes-pandora' },
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'scout', handle: 'scout' },
-    { connectionId: 'pandora', connectionKind: 'remote', connectionLabel: 'Pandora', profile: 'omer', handle: 'omer-pandora' },
-    { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'hermes' },
-    { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'omer', handle: 'omer-this-device' }
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'default',
+      handle: 'hermes-pandora'
+    },
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'scout',
+      handle: 'scout'
+    },
+    {
+      connectionId: 'pandora',
+      connectionKind: 'remote',
+      connectionLabel: 'Pandora',
+      profile: 'omer',
+      handle: 'omer-pandora'
+    },
+    {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      profile: 'default',
+      handle: 'hermes'
+    },
+    {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      profile: 'omer',
+      handle: 'omer-this-device'
+    }
   ],
   sources: [
     { connectionId: 'pandora', kind: 'remote', label: 'Pandora', reachable: true },
@@ -38,9 +68,18 @@ describe('buildRestGroups', () => {
   it('carries each gateway default as its own square plus named profiles alphabetically', () => {
     const [local] = buildRestGroups({ activeConnectionId: 'pandora', connections, roster })
 
-    expect(local.defaultAgent).toMatchObject({ connectionId: 'local', profile: 'default', isDefault: true, handle: 'hermes' })
+    expect(local.defaultAgent).toMatchObject({
+      connectionId: 'local',
+      profile: 'default',
+      isDefault: true,
+      handle: 'hermes'
+    })
     expect(local.named.map(agent => agent.profile)).toEqual(['omer'])
-    expect(local.named[0]).toMatchObject({ connectionLabel: 'This device', handle: 'omer-this-device', isDefault: false })
+    expect(local.named[0]).toMatchObject({
+      connectionLabel: 'This device',
+      handle: 'omer-this-device',
+      isDefault: false
+    })
 
     const [pandora] = buildRestGroups({ activeConnectionId: 'local', connections, roster })
     expect(pandora.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
@@ -66,7 +105,12 @@ describe('buildRestGroups', () => {
   })
 
   it('skips a registration the roster collapsed into another (same backend, two addresses)', () => {
-    const twin: DesktopRegistryConnection = { id: 'pandora-lan', kind: 'remote', label: 'Pandora LAN', url: 'http://10.0.0.2' } as DesktopRegistryConnection
+    const twin: DesktopRegistryConnection = {
+      id: 'pandora-lan',
+      kind: 'remote',
+      label: 'Pandora LAN',
+      url: 'http://10.0.0.2'
+    } as DesktopRegistryConnection
     const groups = buildRestGroups({ activeConnectionId: 'local', connections: [...connections, twin], roster })
 
     expect(groups.map(group => group.connectionId)).toEqual(['pandora', 'vps'])

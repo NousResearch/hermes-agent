@@ -345,9 +345,7 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
       workspaceMode: 'bots',
       workspaceOwnerKey: 'bot:b'
     })
-    $layoutTree.set(
-      group(['workspace', tilePane('chat-a'), tilePane('chat-b')], { active: 'workspace', id: 'main' })
-    )
+    $layoutTree.set(group(['workspace', tilePane('chat-a'), tilePane('chat-b')], { active: 'workspace', id: 'main' }))
 
     closeAllOpenSessionTiles('workspace')
 

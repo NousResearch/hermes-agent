@@ -327,9 +327,9 @@ describe('useModelControls', () => {
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
 
-    await expect(
-      controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })
-    ).resolves.toBe(false)
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
 
     expect($currentModel.get()).toBe('gpt-5.6-sol')
     expect($currentProvider.get()).toBe('openai-codex')

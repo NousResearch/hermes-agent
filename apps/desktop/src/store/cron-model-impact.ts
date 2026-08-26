@@ -235,6 +235,7 @@ function confirmModelWarning(message: string): Promise<boolean> {
 
   return new Promise(resolve => {
     let settled = false
+
     const finish = (value: boolean) => {
       if (settled) {
         return

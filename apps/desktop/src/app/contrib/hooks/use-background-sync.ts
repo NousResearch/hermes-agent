@@ -724,6 +724,7 @@ export function useBackgroundSync({
         }
 
         run()
+
         return
       }
 

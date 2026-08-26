@@ -1075,7 +1075,10 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
   if (Array.isArray(parsed.quarantined)) {
     for (const item of parsed.quarantined) {
       if (item && typeof item === 'object' && 'entry' in (item as Record<string, unknown>)) {
-        quarantine(String((item as Record<string, unknown>).reason || 'unknown'), (item as Record<string, unknown>).entry)
+        quarantine(
+          String((item as Record<string, unknown>).reason || 'unknown'),
+          (item as Record<string, unknown>).entry
+        )
       }
     }
   }
@@ -1105,82 +1108,82 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
     // One bad entry must never abort the whole registry load (#94246): any
     // unexpected throw quarantines THIS entry and the loop moves on.
     try {
-    const entry = item as Record<string, unknown>
-    const kind = entry.kind
+      const entry = item as Record<string, unknown>
+      const kind = entry.kind
 
-    if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
-      quarantine('entry-unrecognized-kind', item)
-
-      continue
-    }
-
-    let label = String(entry.label || '').trim()
-
-    if (!label) {
-      // Defensive: registry entries are always written with labels, but a
-      // hand-edited file may drop one. Derive rather than discard.
-      label =
-        kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
-    }
-
-    label = uniqueLabel(label, seenLabels)
-
-    let id = kind === 'local' ? LOCAL_CONNECTION_ID : String(entry.id || '').trim()
-
-    if (!id || (seenIds.has(id) && kind !== 'local')) {
-      id = connectionIdForLabel(label, seenIds)
-    }
-
-    if (seenIds.has(id)) {
-      continue // second 'local' entry — first one wins
-    }
-
-    seenLabels.add(labelKey(label))
-    seenIds.add(id)
-
-    const clean: RegistryConnection = { id, kind, label }
-
-    if (kind === 'remote' || kind === 'cloud') {
-      const url = String(entry.url || '').trim()
-
-      if (!url) {
-        quarantine('entry-missing-url', item)
+      if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
+        quarantine('entry-unrecognized-kind', item)
 
         continue
       }
 
-      clean.url = url
-      clean.authMode = normAuthMode(entry.authMode)
+      let label = String(entry.label || '').trim()
 
-      if (entry.token !== undefined) {
-        clean.token = entry.token
+      if (!label) {
+        // Defensive: registry entries are always written with labels, but a
+        // hand-edited file may drop one. Derive rather than discard.
+        label =
+          kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
       }
 
-      const storedHeaders = normalizeRemoteHeaders(entry.headers)
+      label = uniqueLabel(label, seenLabels)
 
-      if (Object.keys(storedHeaders).length > 0) {
-        clean.headers = storedHeaders
+      let id = kind === 'local' ? LOCAL_CONNECTION_ID : String(entry.id || '').trim()
+
+      if (!id || (seenIds.has(id) && kind !== 'local')) {
+        id = connectionIdForLabel(label, seenIds)
       }
 
-      const org = String(entry.org || '').trim()
-
-      if (kind === 'cloud' && org) {
-        clean.org = org
-      }
-    } else if (kind === 'ssh') {
-      const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
-
-      if (!ssh) {
-        quarantine('entry-missing-ssh-host', item)
-
-        continue
+      if (seenIds.has(id)) {
+        continue // second 'local' entry — first one wins
       }
 
-      const { mode: _mode, ...sshFields } = ssh
-      Object.assign(clean, sshFields)
-    }
+      seenLabels.add(labelKey(label))
+      seenIds.add(id)
 
-    connections.push(clean)
+      const clean: RegistryConnection = { id, kind, label }
+
+      if (kind === 'remote' || kind === 'cloud') {
+        const url = String(entry.url || '').trim()
+
+        if (!url) {
+          quarantine('entry-missing-url', item)
+
+          continue
+        }
+
+        clean.url = url
+        clean.authMode = normAuthMode(entry.authMode)
+
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
+
+        const storedHeaders = normalizeRemoteHeaders(entry.headers)
+
+        if (Object.keys(storedHeaders).length > 0) {
+          clean.headers = storedHeaders
+        }
+
+        const org = String(entry.org || '').trim()
+
+        if (kind === 'cloud' && org) {
+          clean.org = org
+        }
+      } else if (kind === 'ssh') {
+        const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
+
+        if (!ssh) {
+          quarantine('entry-missing-ssh-host', item)
+
+          continue
+        }
+
+        const { mode: _mode, ...sshFields } = ssh
+        Object.assign(clean, sshFields)
+      }
+
+      connections.push(clean)
     } catch {
       quarantine('entry-normalization-failed', safeEntryCopy(item))
     }

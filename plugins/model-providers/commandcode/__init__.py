@@ -48,6 +48,32 @@ class CommandCodeAnthropicProfile(CommandCodeProfile):
         all_models = super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
         return None if all_models is None else [m for m in all_models if m.startswith("claude-")]
 
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict, dict]:
+        """Apply the native DeepSeek reasoning controls for DeepSeek-family ids.
+
+        CommandCode fronts DeepSeek with vendor-prefixed ids
+        (``deepseek/deepseek-v4-flash``). DeepSeek V4+ defaults to thinking
+        mode when the ``thinking`` field is omitted, so without an explicit
+        wire control a Hermes ``/reasoning none`` changes the session state
+        but not the actual request — the turn sits in
+        ``reflecting.../brainstorming...`` for minutes (#95232). Strip the
+        vendor prefix and delegate to the native DeepSeek profile's logic
+        (extra_body.thinking + reasoning_effort mapping); other CommandCode
+        model families keep the base no-op behavior.
+        """
+        m = (model or "").strip()
+        if not m.lower().startswith("deepseek/") or len(m) <= len("deepseek/"):
+            return {}, {}
+        from plugins.model_providers.deepseek import deepseek as _deepseek_profile
+
+        return _deepseek_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model=m.split("/", 1)[1],
+            **context,
+        )
+
 
 commandcode = CommandCodeProfile(
     name="commandcode", aliases=("commandcode-chat",), api_mode="chat_completions",

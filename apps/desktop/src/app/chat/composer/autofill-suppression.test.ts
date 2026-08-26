@@ -20,14 +20,20 @@ function readComposerSource(): string {
 
 function extractEditorBlock(src: string): string {
   // The visible editor's opening tag runs from its aria-disabled anchor to
-  // the contentEditable prop — capture everything WebKit sees on that div.
+  // the last suppression attribute. eslint's perfectionist/sort-jsx-props puts
+  // contentEditable before the data-* props, so anchoring on contentEditable
+  // alone would drop the very attributes this block exists to assert.
   const start = src.indexOf("aria-disabled={inputDisabled ? true : undefined}")
 
   if (start === -1) {
     new Error('composer editor anchor missing')
   }
 
-  const end = src.indexOf('contentEditable={', start)
+  // End at the first event handler — guaranteed to sit after every data-*
+  // suppression attribute. Anchoring on a literal attribute name is unsafe:
+  // the explanatory comment above also quotes `data-lpignore="true"`, so a
+  // naive indexOf would stop inside the comment instead of at the real prop.
+  const end = src.indexOf('onCompositionEnd=', start)
 
   if (end === -1 || end <= start) {
     new Error('editor block end missing')

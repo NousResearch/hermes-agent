@@ -1002,6 +1002,17 @@ export function ChatBar({
         aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
+        className={cn(
+          'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          '**:data-ref-text:cursor-default',
+          stacked && 'pl-3',
+          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
+          // Inside the native Wayland HUD drag region: a drag region swallows
+          // the page's mouse input whole, so the input must opt back out or it
+          // becomes unclickable. Buttons use the global no-drag rule.
+          hudNativeDrag && '[-webkit-app-region:no-drag]'
+        )}
+        contentEditable={!inputDisabled}
         /* WebKit AutoFill suppression (#95089): iPadOS Safari's keyboard bar
            classifies focused editors heuristically and offers the user's
            contact card (name/address) on free-form chat fields. The WHATWG
@@ -1014,13 +1025,6 @@ export function ChatBar({
         data-1p-ignore=""
         data-composer-rich-input=""
         data-lpignore="true"
-        className={cn(
-          'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
-          '**:data-ref-text:cursor-default',
-          stacked && 'pl-3',
-          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
-        )}
-        contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}

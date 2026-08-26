@@ -63,4 +63,5 @@ jobs:
           set -uo pipefail
           uv run --no-sync python -m pytest \
             tests/hermes_cli/test_real_profile_windows_live.py \
-            -o addopts= -v -p no:cacheprovider
+            tests/hermes_cli/test_real_profile_windows_diag.py \
+            -o addopts= -v -s -p no:cacheprovider

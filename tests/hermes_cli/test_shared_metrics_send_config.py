@@ -136,6 +136,28 @@ class TestTransportSafety:
         )
         assert resolved.send is False
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "ftp://localhost/v1/telemetry",
+            "gopher://localhost/v1/telemetry",
+            "ws://127.0.0.1/v1/telemetry",
+        ],
+    )
+    def test_a_non_http_scheme_on_loopback_is_still_refused(self, endpoint):
+        """The scheme is allowlisted, not merely checked for plaintext http.
+
+        Gap found by mutation testing: replacing the `http` scheme test with
+        `if True` survived the whole suite, because every non-http scheme case
+        pointed at a REMOTE host, where the loopback branch rejects it anyway.
+        Only a non-http scheme aimed at loopback distinguishes an allowlist
+        from a plaintext-only check.
+        """
+        resolved = resolve_send_config(
+            _config(enabled=True, send=True, endpoint=endpoint)
+        )
+        assert resolved.send is False
+
     def test_unsafe_endpoint_does_not_block_collection(self):
         resolved = resolve_send_config(
             _config(enabled=True, send=True, endpoint="http://example.test/v1")

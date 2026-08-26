@@ -357,6 +357,21 @@ Rotation bounds long-term linkability without destroying short-term cohort
 analysis. A profile is one identity for the length of a window, and an
 unrelated identity after it.
 
+**What rotation does not bound.** The identifier changes; the rest of the
+envelope does not. `resource` (`os_family`, `architecture`, `install_method`,
+`hermes_version`) is stable and low-entropy, and `period_start` /
+`period_end` are contiguous across a rotation boundary. For a common
+configuration this is no help to an observer — measured against the 11 real
+packages in a development outbox, every one shares the same
+`arm64 / macos / git` tuple. For a **rare** configuration it is a plausible
+re-identification aid: an unusual architecture or install method, combined
+with an uninterrupted daily period sequence, can bridge two windows. The
+claim this design makes is therefore "rotation raises the cost of long-term
+correlation", not "rotation makes it impossible". Narrowing that residue
+would mean coarsening `resource` or jittering period boundaries, and neither
+is worth the analytical loss today — but it should be a conscious decision,
+not an unexamined one.
+
 ### A.4 Reset behavior
 
 Removing `$HERMES_HOME/telemetry/shared_metrics` still resets local identity,

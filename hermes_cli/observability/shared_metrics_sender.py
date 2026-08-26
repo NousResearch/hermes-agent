@@ -95,6 +95,11 @@ OPT_IN_PERIOD_KEY = "send_opt_in_period"
 #: permanent for the packages collected while it was off.
 SEND_REVOKED_KEY = "send_revoked"
 
+#: Last send-consent state this machine observed ("1"/"0"). Persisted because
+#: each hook fires in a fresh process, so a true->false edge is only visible
+#: by comparing against what was recorded last time.
+LAST_SEEN_SEND_KEY = "send_last_seen"
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -415,8 +420,13 @@ class SharedMetricsSender:
                 )
 
     def _defer(self, package_id: str, delay_seconds: int, reason: str) -> None:
-        # Never write a deadline in the past: that would make the row instantly
-        # re-eligible and let a pass spin on it.
+        # Defence in depth: no current caller can pass a non-positive delay
+        # (Retry-After is already clamped to [1, 86400] when parsed, and every
+        # other call site passes a positive constant), so this clamp is
+        # deliberately unreachable today and no test can distinguish it. It
+        # stays because a past deadline would make the row instantly
+        # re-eligible and let a pass spin on it — a cheap guard against a
+        # future caller that forgets.
         delay = max(1, int(delay_seconds))
         retry_at = self._now().timestamp() + delay
         self._mark(
@@ -514,10 +524,10 @@ class SharedMetricsSender:
             if not self._still_consented():
                 # The user turned sending off while this pass was running.
                 # Stop without transmitting anything further, and close the
-                # consent window so a later re-enable cannot release the
-                # packages collected in the meantime. Recorded here as well as
-                # in the setup wizard because config.yaml can be edited by
-                # hand, which the wizard never sees.
+                # consent window. This covers only the mid-pass case; a
+                # revocation made while no pass is running is caught by the
+                # relay's edge detector before it early-returns, because this
+                # loop would never run to observe it.
                 logger.info("Shared-metrics sending disabled mid-pass; stopping")
                 self._record_revocation()
                 break

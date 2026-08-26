@@ -23,6 +23,31 @@ class FakeStore:
         return []
 
 
+class RealBackedStore:
+    """A store with a genuine SQLite connection, for consent-state tests.
+
+    The consent edge detector writes to telemetry_state, and it is wrapped in
+    a broad except. Against a stub without _connection it would swallow an
+    AttributeError and silently do nothing — which is exactly the failure this
+    file needs to be able to catch.
+    """
+
+    def __init__(self, tmp_path):
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+        self._real = SharedMetricsStore(
+            database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"
+        )
+        self.exported = 0
+
+    def _connection(self):
+        return self._real._connection()
+
+    def create_and_export_package_if_due(self):
+        self.exported += 1
+        return []
+
+
 class FakeSubscriber:
     def __init__(self):
         self.store = FakeStore()
@@ -182,6 +207,128 @@ class TestInteractivePathIsNotBlocked:
         assert len(starts) == 1, "hook fires must not pile up send passes"
         release.set()
         runtime._join_send_thread(timeout=5)
+
+
+class TestConsentRevocationWindow:
+    """The falling edge must close the window even with no pass running.
+
+    Round 3 recorded revocation inside the send loop, which cannot fire for
+    the dominant case: the user turns sending off while idle, so the relay
+    early-returns and no sender is ever built. Re-enabling then released
+    every package collected during the refused window.
+    """
+
+    def _runtime(self, tmp_path):
+        runtime = Runtime()
+        runtime.subscriber.store = RealBackedStore(tmp_path)
+        return runtime
+
+    def _state(self, runtime, key):
+        with runtime.subscriber.store._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM telemetry_state WHERE key = ?", (key,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def test_revoking_while_idle_closes_the_window(
+        self, monkeypatch, tmp_path, capture_sender
+    ):
+        from hermes_cli.observability.shared_metrics_sender import (
+            SEND_REVOKED_KEY,
+        )
+
+        runtime = self._runtime(tmp_path)
+
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+        runtime._send_exported_packages()
+
+        # User edits config.yaml: send: false. Hooks keep firing normally.
+        _set_config(monkeypatch, _config(enabled=True, send=False))
+        for _ in range(6):
+            runtime._send_exported_packages()
+
+        assert self._state(runtime, SEND_REVOKED_KEY) == "1", (
+            "revoking while no pass was running left the consent window open"
+        )
+
+    def test_no_spurious_revocation_when_nothing_changes(
+        self, monkeypatch, tmp_path, capture_sender
+    ):
+        """The detector must key on an EDGE, not on every disabled pass.
+
+        A level trigger re-closes a window the user has since REOPENED: each
+        later disabled pass stamps revoked again, so the next enabled pass
+        advances the gate and silently drops packages the user did consent to.
+        Mutation-checked — an earlier version of this test used a
+        never-consented store, where record_revoked no-ops regardless, and so
+        could not tell an edge trigger from a level trigger.
+        """
+        from hermes_cli.observability.shared_metrics_sender import (
+            OPT_IN_PERIOD_KEY,
+            SEND_REVOKED_KEY,
+        )
+
+        runtime = self._runtime(tmp_path)
+
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+        runtime._send_exported_packages()
+
+        _set_config(monkeypatch, _config(enabled=True, send=False))
+        runtime._send_exported_packages()
+        assert self._state(runtime, SEND_REVOKED_KEY) == "1"
+
+        # User changes their mind and re-enables.
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+        runtime._send_exported_packages()
+        assert self._state(runtime, SEND_REVOKED_KEY) is None, (
+            "re-enabling must clear the revocation marker"
+        )
+        reopened = self._state(runtime, OPT_IN_PERIOD_KEY)
+
+        # Further ENABLED passes must not disturb the reopened window.
+        for _ in range(4):
+            runtime._send_exported_packages()
+
+        assert self._state(runtime, SEND_REVOKED_KEY) is None, (
+            "a steady enabled state re-closed the consent window"
+        )
+        assert self._state(runtime, OPT_IN_PERIOD_KEY) == reopened
+
+    def test_a_never_consented_user_is_never_marked_revoked(
+        self, monkeypatch, tmp_path, capture_sender
+    ):
+        from hermes_cli.observability.shared_metrics_sender import (
+            SEND_REVOKED_KEY,
+        )
+
+        runtime = self._runtime(tmp_path)
+        _set_config(monkeypatch, _config(enabled=True, send=False))
+        for _ in range(5):
+            runtime._send_exported_packages()
+
+        assert self._state(runtime, SEND_REVOKED_KEY) is None
+
+    def test_re_enabling_after_an_idle_revocation_starts_a_new_window(
+        self, monkeypatch, tmp_path, capture_sender
+    ):
+        from hermes_cli.observability.shared_metrics_sender import (
+            OPT_IN_PERIOD_KEY,
+            SEND_REVOKED_KEY,
+        )
+
+        runtime = self._runtime(tmp_path)
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+        runtime._send_exported_packages()
+        first_window = self._state(runtime, OPT_IN_PERIOD_KEY)
+
+        _set_config(monkeypatch, _config(enabled=True, send=False))
+        runtime._send_exported_packages()
+        assert self._state(runtime, SEND_REVOKED_KEY) == "1"
+
+        # Re-enabling must not simply resume the original window.
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+        runtime._send_exported_packages()
+        assert first_window is not None
 
 
 class TestFailureIsolation:

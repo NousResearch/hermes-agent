@@ -2454,6 +2454,11 @@ def setup_telemetry(config: dict):
         if shared_metrics.get("send") is True:
             shared_metrics["send"] = False
             print_info("Sending shared metrics disabled as well.")
+        # Turning collection off is also a withdrawal of send consent, and it
+        # has to close the window like any other. Recorded unconditionally:
+        # the send key may already be false in config while the consent window
+        # is still open, and that window must not survive to be reopened.
+        _record_send_consent_change(enabled=False)
         return
 
     print_success("Local shared metrics enabled.")
@@ -2487,6 +2492,7 @@ def _record_send_consent_change(*, enabled: bool) -> None:
     try:
         from hermes_cli.observability.shared_metrics import SharedMetricsStore
         from hermes_cli.observability.shared_metrics_sender import (
+            LAST_SEEN_SEND_KEY,
             opt_in_period,
             record_revoked,
         )
@@ -2499,6 +2505,16 @@ def _record_send_consent_change(*, enabled: bool) -> None:
                     opt_in_period(connection)
                 else:
                     record_revoked(connection)
+                # Keep the relay's edge detector in step. Without this the
+                # wizard's change looks like "no transition" on the next hook
+                # fire, and a later true->false edge could be missed.
+                connection.execute(
+                    """
+                    INSERT INTO telemetry_state(key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (LAST_SEEN_SEND_KEY, "1" if enabled else "0"),
+                )
     except Exception:
         # Never block the wizard on telemetry bookkeeping. The sender records
         # the same transitions on its next pass.

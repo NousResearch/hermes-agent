@@ -1324,9 +1324,25 @@ def test_sol9_reconciliation_recursively_invalidates_ready_grandchild(kanban_hom
         assert kb.claim_task(conn, grandchild) is None
 
 
+def test_sol10_integer_max_commits_is_accepted(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    contract = _git_contract(repo, base)
+    contract["max_commits"] = 2
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="engineer", assignee="engineer", completion_contract=contract,
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        stored = task.completion_contract
+        assert stored is not None
+        assert stored["max_commits"] == 2
+
+
 @pytest.mark.parametrize(
     "raw",
-    ["two", "1.5", "-1", 0, True, {"n": 2}, [2], 1.5],
+    ["two", "1.5", "-1", 0, True, {"n": 2}, [2], 1.5, "2", 2.0],
 )
 def test_sol10_malformed_max_commits_is_invalid_contract(kanban_home, tmp_path, raw):
     repo = tmp_path / "repo"

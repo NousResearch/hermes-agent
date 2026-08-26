@@ -322,37 +322,10 @@ def _optional_str(value: Any) -> Optional[str]:
 def _normalize_max_commits(raw: Any) -> Optional[int]:
     if raw is None or raw == "":
         return None
-    if isinstance(raw, bool) or isinstance(raw, (dict, list, tuple)):
-        raise CompletionIntegrityError(
-            REASON_INVALID,
-            "max_commits must be a positive integer",
-            details={"max_commits": raw},
-        )
-    if isinstance(raw, int):
-        if raw < 1:
-            raise CompletionIntegrityError(
-                REASON_INVALID,
-                "max_commits must be a positive integer",
-                details={"max_commits": raw},
-            )
+    # Accept only an actual positive int. Do not coerce strings, floats,
+    # bools, or other numeric-looking values.
+    if type(raw) is int and raw >= 1:
         return raw
-    if isinstance(raw, float):
-        if raw.is_integer() and raw >= 1:
-            return int(raw)
-        raise CompletionIntegrityError(
-            REASON_INVALID,
-            "max_commits must be a positive integer",
-            details={"max_commits": raw},
-        )
-    if isinstance(raw, str):
-        text = raw.strip()
-        if text.isdigit() and int(text) >= 1:
-            return int(text)
-        raise CompletionIntegrityError(
-            REASON_INVALID,
-            "max_commits must be a positive integer",
-            details={"max_commits": raw},
-        )
     raise CompletionIntegrityError(
         REASON_INVALID,
         "max_commits must be a positive integer",

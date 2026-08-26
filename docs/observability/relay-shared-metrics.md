@@ -231,6 +231,13 @@ the persistent local identifier by default. It requires a separate product and
 privacy decision covering consent, identity scope, rotation or keyed
 pseudonymization, reset behavior, retention, and deletion.
 
+> That exporter is now being built as Phase 2 of the Hermes telemetry project.
+> The decisions this paragraph asks for are recorded in
+> [Appendix A](#appendix-a-remote-exporter-decisions-phase-2). Until Phase 2
+> ships, the statement above still describes shipped behaviour: nothing is
+> transmitted, and transmission stays opt-in behind a config key that is off by
+> default.
+
 The install identity is scoped to one `HERMES_HOME`. To reset it, stop Hermes
 processes and remove `$HERMES_HOME/telemetry/shared_metrics`. This deliberately
 removes the old identity, aggregate database, and queued local packages
@@ -257,3 +264,152 @@ verifies model, provider, task, tool, and skill counters in SQLite, validates
 all exported delta packages against the closed schema, verifies the
 pseudonymous client-active counter, and checks that prompt, response, tool-call
 ID, tool-result, and skill-name canaries are absent from the packages.
+
+## Appendix A: Remote Exporter Decisions (Phase 2)
+
+Status: **decided, not yet built.** This appendix answers the product and
+privacy questions that "Current Slices" defers to a future remote exporter. It
+records what was decided and why, so the reasoning survives the implementation.
+
+The exporter sends the package files already written under
+`$HERMES_HOME/telemetry/shared_metrics/outbox/` to the Hermes telemetry ingest
+service. That service validates only the envelope (`schema_version` plus a UUID
+`package_id`) and stores the body verbatim in S3.
+
+### A.1 Consent
+
+Transmission is a **separate opt-in** from collection, under a new config key:
+
+```yaml
+telemetry:
+  shared_metrics:
+    enabled: false   # collect locally
+    send: false      # NEW: transmit to the Nous telemetry service
+```
+
+- `send` defaults to **false**. Collection alone never transmits.
+- `send` requires `enabled`. It does **not** imply it: a transmission flag must
+  not silently switch on collection. `send: true` with `enabled: false` warns
+  and does nothing.
+- Like `enabled`, `send` is profile-owned and is not overridden by
+  managed-scope configuration.
+
+**Only packages for periods on or after the opt-in day are ever sent.** The
+opt-in day (UTC) is recorded when `send` first becomes true, and any package
+whose `period_start` predates it is permanently excluded, however late it was
+created.
+
+The gate is on the **period**, not on the package's creation time. One period
+is split across several packages created on different days: a day's first
+package is written that day, and a tail package for the same period typically
+follows the next day. Gating on creation time would send a period's tail while
+dropping its head, reporting a **silently undercounted** day. Gating on the
+period keeps consent forward-only and every transmitted period complete.
+
+Local history can be up to 30 days old, and that data was collected under a
+promise that nothing is uploaded. Honouring consent forward-only costs at most
+30 days of backlog we never had permission to send.
+
+### A.2 Identity scope — the transmitted identifier is derived, not the local one
+
+`install_id` is the persistent profile-scoped identifier described above. It is
+**not transmitted**. Each package sent carries a derived value instead:
+
+```text
+transmitted_id = HMAC-SHA256(key = rotation_salt, message = install_id)
+```
+
+- `rotation_salt` is random, generated locally, and never leaves the machine.
+- The derivation is one-way: the service cannot recover `install_id`.
+- Within a rotation window, packages from one profile correlate — so distinct
+  installs remain countable, which is the primary analytical question.
+- Across windows, they do not.
+
+This satisfies "must not reuse the persistent local identifier by default"
+while keeping the data useful. Stripping the identifier entirely was rejected
+because "how many installs are reporting" is the first question the data must
+answer; sending `install_id` unchanged was rejected because it contradicts the
+commitment made above.
+
+**Byte-identical resends still hold.** The derived value is computed **once**,
+when the package is first prepared for sending, and stored alongside the
+package (the derived id only — not a second copy of the payload, which is
+recomputed deterministically from the stored package). A retry therefore
+rebuilds identical bytes even if the salt rotated in between. The contract
+requires this: resending a `package_id` with different content is undefined
+behaviour.
+
+### A.3 Rotation
+
+`rotation_salt` rotates on a fixed schedule (default: every 30 days, aligned to
+local history retention). Rotation only affects packages prepared after it;
+already-prepared packages keep their derived value so retries stay
+byte-identical.
+
+Rotation bounds long-term linkability without destroying short-term cohort
+analysis. A profile is one identity for the length of a window, and an
+unrelated identity after it.
+
+### A.4 Reset behavior
+
+Removing `$HERMES_HOME/telemetry/shared_metrics` still resets local identity,
+aggregates, and package files, exactly as documented above. Two honest
+qualifications now apply:
+
+- Reset also discards `rotation_salt`, so subsequent packages derive a **new**
+  transmitted identity. Local reset does give a new remote identity.
+- Reset **cannot unsend**. Packages already transmitted remain in the ingest
+  service's storage under their derived identifier. There is no read-back or
+  delete API in the v1 contract.
+
+Setting `send: false` stops transmission immediately. It does not delete
+previously transmitted packages, and it does not stop local collection.
+
+### A.5 Retention
+
+- **Local:** unchanged — 30 days for successfully exported history, and pending
+  deltas are kept until exported. Send state does **not** extend local
+  retention: a package that could never be sent is still pruned at 30 days.
+  Unbounded local growth against a permanently unreachable endpoint is a worse
+  failure than losing metrics from an install that has been broken for a month.
+- **Remote:** raw packages are retained in S3 without expiry in production and
+  for 30 days in staging.
+
+### A.6 Deletion
+
+There is no remote deletion path in the v1 contract, and this appendix does not
+invent one. What a user can do:
+
+| Action | Effect |
+|---|---|
+| `send: false` | No further packages leave the machine |
+| `enabled: false` | Collection stops; existing local state remains |
+| Remove `.../shared_metrics` | Local identity, aggregates, and files reset; future sends use a new derived identity |
+| Delete already-sent data | Not self-service — requires an operator acting on the S3 bucket |
+
+If a deletion-on-request obligation is ever taken on, it needs a lookup path
+from a user to their derived identifiers. That is deliberately **not** built:
+it would require retaining the mapping this design exists to avoid. Any such
+change is a new product decision, not an implementation detail.
+
+### A.7 What the outbox directory is
+
+Recorded because it was misread once during Phase 2 planning, in a way that
+would have deleted user data.
+
+The directory is **local history, not a send-queue**. `package_outbox` is the
+SQLite table; its `exported_at` column means "written to disk", not "sent".
+Files are immutable and pruned **by age alone**.
+
+The ingest contract says senders should delete a package from their outbox on
+`202`. **The exporter does not do this.** Deleting on acknowledgement would
+repurpose the user's 30-day local history as a transmission queue and destroy
+state they were promised. Send state lives in new columns on the
+`package_outbox` table instead; the files are untouched by transmission.
+
+### A.8 Scope note
+
+The `install_id` field inside the package body is what gets replaced by the
+derived value. No other payload field changes, nothing is added, and the
+service treats the whole body as opaque. Payload schema evolution therefore
+stays a sender-side concern, as before.

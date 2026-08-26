@@ -4430,7 +4430,9 @@ def _save_cfg(cfg: dict):
 
     from utils import atomic_roundtrip_yaml_save
 
-    path = _hermes_home / "config.yaml"
+    override = get_hermes_home_override()
+    home = Path(override) if isinstance(override, str) and override else _hermes_home
+    path = Path(home) / "config.yaml"
     # Comment-, ordering-, and Unicode-preserving full-state write.
     # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
     # `atomic_config_write`, which is not comment-preserving) which clobbered
@@ -13919,6 +13921,7 @@ def _respond(rid, params, key, *, allow_expired=False):
 # opt/model-resolution-core PR touches its body; move it to methods_config.py
 # in a follow-up once that PR lands.
 @method("config.set")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))

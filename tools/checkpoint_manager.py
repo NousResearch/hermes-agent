@@ -1157,12 +1157,26 @@ class CheckpointManager:
             # Hermes-created files absent from it (delete to restore state).
             checkout_targets: List[str] = []
             delete_targets: List[str] = []
+            kept_oversize: List[str] = []
             for rel in restore_paths:
                 ok_in_commit, _, _ = _run_git(
                     ["cat-file", "-e", f"{commit_hash}:{rel}"],
                     store, abs_dir, allowed_returncodes={1, 128},
                 )
-                (checkout_targets if ok_in_commit else delete_targets).append(rel)
+                if ok_in_commit:
+                    checkout_targets.append(rel)
+                elif self._exceeds_size_cap(Path(abs_dir) / rel):
+                    # Absent from the checkpoint because ``max_file_size_mb``
+                    # kept it out (_drop_oversize_from_index), not because
+                    # Hermes created it. Deleting it would not restore a prior
+                    # state — no checkpoint holds one — it would destroy the
+                    # only copy. The ledger records a content hash, not whether
+                    # a write created or modified the file, so an oversize path
+                    # cannot be proven agent-created; leaving it costs a stale
+                    # file, deleting it costs the file.
+                    kept_oversize.append(rel)
+                else:
+                    delete_targets.append(rel)
             for rel in delete_targets:
                 try:
                     target = Path(abs_dir) / rel
@@ -1203,8 +1217,16 @@ class CheckpointManager:
         if file_path:
             result["file"] = file_path
         if restore_paths is not None:
-            result["restored_files"] = restore_paths
+            # Only what was actually acted on. A kept oversize path was not
+            # restored, and reporting it as such is how the data loss above
+            # stayed silent: the user was told "Restored" for a file that had
+            # just been unlinked.
+            result["restored_files"] = [
+                rel for rel in restore_paths if rel not in kept_oversize
+            ]
             result["skipped_user_edits"] = skipped_user_edits
+            if kept_oversize:
+                result["skipped_oversize"] = kept_oversize
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:
@@ -1362,6 +1384,22 @@ class CheckpointManager:
         self._enforce_size_cap(store)
 
         return True
+
+    def _exceeds_size_cap(self, path: Path) -> bool:
+        """Whether *path* is larger than ``max_file_size_mb``.
+
+        The same test :meth:`_drop_oversize_from_index` applies when building a
+        checkpoint, so "excluded from the checkpoint" and "refused deletion at
+        restore" agree on one definition. A cap of 0 disables it, and an
+        unstattable path is not claimed to be oversize.
+        """
+        cap = self.max_file_size_mb * 1024 * 1024
+        if cap <= 0:
+            return False
+        try:
+            return path.stat().st_size > cap
+        except OSError:
+            return False
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,

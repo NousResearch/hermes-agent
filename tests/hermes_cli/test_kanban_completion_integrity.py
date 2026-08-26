@@ -71,10 +71,10 @@ def _git_contract(repo: Path, expected_base: str | None = None) -> dict:
         "repository": str(repo),
         "worktree": str(repo),
         "git_common_dir": kci.resolve_git_common_dir(str(repo)),
-        "max_commits": 8,
     }
     if expected_base:
         contract["expected_base"] = expected_base
+        contract["max_commits"] = 8
     return contract
 
 
@@ -711,3 +711,393 @@ def test_negative_path_orchestration_certification(kanban_home, tmp_path):
     receipt_path = tmp_path / "kanban-completion-integrity-certification.json"
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     assert receipt["steps"]
+
+
+# ---------------------------------------------------------------------------
+# Independent Sol rejection regressions (must fail on 4269ffae)
+# ---------------------------------------------------------------------------
+
+
+def _complete_without_attempt(conn, tid: str, *, repo: Path, sha: str):
+    return kb.complete_task(
+        conn,
+        tid,
+        summary=f"completed {sha[:8]}",
+        metadata={
+            "terminal_result": {
+                "repository": str(repo),
+                "worktree": str(repo),
+                "commit_sha": sha,
+            }
+        },
+    )
+
+
+def test_sol1_historian_ordinary_completion_binds_required_sha(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        historian, attempt = _create_and_claim(
+            conn,
+            "historian",
+            contract=_historian_contract(repo, sha_c),
+            assignee="historian",
+        )
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, historian, attempt_id=attempt, repo=repo, sha=sha_b,
+            )
+        assert exc.value.code == kci.REASON_SHA_MISMATCH
+        assert _status(conn, historian) != "done"
+        assert _complete_revision(
+            conn, historian, attempt_id=attempt, repo=repo, sha=sha_c,
+        ) is True
+        assert _status(conn, historian) == "done"
+
+
+def test_sol1_historian_direct_certify_binds_required_sha(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        historian = kb.create_task(
+            conn,
+            title="historian",
+            assignee="historian",
+            completion_contract=_historian_contract(repo, sha_c),
+        )
+        certified = kb.certify_historian_revision(
+            conn, historian, repository=str(repo), commit_sha=sha_b,
+        )
+        assert certified.ok is False
+        assert certified.code == kci.REASON_SHA_MISMATCH
+        certified_c = kb.certify_historian_revision(
+            conn, historian, repository=str(repo), commit_sha=sha_c,
+        )
+        assert certified_c.ok is True
+
+
+def test_sol2_worker_cannot_choose_repository_identity(kanban_home, tmp_path):
+    authorized = tmp_path / "authorized"
+    worker = tmp_path / "worker"
+    _init_repo(authorized, message="authorized")
+    worker_sha = _init_repo(worker, message="worker-chosen")
+    contract = {
+        "schema_version": 1,
+        "type": "git_revision",
+    }
+    with kb.connect() as conn:
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            kb.create_task(
+                conn,
+                title="engineer",
+                assignee="engineer",
+                completion_contract=contract,
+            )
+        assert exc.value.code == kci.REASON_INVALID
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(authorized),
+        )
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, engineer, attempt_id=attempt, repo=worker, sha=worker_sha,
+            )
+        assert exc.value.code in {
+            kci.REASON_INVALID,
+            kci.REASON_WRONG_REPOSITORY,
+            kci.REASON_OBJECT_MISSING,
+        }
+        assert _status(conn, engineer) != "done"
+
+
+def test_sol3_missing_attempt_id_is_rejected(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_without_attempt(conn, engineer, repo=repo, sha=sha_b)
+        assert exc.value.code in {
+            getattr(kci, "REASON_MISSING_ATTEMPT", "MISSING_ATTEMPT"),
+            "MISSING_ATTEMPT",
+        }
+        assert _status(conn, engineer) != "done"
+        assert attempt
+
+
+def test_sol3_stale_attempt_id_replay_is_rejected(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        stale = f"{attempt}-replay"
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, engineer, attempt_id=stale, repo=repo, sha=sha_b,
+            )
+        assert exc.value.code == kci.REASON_WRONG_ATTEMPT
+        assert _status(conn, engineer) != "done"
+
+
+def test_sol4_max_commits_without_expected_base_is_rejected(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    contract = {
+        "schema_version": 1,
+        "type": "git_revision",
+        "repository": str(repo),
+        "worktree": str(repo),
+        "git_common_dir": kci.resolve_git_common_dir(str(repo)),
+        "max_commits": 2,
+    }
+    with kb.connect() as conn:
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            kb.create_task(
+                conn, title="engineer", assignee="engineer", completion_contract=contract,
+            )
+        assert exc.value.code == kci.REASON_INVALID
+
+
+def test_sol4_unknown_dirty_policy_is_rejected(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    contract = _git_contract(repo, base)
+    contract["dirty_policy"] = "yolo"
+    with kb.connect() as conn:
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            kb.create_task(
+                conn, title="engineer", assignee="engineer", completion_contract=contract,
+            )
+        assert exc.value.code == kci.REASON_INVALID
+
+
+def test_sol4_git_status_nonzero_is_verification_error(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    real_run = kci._run_git
+
+    def _status_fails(args, *, cwd=None):
+        if args and args[0] == "status":
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=128,
+                stdout="",
+                stderr="fatal: not a git repository",
+            )
+        return real_run(args, cwd=cwd)
+
+    monkeypatch.setattr(kci, "_run_git", _status_fails)
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, engineer, attempt_id=attempt, repo=repo, sha=sha_b,
+            )
+        assert exc.value.code == kci.REASON_VERIFICATION_ERROR
+        assert _status(conn, engineer) != "done"
+
+
+def test_sol4_replace_objects_do_not_influence_inspection(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    _git(repo, "checkout", "--orphan", "decoy")
+    (repo / "decoy.txt").write_text("decoy\n", encoding="utf-8")
+    _git(repo, "add", "decoy.txt")
+    _git(repo, "commit", "-m", "decoy")
+    decoy = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "checkout", "main")
+    _git(repo, "replace", decoy, sha_b)
+    replaced = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, decoy],
+        capture_output=True,
+        text=True,
+    )
+    assert replaced.returncode == 0
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, engineer, attempt_id=attempt, repo=repo, sha=decoy,
+            )
+        assert exc.value.code == kci.REASON_BASE_MISMATCH
+        assert _status(conn, engineer) != "done"
+
+
+def test_sol4_remote_url_text_is_not_sufficient_provenance(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    _git(repo, "remote", "add", "origin", "https://example.invalid/authorized.git")
+    contract = _git_contract(repo, base)
+    contract["require_remote"] = "https://example.invalid/authorized.git"
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(conn, "engineer", contract=contract)
+        with pytest.raises(kci.CompletionIntegrityError) as exc:
+            _complete_revision(
+                conn, engineer, attempt_id=attempt, repo=repo, sha=sha_b,
+            )
+        assert exc.value.code == kci.REASON_REMOTE_MISMATCH
+        assert _status(conn, engineer) != "done"
+
+
+def test_sol5_worker_context_exposes_governance_evidence(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        ctx = kb.build_worker_context(conn, engineer)
+        assert attempt in ctx
+        assert "completion_contract" in ctx
+        assert "terminal_result" in ctx
+        assert "git_revision" in ctx
+
+
+def test_sol5_cli_and_tool_surfaces_expose_governance_fields(kanban_home, tmp_path):
+    from hermes_cli.kanban import _task_to_dict
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        task = kb.get_task(conn, engineer)
+        cli_payload = _task_to_dict(task)
+        assert cli_payload["attempt_id"] == attempt
+        assert cli_payload["completion_contract"]["type"] == "git_revision"
+        assert "terminal_result" in cli_payload
+        assert "verified_verdict" in cli_payload
+
+    monkeypatch_env = os.environ
+    monkeypatch_env["HERMES_KANBAN_TASK"] = engineer
+    shown = json.loads(kt._handle_show({"task_id": engineer}))
+    assert shown["task"]["attempt_id"] == attempt
+    assert shown["task"]["completion_contract"]["type"] == "git_revision"
+    assert "terminal_result" in shown["task"]
+
+
+def test_sol5_dashboard_api_accepts_and_returns_governance_fields(kanban_home, tmp_path):
+    import importlib.util
+    import sys
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    plugin_file = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_sol5", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/plugins/kanban")
+    client = TestClient(app)
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "engineer-api",
+            "assignee": "engineer",
+            "completion_contract": _git_contract(repo, base),
+        },
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()["task"]
+    tid = task["id"]
+    assert task["completion_contract"]["type"] == "git_revision"
+    with kb.connect() as conn:
+        kb.claim_task(conn, tid)
+        attempt = kb.get_task(conn, tid).attempt_id
+    shown = client.get(f"/api/plugins/kanban/tasks/{tid}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()["task"]
+    assert body["attempt_id"] == attempt
+    assert body["completion_contract"]["type"] == "git_revision"
+    patched = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "status": "done",
+            "summary": "api complete",
+            "terminal_result": {
+                "attempt_id": attempt,
+                "repository": str(repo),
+                "worktree": str(repo),
+                "commit_sha": sha_b,
+            },
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    with kb.connect() as conn:
+        assert _status(conn, tid) == "done"
+        assert _row(conn, tid)["verified_revision"] == sha_b
+
+
+def test_sol6_force_retains_legacy_structural_override(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="legacy-parent", assignee="worker")
+        child = kb.create_task(
+            conn, title="legacy-child", assignee="worker", parents=[parent],
+        )
+        ok, err = kb.promote_task(conn, child, actor="operator", force=True)
+        assert ok is True
+        assert err is None
+        assert _status(conn, child) == "ready"
+
+
+def test_sol6_force_cannot_bypass_required_verification(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    with kb.connect() as conn:
+        engineer, _ = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        ok = kb.request_review(
+            conn, engineer, summary="force the narrative", force=True,
+        )
+        assert ok is False
+        assert _status(conn, engineer) == "running"
+
+
+def test_sol6_force_cannot_bypass_reconciliation(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)
+    sha_b = _commit_file(repo, "b.txt", "B\n", "commit-B")
+    sha_c = _commit_file(repo, "c.txt", "C\n", "commit-C")
+    with kb.connect() as conn:
+        engineer, attempt = _create_and_claim(
+            conn, "engineer", contract=_git_contract(repo, base),
+        )
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[engineer])
+        assert _complete_revision(
+            conn, engineer, attempt_id=attempt, repo=repo, sha=sha_b,
+        ) is True
+        with pytest.raises(kci.CompletionIntegrityError):
+            _complete_revision(
+                conn, engineer, attempt_id=attempt, repo=repo, sha=sha_c,
+            )
+        ok, err = kb.promote_task(conn, child, actor="operator", force=True)
+        assert ok is False
+        assert err is not None
+        assert _status(conn, child) == "todo"

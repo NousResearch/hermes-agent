@@ -5740,7 +5740,26 @@ def _apply_opt_in_completion_locked(
         else kci.mint_attempt_id(task_id, 0)
     )
     claimed_attempt = claimed.get("attempt_id")
-    if claimed_attempt and claimed_attempt != attempt_id:
+    if not claimed_attempt:
+        _record_integrity_event(
+            conn, task_id, "completion_integrity_blocked",
+            {
+                "code": kci.REASON_MISSING_ATTEMPT,
+                "controller_attempt_id": attempt_id,
+                "transition": transition,
+            },
+        )
+        return {
+            "error": {
+                "code": kci.REASON_MISSING_ATTEMPT,
+                "message": (
+                    "terminal result must explicitly contain the current "
+                    "controller-issued attempt_id"
+                ),
+                "details": {"controller_attempt_id": attempt_id},
+            }
+        }
+    if claimed_attempt != attempt_id:
         _record_integrity_event(
             conn, task_id, "completion_integrity_blocked",
             {
@@ -5763,7 +5782,6 @@ def _apply_opt_in_completion_locked(
                 },
             }
         }
-    claimed["attempt_id"] = attempt_id
     claimed_hash = kci.result_hash(claimed)
 
     existing_raw = row["terminal_result"]
@@ -5932,14 +5950,32 @@ def certify_historian_revision(
             {},
         )
     contract = kci.normalize_completion_contract(row["completion_contract"]) or {}
-    sha = commit_sha or contract.get("required_sha") or row["verified_revision"]
-    repo = repository or contract.get("repository") or row["workspace_path"]
+    required = contract.get("required_sha")
+    sha = commit_sha or required or row["verified_revision"]
+    repo = contract.get("repository") or contract.get("worktree")
+    if repository and repo and kci.resolve_git_common_dir(repository) != kci.resolve_git_common_dir(repo):
+        return kci.GitVerification(
+            kci.STATUS_REJECTED,
+            kci.REASON_WRONG_REPOSITORY,
+            "historian certification repository is not the authorized repository",
+            {"repository": repository, "authorized": repo},
+        )
+    if not repo:
+        return kci.GitVerification(
+            kci.STATUS_REJECTED,
+            kci.REASON_INVALID,
+            "historian contract does not identify an authorized repository",
+            {},
+        )
     result = kci.certify_immutable_revision(
         repository=repo,
         commit_sha=sha,
         expected_base=contract.get("expected_base"),
         git_common_dir=contract.get("git_common_dir"),
         max_commits=contract.get("max_commits"),
+        required_sha=required,
+        worktree=contract.get("worktree"),
+        dirty_policy=contract.get("dirty_policy") or "observe",
     )
     with write_txn(conn, allow_nested=True):
         _append_event(
@@ -7492,10 +7528,14 @@ def promote_task(
 
     unsatisfied = _unsatisfied_parent_eval(conn, task_id)
     if unsatisfied is not None:
-        return False, (
-            f"unsatisfied parent dependencies: {unsatisfied.code} "
-            f"({unsatisfied.message})"
-        )
+        # force=True retains legacy structural override (parent not yet
+        # terminal) but must not bypass typed semantic gates, required
+        # completion verification, or reconciliation.
+        if not (force and unsatisfied.code == kci.REASON_PARENT_NOT_TERMINAL):
+            return False, (
+                f"unsatisfied parent dependencies: {unsatisfied.code} "
+                f"({unsatisfied.message})"
+            )
 
     if dry_run:
         return True, None
@@ -11724,6 +11764,38 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    gov = kci.task_governance_fields(task)
+    if gov.get("completion_contract") or gov.get("attempt_id"):
+        lines.append("")
+        lines.append("## Completion integrity")
+        if gov.get("attempt_id"):
+            lines.append(f"attempt_id: {gov['attempt_id']}")
+        if gov.get("completion_contract"):
+            try:
+                lines.append(
+                    "completion_contract: `"
+                    + _cap(json.dumps(gov["completion_contract"], ensure_ascii=False, sort_keys=True))
+                    + "`"
+                )
+            except Exception:
+                lines.append("completion_contract: (unserializable)")
+        lines.append(
+            "Submit a typed terminal_result that includes this exact "
+            "attempt_id. Narrative-only completion is not done."
+        )
+        if gov.get("terminal_result"):
+            try:
+                lines.append(
+                    "terminal_result: `"
+                    + _cap(json.dumps(gov["terminal_result"], ensure_ascii=False, sort_keys=True))
+                    + "`"
+                )
+            except Exception:
+                lines.append("terminal_result: (unserializable)")
+        if gov.get("verified_verdict"):
+            lines.append(f"verified_verdict: {gov['verified_verdict']}")
+        if gov.get("verified_revision"):
+            lines.append(f"verified_revision: {gov['verified_revision']}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,

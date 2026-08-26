@@ -90,6 +90,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        **kb.kci.task_governance_fields(t),
     }
 
 
@@ -1794,6 +1795,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
+    if task.attempt_id:
+        print(f"  attempt_id: {task.attempt_id}")
+    if task.completion_contract:
+        print(f"  completion_contract: {task.completion_contract.get('type')}")
+    if task.verified_verdict:
+        print(f"  verified_verdict: {task.verified_verdict}")
+    if task.verified_revision:
+        print(f"  verified_revision: {task.verified_revision}")
+    if task.terminal_result:
+        print("  terminal_result: present")
     if task.branch_name:
         print(f"  branch:    {task.branch_name}")
     if task.skills:

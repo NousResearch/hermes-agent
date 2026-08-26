@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ REASON_PARENT_NOT_TERMINAL = "PARENT_NOT_TERMINAL"
 REASON_MISSING_TERMINAL_RESULT = "MISSING_TERMINAL_RESULT"
 REASON_NARRATIVE_ONLY = "NARRATIVE_ONLY"
 REASON_WRONG_ATTEMPT = "WRONG_ATTEMPT"
+REASON_MISSING_ATTEMPT = "MISSING_ATTEMPT"
 REASON_CONFLICTING_RESULT = "CONFLICTING_TERMINAL_RESULT"
 REASON_SHA_SYNTAX = "SHA_SYNTAX"
 REASON_OBJECT_MISSING = "OBJECT_MISSING"
@@ -63,7 +65,10 @@ REASON_VERIFICATION_REJECTED = "VERIFICATION_REJECTED"
 REASON_VERIFICATION_ERROR = "VERIFICATION_ERROR"
 REASON_HEAD_NOT_REQUIRED = "HEAD_NOT_REQUIRED"
 
+KNOWN_DIRTY_POLICIES = frozenset({"observe", "reject"})
+
 _GIT_TIMEOUT_SECONDS = 15
+_GIT_NO_REPLACE_ENV = "GIT_NO_REPLACE_OBJECTS"
 
 
 class CompletionIntegrityError(ValueError):
@@ -153,17 +158,50 @@ def normalize_completion_contract(raw: Any) -> Optional[dict]:
             "completion_contract is malformed or unsupported",
             details={"contract": contract},
         )
+    dirty_policy = contract.get("dirty_policy") or "observe"
+    if dirty_policy not in KNOWN_DIRTY_POLICIES:
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "completion_contract dirty_policy is unknown",
+            details={"dirty_policy": dirty_policy},
+        )
+    expected_base = _optional_str(contract.get("expected_base"))
+    max_commits = contract.get("max_commits")
+    if max_commits is not None and not expected_base:
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "max_commits without expected_base is an invalid contract combination",
+            details={"max_commits": max_commits},
+        )
+    repository = _optional_str(contract.get("repository"))
+    worktree = _optional_str(contract.get("worktree"))
+    git_common_dir = _optional_str(contract.get("git_common_dir"))
+    if not (repository or worktree or git_common_dir):
+        raise CompletionIntegrityError(
+            REASON_INVALID,
+            "revision-required completion contract must establish "
+            "controller-authorized repository identity",
+            details={"contract": contract},
+        )
+    required_sha = _normalize_sha(contract.get("required_sha"))
+    if ctype == CONTRACT_HISTORIAN_CERTIFY:
+        if not required_sha or not FULL_SHA_RE.fullmatch(required_sha):
+            raise CompletionIntegrityError(
+                REASON_INVALID,
+                "historian_certify requires a full required_sha",
+                details={"required_sha": required_sha},
+            )
     return {
         "schema_version": 1,
         "type": ctype,
-        "repository": _optional_str(contract.get("repository")),
-        "worktree": _optional_str(contract.get("worktree")),
-        "git_common_dir": _optional_str(contract.get("git_common_dir")),
-        "expected_base": _optional_str(contract.get("expected_base")),
-        "max_commits": contract.get("max_commits"),
+        "repository": repository,
+        "worktree": worktree,
+        "git_common_dir": git_common_dir,
+        "expected_base": expected_base,
+        "max_commits": max_commits,
         "require_remote": _optional_str(contract.get("require_remote")),
-        "dirty_policy": (contract.get("dirty_policy") or "observe"),
-        "required_sha": _optional_str(contract.get("required_sha")),
+        "dirty_policy": dirty_policy,
+        "required_sha": required_sha,
     }
 
 
@@ -223,6 +261,22 @@ def mint_attempt_id(task_id: str, run_id: Any) -> str:
     return f"att_{task_id}_{int(run_id)}"
 
 
+def task_governance_fields(task: Any) -> dict[str, Any]:
+    """Explicit governance fields for worker/CLI/tool/API surfaces."""
+    return {
+        "completion_contract": getattr(task, "completion_contract", None),
+        "attempt_id": getattr(task, "attempt_id", None),
+        "terminal_result": getattr(task, "terminal_result", None),
+        "terminal_result_hash": getattr(task, "terminal_result_hash", None),
+        "verification_status": getattr(task, "verification_status", None),
+        "verification_code": getattr(task, "verification_code", None),
+        "verified_revision": getattr(task, "verified_revision", None),
+        "verified_verdict": getattr(task, "verified_verdict", None),
+        "awaiting_verification": bool(getattr(task, "awaiting_verification", False)),
+        "needs_reconciliation": bool(getattr(task, "needs_reconciliation", False)),
+    }
+
+
 def extract_terminal_result(
     *,
     terminal_result: Any = None,
@@ -273,7 +327,9 @@ def _normalize_sha(value: Any) -> Optional[str]:
 
 
 def _run_git(args: list[str], *, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
-    argv = ["git", *args]
+    argv = ["git", "-c", "core.useReplaceRefs=false", *args]
+    env = os.environ.copy()
+    env[_GIT_NO_REPLACE_ENV] = "1"
     return subprocess.run(
         argv,
         cwd=cwd,
@@ -282,6 +338,7 @@ def _run_git(args: list[str], *, cwd: Optional[str] = None) -> subprocess.Comple
         timeout=_GIT_TIMEOUT_SECONDS,
         check=False,
         shell=False,
+        env=env,
     )
 
 
@@ -336,14 +393,23 @@ def verify_git_revision(
             details,
         )
 
-    repo = contract.get("repository") or claimed_repository
-    worktree = contract.get("worktree") or claimed_worktree
-    if not repo and worktree:
-        repo = worktree
+    required_sha = _normalize_sha(contract.get("required_sha"))
+    if required_sha:
+        details["required_sha"] = required_sha
+        if claimed_sha != required_sha:
+            return GitVerification(
+                STATUS_REJECTED,
+                REASON_SHA_MISMATCH,
+                "claimed revision is not the controller-authorized required SHA",
+                details,
+            )
+
+    repo = contract.get("repository") or contract.get("worktree")
+    worktree = contract.get("worktree")
     if not repo:
         return GitVerification(
-            STATUS_ERROR,
-            REASON_VERIFICATION_ERROR,
+            STATUS_REJECTED,
+            REASON_INVALID,
             "completion contract does not identify an authorized repository",
             details,
         )
@@ -465,23 +531,35 @@ def verify_git_revision(
 
         require_remote = contract.get("require_remote")
         if require_remote:
-            remote_proc = _run_git(["remote", "get-url", "origin"], cwd=repo)
-            remote_url = (remote_proc.stdout or "").strip()
-            details["origin_url"] = remote_url
-            if remote_proc.returncode != 0 or remote_url != require_remote:
-                return GitVerification(
-                    STATUS_REJECTED,
-                    REASON_REMOTE_MISMATCH,
-                    "authorized remote/repository identity does not match",
-                    details,
-                )
+            details["require_remote"] = require_remote
+            return GitVerification(
+                STATUS_REJECTED,
+                REASON_REMOTE_MISMATCH,
+                "mutable remote URL text is not proof of authorized lineage",
+                details,
+            )
 
         dirty_policy = contract.get("dirty_policy") or "observe"
+        details["dirty_policy"] = dirty_policy
+        if dirty_policy not in KNOWN_DIRTY_POLICIES:
+            return GitVerification(
+                STATUS_REJECTED,
+                REASON_INVALID,
+                "completion contract dirty_policy is unknown",
+                details,
+            )
         inspect_path = worktree or repo
         status_proc = _run_git(["status", "--porcelain"], cwd=inspect_path)
+        if status_proc.returncode != 0:
+            details["git_status_returncode"] = status_proc.returncode
+            return GitVerification(
+                STATUS_ERROR,
+                REASON_VERIFICATION_ERROR,
+                "git status failed; dirty state cannot be treated as clean",
+                details,
+            )
         dirty = bool((status_proc.stdout or "").strip())
         details["dirty"] = dirty
-        details["dirty_policy"] = dirty_policy
         if dirty_policy == "reject" and dirty:
             return GitVerification(
                 STATUS_REJECTED,
@@ -529,16 +607,21 @@ def certify_immutable_revision(
     expected_base: Optional[str] = None,
     git_common_dir: Optional[str] = None,
     max_commits: Any = None,
+    required_sha: Optional[str] = None,
+    worktree: Optional[str] = None,
+    dirty_policy: str = "observe",
 ) -> GitVerification:
     """Bounded Historian consumer: certify a reviewed SHA from object storage."""
     return verify_git_revision(
         claimed_sha=_normalize_sha(commit_sha),
         contract={
             "repository": repository,
+            "worktree": worktree,
             "git_common_dir": git_common_dir,
             "expected_base": expected_base,
             "max_commits": max_commits,
-            "dirty_policy": "observe",
+            "required_sha": required_sha,
+            "dirty_policy": dirty_policy or "observe",
         },
         require_head_match=False,
     )

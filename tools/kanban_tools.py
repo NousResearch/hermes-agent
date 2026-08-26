@@ -536,7 +536,7 @@ def _handle_show(args: dict, **kw) -> str:
             children = kb.child_ids(conn, tid)
 
             def _task_dict(t):
-                return {
+                payload = {
                     "id": t.id, "title": t.title, "body": t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
@@ -550,6 +550,8 @@ def _handle_show(args: dict, **kw) -> str:
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
                 }
+                payload.update(kb.kci.task_governance_fields(t))
+                return payload
 
             def _run_dict(r):
                 return {

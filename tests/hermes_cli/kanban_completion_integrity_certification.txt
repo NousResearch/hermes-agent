@@ -1,9 +1,10 @@
 Kanban Completion Integrity negative-path orchestration receipt
 Baseline: 9dbb8868e8bdd8f2ca24c33e0a3b58ef2b605bc8
+Rejected candidate: 4269ffae4e3811c8a7251336ec8a699eea46a183
 Worktree: isolated temporary HERMES_HOME + Git repos (no production mutation)
 Suite: tests/hermes_cli/test_kanban_completion_integrity.py
-Result: 23 passed, 0 failed
-Date: local engineer run against authorized baseline
+Result: 39 passed, 0 failed (23 original + 16 Sol regressions)
+Date: local engineer run against authorized corrective candidate
 
 Observed walk (test_negative_path_orchestration_certification):
 - narrative-only completion rejected (NARRATIVE_ONLY)
@@ -16,3 +17,11 @@ Observed walk (test_negative_path_orchestration_certification):
 - identical duplicate terminal result was idempotent
 - conflicting duplicate set needs_reconciliation and released no dependent
 - ordinary ungated parent/child still promoted after legacy complete
+
+Sol corrections preserved on the same walk and added:
+- historian required_sha binding (ordinary complete + direct certify)
+- controller-authorized repository identity fail-closed
+- missing/stale attempt_id rejected
+- git verifier policy hardening
+- explicit governance surfaces
+- force=True structural override without semantic/verification bypass

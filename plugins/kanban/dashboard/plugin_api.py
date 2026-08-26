@@ -841,6 +841,7 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    terminal_result: Optional[dict] = None
     # Per-task model/provider override (the board's model dropdown).
     # ``model_override=""`` clears both. ``clear_model_override=True`` is
     # the explicit clear signal — needed because Optional[str]=None means
@@ -901,11 +902,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             ok = True
             if s == "done":
                 try:
+                    metadata = payload.metadata
+                    if payload.terminal_result is not None:
+                        metadata = dict(metadata or {})
+                        metadata.setdefault("terminal_result", payload.terminal_result)
                     ok = kanban_db.complete_task(
                         conn, task_id,
                         result=payload.result,
                         summary=payload.summary,
-                        metadata=payload.metadata,
+                        metadata=metadata,
                     )
                 except kanban_db.kci.CompletionIntegrityError as exc:
                     raise HTTPException(
@@ -1308,6 +1313,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    terminal_result: Optional[dict] = None
     reclaim_first: bool = False
     # Bulk model/provider override — same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
@@ -1346,11 +1352,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
+                        metadata = payload.metadata
+                        if payload.terminal_result is not None:
+                            metadata = dict(metadata or {})
+                            metadata.setdefault("terminal_result", payload.terminal_result)
                         ok = kanban_db.complete_task(
                             conn, tid,
                             result=payload.result,
                             summary=payload.summary,
-                            metadata=payload.metadata,
+                            metadata=metadata,
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)

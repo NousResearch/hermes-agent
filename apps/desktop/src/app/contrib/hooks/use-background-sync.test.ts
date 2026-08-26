@@ -58,6 +58,7 @@ function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession
   const signatureRef = { current: new Map<string, string>() }
   const state = createClientSessionState(ACTIVE_STORED_ID)
   const states = new Map([[ACTIVE_RUNTIME_ID, state]])
+
   const updateSessionStateRef = {
     updateSessionState: vi.fn((sessionId: string, updater: (value: typeof state) => typeof state) => {
       const next = updater(states.get(sessionId) ?? createClientSessionState(ACTIVE_STORED_ID))
@@ -66,8 +67,8 @@ function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession
       return next
     })
   }
-  const { updateSessionState } = updateSessionStateRef
 
+  const { updateSessionState } = updateSessionStateRef
 
   const refresh = () =>
     reconcileActiveTranscript({
@@ -97,9 +98,11 @@ function useSyncHarness({
   const updateSessionState: Parameters<typeof useBackgroundSync>[0]['updateSessionState'] = vi.fn(
     (sessionId, updater) => {
       const current = {} as Parameters<typeof updater>[0]
+
       return updater(current)
     }
   )
+
   useBackgroundSync({
     activeConnectionId: 'local',
     activeGatewayProfile: 'default',
@@ -115,7 +118,7 @@ function useSyncHarness({
     refreshMessagingSessions: vi.fn(),
     refreshSessions: vi.fn(),
     updateSessionState,
-      requestGateway: vi.fn(async () => ({ sessions: [] })) as never
+    requestGateway: vi.fn(async () => ({ sessions: [] })) as never
   })
 }
 
@@ -161,12 +164,14 @@ describe('active transcript refresh', () => {
 
   it('refreshes a hidden session through its unique complete owner route', async () => {
     const hiddenStoredSessionId = 'hidden-bot-chat'
+
     const ownerRoute = {
       connectionId: 'ssh-bot-owner',
       mode: 'remote' as const,
       profile: 'bot-route',
       targetProfile: 'bot-profile'
     }
+
     $changeEventsAvailable.set(true)
     $activeSessionId.set(ACTIVE_RUNTIME_ID)
     $selectedStoredSessionId.set(hiddenStoredSessionId)
@@ -214,6 +219,7 @@ describe('active transcript refresh', () => {
         return updater(current)
       }
     )
+
     void updateSessionState
 
     const signatureRef = { current: new Map<string, string>() }
@@ -259,6 +265,7 @@ describe('active transcript refresh', () => {
     const TILE_STORED_ID = 'stored-tile-2'
 
     const signatureRef = { current: new Map<string, string>() }
+
     // Pre-seed the signature with what the mock returns → no-change tick.
     const pre = {
       messages: [
@@ -466,12 +473,14 @@ describe('reconcileActiveTranscript', () => {
   it('reads and publishes only the active hidden owner when another owner coexists', async () => {
     const ownerAStoredSessionId = 'owner-a-chat'
     const ownerBStoredSessionId = 'owner-b-hidden-chat'
+
     const ownerBRoute = {
       connectionId: 'owner-b',
       mode: 'remote' as const,
       profile: 'bot-route',
       targetProfile: 'bot-b'
     }
+
     setSessions([{ id: ownerAStoredSessionId, profile: 'bot-a', source: 'desktop' } as never])
     setSessionOwnerHint(ownerAStoredSessionId, {
       connectionId: 'owner-a',
@@ -482,9 +491,7 @@ describe('reconcileActiveTranscript', () => {
     setSessionOwnerHint(ownerBStoredSessionId, ownerBRoute)
     const fixture = makeRefresh(resolveActiveTranscriptSession)
     fixture.selectedStoredSessionIdRef.current = ownerBStoredSessionId
-    vi.mocked(getLatestSessionMessages).mockResolvedValue(
-      transcript('owner B answer', ownerBStoredSessionId) as never
-    )
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('owner B answer', ownerBStoredSessionId) as never)
 
     await fixture.refresh()
 

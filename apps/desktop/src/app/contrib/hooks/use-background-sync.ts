@@ -130,15 +130,12 @@ export async function reconcileTileTranscripts({
     try {
       const latest = await getLatestSessionMessages(storedSessionId)
 
-      if (
-        requestId !== requestSequenceRef.current ||
-        busyRef.current ||
-        !stillPresent
-      ) {
+      if (requestId !== requestSequenceRef.current || busyRef.current || !stillPresent) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).
         signatureRef.current.delete(`tile:${storedSessionId}`)
+
         continue
       }
 
@@ -156,7 +153,10 @@ export async function reconcileTileTranscripts({
         runtimeSessionId,
         state => ({
           ...state,
-          messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+          messages: preserveLocalAssistantErrors(
+            graftRefreshedTailOntoBackfill(messages, state.messages),
+            state.messages
+          )
         }),
         storedSessionId
       )
@@ -199,6 +199,7 @@ export async function reconcileActiveTranscript({
           profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
         }
       : stored.profile
+
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
     if (
@@ -219,6 +220,7 @@ export async function reconcileActiveTranscript({
           storedSessionId
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
+
     const signature = sessionMessagesSignature(latest.messages)
 
     if (signatureRef.current.get(signatureKey) === signature) {
@@ -656,7 +658,11 @@ export function useBackgroundSync({
       // (#93942 scenario A). Signature-gated per tile, so no-change ticks
       // cost nothing.
       void reconcileTileTranscripts({
-        busyRef: { get current() { return $busy.get() } },
+        busyRef: {
+          get current() {
+            return $busy.get()
+          }
+        },
         requestSequenceRef: tileRequestSequenceRef,
         signatureRef: tileSignatureRef,
         updateSessionState
@@ -683,7 +689,14 @@ export function useBackgroundSync({
         window.clearTimeout(timer)
       }
     }
-  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions, refreshSessions, requestActiveTranscriptRefresh, updateSessionState])
+  }, [
+    changeEventsAvailable,
+    gatewayState,
+    refreshMessagingSessions,
+    refreshSessions,
+    requestActiveTranscriptRefresh,
+    updateSessionState
+  ])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
   // the background). cron.changed (jobs.json moved: CRUD or a scheduler tick's

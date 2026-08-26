@@ -84,11 +84,11 @@ def test_decompose_with_fanout_creates_children(kanban_home):
         "rationale": "test split",
         "tasks": [
             {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
-            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+            {"title": "build", "body": "code it", "assignee": "coder", "parents": [0]},
         ],
     })
 
-    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    patches = _patch_list_profiles(["orchestrator", "researcher", "coder"])
     for p in patches:
         p.start()
     try:
@@ -110,7 +110,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c0.status == "ready"
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
-    assert c1.assignee == "engineer"
+    assert c1.assignee == "coder"
 
 
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
@@ -123,6 +123,8 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
         "title": "Tightened title",
         "body": "Route to fallback.",
         "assignee": "made_up",
+        "criticality": "noncritical",
+        "role": "noncritical",
     })
 
     patches = _patch_list_profiles(["orchestrator", "fallback"])

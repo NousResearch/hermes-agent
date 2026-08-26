@@ -91,6 +91,10 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
         **kb.kci.task_governance_fields(t),
+        "routing_criticality": t.routing_criticality,
+        "routing_role": t.routing_role,
+        "routing_second_opinion": t.routing_second_opinion,
+        "routing_preflight": t.routing_preflight,
     }
 
 
@@ -415,6 +419,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="JSON opt-in completion contract "
              '(e.g. \'{"schema_version":1,"type":"git_revision","repository":"/abs/repo"}\')',
+    )
+    p_create.add_argument(
+        "--criticality",
+        dest="routing_criticality",
+        choices=("critical", "noncritical"),
+        default=None,
+        help="Sprint 3 routing criticality (default: critical)",
+    )
+    p_create.add_argument(
+        "--role",
+        dest="routing_role",
+        choices=("implementation", "architecture", "review", "noncritical"),
+        default=None,
+        help="Sprint 3 routing role (default: implementation when critical)",
+    )
+    p_create.add_argument(
+        "--second-opinion",
+        dest="routing_second_opinion",
+        action="store_true",
+        help="Human-authorized second-opinion review (reviewer-grok / architect-grok)",
     )
 
     # --- swarm ---
@@ -1623,8 +1647,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 goal_max_turns=getattr(args, "goal_max_turns", None),
                 initial_status=getattr(args, "initial_status", "running"),
                 completion_contract=completion_contract,
+                routing_criticality=getattr(args, "routing_criticality", None),
+                routing_role=getattr(args, "routing_role", None),
+                routing_second_opinion=bool(getattr(args, "routing_second_opinion", False)),
             )
         except kb.kci.CompletionIntegrityError as exc:
+            print(f"kanban: {exc.code}: {exc}", file=sys.stderr)
+            return 2
+        except kb.kroute.RoutingGuardError as exc:
             print(f"kanban: {exc.code}: {exc}", file=sys.stderr)
             return 2
         task = kb.get_task(conn, task_id)
@@ -1911,7 +1941,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        try:
+            ok = kb.assign_task(conn, args.task_id, profile)
+        except kb.kroute.RoutingGuardError as exc:
+            print(f"kanban: {exc.code}: {exc}", file=sys.stderr)
+            return 2
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1

@@ -2732,7 +2732,21 @@ DEFAULT_CONFIG = {
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
+        # Critical work never uses this fallback — see routing.unavailable.
         "default_assignee": "",
+        # Bounded Sprint 3 assignee policy. Missing/ambiguous criticality
+        # is CRITICAL. engineer / engineer38 may receive only explicit
+        # noncritical work. Critical work is never remapped to a fallback.
+        "routing": {
+            "default_criticality": "critical",
+            "noncritical_only": ["engineer", "engineer38"],
+            "critical": {
+                "implementation": ["engineer-grok"],
+                "architecture": ["architect-sol"],
+                "review": ["reviewer", "architect-sol"],
+            },
+            "unavailable": "block",
+        },
         # Global concurrency cap (#33488): when set to a positive int, the
         # HOST never has more than N tasks in 'running' at once — counted
         # across every active board and across both the ready and review

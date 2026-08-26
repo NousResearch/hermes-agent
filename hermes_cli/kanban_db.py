@@ -91,6 +91,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from hermes_cli import kanban_completion_integrity as kci
+from hermes_cli import kanban_routing as kroute
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -1167,6 +1168,10 @@ class Task:
     verified_verdict: Optional[str] = None
     awaiting_verification: bool = False
     needs_reconciliation: bool = False
+    routing_criticality: Optional[str] = None
+    routing_role: Optional[str] = None
+    routing_second_opinion: bool = False
+    routing_preflight: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1301,6 +1306,22 @@ class Task:
             needs_reconciliation=bool(
                 row["needs_reconciliation"]
             ) if "needs_reconciliation" in keys and row["needs_reconciliation"] else False,
+            routing_criticality=(
+                row["routing_criticality"]
+                if "routing_criticality" in keys and row["routing_criticality"]
+                else None
+            ),
+            routing_role=(
+                row["routing_role"]
+                if "routing_role" in keys and row["routing_role"]
+                else None
+            ),
+            routing_second_opinion=bool(
+                row["routing_second_opinion"]
+            ) if "routing_second_opinion" in keys and row["routing_second_opinion"] else False,
+            routing_preflight=bool(
+                row["routing_preflight"]
+            ) if "routing_preflight" in keys and row["routing_preflight"] else False,
         )
 
 
@@ -1506,7 +1527,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Controller-normalized review verdict, when applicable.
     verified_verdict     TEXT,
     awaiting_verification INTEGER NOT NULL DEFAULT 0,
-    needs_reconciliation INTEGER NOT NULL DEFAULT 0
+    needs_reconciliation INTEGER NOT NULL DEFAULT 0,
+    -- Sprint 3 controller routing fields. Missing/ambiguous criticality
+    -- is treated as critical at the guard, not by a NULL default here.
+    routing_criticality  TEXT,
+    routing_role         TEXT,
+    routing_second_opinion INTEGER NOT NULL DEFAULT 0,
+    -- 1 = Sprint 3 human routing-preflight parking. recompute_ready
+    -- will not promote these todo cards until a human assignment or
+    -- explicit approval clears the flag.
+    routing_preflight INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2775,6 +2805,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         ("verified_verdict", "verified_verdict TEXT"),
         ("awaiting_verification", "awaiting_verification INTEGER NOT NULL DEFAULT 0"),
         ("needs_reconciliation", "needs_reconciliation INTEGER NOT NULL DEFAULT 0"),
+        ("routing_criticality", "routing_criticality TEXT"),
+        ("routing_role", "routing_role TEXT"),
+        ("routing_second_opinion", "routing_second_opinion INTEGER NOT NULL DEFAULT 0"),
+        ("routing_preflight", "routing_preflight INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in cols:
             _add_column_if_missing(conn, "tasks", col, decl)
@@ -3263,6 +3297,18 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _routing_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Best-effort routing fields from a sqlite row or mapping."""
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+    return {
+        "criticality": row["routing_criticality"] if "routing_criticality" in keys else None,
+        "role": row["routing_role"] if "routing_role" in keys else None,
+        "second_opinion": bool(row["routing_second_opinion"])
+        if "routing_second_opinion" in keys and row["routing_second_opinion"]
+        else False,
+    }
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3292,6 +3338,9 @@ def create_task(
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     completion_contract: Optional[Any] = None,
+    routing_criticality: Optional[str] = None,
+    routing_role: Optional[str] = None,
+    routing_second_opinion: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3341,6 +3390,27 @@ def create_task(
     if completion_contract is not None:
         contract_obj = kci.normalize_completion_contract(completion_contract)
     assignee = _canonical_assignee(assignee)
+    routing_cfg = kroute.load_routing_config_from_disk()
+    routing_decision = kroute.resolve_routing_fields(
+        routing_criticality,
+        routing_role,
+        second_opinion=routing_second_opinion,
+        routing=routing_cfg,
+        assignee=assignee,
+    )
+    routing_crit, routing_role_val, routing_second = routing_decision
+    if assignee is not None:
+        checked = kroute.check_assignment(
+            assignee,
+            criticality=routing_crit,
+            role=routing_role_val,
+            second_opinion=routing_second,
+            routing=routing_cfg,
+        )
+        assignee = checked.assignee
+        routing_crit = checked.criticality
+        routing_role_val = checked.role
+        routing_second = checked.second_opinion
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -3618,8 +3688,9 @@ def create_task(
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id,
-                        completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        completion_contract,
+                        routing_criticality, routing_role, routing_second_opinion
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3646,6 +3717,9 @@ def create_task(
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
                         kci.persist_json(contract_obj),
+                        routing_crit,
+                        routing_role_val,
+                        1 if routing_second else 0,
                     ),
                 )
                 for pid in parents:
@@ -3830,7 +3904,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, routing_criticality, "
+            "routing_role, routing_second_opinion FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
@@ -3839,17 +3915,31 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        if profile is not None:
+            keys = set(row.keys())
+            checked = kroute.check_assignment(
+                profile,
+                criticality=row["routing_criticality"] if "routing_criticality" in keys else None,
+                role=row["routing_role"] if "routing_role" in keys else None,
+                second_opinion=bool(row["routing_second_opinion"])
+                if "routing_second_opinion" in keys else False,
+                routing=kroute.load_routing_config_from_disk(),
+            )
+            profile = checked.assignee
         if row["assignee"] != profile:
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
             # new profile should not inherit the previous profile's streak.
             conn.execute(
                 "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
-                "last_failure_error = NULL WHERE id = ?",
+                "last_failure_error = NULL, routing_preflight = 0 WHERE id = ?",
                 (profile, task_id),
             )
         else:
-            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+            conn.execute(
+                "UPDATE tasks SET assignee = ?, routing_preflight = 0 WHERE id = ?",
+                (profile, task_id),
+            )
         _append_event(conn, task_id, "assigned", {"assignee": profile})
     # Task-mutation observer (RFC #58548), fired AFTER the assignment txn
     # has committed so subscribers always observe durable board state.
@@ -4682,12 +4772,21 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, routing_preflight "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            keys = set(row.keys())
+            if (
+                "routing_preflight" in keys
+                and row["routing_preflight"]
+                and cur_status == "todo"
+            ):
+                # Sprint 3 human routing-preflight: stay non-spawnable
+                # until a human assignment/approval clears the flag.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for explicit human intervention — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4933,6 +5032,31 @@ def claim_task(
                 },
             )
             return None
+        row = conn.execute(
+            "SELECT assignee, routing_criticality, routing_role, "
+            "routing_second_opinion FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if row is not None and row["assignee"]:
+            try:
+                fields = _routing_from_row(row)
+                kroute.check_assignment(
+                    row["assignee"],
+                    criticality=fields["criticality"],
+                    role=fields["role"],
+                    second_opinion=fields["second_opinion"],
+                    routing=kroute.load_routing_config_from_disk(),
+                )
+            except kroute.RoutingGuardError as exc:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {
+                        "reason": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                    },
+                )
+                return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -7963,6 +8087,20 @@ def specify_triage_task(
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    if assignee is not None:
+        existing_preview = conn.execute(
+            "SELECT routing_criticality, routing_role, routing_second_opinion "
+            "FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        fields = _routing_from_row(existing_preview or {})
+        kroute.check_assignment(
+            assignee,
+            criticality=fields["criticality"],
+            role=fields["role"],
+            second_opinion=fields["second_opinion"],
+            routing=kroute.load_routing_config_from_disk(),
+        )
     with write_txn(conn):
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
@@ -7970,7 +8108,7 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
-        sets: list[str] = ["status = 'todo'"]
+        sets: list[str] = ["status = 'todo'", "routing_preflight = 0"]
         params: list[Any] = []
         changed_fields: list[str] = []
         if title is not None and title.strip() != (existing["title"] or ""):
@@ -8144,6 +8282,26 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            child_routing = kroute.resolve_routing_fields(
+                child.get("routing_criticality") or child.get("criticality"),
+                child.get("routing_role") or child.get("role"),
+                second_opinion=child.get("routing_second_opinion")
+                or child.get("second_opinion"),
+                assignee=assignee,
+            )
+            child_crit, child_role, child_second = child_routing
+            if assignee is not None:
+                checked = kroute.check_assignment(
+                    assignee,
+                    criticality=child_crit,
+                    role=child_role,
+                    second_opinion=child_second,
+                    routing=kroute.load_routing_config_from_disk(),
+                )
+                assignee = checked.assignee
+                child_crit = checked.criticality
+                child_role = checked.role
+                child_second = checked.second_opinion
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -8168,8 +8326,10 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, "
+                " routing_criticality, routing_role, routing_second_opinion, "
+                " routing_preflight) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -8180,6 +8340,10 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    child_crit,
+                    child_role,
+                    1 if child_second else 0,
+                    0 if auto_promote else 1,
                 ),
             )
             _append_event(
@@ -8792,6 +8956,9 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_routing_denied: list[str] = field(default_factory=list)
+    """Ready task ids skipped because the Sprint 3 routing guard refused
+    the current assignee or a default_assignee fallback."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Task ids that were unassigned in the DB and had
     ``kanban.default_assignee`` applied this tick before spawning (#27145).
@@ -10798,7 +10965,8 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, routing_criticality, routing_role, "
+        "routing_second_opinion FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10879,6 +11047,7 @@ def _dispatch_once_locked(
         if ready_budget is not None and spawned >= ready_budget:
             break
         row_assignee = row["assignee"]
+        routing_fields = _routing_from_row(row)
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
@@ -10890,7 +11059,32 @@ def _dispatch_once_locked(
             # board state consistent: the task is now legitimately owned
             # by ``kanban.default_assignee``, not "unassigned but secretly
             # routed".
+            #
+            # Critical work is fail-closed: never stamp default_assignee,
+            # engineer, engineer38, or any other fallback onto it.
             if _default_assignee and _default_assignee_resolved:
+                try:
+                    kroute.check_assignment(
+                        _default_assignee,
+                        criticality=routing_fields["criticality"],
+                        role=routing_fields["role"],
+                        second_opinion=routing_fields["second_opinion"],
+                        routing=kroute.load_routing_config_from_disk(),
+                    )
+                    crit, _role, _second = kroute.resolve_routing_fields(
+                        routing_fields["criticality"],
+                        routing_fields["role"],
+                        second_opinion=routing_fields["second_opinion"],
+                    )
+                    if crit == kroute.CRITICALITY_CRITICAL:
+                        kroute.reject_critical_default_fallback(
+                            criticality=crit,
+                            default_assignee=_default_assignee,
+                        )
+                except kroute.RoutingGuardError:
+                    result.skipped_routing_denied.append(row["id"])
+                    result.skipped_unassigned.append(row["id"])
+                    continue
                 # Dry-run: show what WOULD happen (auto-assign + spawn) without
                 # mutating the DB. Real run: mutate the row + emit the
                 # 'assigned' event so the board state matches what just happened.
@@ -10921,6 +11115,18 @@ def _dispatch_once_locked(
                 result.auto_assigned_default.append(row["id"])
             else:
                 result.skipped_unassigned.append(row["id"])
+                continue
+        else:
+            try:
+                kroute.check_assignment(
+                    row_assignee,
+                    criticality=routing_fields["criticality"],
+                    role=routing_fields["role"],
+                    second_opinion=routing_fields["second_opinion"],
+                    routing=kroute.load_routing_config_from_disk(),
+                )
+            except kroute.RoutingGuardError:
+                result.skipped_routing_denied.append(row["id"])
                 continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails

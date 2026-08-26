@@ -44,7 +44,13 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     kb, _home = isolated_kanban_home
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        task_id = kb.create_task(conn, title="t1", assignee=None)
+        task_id = kb.create_task(
+            conn,
+            title="t1",
+            assignee=None,
+            routing_criticality="noncritical",
+            routing_role="noncritical",
+        )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,

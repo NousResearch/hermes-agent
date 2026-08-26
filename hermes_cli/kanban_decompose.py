@@ -45,6 +45,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
+from hermes_cli import kanban_routing as kroute
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,12 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Optional per-task fields: "criticality" ("critical" or "noncritical"),
+    "role" ("implementation", "architecture", "review", or "noncritical"),
+    and "second_opinion" (true only when a human authorized a second look).
+    Missing/ambiguous criticality is treated as critical. Missing role on
+    critical work is treated as implementation. The controller, not this
+    prompt, enforces who may receive the work.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -254,18 +261,38 @@ def _normalize_assignee_choice(
     *,
     default_assignee: str,
     valid_names: set[str],
+    criticality: object = None,
+    role: object = None,
+    second_opinion: object = False,
+    routing: dict | None = None,
 ) -> str:
-    """Return a valid assignee, falling back to ``default_assignee``.
+    """Return a valid assignee, or raise RoutingGuardError.
 
-    Fan-out children and the single-task fallback should share the same
-    routing guarantee: promoted work must not be left unassigned.
+    Noncritical work may still use ``default_assignee`` when the LLM
+    leaves the field empty or names an unknown profile. Critical work
+    never remaps to a fallback.
     """
-    if not isinstance(assignee, str) or not assignee.strip():
-        return default_assignee
-    chosen = assignee.strip()
-    if chosen not in valid_names:
-        return default_assignee
-    return chosen
+    routing_cfg = routing or kroute.load_routing_config_from_disk()
+    chosen = assignee.strip() if isinstance(assignee, str) and assignee.strip() else None
+    decision = kroute.check_assignment(
+        chosen,
+        criticality=criticality,
+        role=role,
+        second_opinion=second_opinion,
+        routing=routing_cfg,
+        valid_names=valid_names,
+        apply_default=default_assignee,
+    )
+    if decision.assignee is None:
+        raise kroute.RoutingGuardError(
+            kroute.REASON_EMPTY,
+            "assignee is required after routing normalization",
+            details={
+                "criticality": decision.criticality,
+                "role": decision.role,
+            },
+        )
+    return decision.assignee
 
 
 def decompose_task(
@@ -352,11 +379,20 @@ def decompose_task(
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
         assignee_val = None
         if not task.assignee:
-            assignee_val = _normalize_assignee_choice(
-                parsed.get("assignee"),
-                default_assignee=default_assignee,
-                valid_names=valid_names,
-            )
+            try:
+                assignee_val = _normalize_assignee_choice(
+                    parsed.get("assignee"),
+                    default_assignee=default_assignee,
+                    valid_names=valid_names,
+                    criticality=parsed.get("criticality"),
+                    role=parsed.get("role"),
+                    second_opinion=parsed.get("second_opinion"),
+                    routing=kroute.load_routing_config(cfg),
+                )
+            except kroute.RoutingGuardError as exc:
+                return DecomposeOutcome(
+                    task_id, False, f"{exc.code}: {exc}",
+                )
         if title_val is None and body_val is None:
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
@@ -402,20 +438,26 @@ def decompose_task(
         if not isinstance(body, str):
             body = ""
         assignee = entry.get("assignee")
-        chosen = _normalize_assignee_choice(
-            assignee,
-            default_assignee=default_assignee,
-            valid_names=valid_names,
-        )
+        try:
+            chosen = _normalize_assignee_choice(
+                assignee,
+                default_assignee=default_assignee,
+                valid_names=valid_names,
+                criticality=entry.get("criticality"),
+                role=entry.get("role"),
+                second_opinion=entry.get("second_opinion"),
+                routing=kroute.load_routing_config(cfg),
+            )
+        except kroute.RoutingGuardError as exc:
+            return DecomposeOutcome(task_id, False, f"{exc.code}: {exc}")
         if (
             isinstance(assignee, str)
             and assignee.strip()
             and assignee.strip() not in valid_names
         ):
             logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
-                "routing to default_assignee %r",
-                task_id, idx, assignee, default_assignee,
+                "decompose: task %s child %d picked unknown assignee %r — blocked",
+                task_id, idx, assignee,
             )
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
@@ -427,6 +469,9 @@ def decompose_task(
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            "criticality": entry.get("criticality"),
+            "role": entry.get("role"),
+            "second_opinion": entry.get("second_opinion"),
         })
 
     try:
@@ -439,6 +484,8 @@ def decompose_task(
                 author=audit_author,
                 auto_promote=auto_promote,
             )
+    except kroute.RoutingGuardError as exc:
+        return DecomposeOutcome(task_id, False, f"{exc.code}: {exc}")
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
     except Exception as exc:

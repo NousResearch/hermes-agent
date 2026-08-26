@@ -109,7 +109,7 @@ def _review_gate(sha: str) -> dict:
     }
 
 
-def _create_and_claim(conn, title: str, *, contract: dict, assignee: str = "engineer") -> tuple[str, str]:
+def _create_and_claim(conn, title: str, *, contract: dict, assignee: str = "implementer") -> tuple[str, str]:
     tid = kb.create_task(
         conn,
         title=title,
@@ -853,7 +853,7 @@ def test_sol2_worker_cannot_choose_repository_identity(kanban_home, tmp_path):
             kb.create_task(
                 conn,
                 title="engineer",
-                assignee="engineer",
+                assignee="implementer",
                 completion_contract=contract,
             )
         assert exc.value.code == kci.REASON_INVALID
@@ -928,7 +928,7 @@ def test_sol4_max_commits_without_expected_base_is_rejected(kanban_home, tmp_pat
     with kb.connect() as conn:
         with pytest.raises(kci.CompletionIntegrityError) as exc:
             kb.create_task(
-                conn, title="engineer", assignee="engineer", completion_contract=contract,
+                conn, title="engineer", assignee="implementer", completion_contract=contract,
             )
         assert exc.value.code == kci.REASON_INVALID
 
@@ -941,7 +941,7 @@ def test_sol4_unknown_dirty_policy_is_rejected(kanban_home, tmp_path):
     with kb.connect() as conn:
         with pytest.raises(kci.CompletionIntegrityError) as exc:
             kb.create_task(
-                conn, title="engineer", assignee="engineer", completion_contract=contract,
+                conn, title="engineer", assignee="implementer", completion_contract=contract,
             )
         assert exc.value.code == kci.REASON_INVALID
 
@@ -1084,7 +1084,7 @@ def test_sol5_dashboard_api_accepts_and_returns_governance_fields(kanban_home, t
         "/api/plugins/kanban/tasks",
         json={
             "title": "engineer-api",
-            "assignee": "engineer",
+            "assignee": "implementer",
             "completion_contract": _git_contract(repo, base),
         },
     )
@@ -1331,7 +1331,7 @@ def test_sol10_integer_max_commits_is_accepted(kanban_home, tmp_path):
     contract["max_commits"] = 2
     with kb.connect() as conn:
         tid = kb.create_task(
-            conn, title="engineer", assignee="engineer", completion_contract=contract,
+            conn, title="engineer", assignee="implementer", completion_contract=contract,
         )
         task = kb.get_task(conn, tid)
         assert task is not None
@@ -1352,7 +1352,7 @@ def test_sol10_malformed_max_commits_is_invalid_contract(kanban_home, tmp_path, 
     with kb.connect() as conn:
         with pytest.raises(kci.CompletionIntegrityError) as exc:
             kb.create_task(
-                conn, title="engineer", assignee="engineer", completion_contract=contract,
+                conn, title="engineer", assignee="implementer", completion_contract=contract,
             )
         assert exc.value.code == kci.REASON_INVALID
 
@@ -1381,7 +1381,7 @@ def test_sol11_cli_create_and_show_parse_governance_contract(kanban_home, tmp_pa
     args = argparse.Namespace(
         title="engineer",
         body=None,
-        assignee="engineer",
+        assignee="implementer",
         created_by=None,
         workspace="scratch",
         branch=None,

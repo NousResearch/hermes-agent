@@ -1483,6 +1483,11 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
                 completion_contract=args.get("completion_contract"),
+                routing_criticality=args.get("criticality") or args.get("routing_criticality"),
+                routing_role=args.get("role") or args.get("routing_role"),
+                routing_second_opinion=bool(
+                    args.get("second_opinion") or args.get("routing_second_opinion")
+                ),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1496,9 +1501,12 @@ def _handle_create(args: dict, **kw) -> str:
             )
         finally:
             conn.close()
-    except ValueError as e:
-        return tool_error(f"kanban_create: {e}")
     except Exception as e:
+        from hermes_cli.kanban_routing import RoutingGuardError
+        if isinstance(e, RoutingGuardError):
+            return tool_error(f"kanban_create: {e.code}: {e}")
+        if isinstance(e, ValueError):
+            return tool_error(f"kanban_create: {e}")
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
 
@@ -2393,6 +2401,30 @@ KANBAN_CREATE_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            "criticality": {
+                "type": "string",
+                "enum": ["critical", "noncritical"],
+                "description": (
+                    "Routing criticality. Missing or ambiguous values are "
+                    "treated as critical. engineer/engineer38 may receive "
+                    "only explicit noncritical work."
+                ),
+            },
+            "role": {
+                "type": "string",
+                "enum": ["implementation", "architecture", "review", "noncritical"],
+                "description": (
+                    "Routing role. Missing role on critical work is treated "
+                    "as implementation."
+                ),
+            },
+            "second_opinion": {
+                "type": "boolean",
+                "description": (
+                    "True only when a human authorized a second-opinion "
+                    "reviewer-grok / architect-grok assignment."
+                ),
+            },
         },
         "required": ["title", "assignee"],
     },

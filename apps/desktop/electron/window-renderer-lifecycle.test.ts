@@ -7,6 +7,7 @@ import {
   installWindowRendererLifecycle,
   pruneReloadTimes,
   pushReloadTime,
+  shouldReloadAfterFailedLoad,
   shouldReloadAfterRendererGone
 } from './window-renderer-lifecycle'
 
@@ -399,4 +400,145 @@ test('describeRendererLifecycleEvent sanitizes unknown fields', () => {
     }),
     '[renderer:main] render-process-gone reason=killed exitCode=1 (expected teardown)'
   )
+})
+
+// --- #95575: white-screen recovery for main-frame load failures -------------
+// A torn renderer bundle (update replaced the app while its files were
+// locked) or a missing index.html used to leave the primary window blank with
+// only a desktop.log line. The policy below turns that into bounded
+// auto-reload (transient failures self-heal) and, once the budget is
+// exhausted, a VISIBLE error page instead of a silent white screen.
+
+test('shouldReloadAfterFailedLoad reloads a real main-frame failure', () => {
+  assert.deepEqual(shouldReloadAfterFailedLoad({ errorCode: -6, isMainFrame: true, recentReloadTimes: [] }), {
+    reload: true
+  })
+  assert.deepEqual(shouldReloadAfterFailedLoad({ errorCode: -2, isMainFrame: true, recentReloadTimes: [] }), {
+    reload: true
+  })
+})
+
+test('shouldReloadAfterFailedLoad never reloads sub-frames or ERR_ABORTED', () => {
+  // Sub-frame failures are page-internal noise.
+  assert.deepEqual(shouldReloadAfterFailedLoad({ errorCode: -6, isMainFrame: false, recentReloadTimes: [] }), {
+    reload: false,
+    suppressedReason: 'unrecoverable-reason'
+  })
+  // -3 = ERR_ABORTED: the load was superseded (navigation/redirect), expected.
+  assert.deepEqual(shouldReloadAfterFailedLoad({ errorCode: -3, isMainFrame: true, recentReloadTimes: [] }), {
+    reload: false,
+    suppressedReason: 'expected-teardown'
+  })
+})
+
+test('shouldReloadAfterFailedLoad surfaces a visible error once the budget is exhausted', () => {
+  const decision = shouldReloadAfterFailedLoad({
+    errorCode: -6,
+    isMainFrame: true,
+    recentReloadTimes: [100, 50, 10],
+    reloadWindowMs: 60_000,
+    reloadMax: 3,
+    now: () => 200
+  })
+
+  assert.deepEqual(decision, { reload: false, suppressedReason: 'crash-loop', surfaceError: true })
+})
+
+test('installWindowRendererLifecycle auto-reloads main-frame load failures when enabled', async () => {
+  const win = makeFakeWindow()
+  const { logs, options } = makeOptions(win, 'main', {
+    reloadOnFailedLoad: true,
+    reloadWindowMs: 60_000,
+    reloadMax: 3,
+    now: () => 1000
+  })
+
+  installWindowRendererLifecycle(win, options)
+  win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
+  await flushDeferred()
+
+  assert.equal(win.reloadCalls.length, 1)
+  assert.match(logs[0], /\[renderer:main\] did-fail-load code=-6 url=file:\/\/\/dist\/index\.html/)
+})
+
+test('installWindowRendererLifecycle surfaces the error page after the reload budget trips', async () => {
+  const win = makeFakeWindow()
+  const surfaced: Array<{ errorCode?: number | string; url?: string }> = []
+
+  const { logs, options } = makeOptions(win, 'main', {
+    reloadOnFailedLoad: true,
+    reloadWindowMs: 60_000,
+    reloadMax: 1,
+    now: () => 1000,
+    callbacks: {
+      log: (message: string) => {
+        logs.push(message)
+      },
+      reload: () => {
+        win.webContents.reload()
+      },
+      onFailedLoadBudgetExhausted: details => {
+        surfaced.push({ errorCode: details?.errorCode, url: details?.url })
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  // First failure reloads (budget = 1).
+  win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(surfaced.length, 0)
+
+  // Second failure within the window trips the budget → visible error.
+  win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
+  await flushDeferred()
+
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(surfaced.length, 1)
+  assert.deepEqual(surfaced[0], { errorCode: -6, url: 'file:///dist/index.html' })
+  assert.match(logs[logs.length - 1], /surfacing visible error instead of a blank window/)
+})
+
+test('load-failure reloads share the crash-loop budget with render-process-gone', async () => {
+  const win = makeFakeWindow()
+  const { options } = makeOptions(win, 'main', {
+    reloadOnFailedLoad: true,
+    reloadWindowMs: 60_000,
+    reloadMax: 1,
+    now: () => 1000
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  // A crash spends the single budget slot…
+  win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 3 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+
+  // …so the load failure that follows must NOT reload — it surfaces instead.
+  win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+})
+
+test('ERR_ABORTED does not consume the load-failure budget', async () => {
+  const win = makeFakeWindow()
+  const { options } = makeOptions(win, 'main', {
+    reloadOnFailedLoad: true,
+    reloadWindowMs: 60_000,
+    reloadMax: 1,
+    now: () => 1000
+  })
+
+  installWindowRendererLifecycle(win, options)
+  win.webContents.emit('did-fail-load', {}, -3, 'ERR_ABORTED', 'file:///dist/index.html', true)
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 0)
+
+  // A real failure still has its full budget.
+  win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
 })

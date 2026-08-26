@@ -306,6 +306,7 @@ import {
   createRemoteWsHeaderStore
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
+import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
   classifyStoredSecret,
@@ -13189,11 +13190,30 @@ function createWindow() {
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
         }
+      },
+      // #95575: a renderer that repeatedly fails to load (torn bundle after
+      // an update, file locked by AV, missing index.html) used to sit on a
+      // white screen with only a desktop.log line. Once the bounded reload
+      // budget is exhausted, put the VISIBLE error page in the window so the
+      // user sees what is wrong and how to repair it.
+      onFailedLoadBudgetExhausted: details => {
+        rememberLog(
+          `[renderer:main] load-failure budget exhausted; loading visible error page` +
+            `${details?.errorCode === undefined ? '' : ` code=${String(details.errorCode)}`}`
+        )
+        void loadRendererLoadErrorPage(mainWindow, {
+          errorCode: details?.errorCode,
+          url: details?.url,
+          errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
+          repairHint: 'hermes desktop --force-build',
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+        })
       }
     },
     reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
     reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
+    recentReloadTimesRef: rendererReloadTimesRef,
+    reloadOnFailedLoad: true
   })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
@@ -13203,7 +13223,34 @@ function createWindow() {
   // quick-entry windows used to vanish without a trace).
   attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
 
-  loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')
+  // #95575: a torn renderer bundle (update replaced the app while its files
+  // were locked) loads fine and then dies on the first lazy import — a white
+  // screen with no error surface. resolveRendererIndex already logs the torn
+  // copies; here we refuse to load one into the PRIMARY window and put the
+  // visible repair page in it instead. The Reload button re-attempts the
+  // bundle in case the file lock cleared since boot.
+  const rendererIndex = DEV_SERVER ? null : resolveRendererIndex()
+  const tornAssets = rendererIndex ? missingRendererAssets(rendererIndex) : []
+
+  if (!DEV_SERVER && rendererIndex && tornAssets.length > 0) {
+    rememberLog(
+      `[renderer] primary window: chosen renderer bundle ${rendererIndex} is incomplete ` +
+        `(${tornAssets.length} missing asset(s)); loading visible repair page instead of a white screen`
+    )
+    void loadRendererLoadErrorPage(mainWindow, {
+      errorCode: 'ERR_FILE_NOT_FOUND',
+      errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
+      missingAssets: tornAssets,
+      repairHint: 'hermes desktop --force-build',
+      reloadUrl: pathToFileURL(rendererIndex).toString()
+    })
+  } else {
+    loadWindowUrl(
+      mainWindow,
+      DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
+      'Renderer'
+    )
+  }
 
   // Start the Python backend NOW, in parallel with the renderer load — not on
   // did-finish-load. The backend cold boot (spawn → port announce → /api/status)

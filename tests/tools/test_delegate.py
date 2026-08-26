@@ -2232,6 +2232,133 @@ class TestFallbackModelInheritance(unittest.TestCase):
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
+    # ── Bounded custom roles (Codex agent_roles semantic) ─────────────────
+
+    def test_custom_role_appends_instructions(self):
+        """A configured role's instructions are appended to the child prompt,
+        never replace the base prompt."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.disabled_toolsets = []
+        role_cfg = {
+            "roles": {
+                "explorer": {"instructions": "Be a fast codebase explorer."}
+            }
+        }
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.agent_roles._load_delegation_config", return_value=role_cfg),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="explore",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="explorer",
+            )
+
+        _, kwargs = MockAgent.call_args
+        # The role instructions ride on the child's ephemeral system prompt,
+        # and the base "focused subagent" text is preserved.
+        prompt = str(kwargs.get("ephemeral_system_prompt") or "")
+        self.assertIn("Be a fast codebase explorer.", prompt)
+        self.assertIn("focused subagent", prompt)
+
+    def test_custom_role_intersects_toolsets(self):
+        """A role's enabled_toolsets narrow the child, never widen it."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+        parent.disabled_toolsets = []
+        role_cfg = {
+            "roles": {
+                "explorer": {"enabled_toolsets": ["terminal"]}
+            }
+        }
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.agent_roles._load_delegation_config", return_value=role_cfg),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="explore",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="explorer",
+            )
+
+        _, kwargs = MockAgent.call_args
+        enabled = set(kwargs.get("enabled_toolsets") or [])
+        self.assertIn("terminal", enabled)
+        self.assertNotIn("web", enabled)
+
+    def test_custom_role_model_override(self):
+        """A role's model override wins over the parent model but loses to an
+        explicit caller-supplied model."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.disabled_toolsets = []
+        role_cfg = {
+            "roles": {
+                "fast": {"model": "cheap-fast-model"}
+            }
+        }
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.agent_roles._load_delegation_config", return_value=role_cfg),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="run fast",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="fast",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "cheap-fast-model")
+
+    def test_unknown_role_still_degrades_to_leaf(self):
+        """An unknown role name must not crash child assembly — it degrades
+        to leaf exactly as before (backward compatible)."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.disabled_toolsets = []
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.agent_roles._load_delegation_config", return_value={}),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="whatever",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="no-such-role",
+            )
+
+        _, kwargs = MockAgent.call_args
+        # Leaf children don't get the delegation toolset.
+        self.assertNotIn("delegation", kwargs.get("enabled_toolsets") or [])
+
 
 if __name__ == "__main__":
     unittest.main()

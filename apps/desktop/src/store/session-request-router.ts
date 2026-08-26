@@ -109,7 +109,7 @@ async function withRoutedTurnLease<T>(
   const sessionId = promptSessionId(method, params)
 
   if (!sessionId) {
-    return request()
+    return requestWithRebindGuard(method, params, request)
   }
 
   const release = await retainGatewayForSessionTurn(connectionId, profile, sessionId)

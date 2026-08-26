@@ -16,6 +16,7 @@ import {
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, setApprovalRequest } from './prompts'
 import { $activeSessionId, setActiveSessionId } from './session'
+import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -47,6 +48,7 @@ beforeEach(() => {
   }
 
   setActiveSessionId(null)
+  resetBackgroundPollingGuard()
   setWindowState({ focused: false, hidden: true })
   __resetNativeNotifyBaselineForTests()
 })
@@ -59,6 +61,8 @@ afterEach(() => {
   } else {
     delete desktopWindow.hermesDesktop
   }
+
+  resetBackgroundPollingGuard()
 })
 
 describe('dispatchNativeNotification focus gating', () => {
@@ -337,6 +341,14 @@ describe('respondToApprovalAction', () => {
   it('no-ops without a gateway', async () => {
     $gateway.set(null)
     await respondToApprovalAction('bg', 'approve')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry an approval action for a runtime already marked gone', async () => {
+    markSessionGone('bg')
+
+    await respondToApprovalAction('bg', 'approve')
+
     expect(request).not.toHaveBeenCalled()
   })
 })

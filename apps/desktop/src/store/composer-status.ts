@@ -466,6 +466,8 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
   }
 
   if (!gateway) {
+    notifyError(new Error('Gateway is not connected'), 'Could not stop the process')
+
     return
   }
 

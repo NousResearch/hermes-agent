@@ -206,6 +206,39 @@ describe('requestForSessionProfile', () => {
     expect(isSessionGone('rt-rebound')).toBe(true)
   })
 
+  it('clears a dead-runtime latch through the bare profile owner route', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    markSessionGone('profile-rebound')
+
+    await requestForSessionProfile('loki', ambient as never, 'session.resume', {
+      session_id: 'profile-rebound'
+    })
+
+    expect(isSessionGone('profile-rebound')).toBe(false)
+  })
+
+  it('clears a dead-runtime latch through an explicit connection owner route', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    markSessionGone('connection-rebound')
+
+    await requestForSessionProfile(
+      { connectionId: 'source-a', profile: 'default' },
+      ambient as never,
+      'session.activate',
+      { session_id: 'connection-rebound' }
+    )
+
+    expect(isSessionGone('connection-rebound')).toBe(false)
+  })
+
   it('keeps routing a bare profile owner through its legacy profile pool when a connection registry exists', async () => {
     // A profile pick on the primary or the explicit `local` source takes the
     // legacy profile-only door (store/profile activateOnCurrentSource), so a

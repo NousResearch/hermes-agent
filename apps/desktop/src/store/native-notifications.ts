@@ -7,7 +7,7 @@ import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
 import { $activeSessionId } from './session'
-import { isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { isSessionGoneForBackgroundPolling, isSessionGone, markSessionGone } from './runtime-gone'
 import { requestForOwnedSession } from './session-states'
 
 export type { HermesOpenTarget }
@@ -351,6 +351,10 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   const choice = actionId === 'approve' ? 'once' : actionId === 'reject' ? 'deny' : null
 
   if (!choice) {
+    return
+  }
+
+  if (sessionId && isSessionGone(sessionId)) {
     return
   }
 

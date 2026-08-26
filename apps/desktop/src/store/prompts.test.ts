@@ -146,6 +146,15 @@ describe('approval prompt store', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('propagates transient approval replay failures without latching the runtime', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('gateway timed out')
+    })
+
+    await expect(replayPendingApproval({ request }, 'transient-runtime')).rejects.toThrow('gateway timed out')
+    expect(isSessionGone('transient-runtime')).toBe(false)
+  })
+
   it('keeps approval receipt failures contained and marks the runtime gone', async () => {
     const request = vi.fn(async () => {
       throw new JsonRpcGatewayError('session not found', { code: 4001 })

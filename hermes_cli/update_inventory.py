@@ -78,8 +78,16 @@ class UpdatePlan:
         return payload
 
 
-def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
+def _detect_supervisor_for_pid(
+    pid: int, service_pids: set, windows_service_pids: set | None = None
+) -> str:
     """Classify how a live gateway PID is supervised."""
+    if windows_service_pids and pid in windows_service_pids:
+        # SCM-supervised Windows gateway (WinSW/NSSM/sc.exe create): the
+        # update pause machinery stops the SERVICE via sc.exe instead of
+        # killing the child, so #91277 Phase 2 reconciliation must plan it
+        # under its own mechanism id, not "manual".
+        return "windows-service"
     if pid in service_pids:
         try:
             from hermes_cli.gateway import is_macos, supports_systemd_services
@@ -109,6 +117,8 @@ def _restart_mechanism(supervisor: str, profile: str) -> str:
         return "launchd"
     if supervisor == "desktop":
         return "desktop"
+    if supervisor == "windows-service":
+        return "windows-service"
     if supervisor == "manual-serve":
         return "respawn-argv"
     return "manual"
@@ -122,6 +132,8 @@ def describe_restart_mechanism(mechanism: str, profile: str) -> str:
         return "launchctl kickstart -k (drain-first, per-label domain)"
     if mechanism == "desktop":
         return "Desktop app respawns its serve backend"
+    if mechanism == "windows-service":
+        return "sc.exe stop before venv mutation, sc.exe start after update"
     if mechanism == "respawn-argv":
         return "stop before code swap, relaunch with recorded launch args"
     if profile != "default":
@@ -215,6 +227,23 @@ def collect_runtime_inventory() -> UpdatePlan:
     except Exception as exc:
         logger.debug("Service-PID probe failed: %s", exc)
 
+    # --- SCM-supervised gateway PIDs (Windows) ------------------------------
+    # find_windows_gateway_services() maps validated gateway PIDs through
+    # process ancestry to running SCM service PIDs (no-op off Windows). The
+    # update's pause phase stops these via `sc.exe stop` / restarts via
+    # `sc.exe start`, so the plan must carry the matching mechanism id for
+    # the #91277 Phase 2 reconciliation and the fleet check.
+    windows_service_pids: set = set()
+    try:
+        from hermes_cli.gateway import find_windows_gateway_services
+
+        windows_service_pids = {
+            int(service.gateway_pid)
+            for service in find_windows_gateway_services()
+        }
+    except Exception as exc:
+        logger.debug("Windows SCM service-ownership probe failed: %s", exc)
+
     # --- per-profile gateways (PID files + runtime status stamps) ----------
     seen_pids: set[int] = set()
     try:
@@ -247,7 +276,9 @@ def collect_runtime_inventory() -> UpdatePlan:
                     supervisor = (
                         str(declared)
                         if declared
-                        else _detect_supervisor_for_pid(sock_pid, service_pids)
+                        else _detect_supervisor_for_pid(
+                            sock_pid, service_pids, windows_service_pids
+                        )
                     )
                     sock_sha = identity.get("code_sha")
                     plan.runtimes.append(
@@ -275,7 +306,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if pid is None or not _pid_exists(pid):
                 continue
             seen_pids.add(pid)
-            supervisor = _detect_supervisor_for_pid(pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",
@@ -298,7 +331,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if proc.pid in seen_pids:
                 continue
             seen_pids.add(proc.pid)
-            supervisor = _detect_supervisor_for_pid(proc.pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                proc.pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",

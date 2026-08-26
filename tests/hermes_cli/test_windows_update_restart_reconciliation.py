@@ -21,6 +21,8 @@ reconciliation runs (mirrored here directly, since driving the full
 
 from unittest.mock import patch
 
+import pytest
+
 import hermes_cli.gateway as gateway
 import hermes_cli.main as hm
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
@@ -77,7 +79,11 @@ def test_resume_omits_profiles_whose_relaunch_failed(monkeypatch):
 
     token = _token({"default": 1111, "work": 2222})
     with patch("builtins.print"):
-        _resume_windows_gateways_after_update(token)
+        # Fail-closed contract: a profile whose relaunch failed
+        # raises so the update is marked incomplete (the caller catches,
+        # records the phase error, and exits 1 in gateway mode).
+        with pytest.raises(RuntimeError, match="Could not restart every paused"):
+            _resume_windows_gateways_after_update(token)
 
     assert token["relaunched_profiles"] == ["default"]
 

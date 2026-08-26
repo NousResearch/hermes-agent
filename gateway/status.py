@@ -1034,6 +1034,38 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
             pass
 
 
+def _strict_path_exists(path: Path, label: str) -> bool:
+    try:
+        path.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RuntimeError(f"{label} metadata is not inspectable: {exc}") from exc
+
+
+def _is_gateway_runtime_lock_active_strict(lock_path: Path) -> bool:
+    """Probe ownership without treating access failures as absence."""
+    try:
+        handle = open(lock_path, "r+", encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RuntimeError(f"gateway runtime lock is not inspectable: {exc}") from exc
+    try:
+        if _try_acquire_file_lock(handle):
+            _release_file_lock(handle)
+            return False
+        return True
+    except OSError as exc:
+        raise RuntimeError(f"gateway runtime lock probe failed: {exc}") from exc
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
 def write_pid_file() -> None:
     """Write the current process PID and metadata to the gateway PID file.
 
@@ -2354,6 +2386,61 @@ def get_running_pid(
         if runtime_pid is not None:
             return runtime_pid
     return None
+
+
+def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float]]:
+    """Return a verified process identity or fail on ambiguous runtime state."""
+    resolved_pid_path = Path(pid_path)
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    pid_exists = _strict_path_exists(resolved_pid_path, "gateway PID")
+    lock_exists = _strict_path_exists(resolved_lock_path, "gateway lock")
+    if not pid_exists and not lock_exists:
+        return None
+    if not lock_exists:
+        # No runtime lock can be owned. A stale PID file is not a live gateway.
+        return None
+    if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
+        # The lock probe is authoritative for absence. Stale or malformed files
+        # may remain after a crash, but no process currently owns this runtime.
+        return None
+    if not pid_exists:
+        raise RuntimeError("active gateway lock has no PID metadata")
+    pid_record = _read_pid_record(resolved_pid_path)
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    if not pid_record or not lock_record:
+        raise RuntimeError("gateway PID or lock metadata is malformed")
+    pid = _pid_from_record(pid_record)
+    if pid is None or pid <= 0 or _pid_from_record(lock_record) != pid:
+        raise RuntimeError("gateway PID and lock identities disagree")
+    if not _pid_exists(pid):
+        raise RuntimeError("gateway identity is not live")
+    current_start = _get_process_start_time(pid)
+    starts = (pid_record.get("start_time"), lock_record.get("start_time"))
+    if current_start is None or any(start is None for start in starts):
+        raise RuntimeError("gateway creation time is unavailable")
+    try:
+        current = float(current_start)
+        recorded = tuple(float(start) for start in starts)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("gateway creation time is malformed") from exc
+    if current <= 0 or any(start <= 0 or abs(start - current) > 0.001 for start in recorded):
+        raise RuntimeError("gateway process identity changed")
+    if not all(_record_matches_live_gateway_pid(record, pid) for record in (pid_record, lock_record)):
+        raise RuntimeError("runtime metadata does not identify a live gateway")
+    # Windows persists a centisecond fingerprint; SCM ownership checks need the
+    # exact psutil epoch timestamp. Re-read it only after the persisted identity
+    # has been validated, and prove it still rounds to that same fingerprint.
+    if _IS_WINDOWS:
+        try:
+            import psutil  # type: ignore
+
+            exact_create_time = float(psutil.Process(pid).create_time())
+        except Exception as exc:
+            raise RuntimeError("exact gateway creation time is unavailable") from exc
+        if int(round(exact_create_time * 100)) != int(current):
+            raise RuntimeError("gateway process identity changed")
+        return pid, exact_create_time
+    return pid, current
 
 
 def get_running_pid_cached(

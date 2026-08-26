@@ -64,6 +64,17 @@ class TestEmptySnapshotFailClosed:
             _fleet_probe_expected_runtimes(None, [], token, [], set()) is True
         )
 
+    def test_incomplete_when_windows_resume_token_has_services(self):
+        token = {
+            "resume_needed": False,
+            "profiles": {},
+            "unmapped": [],
+            "services": ["HermesGateway"],
+        }
+        assert (
+            _fleet_probe_expected_runtimes(None, [], token, [], set()) is True
+        )
+
     def test_incomplete_when_restart_phase_touched_gateways(self):
         # The original #93410 signal still counts.
         assert (

@@ -174,6 +174,64 @@ ALIBABA_FAMILY_PROVIDERS = frozenset({
 })
 
 
+# --- 1h-tier membership: an ALLOW-list, deliberately minimal ----------------
+#
+# #84733 clamped 1h -> 5m for the whole alibaba/opencode family, reasoning from
+# Alibaba's PUBLISHED Qwen docs. Wire measurement on the opencode-go route
+# contradicts the docs. Controlled run: identical request, only the ttl flag
+# varying, read back after 11 minutes with no intervening call (a read renews
+# the window and would mask expiry):
+#
+#   qwen3.8-max   ttl=1h -> cache_read 2122  SURVIVED
+#   qwen3.8-max   ttl=-  -> cache_read    0  EXPIRED    <- control
+#   glm-5.2       ttl=1h -> cache_read 2092  SURVIVED
+#   minimax-m2.5  ttl=1h -> cache_read    0  EXPIRED
+#
+# Read the two non-qwen rows for what they are: evidence about the ROUTE, not
+# about traffic Hermes sends today. anthropic_prompt_cache_policy currently
+# opts opencode-go in only for qwen models, so glm-5.2 and minimax-m2.5 on
+# that route receive no cache_control marker at all and never reach this
+# clamp in production. They constrain the route-level rule; they are not
+# live paths.
+#
+# Only opencode-go is listed: it is the only route measured. Other opencode
+# routes stay clamped because they were NOT measured, not because they are
+# known bad. opencode-zen returns cache_creation.ephemeral_1h_input_tokens for
+# Claude models, so it is a candidate -- but qwen on zen is unmeasured, so
+# adding the provider wholesale would outrun the evidence.
+#
+# WARNING: opencode-go labels EVERY write `ephemeral_5m_input_tokens` whatever
+# ttl was requested. That label is NOT evidence of the retention window -- it
+# is what made the original docs-based reasoning look confirmed. Verify only
+# with a delayed read past 5 minutes and no intervening call.
+#
+# NOTE: kept separate from ALIBABA_FAMILY_PROVIDERS on purpose. That set also
+# drives the cache-marker-layout OPT-IN in
+# agent_runtime_helpers.anthropic_prompt_cache_policy; narrowing it would
+# silently DISABLE caching for qwen on opencode-go rather than extend its TTL.
+MEASURED_1H_PROVIDERS = frozenset({
+    "opencode-go",
+})
+
+# Models measured to ignore the 1h tier even on a 1h-capable route.
+#
+# SCOPE: consulted only for providers already in MEASURED_1H_PROVIDERS. The
+# measurement was taken on the opencode-go route, so it says nothing about the
+# same model reached some other way -- and MiniMax on its own
+# Anthropic-compatible endpoint IS a separate, cache-eligible route
+# (anthropic_prompt_cache_policy opts it in by provider id / host match).
+# Checking this set globally would have silently regressed that unrelated
+# route's configured 1h to 5m off the back of an opencode-go observation.
+NO_1H_TIER_MODELS = frozenset({
+    "minimax-m2.5",
+})
+
+
+def _flat_model(model: str) -> str:
+    """Bare model id, tolerating aggregator prefixes (``vendor/model``)."""
+    return (model or "").strip().rsplit("/", 1)[-1].lower()
+
+
 def is_qwen_model(model: str) -> bool:
     """True when ``model`` names a Qwen-family model (case-insensitive).
 
@@ -202,6 +260,14 @@ def effective_cache_ttl(
     """
     if ttl != "1h":
         return ttl or "5m"
+    if (provider or "").lower() in MEASURED_1H_PROVIDERS:
+        # Route measured to honour the tier -- checked BEFORE the generic
+        # is_qwen_model clamp below, which would otherwise swallow every Qwen
+        # model on it. Within the route, a model measured to ignore the tier
+        # still wins; the denial stays nested here so an opencode-go
+        # observation cannot leak out and reclamp the same model on an
+        # unrelated route.
+        return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
     if is_qwen_model(model):
         return "5m"
     if (provider or "").lower() in ALIBABA_FAMILY_PROVIDERS:

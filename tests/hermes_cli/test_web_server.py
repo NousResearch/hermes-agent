@@ -1173,6 +1173,11 @@ class TestWebServerEndpoints:
 
         # Bypass the managed-externally gate so we reach the docker install check.
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly.
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "docker"
+        )
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -1208,6 +1213,12 @@ class TestWebServerEndpoints:
             raise AssertionError("APT-managed update guard should not spawn hermes update")
 
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly, so patch it there (the
+        # web_server module alias only feeds the /update/check endpoint).
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "apt"
+        )
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "apt")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)

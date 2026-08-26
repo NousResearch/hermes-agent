@@ -5,10 +5,18 @@ import os
 from pathlib import Path
 import subprocess
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 
-from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _desktop_launch_arguments, _parser
+from ares_runtime.local_runtime import (
+    AresLocalPaths,
+    AresLocalRuntime,
+    AresLocalRuntimeError,
+    _desktop_launch_arguments,
+    _parser,
+    main,
+)
 
 
 def _runtime(tmp_path: Path) -> AresLocalRuntime:
@@ -80,6 +88,60 @@ def test_rollback_swaps_current_and_previous_without_a_worktree_fallback(tmp_pat
 
     assert runtime.active_release() == (first, first_source.resolve())
     assert runtime.previous_release() == (second, second_source.resolve())
+
+
+def test_activation_failure_restores_the_complete_pointer_pair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
+    current_revision = "a" * 40
+    candidate_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
+    current_source = _release(runtime, current_revision)
+    candidate_source = _release(runtime, candidate_revision)
+    runtime._activate(prior_revision)
+    runtime._activate(current_revision)
+    atomic_link = runtime._atomic_link
+
+    def fail_candidate_current(link: Path, target: Path) -> None:
+        if link == runtime.paths.current_link and target == candidate_source.resolve():
+            raise OSError("injected current-pointer failure")
+        atomic_link(link, target)
+
+    monkeypatch.setattr(runtime, "_atomic_link", fail_candidate_current)
+
+    with pytest.raises(OSError, match="injected current-pointer failure"):
+        runtime._activate(candidate_revision)
+
+    assert runtime.active_release() == (current_revision, current_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
+
+
+def test_rollback_pointer_failure_restores_the_complete_pair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    previous_revision = "a" * 40
+    current_revision = "b" * 40
+    previous_source = _release(runtime, previous_revision)
+    current_source = _release(runtime, current_revision)
+    runtime._activate(previous_revision)
+    runtime._activate(current_revision)
+    atomic_link = runtime._atomic_link
+
+    def fail_previous_swap(link: Path, target: Path) -> None:
+        if link == runtime.paths.previous_link and target == current_source.resolve():
+            raise OSError("injected previous-pointer failure")
+        atomic_link(link, target)
+
+    monkeypatch.setattr(runtime, "_atomic_link", fail_previous_swap)
+
+    with pytest.raises(OSError, match="injected previous-pointer failure"):
+        runtime.rollback()
+
+    assert runtime.active_release() == (current_revision, current_source.resolve())
+    assert runtime.previous_release() == (previous_revision, previous_source.resolve())
 
 
 def test_config_only_tracks_update_source_not_active_release(tmp_path: Path) -> None:
@@ -241,10 +303,13 @@ def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> N
 
 def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, monkeypatch) -> None:
     runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
     old_revision = "a" * 40
     new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
     old_source = _release(runtime, old_revision)
     _release(runtime, new_revision)
+    runtime._activate(prior_revision)
     runtime._activate(old_revision)
     source = tmp_path / "candidate"
     source.mkdir()
@@ -274,9 +339,153 @@ def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, mon
         runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
 
     assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
     assert "cd \"$runtime_root\"" in runtime.paths.launcher_path.read_text(encoding="utf-8")
     assert ("enable", "ares-gateway.service") in calls
     assert ("restart", "ares-gateway.service") in calls
+
+
+def test_update_failure_restores_complete_pointer_pair(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(prior_revision)
+    runtime._activate(old_revision)
+    runtime.paths.unit_path.parent.mkdir(parents=True)
+    runtime.paths.unit_path.write_text("unit", encoding="utf-8")
+
+    monkeypatch.setattr(
+        runtime,
+        "_read_config",
+        lambda: {
+            "remote": "downstream",
+            "branch": "main",
+            "upstream_remote": "upstream",
+            "upstream_branch": "main",
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_remote_revision",
+        lambda remote, _branch: "d" * 40 if remote == "downstream" else "u" * 40,
+    )
+    monkeypatch.setattr(runtime, "_release_metadata", lambda _revision: {})
+    monkeypatch.setattr(
+        runtime,
+        "_materialize_upstream_candidate",
+        lambda **_kwargs: new_revision,
+    )
+    monkeypatch.setattr(runtime, "_install_gateway_unit", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_systemctl",
+        lambda *args, **_kwargs: False if args[:2] == ("is-active", "--quiet") else True,
+    )
+    monkeypatch.setattr("ares_runtime.local_runtime.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(AresLocalRuntimeError, match="did not remain active"):
+        runtime.update(desktop=False)
+
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
+
+
+def test_setup_pre_handoff_failure_restores_complete_pointer_pair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    prior_revision = "0" * 40
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    prior_source = _release(runtime, prior_revision)
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(prior_revision)
+    runtime._activate(old_revision)
+    source = tmp_path / "candidate"
+    source.mkdir()
+
+    def git_output(_source: Path, *args: str) -> str:
+        values = {
+            ("rev-parse", "--is-inside-work-tree"): "true",
+            ("rev-parse", "HEAD"): new_revision,
+            ("remote", "get-url", "origin"): str(source),
+            ("symbolic-ref", "--quiet", "--short", "HEAD"): "main",
+        }
+        return values[args]
+
+    monkeypatch.setattr(runtime, "_git_output", git_output)
+    monkeypatch.setattr(runtime, "_materialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_seed_agent_home", lambda *_args: False)
+    monkeypatch.setattr(runtime, "_provision_context_governor_key", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime,
+        "_write_config",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("config failed")),
+    )
+    monkeypatch.setattr(runtime, "_systemctl", lambda *args, **_kwargs: False)
+
+    with pytest.raises(RuntimeError, match="config failed"):
+        runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
+
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert runtime.previous_release() == (prior_revision, prior_source.resolve())
+
+
+def test_agent_environment_strips_ambient_python_import_controls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        monkeypatch.setenv(name, f"/hostile/{name.lower()}")
+
+    environment = runtime._agent_environment()
+
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        assert name not in environment
+
+
+def test_build_environment_strips_all_python_import_controls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "UV_PROJECT_ENVIRONMENT",
+    ):
+        monkeypatch.setenv(name, f"/hostile/{name.lower()}")
+
+    environment = runtime._build_environment(source)
+
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+    ):
+        assert name not in environment
+    assert environment["UV_PROJECT_ENVIRONMENT"] == str(source / ".venv")
 
 
 def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> None:
@@ -287,6 +496,20 @@ def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> Non
 
     assert f"ExecStart={runtime.paths.launcher_path} gateway foreground" in unit
     assert "TimeoutStopSec=210" in unit
+
+
+def test_source_cleanliness_reports_dirty_and_clean_git_releases(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    source = _repository(tmp_path / "release")
+    (source / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    _commit(source, "initial")
+
+    assert runtime._source_cleanliness(source) == (True, "clean")
+
+    (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    clean, detail = runtime._source_cleanliness(source)
+    assert clean is False
+    assert detail == "dirty (1 path(s))"
 
 
 def test_systemd_environment_preserves_an_existing_session_bus(monkeypatch) -> None:
@@ -353,6 +576,19 @@ def test_chat_command_leaves_hermes_options_for_the_runtime() -> None:
     assert passthrough == ["--oneshot", "Reply with exactly ARES_RUNTIME_OK"]
 
 
+def test_bare_ares_launches_the_tui_and_never_the_desktop(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    runtime = SimpleNamespace(
+        tui=lambda arguments: calls.append(("tui", arguments)),
+        desktop=lambda **kwargs: calls.append(("desktop", kwargs)),
+    )
+    monkeypatch.setattr("ares_runtime.local_runtime.AresLocalRuntime", lambda: runtime)
+
+    main([])
+
+    assert calls == [("tui", ())]
+
+
 def test_doctor_uses_the_strict_context_governor_probe() -> None:
     source = Path(__file__).parents[2] / "ares_runtime" / "local_runtime.py"
 
@@ -360,3 +596,185 @@ def test_doctor_uses_the_strict_context_governor_probe() -> None:
 
     assert "Context Governor strict probe" in implementation
     assert "ContextGovernorEngine().probe_activation()" in implementation
+
+
+def test_doctor_reports_live_runtime_process_drift(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "a" * 40
+    source = _release(runtime, revision)
+    python = runtime._python_for(source)
+    python.parent.mkdir(parents=True)
+    python.write_text("python", encoding="utf-8")
+    python.chmod(0o755)
+    runtime._activate(revision)
+    monkeypatch.setattr(runtime, "_source_cleanliness", lambda _source: (True, "clean"))
+    monkeypatch.setattr(
+        "hermes_cli.sqlite_runtime.probe_sqlite_runtime",
+        lambda _python: SimpleNamespace(
+            wal_reset_vulnerable=False,
+            sqlite_version_string="3.53.2",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout='{"engine":"compressor","strict_probe":"not configured"}'
+        ),
+    )
+
+    def subprocess_run(command, **_kwargs):
+        program = command[2] if len(command) > 2 else ""
+        stdout = '{"missing":[]}' if "probe_mcp_server_tools" in program else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("ares_runtime.local_runtime.subprocess.run", subprocess_run)
+    monkeypatch.setattr(
+        "ares_runtime.runtime_audit.audit_managed_runtime_processes",
+        lambda **kwargs: SimpleNamespace(
+            ok=False,
+            summary=lambda: (
+                f"managed=2 coherent=1 stale=1 active={kwargs['active_revision']}"
+            ),
+        ),
+    )
+    monkeypatch.setattr(runtime, "_systemctl", lambda *_args, **_kwargs: True)
+
+    checks = {label: (passed, detail) for label, passed, detail in runtime.doctor()}
+
+    assert checks["runtime process coherence"] == (
+        False,
+        f"managed=2 coherent=1 stale=1 active={revision}",
+    )
+
+
+def test_runtime_builder_refuses_an_installed_release_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source = _release(runtime, "a" * 40)
+    monkeypatch.setattr(
+        "hermes_cli.managed_uv.ensure_uv",
+        lambda: (_ for _ in ()).throw(AssertionError("managed build was entered")),
+    )
+
+    with pytest.raises(AresLocalRuntimeError, match="installed release"):
+        runtime._build_runtime(source, desktop=False)
+
+
+def test_materialize_reuses_a_complete_existing_release_without_rebuilding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "a" * 40
+    source = _release(runtime, revision)
+    python = runtime._python_for(source)
+    python.parent.mkdir(parents=True)
+    python.write_text("python", encoding="utf-8")
+    python.chmod(0o755)
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing release was rebuilt")
+        ),
+    )
+
+    runtime._materialize("unused", revision, desktop=False)
+
+    assert runtime._release_source(revision) == source
+
+
+def test_materialize_refuses_an_incomplete_existing_release_without_rebuilding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "a" * 40
+    _release(runtime, revision)
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("incomplete release was rebuilt")
+        ),
+    )
+
+    with pytest.raises(AresLocalRuntimeError, match="incomplete"):
+        runtime._materialize("unused", revision, desktop=False)
+
+
+def test_upstream_candidate_reuse_never_rebuilds_the_installed_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    upstream = _repository(tmp_path / "upstream-reuse")
+    (upstream / "base.txt").write_text("base\n", encoding="utf-8")
+    _commit(upstream, "base")
+
+    downstream = tmp_path / "downstream-reuse"
+    subprocess.run(["git", "clone", str(upstream), str(downstream)], check=True)
+    _git(downstream, "config", "user.name", "Ares Runtime Tests")
+    _git(downstream, "config", "user.email", "ares-runtime-tests@example.invalid")
+    (downstream / "ares.txt").write_text("Ares\n", encoding="utf-8")
+    downstream_revision = _commit(downstream, "Ares patch")
+
+    (upstream / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+    upstream_revision = _commit(upstream, "upstream patch")
+
+    runtime = _runtime(tmp_path)
+
+    def mark_ready(source: Path, *, desktop: bool) -> None:
+        assert desktop is False
+        python = runtime._python_for(source)
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("python", encoding="utf-8")
+        python.chmod(0o755)
+
+    monkeypatch.setattr(runtime, "_build_runtime", mark_ready)
+    first = runtime._materialize_upstream_candidate(
+        downstream_remote=str(downstream),
+        downstream_revision=downstream_revision,
+        upstream_remote=str(upstream),
+        upstream_branch="main",
+        upstream_revision=upstream_revision,
+        desktop=False,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("installed candidate was rebuilt")
+        ),
+    )
+
+    second = runtime._materialize_upstream_candidate(
+        downstream_remote=str(downstream),
+        downstream_revision=downstream_revision,
+        upstream_remote=str(upstream),
+        upstream_branch="main",
+        upstream_revision=upstream_revision,
+        desktop=False,
+    )
+
+    assert second == first
+
+
+def test_desktop_rebuild_refuses_to_mutate_the_active_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "a" * 40
+    source = _release(runtime, revision)
+    runtime._activate(revision)
+    executable = source / "Ares"
+    executable.write_text("desktop", encoding="utf-8")
+    monkeypatch.setattr(runtime, "_desktop_binary", lambda _source: executable)
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("active release was rebuilt")
+        ),
+    )
+
+    with pytest.raises(AresLocalRuntimeError, match="cannot mutate an installed release"):
+        runtime.desktop(rebuild=True)

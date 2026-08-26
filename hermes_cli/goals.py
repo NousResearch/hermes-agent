@@ -1856,15 +1856,37 @@ class GoalManager:
             self._continuation_lock_handle = None
         return saved
 
-    def start_continuation(self) -> bool:
+    def start_continuation(
+        self,
+        *,
+        expected_goal_id: Optional[str] = None,
+        expected_checkpoint_revision: Optional[int] = None,
+        expected_continuation_token: Optional[str] = None,
+    ) -> bool:
         """Atomically consume a queued continuation at turn start.
 
         A duplicate or replayed FIFO event is rejected after the first
-        consumer clears ``continuation_pending``. The checkpoint itself is
-        retained for audit and stale/replay validation.
+        consumer clears ``continuation_pending``. A gateway FIFO event may also
+        bind the expected goal identity, checkpoint revision, and continuation
+        token captured at enqueue time.  If a real user turn superseded that
+        checkpoint before the FIFO drains, those expectations reject the stale
+        event without consuming the newer pending continuation. The checkpoint
+        itself is retained for audit and stale/replay validation.
         """
         state = load_goal(self.session_id)
         if state is None or state.status != "active" or not state.continuation_pending:
+            return False
+        if expected_goal_id is not None and state.goal_id != expected_goal_id:
+            return False
+        if (
+            expected_checkpoint_revision is not None
+            and state.checkpoint_revision != expected_checkpoint_revision
+        ):
+            return False
+        if (
+            expected_continuation_token is not None
+            and state.continuation_token != expected_continuation_token
+        ):
             return False
         self._state = state
         state.continuation_pending = False

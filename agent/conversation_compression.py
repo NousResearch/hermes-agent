@@ -3623,6 +3623,7 @@ def compress_context(
                                 "_proactive_prune_rearm_tokens"
                             ]
                         )
+                    _discard_pending_once("would_grow")
                     _release_lock()
                     return messages, _existing_sp
 

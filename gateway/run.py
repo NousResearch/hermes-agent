@@ -2750,7 +2750,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         ).strip().lower()
         if dm_policy != "open" and group_policy != "open":
             continue
-        gateway_allow_all = os.getenv(
+        gateway_allow_all = _getenv(
             "GATEWAY_ALLOW_ALL_USERS", ""
         ).lower() in {"true", "1", "yes"}
         platform_opted_in = gateway_allow_all or (
@@ -20365,6 +20365,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
+            if not await self._consume_goal_continuation_at_turn_start(event, session_entry):
+                return None
             _turn_started_monotonic = time.monotonic()
             agent_result = await self._run_agent(
                 message=message_text,
@@ -21760,21 +21762,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         # Enqueue via the adapter's FIFO so a user message already in
-        # flight preempts the continuation naturally.
+        # flight preempts the continuation naturally. The durable lease prevents
+        # concurrent gateway hooks or restart races from stacking generations.
+        owner = f"gateway:{id(self)}:{sid}"
+        if not mgr.claim_continuation(owner):
+            logger.info("goal continuation already claimed for session %s", sid)
+            return
         try:
             adapter = self._adapter_for_source(source)
             _quick_key = self._session_key_for_source(source)
-            if adapter and _quick_key:
-                cont_event = MessageEvent(
-                    text=prompt,
-                    message_type=MessageType.TEXT,
-                    source=source,
-                    message_id=None,
-                    channel_prompt=None,
-                )
-                self._enqueue_fifo(_quick_key, cont_event, adapter)
+            if not adapter or not _quick_key:
+                mgr.release_continuation(queued=False)
+                return
+            cont_event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+                channel_prompt=None,
+                internal=True,
+                # Bind this synthetic FIFO item to exactly the checkpoint and
+                # routing identity which authorized it. A real turn can replace
+                # that checkpoint before the adapter drains this event; then the
+                # stale item must be discarded rather than consume the newer
+                # pending continuation or create a second goal generation.
+                metadata={
+                    "goal_continuation": {
+                        "goal_id": mgr.state.goal_id,
+                        "checkpoint_revision": mgr.state.checkpoint_revision,
+                        "continuation_token": mgr.state.continuation_token,
+                    },
+                    "gateway_session_key": _quick_key,
+                    "gateway_session_id": sid,
+                    "gateway_session_strict": True,
+                },
+                allow_gateway_control=False,
+            )
+            self._enqueue_fifo(_quick_key, cont_event, adapter)
+            mgr.release_continuation(queued=True)
         except Exception as exc:
+            mgr.release_continuation(queued=False)
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    async def _consume_goal_continuation_at_turn_start(
+        self, event: Any, session_entry: Any
+    ) -> bool:
+        """Consume a synthetic /goal event at the actual agent-start seam.
+
+        Ordinary turns are admitted unchanged.  A marked internal continuation
+        must still match the exact durable checkpoint captured when it entered
+        the adapter FIFO; a preempting user turn or restart recovery may have
+        created a newer generation while this event waited.
+        """
+        event_metadata = getattr(event, "metadata", None) or {}
+        continuation = event_metadata.get("goal_continuation")
+        if not isinstance(continuation, dict) or not getattr(event, "internal", False):
+            return True
+        try:
+            from hermes_cli.goals import GoalManager
+            mgr = GoalManager(session_entry.session_id)
+            started = await asyncio.to_thread(
+                mgr.start_continuation,
+                expected_goal_id=str(continuation.get("goal_id") or ""),
+                expected_checkpoint_revision=int(continuation["checkpoint_revision"]),
+                expected_continuation_token=str(continuation.get("continuation_token") or ""),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("Dropping malformed goal continuation event: %s", exc)
+            return False
+        except Exception as exc:
+            logger.warning("Dropping goal continuation before turn start: %s", exc)
+            return False
+        if not started:
+            logger.info("Dropping stale goal continuation for session %s", session_entry.session_id)
+        return started
 
     async def _run_post_turn_hooks(
         self,
@@ -28162,12 +28223,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 thread_id=getattr(source, "thread_id", None),
                 parent_chat_id=getattr(source, "parent_chat_id", None),
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
+                "Profile route matching failed for %s/%s; rejecting routing",
                 source.platform, source.chat_id, exc_info=True,
             )
-            return None
+            raise ProfileRouteRejected("profile-routes") from exc
         if matched:
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -28230,18 +28291,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if explicit_profile and not profile_exists(name):
                 logger.warning(
                     "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
+                    "rejecting the explicit profile route",
                     explicit_profile,
                     source.platform.value,
                     source.chat_id,
                     getattr(source, "guild_id", None),
                 )
-                return get_hermes_home()
+                raise ProfileRouteRejected(explicit_profile)
             return profile_dir
         except ProfileRouteRejected:
             raise
-        except Exception:
-            # Catch normalization errors, path errors, etc.
+        except Exception as exc:
+            # An explicit identity must never widen to the ambient/default
+            # profile when normalization or path resolution fails.
+            if explicit_profile:
+                logger.warning(
+                    "Failed to resolve profile directory for source %s/%s "
+                    "(guild_id=%s), rejecting explicit profile %s",
+                    source.platform.value,
+                    source.chat_id,
+                    getattr(source, "guild_id", None),
+                    explicit_profile,
+                    exc_info=True,
+                )
+                raise ProfileRouteRejected(explicit_profile) from exc
+            # No profile identity was selected at all: retain the historical
+            # active-home fallback for single-profile callers.
             logger.warning(
                 "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
                 "falling back to global HERMES_HOME: %s",

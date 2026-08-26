@@ -18,6 +18,7 @@ silently stalling goal loops on messaging gateways.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -199,3 +200,61 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     assert adapter._pending_messages[adapter_key].text.startswith(
         "[Continuing toward your standing goal]"
     )
+    continuation = adapter._pending_messages[adapter_key]
+    assert continuation.internal is True
+    assert continuation.allow_gateway_control is False
+    assert continuation.metadata["gateway_session_key"] == adapter_key
+    assert continuation.metadata["gateway_session_id"] == session_entry.session_id
+    assert continuation.metadata["gateway_session_strict"] is True
+    assert continuation.metadata["goal_continuation"]["goal_id"]
+    assert continuation.metadata["goal_continuation"]["checkpoint_revision"] > 0
+    assert continuation.metadata["goal_continuation"]["continuation_token"]
+
+
+@pytest.mark.asyncio
+async def test_generation_scoped_continuation_consumes_only_its_checkpoint(hermes_home):
+    """The agent-start seam rejects a FIFO item superseded by user work."""
+    from gateway.run import GatewayRunner
+    from hermes_cli import goals
+
+    session_id = "goal-generation-scope"
+    mgr = goals.GoalManager(session_id)
+    mgr.set("finish bounded work")
+    mgr.evaluate_after_turn(
+        "", turn_outcome=goals.EXECUTION_FAILED,
+        turn_metadata={"reason": "first failure"},
+    )
+    stale = {
+        "goal_id": mgr.state.goal_id,
+        "checkpoint_revision": mgr.state.checkpoint_revision,
+        "continuation_token": mgr.state.continuation_token,
+    }
+    assert mgr.start_continuation() is True
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            goals,
+            "judge_goal",
+            lambda *args, **kwargs: ("continue", "new work remains", False, None, False),
+        )
+        mgr.evaluate_after_turn("real user progress")
+
+    runner = object.__new__(GatewayRunner)
+    event = MessageEvent(
+        text=CONTINUATION_TEXT,
+        message_type=MessageType.TEXT,
+        source=_slack_thread_source(),
+        internal=True,
+        metadata={"goal_continuation": stale},
+    )
+    entry = SimpleNamespace(session_id=session_id)
+    assert await runner._consume_goal_continuation_at_turn_start(event, entry) is False
+    assert goals.GoalManager(session_id).state.continuation_pending is True
+
+    current = goals.GoalManager(session_id).state
+    event.metadata["goal_continuation"] = {
+        "goal_id": current.goal_id,
+        "checkpoint_revision": current.checkpoint_revision,
+        "continuation_token": current.continuation_token,
+    }
+    assert await runner._consume_goal_continuation_at_turn_start(event, entry) is True
+    assert goals.GoalManager(session_id).state.continuation_pending is False

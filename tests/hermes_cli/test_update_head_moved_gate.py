@@ -100,6 +100,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
+    # Restart execution has its own fresh-process integration coverage. Keep
+    # this focused Git-movement test at the handoff boundary.
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._run_post_update_restart_in_fresh_process",
+        lambda **_kwargs: None,
+    )
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)

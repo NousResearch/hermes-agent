@@ -36,7 +36,12 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, makeNousCloudBackendDownError, waitForHermesReady } from './backend-health'
-import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
+import {
+  backendCommandMatches,
+  createBackendOrphanReaper,
+  createBackendOwnership,
+  createBackendShutdownCoordinator
+} from './backend-ownership'
 import {
   canImportHermesCli,
   execProbeSync,
@@ -218,7 +223,7 @@ import {
   registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { selectPoolEvictions } from './pool-eviction'
+import { canAdmitLocalBackend, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
@@ -1305,7 +1310,7 @@ const profileDeletionGate = new ProfileDeletionGate()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
+const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 4)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
@@ -1313,7 +1318,6 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // killing one to honor the soft cap would abort a running agent.
 const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
-let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
 // secondary session, instance) so a crash loop anywhere is suppressed after
 // the same budget instead of reloading per-window forever. A deterministic
@@ -2344,14 +2348,10 @@ function findSystemPython() {
   //      that didn't check the launcher option, so PATH-only checks
   //      miss real Python 3.13 installs (user-reported case).
   //
-  // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
-  // CPython but several Hermes deps (notably pywinpty's Rust-built
-  // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
-  // `pip install -e .` falls back to source-build, which fails without
-  // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
-  // via uv; until we add the same uv-managed Python pathway here, the
-  // simplest fix is to refuse 3.14 detection and let the NSIS prereq
-  // page offer to install 3.11 alongside.
+  // The locked project admission covers Python 3.11–3.14. pywinpty 3.0.5
+  // supplies cp314 Windows wheels, so 3.14 is no longer excluded from the
+  // resolver's candidate ladder. The later backend probe still verifies the
+  // actual Hermes imports before a candidate is trusted.
   //
   // Strategy: probe in three passes, in order from most-precise to
   // least-precise, and ONLY use PATH lookup as a last resort after
@@ -2361,7 +2361,7 @@ function findSystemPython() {
   //          installer registers itself at SOFTWARE\Python\PythonCore.
   //          The MS Store stub does NOT register here, so a hit means
   //          a real Python install. Versions are explicit so we
-  //          inherently filter 3.14 out.
+  //          inherently restrict the result to the admitted versions.
   //  Pass 2: Filesystem probe of standard install locations
   //          (Program Files, LocalAppData\Programs\Python). Same
   //          version filtering by directory name.
@@ -2371,8 +2371,8 @@ function findSystemPython() {
   //          py.exe's default is (which on a 3.14-only box would be
   //          3.14).
 
-  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13']
-  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313']
+  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13', '3.14']
+  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313', '314']
 
   // Pass 1: registry. Use `reg query` since main process doesn't have
   // a reliable in-process registry API across all electron versions.
@@ -2426,7 +2426,7 @@ function findSystemPython() {
   }
 
   // Pass 3: py.exe with explicit version flag. The launcher itself is
-  // safe to invoke (no Store popup) and `py -3.13 -c "import sys;
+  // safe to invoke (no Store popup) and `py -3.14 -c "import sys;
   // print(sys.executable)"` resolves to the actual python.exe path of
   // the requested version. We try in version-priority order so the
   // first hit wins.
@@ -2462,10 +2462,9 @@ function findSystemPython() {
 
   // We deliberately do NOT fall back to plain `python.exe` on PATH.
   // Without a way to verify the version safely (running `python -V`
-  // risks the Microsoft Store popup), accepting whatever's there
-  // could land us on 3.14 and trigger the Rust-build-from-source
-  // failure. Better to return null and let the NSIS prereq page
-  // offer to install a known-good 3.11 via winget.
+  // risks the Microsoft Store popup), accepting whatever's there could
+  // land us outside the locked admission range. Better to return null and
+  // let the NSIS prereq page offer to install a known-good interpreter.
   return null
 }
 
@@ -3365,23 +3364,14 @@ function releaseBackendChild(child) {
   }
 }
 
-function reapOrphanedBackendsOnce() {
-  if (!backendOrphanReapPromise) {
-    backendOrphanReapPromise = backendOwnership
-      .reapOrphans()
-      .then(pids => {
-        if (pids.length) {
-          rememberLog(`Reaped orphaned desktop backend PID(s): ${pids.join(', ')}`)
-        }
-      })
-      .catch(error => {
-        backendOrphanReapPromise = null
-        throw error
-      })
+const reapOrphanedBackends = createBackendOrphanReaper(
+  () => backendOwnership.reapOrphans(),
+  pids => {
+    if (pids.length) {
+      rememberLog(`Reaped orphaned desktop backend PID(s): ${pids.join(', ')}`)
+    }
   }
-
-  return backendOrphanReapPromise
-}
+)
 
 // Before handing off the update on Windows, the desktop MUST stop every backend
 // it spawned and WAIT for the venv shim to actually unlock. The old code did
@@ -9949,10 +9939,15 @@ async function ensureBackend(profile) {
     return connection
   }
 
+  if (!canAdmitLocalBackend(backendPool.entries(), POOL_MAX_BACKENDS)) {
+    throw new PoolCapacityError(POOL_MAX_BACKENDS)
+  }
+
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
   const entry = {
     process: null,
+    countsTowardPoolCap: true,
     port: null,
     token: null,
     connectionPromise: null,
@@ -10038,10 +10033,15 @@ async function ensureRegistryBackend(connectionId, profile) {
       return existingLocal.connectionPromise
     }
 
+    if (!canAdmitLocalBackend(backendPool.entries(), POOL_MAX_BACKENDS)) {
+      throw new PoolCapacityError(POOL_MAX_BACKENDS)
+    }
+
     evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
     const localEntry = {
       process: null,
+      countsTowardPoolCap: true,
       port: null,
       token: null,
       connectionPromise: null,
@@ -10278,7 +10278,7 @@ function startPoolIdleReaper() {
 async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
   const poolKey = opts.poolKey || profile
 
-  await reapOrphanedBackendsOnce()
+  await reapOrphanedBackends()
   profileDeletionGate.assertCanStart(profile)
 
   // A profile may point at its OWN remote backend (connection.json
@@ -10566,7 +10566,7 @@ async function startHermes() {
     throw new Error('Hermes Desktop is already running in another window.')
   }
 
-  await reapOrphanedBackendsOnce()
+  await reapOrphanedBackends()
 
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -12304,8 +12304,8 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
-        probe: fetchPublicJson,
-        resetConnection: resetHermesConnection,
+        probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
+        resetConnection: () => resetHermesConnection({ soft: true }),
         tracker: remoteLiveness
       }),
       revalidatePool()
@@ -12335,7 +12335,7 @@ function revalidatePool() {
   return revalidatePooledRemoteBackends({
     entries: backendPool.entries(),
     log: rememberLog,
-    probe: fetchPublicJson,
+    probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
     stopBackend: stopPoolBackend,
     tracker: remoteLiveness
   })

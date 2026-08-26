@@ -593,23 +593,88 @@ def _wsl_windows_path_to_posix(path: str) -> str:
 
 
 def _resolve_cua_driver_app_path(driver_cmd: str) -> Optional[str]:
-    """Return the installed CuaDriver.app carrying *driver_cmd*, if present."""
+    """Return the CuaDriver.app bundle that CARRIES *driver_cmd*, if any.
+
+    Deliberately derived from the resolved driver binary path only — no
+    /Applications or ~/Applications fallback. A fallback candidate can be a
+    DIFFERENT install than the driver the manifest resolved (stale copy,
+    side-by-side version), and launching it would run code the resolution
+    chain never validated. If the resolved driver does not live inside an
+    app bundle, the caller fails closed with install guidance.
+    """
     marker = ".app/Contents/MacOS/"
-    candidates: List[str] = []
     marker_index = driver_cmd.find(marker)
-    if marker_index >= 0:
-        candidates.append(driver_cmd[: marker_index + len(".app")])
-    candidates.extend(
-        [
-            "/Applications/CuaDriver.app",
-            os.path.expanduser("~/Applications/CuaDriver.app"),
-        ]
-    )
-    for candidate in candidates:
-        executable = os.path.join(candidate, "Contents", "MacOS", "cua-driver")
-        if os.path.isfile(executable) and os.access(executable, os.X_OK):
-            return candidate
+    if marker_index < 0:
+        return None
+    candidate = driver_cmd[: marker_index + len(".app")]
+    executable = os.path.join(candidate, "Contents", "MacOS", "cua-driver")
+    if os.path.isfile(executable) and os.access(executable, os.X_OK):
+        return candidate
     return None
+
+
+# The only bundle identity the private daemon may launch through, and the
+# team that signs official cua-driver releases. Exact matches only: a
+# suffixed identifier ("com.trycua.driver.evil") or a different non-empty
+# team is an impostor bundle, not a variant.
+_CUA_DRIVER_BUNDLE_ID = "com.trycua.driver"
+_CUA_DRIVER_TEAM_ID = "4YEC26S9KF"
+
+
+def _validate_cua_driver_app_signature(app_path: str) -> None:
+    """Fail closed unless *app_path* is the genuinely-signed CuaDriver.app.
+
+    Launching via ``/usr/bin/open`` hands LaunchServices whatever bundle sits
+    at the path, so the TCC-identity fix must not become a launcher for
+    arbitrary apps: require ``codesign -dv`` to report EXACTLY
+    ``Identifier=com.trycua.driver`` and the expected TeamIdentifier.
+    ``TeamIdentifier=not set`` (unsigned/ad-hoc dev builds) is allowed only
+    when ``computer_use.allow_unsigned_driver: true`` is set in config.yaml —
+    the escape hatch for local driver development, never the default. Raises
+    RuntimeError on any mismatch or when codesign is unavailable/fails.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        raise RuntimeError(
+            "codesign is required to verify CuaDriver.app before launching it."
+        )
+    try:
+        proc = subprocess.run(
+            [codesign, "-dv", app_path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not verify CuaDriver.app signature: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"CuaDriver.app at {app_path} is not code-signed; refusing to launch it "
+            f"({(proc.stderr or '').strip()})"
+        )
+    # codesign -dv reports on stderr.
+    fields = {}
+    for line in (proc.stderr or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields.setdefault(key.strip(), value.strip())
+    identifier = fields.get("Identifier", "")
+    team = fields.get("TeamIdentifier", "")
+    if identifier != _CUA_DRIVER_BUNDLE_ID:
+        raise RuntimeError(
+            f"CuaDriver.app at {app_path} has identifier {identifier!r}, "
+            f"expected {_CUA_DRIVER_BUNDLE_ID!r}; refusing to launch it."
+        )
+    if team == _CUA_DRIVER_TEAM_ID:
+        return
+    if team in ("", "not set") and _computer_use_cfg().get("allow_unsigned_driver") is True:
+        return
+    raise RuntimeError(
+        f"CuaDriver.app at {app_path} is signed by team {team!r}, expected "
+        f"{_CUA_DRIVER_TEAM_ID!r}; refusing to launch it. (Set "
+        "computer_use.allow_unsigned_driver: true in config.yaml only for "
+        "local unsigned driver builds.)"
+    )
 
 
 def _embedded_daemon_spawn_command(
@@ -628,9 +693,11 @@ def _embedded_daemon_spawn_command(
             "CuaDriver.app is required for private computer-use sessions on macOS. "
             "Run `hermes computer-use install` to restore it."
         )
+    _validate_cua_driver_app_signature(resolved_app)
     return [
         "/usr/bin/open",
         "-n",
+        "-g",
         "-a",
         resolved_app,
         "--args",

@@ -111,6 +111,7 @@ describe('buildRestGroups', () => {
       label: 'Pandora LAN',
       url: 'http://10.0.0.2'
     } as DesktopRegistryConnection
+
     const groups = buildRestGroups({ activeConnectionId: 'local', connections: [...connections, twin], roster })
 
     expect(groups.map(group => group.connectionId)).toEqual(['pandora', 'vps'])

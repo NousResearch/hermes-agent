@@ -144,3 +144,28 @@ def test_sandbox_dispatch_uses_standard_dispatcher(monkeypatch):
         "programmatic": True,
     }
     assert file_tools._programmatic_read.get() is False
+
+
+def test_programmatic_read_and_chat_raw_paths_are_byte_identical(tmp_path):
+    """Pin the two content construction paths to identical raw output.
+
+    The early structured-document branch builds its page natively (no
+    gutter, no per-line truncation), while the file_ops branch either adds
+    numbers natively or — with line_numbers=False — applies the same clamp
+    without a gutter. Both must produce byte-identical raw content for the
+    same window so the "stable" programmatic contract cannot drift from
+    the chat path.
+    """
+    target = tmp_path / "paths.txt"
+    long_line = "x" * 3000  # exceeds the default 2000-char per-line clamp
+    target.write_text(f"alpha\n{long_line}\ngamma\n", encoding="utf-8")
+
+    programmatic = json.loads(
+        file_tools.read_file_programmatic_tool(str(target), task_id="pin-prog")
+    )
+    chat_raw = json.loads(
+        file_tools.read_file_tool(str(target), task_id="pin-chat", line_numbers=False)
+    )
+
+    assert programmatic["content"] == chat_raw["content"]
+    assert programmatic["content"].splitlines()[1] != long_line  # clamped identically

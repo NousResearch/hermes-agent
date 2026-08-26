@@ -26628,6 +26628,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
+        ("compression", "tail_mode"),
         ("compression", "protect_last_n"),
         ("compression", "proactive_prune_tokens"),
         ("compression", "proactive_prune_min_result_chars"),

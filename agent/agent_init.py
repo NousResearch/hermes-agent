@@ -2146,11 +2146,15 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
-    # Tail retention mode (compression.tail_mode). "legacy" (default) keeps
-    # the 0.20*window verbatim tail; "lean" switches to the clamped
-    # 2.5%/10K-25K tail with recovery-pointer machinery (#87326). Unknown
-    # values fall back to legacy inside the compressor.
-    compression_tail_mode = str(_compression_cfg.get("tail_mode", "legacy")).strip().lower()
+    # Tail retention mode (compression.tail_mode). "lean" (default) keeps a
+    # clamped 2.5%/10K-25K verbatim tail with recovery-pointer machinery —
+    # continuity rides the upgraded summary (digests, anchor index, verbatim
+    # user messages, session_search pointers; recall-eval'd, see
+    # evals/compaction/results/). "legacy" restores the pre-#87326
+    # 0.20*threshold verbatim tail, which on big-window/raised-threshold
+    # setups hoards 100-240K tokens per compaction. Unknown values fall back
+    # to lean inside the compressor.
+    compression_tail_mode = str(_compression_cfg.get("tail_mode", "lean")).strip().lower()
     # Minimum REAL (actionable) user messages guaranteed to survive in the
     # uncompressed tail (compression.min_tail_user_messages).  Default 1
     # preserves current behavior exactly — the existing single-user tail

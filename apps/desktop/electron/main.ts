@@ -1405,7 +1405,27 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // pings every 60s for every open profile). LRU eviction must spare these — a
 // concurrent multi-profile session keeps several backends "fresh" at once, and
 // killing one to honor the soft cap would abort a running agent.
-const POOL_KEEPALIVE_FRESH_MS = 90_000
+//
+// The window is intentionally MUCH wider than the 60s ping cadence:
+//   * 1 missed ping    = +60s of apparent silence
+//   * WSL2 IPC stall  = the renderer's `hermes:backend:touch` roundtrips
+//                       through 9p; a single brief 9p hiccup can stretch a
+//                       ping to ~30s of observed silence (#95189: gateways
+//                       exited every ~2 min on WSL2 because the previous
+//                       90s window left no headroom — one delayed ping
+//                       pushed a live backend past the threshold and the
+//                       cap-driven eviction killed the active profile's
+//                       backend mid-session, re-minting runtime ids and
+//                       re-allocating pooled gateway secondaries ~700×/day).
+//   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
+//     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
+//     POOL_IDLE_MS above (default 10 min) — this constant only governs the
+//     "is this backend plausibly still alive" question for LRU eviction,
+//     not when the idle reaper definitively tears a backend down.
+const POOL_KEEPALIVE_FRESH_MS = Math.max(
+  120_000,
+  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
+)
 let poolIdleReaper = null
 let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,

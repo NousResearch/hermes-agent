@@ -2021,13 +2021,22 @@ def test_legacy_receipt_prefix_rehydrates_only_lost_durable_fields(tmp_path):
             "id": "call_123",
             "name": "skill_view",
             "content": "tool result",
-            "metadata": {"tool_call_id": "call_123"},
+            "metadata": {
+                "hermes_metadata": {"interim": True},
+                "tool_call_id": "call_123",
+            },
         },
         {
             "role": "assistant",
             "id": "summary_123",
             "name": "context_governor",
             "content": "deterministic extractive summary",
+            "metadata": {
+                "hermes_metadata": {
+                    "llm_checkpoint": True,
+                    "receipt_id": "ctxr_legacy",
+                }
+            },
         },
     ]
     (tmp_path / "ctxr_legacy.json").write_text(
@@ -2043,7 +2052,8 @@ def test_legacy_receipt_prefix_rehydrates_only_lost_durable_fields(tmp_path):
     )
 
     # Simulate the historical SessionDB projection: tool-call id survives,
-    # while provider-facing names and the assistant summary id do not.
+    # while provider-facing names, assistant summary ids, and generic host
+    # metadata do not.
     resumed = [
         {
             "role": "tool",
@@ -2064,6 +2074,12 @@ def test_legacy_receipt_prefix_rehydrates_only_lost_durable_fields(tmp_path):
 
     # Same legacy field loss is not sufficient if content has drifted.
     incoming[0]["content"] = "different result"
+    assert engine._rehydrate_legacy_parent_prefix(incoming) == incoming
+
+    # Governor-owned durable metadata remains comparison-significant even
+    # beside the ignored host envelope.
+    incoming[0]["content"] = "tool result"
+    incoming[0]["metadata"]["tool_call_id"] = "call_drifted"
     assert engine._rehydrate_legacy_parent_prefix(incoming) == incoming
 
 

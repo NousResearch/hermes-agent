@@ -1820,6 +1820,19 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
             # summary ids from old receipts were not persisted.
             if projection.get("role") != "tool":
                 projection.pop("id", None)
+            # SessionDB also has no generic message-metadata column. Preserve
+            # governor-owned durable metadata (tool-call identity and native
+            # multimodal content), but ignore only the host metadata envelope
+            # that _message_to_governor produced from a transient ``metadata``
+            # field. Once an authenticated receipt has been archived and
+            # resumed, that envelope cannot be reconstructed from SessionDB;
+            # requiring it here permanently wedges otherwise byte-identical
+            # legacy lineages at their next recursive compaction.
+            metadata = projection.get("metadata")
+            if isinstance(metadata, dict) and "hermes_metadata" in metadata:
+                metadata.pop("hermes_metadata", None)
+                if not metadata:
+                    projection.pop("metadata", None)
             return projection
 
         def repaired_projection(

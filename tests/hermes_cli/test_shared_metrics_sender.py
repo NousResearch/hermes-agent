@@ -148,6 +148,18 @@ class TestContractResponses:
         _sender(store, transport2).send_pending()
         assert transport2.calls == []
 
+    @pytest.mark.parametrize("status", [401, 403, 404, 413, 422])
+    def test_other_4xx_are_permanent_too(self, store, status):
+        """Retrying these every 15 minutes for 30 days fixes nothing."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        transport = FakeTransport(FakeResponse(status))
+        outcome = _sender(store, transport).send_pending()
+        assert outcome.rejected == 1
+        assert len(transport.calls) == 1
+        row = _row(store, "pkg-1")
+        assert row["send_state"] == "rejected"
+        assert str(status) in row["last_error"]
+
     def test_429_defers_using_retry_after(self, store):
         _add_package(store, "pkg-1", "2026-08-26")
         transport = FakeTransport(FakeResponse(429, retry_after="120"))
@@ -342,27 +354,77 @@ class TestClaimingAndBounds:
         assert outcome.sent == MAX_PACKAGES_PER_PASS
 
     def test_two_concurrent_passes_do_not_double_send(self, store):
-        """Claiming is what stops two Hermes processes duplicating work."""
+        """Claiming is what stops two Hermes processes duplicating work.
+
+        The second pass must RECORD what it saw rather than raise: _send_one
+        catches every exception as a retryable transport failure, so an
+        assertion thrown inside a transport would be swallowed and this test
+        would pass no matter what the claim did.
+        """
         _add_package(store, "pkg-1", "2026-08-26")
 
-        seen = []
+        first_calls = []
+        second_calls = []
+
+        def second_transport(endpoint, payload, *, timeout):
+            second_calls.append(payload)
+            return FakeResponse(202)
 
         def transport(endpoint, payload, *, timeout):
-            seen.append(payload)
+            first_calls.append(payload)
             # A second sender runs while the first is mid-flight.
             SharedMetricsSender(
                 store,
                 ENDPOINT,
-                post=lambda *a, **k: (_ for _ in ()).throw(
-                    AssertionError("second pass must not claim a held package")
-                ),
+                post=second_transport,
                 sleep=lambda _s: None,
                 now=lambda: NOW,
             ).send_pending()
             return FakeResponse(202)
 
         _sender(store, transport).send_pending()
-        assert len(seen) == 1
+        assert len(first_calls) == 1
+        assert second_calls == [], (
+            "a concurrent pass claimed a package already in flight"
+        )
+
+    def test_a_claim_leases_the_row_into_the_future(self, store):
+        """The lease, not the send result, is what blocks a concurrent pass."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        with store._connection() as connection:
+            with __import__(
+                "hermes_cli.sqlite_util", fromlist=["write_txn"]
+            ).write_txn(connection):
+                claimed = _sender(store, FakeTransport())._claim(connection, NOW)
+        assert len(claimed) == 1
+        assert _row(store, "pkg-1")["next_attempt_at"] > "2026-08-26T12:00:00Z"
+
+    def test_an_expired_lease_is_reclaimed(self, store):
+        """A process killed mid-pass must not strand its packages."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        _sender(store, FakeTransport(OSError("killed"), OSError(""), OSError(""))).send_pending()
+
+        later = SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=(transport := FakeTransport(FakeResponse(202))),
+            sleep=lambda _s: None,
+            now=lambda: NOW + timedelta(hours=2),
+        )
+        later.send_pending()
+        assert len(transport.calls) == 1
+
+    def test_a_lapsed_sender_cannot_resurrect_a_sent_package(self, store):
+        """Terminal state must win over a straggler's write."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        _sender(store, FakeTransport(FakeResponse(202))).send_pending()
+        assert _row(store, "pkg-1")["send_state"] == "sent"
+
+        # A straggler from an earlier pass tries to defer the same row.
+        _sender(store, FakeTransport())._defer("pkg-1", 600, "stale")
+        assert _row(store, "pkg-1")["send_state"] == "sent", (
+            "a lapsed pass overwrote a completed send"
+        )
 
 
 class TestResilience:

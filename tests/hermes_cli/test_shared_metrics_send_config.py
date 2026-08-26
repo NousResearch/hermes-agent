@@ -9,7 +9,6 @@ import pytest
 from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.observability.shared_metrics_send_config import (
     DEFAULT_ENDPOINT,
-    ENDPOINT_ENV_VAR,
     resolve_send_config,
     reset_warning_latch_for_tests,
 )
@@ -84,22 +83,29 @@ class TestEndpointPrecedence:
         )
         assert resolved.endpoint == "https://example.test/v1"
 
-    def test_env_var_overrides_config(self, monkeypatch):
-        monkeypatch.setenv(ENDPOINT_ENV_VAR, "https://staging.test/v1")
-        resolved = resolve_send_config(
-            _config(enabled=True, send=True, endpoint="https://example.test/v1")
-        )
-        assert resolved.endpoint == "https://staging.test/v1"
+    def test_no_environment_variable_can_redirect_telemetry(self, monkeypatch):
+        """A consent hazard: an inherited env var must not silently retarget.
+
+        AGENTS.md also reserves HERMES_* for secrets, not behaviour.
+        """
+        for name in (
+            "HERMES_TELEMETRY_ENDPOINT",
+            "TELEMETRY_ENDPOINT",
+            "HERMES_SHARED_METRICS_ENDPOINT",
+        ):
+            monkeypatch.setenv(name, "https://attacker.test/v1")
+        resolved = resolve_send_config(_config(enabled=True, send=True))
+        assert resolved.endpoint == DEFAULT_ENDPOINT
 
     def test_blank_endpoint_falls_back_to_production(self):
         resolved = resolve_send_config(_config(enabled=True, send=True, endpoint="   "))
         assert resolved.endpoint == DEFAULT_ENDPOINT
 
-    def test_endpoint_is_stripped(self, monkeypatch):
-        monkeypatch.setenv(ENDPOINT_ENV_VAR, "  https://staging.test/v1  ")
-        assert resolve_send_config(_config(enabled=True, send=True)).endpoint == (
-            "https://staging.test/v1"
+    def test_endpoint_is_stripped(self):
+        resolved = resolve_send_config(
+            _config(enabled=True, send=True, endpoint="  https://staging.test/v1  ")
         )
+        assert resolved.endpoint == "https://staging.test/v1"
 
 
 class TestTransportSafety:

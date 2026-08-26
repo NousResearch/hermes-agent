@@ -5570,6 +5570,43 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
+def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
+    """Return (collection_enabled, send_enabled) from a config dict."""
+    telemetry = config.get("telemetry")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    shared = telemetry.get("shared_metrics")
+    shared = shared if isinstance(shared, dict) else {}
+    return shared.get("enabled") is True, shared.get("send") is True
+
+
+def _shared_metrics_menu_label(config: dict) -> str:
+    """Menu row for shared metrics, showing both consent states."""
+    enabled, send = _shared_metrics_state(config)
+    if not enabled:
+        state = "off"
+    elif send:
+        state = "collecting + sending to Nous"
+    else:
+        state = "collecting locally"
+    return f"Configure shared metrics  ({state})"
+
+
+def _configure_shared_metrics_interactive(config: dict) -> None:
+    """Toggle shared-metrics collection and sending from `hermes tools`.
+
+    Delegates to the setup wizard's prompt so the consent rules live in one
+    place: sending requires collection, and turning collection off also turns
+    sending off.
+    """
+    from hermes_cli.setup import setup_telemetry
+
+    before = _shared_metrics_state(config)
+    setup_telemetry(config)
+    after = _shared_metrics_state(config)
+    if before != after:
+        save_config(config)
+
+
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` and `hermes setup tools`.
 
@@ -5694,6 +5731,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if len(platform_keys) > 1:
         platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
+    platform_choices.append(_shared_metrics_menu_label(config))
 
     # Show MCP option if any MCP servers are configured
     _has_mcp = bool(config.get("mcp_servers"))
@@ -5705,8 +5743,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
-    _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
-    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
+    _metrics_idx = _reconfig_idx + 1
+    _mcp_idx = (_metrics_idx + 1) if _has_mcp else -1
+    _done_idx = _metrics_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -5718,6 +5757,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         # "Reconfigure" selected
         if idx == _reconfig_idx:
             _reconfigure_tool(config, force_fresh=True)
+            print()
+            continue
+
+        # "Shared metrics" selected
+        if idx == _metrics_idx:
+            _configure_shared_metrics_interactive(config)
+            platform_choices[_metrics_idx] = _shared_metrics_menu_label(config)
             print()
             continue
 

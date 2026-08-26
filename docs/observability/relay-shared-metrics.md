@@ -33,8 +33,12 @@ than downloading a different implementation.
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can
 operate on the real call. This is separate from the shared-metrics data
-contract. Shared-metrics mode installs no network exporter and its subscriber
-accepts only the versioned, allowlisted projection described below. Enabling a
+contract. Shared-metrics mode installs no rich-observability network exporter,
+and its subscriber
+accepts only the versioned, allowlisted projection described below. The
+opt-in package sender described in Appendix A is the only outbound path, it
+transmits nothing unless the user enables both `enabled` and `send`, and it
+sends whole packages rather than live spans. Enabling a
 separately configured rich-observability or dynamic plugin can create a
 different data path and requires its own policy review.
 
@@ -226,17 +230,17 @@ packages from that profile and can therefore link those local packages.
 Deleting `$HERMES_HOME/telemetry/shared_metrics` resets the identifier together
 with all aggregates and package files.
 
-This slice has no remote-delivery path. A future remote exporter must not reuse
+Remote delivery is opt-in and off by default. A remote exporter must not reuse
 the persistent local identifier by default. It requires a separate product and
 privacy decision covering consent, identity scope, rotation or keyed
 pseudonymization, reset behavior, retention, and deletion.
 
-> That exporter is now being built as Phase 2 of the Hermes telemetry project.
-> The decisions this paragraph asks for are recorded in
-> [Appendix A](#appendix-a-remote-exporter-decisions-phase-2). Until Phase 2
-> ships, the statement above still describes shipped behaviour: nothing is
-> transmitted, and transmission stays opt-in behind a config key that is off by
-> default.
+> Those decisions are recorded in
+> [Appendix A](#appendix-a-remote-exporter-decisions-phase-2), and the exporter
+> implementing them has shipped. Collection alone still transmits nothing: the
+> sender runs only when `telemetry.shared_metrics.send` is also true, and it
+> transmits a rotating HMAC of the install identity rather than the identifier
+> itself.
 
 The install identity is scoped to one `HERMES_HOME`. To reset it, stop Hermes
 processes and remove `$HERMES_HOME/telemetry/shared_metrics`. This deliberately
@@ -267,9 +271,12 @@ ID, tool-result, and skill-name canaries are absent from the packages.
 
 ## Appendix A: Remote Exporter Decisions (Phase 2)
 
-Status: **decided, not yet built.** This appendix answers the product and
+Status: **implemented.** This appendix answers the product and
 privacy questions that "Current Slices" defers to a future remote exporter. It
 records what was decided and why, so the reasoning survives the implementation.
+
+Sending is off by default and requires both `telemetry.shared_metrics.enabled`
+and `telemetry.shared_metrics.send`.
 
 The exporter sends the package files already written under
 `$HERMES_HOME/telemetry/shared_metrics/outbox/` to the Hermes telemetry ingest

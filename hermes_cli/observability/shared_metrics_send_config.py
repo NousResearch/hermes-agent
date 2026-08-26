@@ -9,19 +9,20 @@ identity, rotation, retention, and deletion decisions behind this module.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-#: Production ingest endpoint. Overridable by config or environment so the
-#: live E2E can target staging without mutating a user's config.
+#: Production ingest endpoint. Overridable through config only.
+#:
+#: Deliberately NOT overridable by an environment variable: AGENTS.md reserves
+#: HERMES_* env vars for secrets, and a behavioural override here would be a
+#: consent hazard — a user who agreed to send metrics to Nous could have them
+#: silently redirected to any host by an inherited variable, with nothing
+#: visible in their config to show it. Tests and the staging E2E write this
+#: key into a throwaway profile instead.
 DEFAULT_ENDPOINT = "https://telemetry.nousresearch.com/v1/telemetry"
-
-#: Environment override, highest precedence. Intended for tests and staging
-#: validation, not as the documented user-facing setting (which is config).
-ENDPOINT_ENV_VAR = "HERMES_TELEMETRY_ENDPOINT"
 
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
@@ -62,8 +63,7 @@ def _endpoint_is_safe(endpoint: str) -> bool:
 def resolve_send_config(config: dict | None) -> SendConfig:
     """Resolve transmission settings from config plus the environment.
 
-    Endpoint precedence: ``HERMES_TELEMETRY_ENDPOINT`` > config > production
-    default.
+    Endpoint precedence: config > production default.
 
     ``send`` is returned as False whenever transmission cannot legitimately
     happen, so callers never have to re-check the combination.
@@ -92,7 +92,7 @@ def resolve_send_config(config: dict | None) -> SendConfig:
             )
         return SendConfig(enabled=False, send=False, endpoint=DEFAULT_ENDPOINT)
 
-    endpoint = os.environ.get(ENDPOINT_ENV_VAR) or shared.get("endpoint")
+    endpoint = shared.get("endpoint")
     if not isinstance(endpoint, str) or not endpoint.strip():
         endpoint = DEFAULT_ENDPOINT
     endpoint = endpoint.strip()

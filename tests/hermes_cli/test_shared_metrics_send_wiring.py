@@ -214,3 +214,41 @@ class TestFailureIsolation:
 
     def test_join_is_safe_with_no_thread(self, runtime):
         runtime._join_send_thread(timeout=0.1)
+
+    def test_join_waits_for_an_in_flight_send(self, runtime, monkeypatch):
+        """shutdown() must give a started send a chance to finish.
+
+        A short-lived CLI exits straight after its final export; without the
+        join the daemon thread is killed mid-request, and the hook path is the
+        only delivery cadence this feature has.
+        """
+        finished = []
+        release = threading.Event()
+
+        class SlowSender:
+            def __init__(self, store, endpoint, **kwargs):
+                pass
+
+            def send_pending(self):
+                release.wait(3)
+                finished.append(True)
+
+        monkeypatch.setattr(
+            "hermes_cli.observability.shared_metrics_sender.SharedMetricsSender",
+            SlowSender,
+        )
+        _set_config(monkeypatch, _config(enabled=True, send=True))
+
+        runtime._export()
+        release.set()
+        runtime._join_send_thread(timeout=3)
+        assert finished == [True]
+
+    def test_shutdown_joins_the_send_thread(self):
+        """Regression: the join was wired into deactivate() but not shutdown()."""
+        import inspect
+
+        source = inspect.getsource(mod._Runtime.shutdown)
+        assert "_join_send_thread" in source, (
+            "shutdown() must join the sender, or a CLI exit kills it mid-send"
+        )

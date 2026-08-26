@@ -2468,9 +2468,32 @@ def setup_telemetry(config: dict):
         default=shared_metrics.get("send") is True,
     )
     if shared_metrics["send"]:
+        _record_send_opt_in_day()
         print_success("Sending shared metrics enabled.")
     else:
         print_info("Sending shared metrics disabled (collection stays local).")
+
+
+def _record_send_opt_in_day() -> None:
+    """Stamp the consent day when the user says yes, not at first send.
+
+    The gate excludes packages for periods before this day. Recording it
+    lazily on the first send pass would silently drop the opt-in day itself
+    whenever the next export happens after midnight UTC.
+    """
+    try:
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_cli.observability.shared_metrics_sender import opt_in_period
+        from hermes_cli.sqlite_util import write_txn
+
+        store = SharedMetricsStore()
+        with store._connection() as connection:
+            with write_txn(connection):
+                opt_in_period(connection)
+    except Exception:
+        # Never block the wizard on telemetry bookkeeping; the sender still
+        # records the day on its first pass if this could not run.
+        logger.debug("Unable to record shared-metrics opt-in day", exc_info=True)
 
 
 # =============================================================================

@@ -671,6 +671,12 @@ class _Runtime:
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
         self.host.release_managed_execution(self._subscriber_name)
         self._registered = False
+        # The final export above may have started a send. Give it the same
+        # bounded chance to finish that deactivate() gets — without this a
+        # short-lived CLI process exits immediately and kills the daemon
+        # thread mid-request, which is the common case for the one cadence
+        # this feature has.
+        self._join_send_thread()
         try:
             atexit.unregister(self.shutdown)
         except Exception:

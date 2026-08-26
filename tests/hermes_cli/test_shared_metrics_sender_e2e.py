@@ -40,6 +40,9 @@ class Ingest(BaseHTTPRequestHandler):
             {
                 "headers": {k.lower(): v for k, v in self.headers.items()},
                 "body": json.loads(body.decode("utf-8")),
+                # Keep the RAW request bytes: comparing only the parsed body
+                # would not notice a non-deterministic transport encoding.
+                "raw": raw,
                 "raw_len": len(raw),
                 "decoded_len": len(body),
             }
@@ -212,6 +215,18 @@ class TestRealTransport:
         _sender(store, server).send_pending()
         first, second = Ingest.received
         assert first["body"] == second["body"]
+        assert first["raw"] == second["raw"], (
+            "the raw request bytes must match, not just the parsed body"
+        )
+
+    def test_a_gzipped_retry_is_byte_identical_on_the_wire(self, store, server):
+        """gzip embeds an mtime by default, which would break this."""
+        _add(store, "pkg-1", metrics=200)
+        Ingest.script = [(503, {}, {}), (202, {}, {})]
+        _sender(store, server).send_pending()
+        first, second = Ingest.received
+        assert first["headers"].get("content-encoding") == "gzip"
+        assert first["raw"] == second["raw"]
 
     def test_several_packages_in_one_pass(self, store, server):
         for i in range(5):

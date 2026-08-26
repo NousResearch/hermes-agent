@@ -28,8 +28,32 @@ def main() -> int:
     scratch = Path(tempfile.mkdtemp(prefix="hermes-telemetry-e2e-"))
     os.environ["HERMES_HOME"] = str(scratch)
 
+    # Staging is selected by writing config into the THROWAWAY profile, not by
+    # an environment override: a runtime env var that can retarget consented
+    # telemetry would be a consent hazard in production.
+    (scratch / "config.yaml").write_text(
+        "telemetry:\n"
+        "  shared_metrics:\n"
+        "    enabled: true\n"
+        "    send: true\n"
+        f"    endpoint: {STAGING}\n"
+    )
+
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_cli.observability.shared_metrics_send_config import (
+        resolve_send_config,
+    )
     from hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
+
+    # Resolve through the real config path so this exercises what a user gets.
+    import yaml
+
+    resolved = resolve_send_config(
+        yaml.safe_load((scratch / "config.yaml").read_text())
+    )
+    if not resolved.send or resolved.endpoint != STAGING:
+        print(f"FAIL: config did not resolve to staging: {resolved}")
+        return 1
 
     store = SharedMetricsStore(
         database_path=scratch / "metrics.sqlite3",
@@ -97,7 +121,7 @@ def main() -> int:
         print(f"  - {package_id}  ({count} metrics)")
     print()
 
-    outcome = SharedMetricsSender(store, STAGING).send_pending()
+    outcome = SharedMetricsSender(store, resolved.endpoint).send_pending()
     print(f"outcome: sent={outcome.sent} rejected={outcome.rejected} "
           f"deferred={outcome.deferred}")
     print()

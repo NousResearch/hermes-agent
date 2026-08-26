@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from hermes_cli.sqlite_util import write_txn
 
@@ -57,6 +57,13 @@ GZIP_THRESHOLD_BYTES = 4096
 
 #: Packages per pass. Bounds work on an interactive hook even after an outage.
 MAX_PACKAGES_PER_PASS = 20
+
+#: How long a claimed row is held by the claiming pass. A claim writes a
+#: LEASE INTO THE FUTURE: another process selecting on `next_attempt_at <= now`
+#: therefore skips it. Long enough to cover three attempts plus backoff
+#: (1+5+25s of jitter plus three 30s timeouts), short enough that a killed
+#: process's rows become eligible again quickly.
+_CLAIM_LEASE_SECONDS = 180
 
 #: Floor applied after a pass fails to deliver, so a hard-down service is not
 #: retried on every task completion.
@@ -100,7 +107,12 @@ def _post(endpoint: str, payload: bytes, *, timeout: int) -> _Response:
     }
     body = payload
     if len(payload) > GZIP_THRESHOLD_BYTES:
-        body = gzip.compress(payload)
+        # mtime=0: gzip embeds a timestamp by default, which would make two
+        # sends of one package differ on the wire. The service decompresses
+        # before storing so it would not change what lands in S3, but a
+        # deterministic body keeps "a resend is byte-identical" true at the
+        # transport layer too, and makes the property testable.
+        body = gzip.compress(payload, mtime=0)
         headers["Content-Encoding"] = "gzip"
 
     request = urllib.request.Request(
@@ -185,6 +197,7 @@ class SharedMetricsSender:
         """
         period = opt_in_period(connection, now=now)
         stamp = _isoformat(now)
+        lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
         rows = connection.execute(
             """
             SELECT package_id, payload_json, sent_install_id
@@ -243,9 +256,14 @@ class SharedMetricsSender:
                     next_attempt_at = ?
                 WHERE package_id = ?
                 """,
-                # Hold the row for the duration of this pass; success or a
-                # real backoff overwrite this immediately below.
-                (_isoformat(now), package_id),
+                # Lease the row INTO THE FUTURE. Selection above requires
+                # next_attempt_at <= now, so for the length of the lease no
+                # other process can claim this package. Writing `now` here (as
+                # an earlier revision did) claimed nothing: a concurrent pass
+                # matched the same predicate immediately and sent a duplicate.
+                # Success or a real backoff overwrites this below; if this
+                # process dies mid-pass, the lease simply expires.
+                (_isoformat(lease_until), package_id),
             )
             claimed.append(
                 {
@@ -268,12 +286,24 @@ class SharedMetricsSender:
         payload = substitute_install_id(json.loads(payload_json), derived)
         return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
 
-    def _mark(self, package_id: str, **columns) -> None:
+    def _mark(self, package_id: str, *, only_if_pending: bool = True, **columns) -> None:
+        """Write send state for one package.
+
+        Guarded on send_state so a pass whose lease lapsed cannot resurrect a
+        row another process has already finished: without this, a slow sender
+        could overwrite 'sent' back to 'pending' and cause a re-send.
+        """
         assignments = ", ".join(f"{name} = ?" for name in columns)
+        predicate = (
+            " AND (send_state IS NULL OR send_state = 'pending')"
+            if only_if_pending
+            else ""
+        )
         with self._store._connection() as connection:
             with write_txn(connection):
                 connection.execute(
-                    f"UPDATE package_outbox SET {assignments} WHERE package_id = ?",
+                    f"UPDATE package_outbox SET {assignments} "
+                    f"WHERE package_id = ?{predicate}",
                     (*columns.values(), package_id),
                 )
 
@@ -315,17 +345,23 @@ class SharedMetricsSender:
                 )
                 return "sent"
 
-            if response.status == 400:
-                # Permanent per the contract. Keep the file (it is the user's
-                # history) but never try again.
+            if response.status == 400 or (
+                400 <= response.status < 500 and response.status != 429
+            ):
+                # The contract only names 400, but every other 4xx is equally
+                # permanent for an unauthenticated fire-and-forget sender: a
+                # wrong path (404), an edge rejection (403), or an oversized
+                # body (413) will not fix itself by being retried every 15
+                # minutes until local retention prunes the package.
                 logger.warning(
-                    "Telemetry package %s rejected as malformed; not retrying",
+                    "Telemetry package %s rejected with HTTP %s; not retrying",
                     package_id,
+                    response.status,
                 )
                 self._mark(
                     package_id,
                     send_state="rejected",
-                    last_error=response.body[:500],
+                    last_error=f"HTTP {response.status}: {response.body[:400]}",
                 )
                 return "rejected"
 

@@ -723,15 +723,25 @@ describe('selectConnection', () => {
     }
   })
 
-  it('boot-time restore leaves "All profiles" browse mode on (#93197)', async () => {
-    // Fresh boot: nothing active yet, registry restores last-used. The
-    // persisted showAllProfiles=true must survive the silent restore.
+  it('waits for the primary descriptor before restoring a source at boot', async () => {
+    // The sidebar mounts while the primary gateway is still booting. Dialing
+    // the preferred source before its descriptor is published can create a
+    // second SSH backend for the exact same registered connection.
     list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
     $showAllProfiles.set(true)
 
-    await initializeConnectionsRegistry()
+    const restoring = initializeConnectionsRegistry()
 
-    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(openGatewayAgent).not.toHaveBeenCalled()
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+
+    $connection.set({ connectionId: 'homelab', mode: 'remote' })
+    await restoring
+
+    expect(openGatewayAgent).not.toHaveBeenCalled()
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
     expect($showAllProfiles.get()).toBe(true)
   })
 

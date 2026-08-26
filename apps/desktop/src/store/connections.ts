@@ -136,6 +136,30 @@ async function rememberConnection(connectionId: string): Promise<void> {
 }
 
 /**
+ * The sidebar registry initializes in parallel with the primary gateway boot.
+ * Wait for main's resolved descriptor before deciding whether the preferred
+ * source needs a secondary dial. Otherwise a remote primary can be opened a
+ * second time through the registry while the identical primary SSH backend is
+ * still publishing its connection identity.
+ */
+function waitForInitialConnection(): Promise<void> {
+  if ($connection.get()) {
+    return Promise.resolve()
+  }
+
+  return new Promise(resolve => {
+    const unlisten = $connection.listen(connection => {
+      if (!connection) {
+        return
+      }
+
+      unlisten()
+      resolve()
+    })
+  })
+}
+
+/**
  * Load the registry once for Sessions and restore the last successfully used
  * source. Later registry refreshes stay side-effect free, so editing Settings
  * in another window never changes the active workspace.
@@ -148,6 +172,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   }
 
   restoreAttempted = true
+  await waitForInitialConnection()
 
   // Residual drift: a window can be live on a source the registry cannot name
   // (a v1-configured remote that reconciliation has not repaired yet, e.g. a

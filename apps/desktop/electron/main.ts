@@ -134,6 +134,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   rememberSshEnumeration,
+  registrySourceOwnsPrimaryBackend,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
@@ -10569,6 +10570,24 @@ async function ensureRegistryBackend(connectionId, profile) {
       ...primary,
       profile: profileKey,
       connectionId: id
+    }
+  }
+
+  // The v1 primary and the registry primary can describe the same remote
+  // backend beyond the SSH-fingerprint path above (cloud/url remotes have no
+  // ssh -G identity). Reuse the already-running primary when the registry
+  // resolves its live descriptor back to this exact source id; otherwise one
+  // Desktop window starts two isolated servers whose transient runtime ids
+  // are not interchangeable.
+  if (id === registry.primary && source.kind !== 'local' && source.kind !== 'ssh') {
+    const primaryDescriptor = await ensureBackend(profile)
+
+    if (registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)) {
+      return {
+        ...primaryDescriptor,
+        profile: profileKey,
+        connectionId: id
+      }
     }
   }
 

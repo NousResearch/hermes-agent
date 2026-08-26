@@ -29,6 +29,7 @@ import {
   reconcileRegistryDrift,
   REGISTRY_VERSION,
   rememberSshEnumeration,
+  registrySourceOwnsPrimaryBackend,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
@@ -236,6 +237,28 @@ test('primary SSH reuse rejects a descriptor with a different remote Hermes path
     }),
     null
   )
+})
+
+test('registry primary reuses a matching primary backend descriptor', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'hermes-vps',
+    launchMode: 'primary',
+    lastUsed: 'hermes-vps',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      { id: 'hermes-vps', kind: 'ssh', label: 'Hermes VPS', host: 'hermes-vps' }
+    ]
+  })
+  const descriptor = {
+    connectionId: 'hermes-vps',
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: { host: 'hermes-vps' }
+  }
+
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, 'hermes-vps', descriptor), true)
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, LOCAL_CONNECTION_ID, descriptor), false)
 })
 
 test('resolvedConnectionId identifies local and migrated remote descriptors', () => {

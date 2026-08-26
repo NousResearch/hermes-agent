@@ -320,3 +320,151 @@ class TestStaleGiveupHalfOpenProbe:
         assert "consecutive stale attempts" in msg
         assert "aborting this call" in msg
         assert "Next automatic probe" in msg
+
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_responsive_http_error_probe_clears_breaker_for_normal_retry(
+        self, monkeypatch
+    ):
+        """A half-open probe that reaches the provider and receives a real
+        HTTP error (429/503/…) proves the no-response condition is over: the
+        breaker clears entirely, so the normal retry/rate-limit/fallback
+        machinery's next attempt reaches provider dispatch instead of being
+        short-circuited as "provider unresponsive"."""
+        import time
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 3
+        agent._stale_probe_after = time.monotonic() - 1.0  # probe due
+
+        req = httpx.Request("POST", "https://example.com/v1/messages")
+        agent._anthropic_client.messages.stream.side_effect = (
+            httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=req,
+                response=httpx.Response(429, request=req),
+            )
+        )
+
+        with pytest.raises(Exception):
+            agent._interruptible_streaming_api_call({})
+
+        # The authoritative response resolved the stale condition: streak
+        # and probe window both cleared — "open because unreachable" did not
+        # survive evidence of reachability.
+        assert agent._consecutive_stale_streams == 0
+        assert agent._stale_probe_after == 0.0
+
+        # The follow-up attempt (the retry the outer policy would make)
+        # reaches provider dispatch — no fail-fast breaker result.
+        agent._anthropic_client.messages.stream.side_effect = None
+        agent._anthropic_client.messages.stream.return_value = _good_stream_cm()
+        resp = agent._interruptible_streaming_api_call({})
+        assert resp is not None
+        assert agent._anthropic_client.messages.stream.call_count == 2
+
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    def test_connection_error_probe_keeps_breaker_open(self, monkeypatch):
+        """A probe failing with a status-less transport error (connection
+        refused/dropped — still no authoritative response) must NOT clear
+        the breaker: the streak survives and the re-armed window keeps the
+        next call insta-failing."""
+        import time
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 3
+        agent._stale_probe_after = time.monotonic() - 1.0  # probe due
+        agent._anthropic_client.messages.stream.side_effect = httpx.ConnectError(
+            "connection refused"
+        )
+
+        with pytest.raises(Exception):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._consecutive_stale_streams == 3
+        assert agent._stale_probe_after > time.monotonic()
+        opened = agent._anthropic_client.messages.stream.call_count
+
+        with pytest.raises(RuntimeError, match="consecutive stale attempts"):
+            agent._interruptible_streaming_api_call({})
+        assert agent._anthropic_client.messages.stream.call_count == opened
+
+    def test_concurrent_probe_claim_admits_exactly_one(self, monkeypatch):
+        """At most one network probe is admitted per half-open window, even
+        when many callers hit _check_stale_giveup concurrently at the
+        expired-window boundary: the claim (check elapsed → arm next window
+        → admit) is serialized, so exactly one caller reaches provider
+        dispatch and every other retains the fail-fast breaker result."""
+        import time
+
+        from agent.chat_completion_helpers import _check_stale_giveup
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 5
+        agent._stale_probe_after = time.monotonic() - 5.0  # window elapsed
+
+        n = 8
+        barrier = threading.Barrier(n)
+        outcomes = []
+        outcomes_lock = threading.Lock()
+
+        def _caller():
+            barrier.wait(timeout=5.0)
+            try:
+                _check_stale_giveup(agent)
+                verdict = "admitted"
+            except RuntimeError:
+                verdict = "blocked"
+            with outcomes_lock:
+                outcomes.append(verdict)
+
+        threads = [threading.Thread(target=_caller) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        assert len(outcomes) == n
+        assert outcomes.count("admitted") == 1
+        assert outcomes.count("blocked") == n - 1
+        # The single claim re-armed the window into the future.
+        assert agent._stale_probe_after > time.monotonic()
+
+    def test_responsive_error_detection_shapes(self):
+        """_is_responsive_provider_error recognizes the provider-SDK error
+        shapes that carry an authoritative HTTP response, and nothing else."""
+        from agent.chat_completion_helpers import _is_responsive_provider_error
+
+        req = httpx.Request("POST", "https://example.com/v1/messages")
+
+        # openai/anthropic APIStatusError shape: .status_code int
+        assert _is_responsive_provider_error(
+            SimpleNamespace(status_code=429, response=None)
+        )
+        # httpx.HTTPStatusError shape: .response.status_code int
+        assert _is_responsive_provider_error(
+            httpx.HTTPStatusError(
+                "503", request=req, response=httpx.Response(503, request=req)
+            )
+        )
+        # botocore ClientError shape: dict .response with ResponseMetadata
+        assert _is_responsive_provider_error(
+            SimpleNamespace(
+                response={"ResponseMetadata": {"HTTPStatusCode": 400}}
+            )
+        )
+        # No authoritative response: timeouts, transport drops, junk shapes
+        assert not _is_responsive_provider_error(None)
+        assert not _is_responsive_provider_error(TimeoutError("stale"))
+        assert not _is_responsive_provider_error(
+            httpx.ConnectError("connection refused")
+        )
+        assert not _is_responsive_provider_error(
+            SimpleNamespace(status_code="429")  # non-int status
+        )
+        assert not _is_responsive_provider_error(SimpleNamespace(response={}))

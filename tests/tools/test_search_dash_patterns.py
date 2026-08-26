@@ -47,14 +47,20 @@ def test_rg_command_separates_leading_dash_pattern(pattern):
     assert f" -- '{pattern}'" in cmd.replace('"', "'")
 
 
-@pytest.mark.parametrize("pattern", ["-77", "->"])
+@pytest.mark.parametrize("pattern", ["-77", "--pdf-engine", "-e", "->"])
 def test_grep_command_separates_leading_dash_pattern(pattern):
+    """Mirror of the rg construction set — grep's own flag parser is the
+    fallback engine most users hit, so it gets the same coverage. The
+    trailing ``--`` is honored by GNU/BSD/BusyBox grep alike (BusyBox
+    compatibility is assumed for minimal remote appliances)."""
     ops, captured = _capturing_ops()
     result = ops._search_with_grep(
         pattern=pattern, path=".", file_glob=None,
         limit=10, offset=0, output_mode="content", context=0,
     )
-    assert " -- " in captured["cmd"]
+    cmd = captured["cmd"]
+    assert " -- " in cmd, f"end-of-flags separator missing: {cmd}"
+    assert f" -- '{pattern}'" in cmd.replace('"', "'")
 
 
 # ─────────────────────────────────────────────────────────────────────

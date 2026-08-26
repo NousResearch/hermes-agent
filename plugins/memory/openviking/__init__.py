@@ -487,10 +487,7 @@ class _VikingClient:
         """Probe server identity without disclosing credentials or tenant IDs."""
         resp = self._httpx.get(
             self._url(path),
-            headers={
-                "Accept": "application/json",
-                "User-Agent": _OPENVIKING_USER_AGENT,
-            },
+            headers={"Accept": "application/json"},
             timeout=3.0,
         )
         return self._parse_response(resp)

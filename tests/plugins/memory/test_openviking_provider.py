@@ -847,7 +847,6 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
     ]
     expected_anonymous_headers = {
         "Accept": "application/json",
-        "User-Agent": _EXPECTED_USER_AGENT,
     }
     assert calls[0][1] == expected_anonymous_headers
     assert calls[1][1] == expected_anonymous_headers
@@ -881,14 +880,8 @@ def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_head
     assert client.health() is True
     assert client.health() is True
     assert captured_headers == [
-        {
-            "Accept": "application/json",
-            "User-Agent": _EXPECTED_USER_AGENT,
-        },
-        {
-            "Accept": "application/json",
-            "User-Agent": _EXPECTED_USER_AGENT,
-        },
+        {"Accept": "application/json"},
+        {"Accept": "application/json"},
     ]
 
 
@@ -925,7 +918,6 @@ def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatc
     assert client.health() is True
     assert calls[0] == {
         "Accept": "application/json",
-        "User-Agent": _EXPECTED_USER_AGENT,
     }
     assert "Authorization" in calls[1]
     assert calls[1]["Authorization"].startswith("Bearer account.user.")
@@ -960,12 +952,7 @@ def test_cloud_health_does_not_send_key_without_api_key(monkeypatch):
 
     with pytest.raises(openviking_module._OpenVikingHTTPError):
         client.health_payload()
-    assert calls == [
-        {
-            "Accept": "application/json",
-            "User-Agent": _EXPECTED_USER_AGENT,
-        }
-    ]
+    assert calls == [{"Accept": "application/json"}]
 
 
 def test_health_non_auth_errors_do_not_retry_with_credentials(monkeypatch):
@@ -988,12 +975,7 @@ def test_health_non_auth_errors_do_not_retry_with_credentials(monkeypatch):
 
     with pytest.raises(openviking_module._OpenVikingHTTPError):
         client.health_payload()
-    assert calls == [
-        {
-            "Accept": "application/json",
-            "User-Agent": _EXPECTED_USER_AGENT,
-        }
-    ]
+    assert calls == [{"Accept": "application/json"}]
 
 
 def test_modern_openviking_identity_does_not_probe_openapi():

@@ -138,7 +138,10 @@ describe('secondary activation requires an open socket, not just a connection de
 
     gatewayMocks.connect.mockRejectedValueOnce(new Error('ECONNRESET'))
 
-    await ensureGatewayForProfile('research')
+    // Post-#81165 the profile door RE-THROWS on a failed dial (so callers can
+    // surface it); the #92265 invariant under test is unchanged — the closed
+    // secondary must never be published as the active route.
+    await expect(ensureGatewayForProfile('research')).rejects.toThrow('ECONNRESET')
 
     // Must still be on the primary -- the closed secondary was never
     // published as the active route.

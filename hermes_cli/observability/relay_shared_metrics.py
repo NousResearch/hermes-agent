@@ -132,6 +132,9 @@ class _Runtime:
         self._sessions: dict[str, _MetricsSession] = {}
         self._task_creation_lock = threading.RLock()
         self._task_sessions_lock = threading.RLock()
+        # Guards the opt-in send pass: at most one in flight per process.
+        self._send_lock = threading.RLock()
+        self._send_thread: threading.Thread | None = None
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._turn_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
@@ -706,10 +709,28 @@ class _Runtime:
         with self._task_sessions_lock:
             self._task_sessions.clear()
             self._turn_sessions.clear()
+        self._join_send_thread()
         try:
             atexit.unregister(self.shutdown)
         except Exception:
             pass
+
+    def _join_send_thread(self, timeout: float = 2.0) -> None:
+        """Give an in-flight send a brief chance to finish at exit.
+
+        Bounded on purpose: the packages stay pending in SQLite and go out on
+        the next run, so blocking a user's shutdown for a slow network is the
+        wrong trade. The thread is a daemon, so an unfinished pass dies with
+        the process rather than holding it open.
+        """
+        with self._send_lock:
+            thread = self._send_thread
+        if thread is None or not thread.is_alive():
+            return
+        try:
+            thread.join(timeout)
+        except Exception:
+            logger.debug("Shared-metrics send thread join failed", exc_info=True)
 
     def _session(self, event: dict[str, Any]) -> _MetricsSession | None:
         session_id = str(event.get("session_id") or "")
@@ -1048,7 +1069,56 @@ class _Runtime:
         return True
 
     def _export(self) -> None:
-        self._safe(self.subscriber.store.create_and_export_package_if_due)
+        exported = self._safe(self.subscriber.store.create_and_export_package_if_due)
+        # Sending is opt-in and must never delay the caller: _export runs on
+        # finish_task, which is the user's interactive path. Errors inside the
+        # sender are already swallowed there; the thread is about latency, not
+        # correctness.
+        if exported is not None:
+            self._safe(self._send_exported_packages)
+
+    def _send_exported_packages(self) -> None:
+        from hermes_cli.observability.shared_metrics_send_config import (
+            resolve_send_config,
+        )
+
+        try:
+            from hermes_cli.config import read_raw_config_readonly
+
+            config = read_raw_config_readonly() or {}
+        except Exception:
+            logger.debug("Unable to read shared-metrics send policy", exc_info=True)
+            return
+
+        resolved = resolve_send_config(config)
+        if not resolved.send:
+            return
+
+        with self._send_lock:
+            # One in-flight pass per process. A queued second pass would add
+            # nothing: the next hook fire picks up whatever is still pending.
+            if self._send_thread is not None and self._send_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._run_send_pass,
+                args=(resolved.endpoint,),
+                name="hermes-shared-metrics-send",
+                daemon=True,
+            )
+            self._send_thread = thread
+            thread.start()
+
+    def _run_send_pass(self, endpoint: str) -> None:
+        from hermes_cli.observability.shared_metrics_sender import (
+            SharedMetricsSender,
+        )
+
+        try:
+            SharedMetricsSender(
+                self.subscriber.store, endpoint
+            ).send_pending()
+        except Exception:
+            logger.warning("Shared-metrics send pass failed", exc_info=True)
 
     def _event_metadata(self) -> dict[str, str]:
         return {

@@ -10092,7 +10092,31 @@ function globalRemoteActive() {
 
   const mode = readDesktopConnectionConfig().mode
 
-  return modeIsRemoteLike(mode) || mode === 'ssh'
+  if (modeIsRemoteLike(mode) || mode === 'ssh') {
+    return true
+  }
+
+  // Registry-primary transport (#91564/#90316): a registered remote/cloud/ssh
+  // gateway promoted to primary via connections.json makes the primary
+  // backend remote even while the v1 config.mode still says 'local'. Every
+  // consumer of this flag ("one remote host serves every profile") must see
+  // that, or the local-entry routes delegate into a primary that now dials
+  // remote — respawning the exact loopback children the resolver rung in
+  // desktop-remote-route.ts eliminates.
+  return registryPrimaryIsRemote()
+}
+
+// True when the v2 registry PRIMARY names a non-local connection. Mirrors the
+// registry fallback rung in resolveDesktopRemoteRoute.
+function registryPrimaryIsRemote() {
+  try {
+    const registry = readDesktopConnectionsRegistry()
+    const entry = registry.connections.find(c => c.id === registry.primary)
+
+    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh'))
+  } catch {
+    return false
+  }
 }
 
 // True when the PRIMARY profile's backend resolves to a remote/cloud host —

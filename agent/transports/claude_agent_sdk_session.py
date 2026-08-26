@@ -903,6 +903,89 @@ def _swallow_interrupt_result(future: Any) -> None:
         )
 
 
+def _mcp_registry_tool_specs(agent, snapshot: list) -> list:
+    """MCP schemas the agent's gating allows that its snapshot is missing.
+
+    The snapshot is missing them whenever Hermes' own tool-search deferral is
+    active: ``get_tool_definitions`` collapses MCP tools behind
+    ``tool_search``/``describe``/``call`` before the bridge is built, so they
+    never reach the subprocess at all — no bucket carries them, and direct
+    registration in ``mcp_servers`` covers neither stdio servers (no URL) nor
+    servers whose URL is refused.
+
+    That deferral is redundant on this lane. The spawned CLI runs its own tool
+    search over whatever it is handed (``ToolSearch`` returning
+    ``tool_reference`` entries), and unlike ours it keeps every tool
+    reachable — it only decides what to put in context, which is where the
+    token cost is actually paid. Ours removes the tool outright, so the
+    subprocess cannot surface what it never received. Reading the
+    pre-assembly schemas hands it the full surface and lets its own deferral
+    do the job.
+
+    This is a diff, not a concatenation: only ``mcp__``-prefixed names the
+    snapshot does not already carry are returned, so a server the snapshot
+    already covers is never registered twice.
+
+    Gating is the agent's own — the same ``enabled_toolsets`` /
+    ``disabled_toolsets`` it was built with, which is what
+    ``refresh_agent_mcp_tools`` uses for the same rebuild. Reading the
+    registry unfiltered would resurrect a server the operator disabled for
+    this platform, and registry dispatch is not allowlist-gated.
+
+    Never raises: any failure yields ``[]`` and leaves the bridge exactly as
+    it would have been.
+    """
+    # Honour the same opt-out the snapshot refresh honours: background review
+    # sets `_skip_mcp_refresh` deliberately, and reading the registry here
+    # would walk straight past it.
+    if getattr(agent, "_skip_mcp_refresh", False):
+        return []
+
+    try:
+        from tools.mcp_tool_discovery import has_registered_mcp_tools
+
+        if not has_registered_mcp_tools():
+            return []
+    except Exception:
+        logger.debug("MCP registry probe failed", exc_info=True)
+        return []
+
+    try:
+        from model_tools import get_tool_definitions
+
+        from agent.transports.hermes_tool_exposure import normalize_tool_spec
+
+        specs = get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True,
+            # Pre-assembly schemas: tool_search would otherwise hand back its
+            # tier-2 placeholder and the bridge would register that instead
+            # of the real tool.
+            skip_tool_search_assembly=True,
+        )
+    except Exception:
+        logger.debug("MCP registry tool-definition read failed", exc_info=True)
+        return []
+
+    def _name(spec: Any) -> Optional[str]:
+        try:
+            normalized = normalize_tool_spec(spec, strip_mcp_prefix=False)
+        except Exception:
+            return None
+        return normalized[0] if normalized else None
+
+    seen = {n for n in (_name(s) for s in (snapshot or [])) if n}
+    out: list = []
+    for spec in specs or []:
+        name = _name(spec)
+        if not name or not name.startswith("mcp__") or name in seen:
+            continue
+        seen.add(name)
+        out.append(spec)
+    return out
+
+
 def _http_mcp_entries_from_config() -> dict[str, dict]:
     """Return explicitly opted-in, credential-free HTTP MCPs for the SDK.
 
@@ -2853,9 +2936,22 @@ class ClaudeAgentSdkSession:
                     only_names=HERMES_TOOLS_LEGACY_NAMES,
                     exclude_names=exclude_names,
                 )
+                # Registry diff rides the "extras" bucket only: the legacy
+                # bucket stays byte-identical so ``mcp__hermes-tools__*``
+                # grants keep matching. When the diff is empty the snapshot
+                # object is forwarded untouched, so a deployment with nothing
+                # late-registered builds exactly the bridge it built before.
+                registry_extra = _mcp_registry_tool_specs(
+                    self._agent, self._tools
+                )
+                hybrid_tools = (
+                    list(self._tools) + registry_extra
+                    if registry_extra
+                    else self._tools
+                )
                 mcp_servers[HYBRID_SERVER] = build_hybrid_mcp_server(
                     self._agent,
-                    self._tools,
+                    hybrid_tools,
                     server_name=HYBRID_SERVER,
                     exclude_names=(
                         list(exclude_names) + list(HERMES_TOOLS_LEGACY_NAMES)

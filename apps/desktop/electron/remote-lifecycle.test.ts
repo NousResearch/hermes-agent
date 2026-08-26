@@ -287,38 +287,40 @@ test('readLockfile classifies existing-but-foreign lockfiles as skew, never null
   // (a) foreign-schema lockfile (fork build wrote a different shape)
   const foreign = await readLockfile(fakeSsh([[/cat/, 'not json at all']]), OWNERSHIP_ID)
   assert.equal(isLockfileSkew(foreign), true)
+
   // (b) truncated lockfile (partial write / corruption)
-  const truncated = await readLockfile(
-    fakeSsh([[/cat/, JSON.stringify(ownedLock()).slice(0, 40)]]),
-    OWNERSHIP_ID
-  )
+  const truncated = await readLockfile(fakeSsh([[/cat/, JSON.stringify(ownedLock()).slice(0, 40)]]), OWNERSHIP_ID)
+
   assert.equal(isLockfileSkew(truncated), true)
+
   // (c) future schemaVersion (newer build owns this remote)
   const future = await readLockfile(
     fakeSsh([[/cat/, JSON.stringify(ownedLock({ schemaVersion: LOCKFILE_SCHEMA_VERSION + 1 }))]]),
     OWNERSHIP_ID
   )
+
   assert.equal(isLockfileSkew(future), true)
   // unknown schema number entirely
   const unknown = await readLockfile(fakeSsh([[/cat/, JSON.stringify({ schemaVersion: 999 })]]), OWNERSHIP_ID)
   assert.equal(isLockfileSkew(unknown), true)
+
   // missing ownershipId / foreign ownership
   const foreignOwner = await readLockfile(
     fakeSsh([[/cat/, JSON.stringify(ownedLock({ ownershipId: undefined }))]]),
     OWNERSHIP_ID
   )
+
   assert.equal(isLockfileSkew(foreignOwner), true)
+
   // every skew carries a diagnosable reason and is never a valid lock
   for (const skew of [foreign, truncated, future, unknown, foreignOwner]) {
     assert.equal(typeof (skew as any).reason, 'string')
     assert.notEqual(skew, null)
   }
+
   // a valid lock and a missing lockfile are NOT skew
   assert.equal(isLockfileSkew(await readLockfile(fakeSsh([[/cat/, '']]), OWNERSHIP_ID)), false)
-  assert.equal(
-    isLockfileSkew(await readLockfile(fakeSsh([[/cat/, JSON.stringify(ownedLock())]]), OWNERSHIP_ID)),
-    false
-  )
+  assert.equal(isLockfileSkew(await readLockfile(fakeSsh([[/cat/, JSON.stringify(ownedLock())]]), OWNERSHIP_ID)), false)
 })
 
 // #95532: on skew the reap pass must FAIL CLOSED — no kill, no lockfile
@@ -344,7 +346,10 @@ test('connect() fails closed on lockfile schema/ownership skew: skips reap, touc
       (error: any) => error.kind === 'remote-lockfile-skew',
       `${label}: connect must refuse with remote-lockfile-skew`
     )
-    assert.ok(!ssh.calls.some(c => /(^|[^-\d])kill -?9? ?\d/.test(c) && !/kill -0/.test(c)), `${label}: must not kill any pid`)
+    assert.ok(
+      !ssh.calls.some(c => /(^|[^-\d])kill -?9? ?\d/.test(c) && !/kill -0/.test(c)),
+      `${label}: must not kill any pid`
+    )
     assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), `${label}: must not remove any remote file`)
     assert.ok(!ssh.calls.some(c => /setsid|nohup/.test(c)), `${label}: must not spawn on top of foreign state`)
     assert.ok(!ssh.calls.some(c => /printf '%s' '.*schemaVersion/.test(c)), `${label}: must not overwrite the lockfile`)

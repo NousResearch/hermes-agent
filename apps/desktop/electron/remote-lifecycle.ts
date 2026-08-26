@@ -861,13 +861,17 @@ async function connect(deps) {
     // or is corrupt. FAIL CLOSED: no reap, no removal, no overwrite, no spawn
     // on top of foreign live state — reaping here is how live tunnels die.
     const lpath = lockfilePath(ownershipId)
-    log(`lockfile schema/ownership skew (${lock.reason}) at ${lpath} — failing closed: skipping reap, leaving remote state untouched`)
+    log(
+      `lockfile schema/ownership skew (${lock.reason}) at ${lpath} — failing closed: skipping reap, leaving remote state untouched`
+    )
+
     const error: any = new Error(
       `The remote ownership record ${lpath} does not match this Hermes Desktop build (${lock.reason}). ` +
         'It was probably written by a different or modified desktop build sharing this remote, or the file is corrupt. ' +
         'Refusing to reap or overwrite it — that could kill a live SSH backend owned by another build. ' +
         'If nothing else uses this remote, delete that file on the remote host and reconnect.'
     )
+
     error.kind = 'remote-lockfile-skew'
     throw error
   }

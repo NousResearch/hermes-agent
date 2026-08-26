@@ -117,6 +117,7 @@ import type { ClientSessionState } from '../../types'
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
+import { singleFlightSessionResume } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -1945,7 +1946,7 @@ describe('resumeSession failure recovery', () => {
     expect($resumeFailedSessionId.get()).toBe('stored-1')
   })
 
-  it('times out a never-settling resume and releases the single-flight for retry', async () => {
+  it('times out when joining an earlier never-settling resume and releases the shared flight for retry', async () => {
     vi.useFakeTimers()
 
     let resumeCalls = 0
@@ -1956,10 +1957,6 @@ describe('resumeSession failure recovery', () => {
       }
 
       resumeCalls += 1
-
-      if (resumeCalls === 1) {
-        return new Promise<never>(() => undefined)
-      }
 
       return {
         info: {},
@@ -1977,6 +1974,12 @@ describe('resumeSession failure recovery', () => {
     // unresumable/unreachable row whose RPC never settles.
     vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('network down'))
 
+    // Another resume surface wins the module-level flight before the route
+    // resolver starts. The resolver must still inherit the shared deadline;
+    // putting a timeout only inside its callback cannot bound this join path.
+    const earlierFlight = singleFlightSessionResume('stored-1', () => new Promise<never>(() => undefined))
+    earlierFlight.catch(() => undefined)
+
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
     expect(resume).not.toBeNull()
@@ -1989,18 +1992,17 @@ describe('resumeSession failure recovery', () => {
     })
 
     expect($resumeFailedSessionId.get()).toBe('stored-1')
-    expect(resumeCalls).toBe(1)
+    expect(resumeCalls).toBe(0)
 
-    // The timeout rejects INSIDE singleFlightSessionResume, so its finally
-    // removes the stale flight. A later retry must dispatch a fresh RPC rather
-    // than rejoin the permanently pending first request.
+    // The shared timeout removes exactly the stale flight. A later retry must
+    // dispatch a fresh RPC rather than rejoin the permanently pending request.
     vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
 
     await act(async () => {
       await resume!('stored-1', true)
     })
 
-    expect(resumeCalls).toBe(2)
+    expect(resumeCalls).toBe(1)
     expect($activeSessionId.get()).toBe('runtime-retry')
     expect($resumeFailedSessionId.get()).toBeNull()
   })

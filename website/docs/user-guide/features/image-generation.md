@@ -104,6 +104,28 @@ image_gen:
 
 The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to `medium` (~$0.034–$0.06/image at 1024×1024). We don't expose the `low` / `high` tiers as a user-facing option so that Nous Portal billing stays predictable across all users — the cost spread between tiers is 3–22×. If you want a cheaper option, pick Klein 9B or Z-Image Turbo; if you want higher quality, use Nano Banana Pro or Recraft V4 Pro.
 
+### Meta Model API: Muse Image
+
+With `image_gen.provider: meta-ai`, images are generated through the
+[Meta Model API](https://api.meta.ai) (`https://api.meta.ai/v1`), the same
+OpenAI-compatible endpoint that serves the Muse Spark chat models. It is the
+image-gen companion to the bundled `meta-ai` chat provider.
+
+| Model | Speed | Strengths | Price |
+|---|---|---|---|
+| `muse-image-1.0` *(default)* | ~10s | Meta Model API image generation | $0.01/image |
+
+```yaml
+image_gen:
+  provider: meta-ai
+  model: muse-image-1.0
+```
+
+Auth reuses the same env vars as the Meta chat provider — `MODEL_API_KEY`
+(Meta's documented name), with `META_API_KEY` / `META_MODEL_API_KEY` accepted
+as aliases. Set `META_BASE_URL` to point at a proxy or alternate host. Text-to-image
+only for now; responses are saved to `$HERMES_HOME/cache/images/`.
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:

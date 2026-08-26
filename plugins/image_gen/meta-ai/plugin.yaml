@@ -1,0 +1,7 @@
+name: meta-ai-image-gen
+version: 1.0.0
+description: "Meta Model API image generation backend (muse-image). OpenAI-compatible /v1/images/generations. Saves images to $HERMES_HOME/cache/images/."
+author: Meta Platforms, Inc.
+kind: backend
+requires_env:
+  - META_MODEL_API_KEY

@@ -117,9 +117,7 @@ describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
     const dev = makeRepoAt(root, 'dev', 'proj')
     const music = makeRepoAt(root, 'Music', 'samples')
 
-    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'linux' }))).toEqual(
-      [dev, music].sort()
-    )
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'linux' }))).toEqual([dev, music].sort())
   })
 })
 

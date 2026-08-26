@@ -83,8 +83,22 @@ describe('revalidateSuspectPooledRemoteBackends (#93910)', () => {
 
     const result = await revalidateSuspectPooledRemoteBackends({
       entries: [
-        ['default', { connectionPromise: Promise.resolve(descriptor('http://127.0.0.1:9')), process: { pid: 4 }, remoteBaseUrl: null }],
-        ['work', { connectionPromise: Promise.resolve(descriptor('http://127.0.0.1:9')), process: { pid: 5 }, remoteBaseUrl: '' }]
+        [
+          'default',
+          {
+            connectionPromise: Promise.resolve(descriptor('http://127.0.0.1:9')),
+            process: { pid: 4 },
+            remoteBaseUrl: null
+          }
+        ],
+        [
+          'work',
+          {
+            connectionPromise: Promise.resolve(descriptor('http://127.0.0.1:9')),
+            process: { pid: 5 },
+            remoteBaseUrl: ''
+          }
+        ]
       ],
       log: vi.fn(),
       probe,
@@ -181,6 +195,7 @@ describe('attachPowerResumeRemoteRevalidation (#93910)', () => {
   it('kicks one bounded revalidation per resume, coalescing resume + unlock-screen bursts (no hot loop)', async () => {
     const powerMonitor = fakePowerMonitor()
     let resolveRevalidate: (() => void) | undefined
+
     const revalidate = vi.fn(
       () =>
         new Promise<void>(resolve => {
@@ -220,11 +235,13 @@ describe('attachPowerResumeRemoteRevalidation (#93910)', () => {
   it('swallows and logs a rejected revalidation without wedging future wakes', async () => {
     const powerMonitor = fakePowerMonitor()
     const log = vi.fn()
+
     const revalidate = vi.fn(async () => {
       throw new Error('probe exploded')
     })
 
     let now = 5_000_000
+
     const trigger = attachPowerResumeRemoteRevalidation({
       log,
       now: () => now,

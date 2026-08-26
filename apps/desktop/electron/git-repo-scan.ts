@@ -35,6 +35,7 @@ const LIBRARY_PACKAGE_SUFFIXES = ['.photoslibrary', '.musiclibrary', '.tvlibrary
 
 function isLibraryPackage(name: string): boolean {
   const lower = String(name).toLowerCase()
+
   return LIBRARY_PACKAGE_SUFFIXES.some(suffix => lower.endsWith(suffix))
 }
 
@@ -172,18 +173,21 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     }
 
     const skipTccProtectedPaths = (pathOptions.platform ?? process.platform) === 'darwin'
+
     const subdirs = entries
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !JUNK_DIRS.has(entry.name))
       .filter(entry => {
         if (!skipTccProtectedPaths) {
           return true
         }
+
         // Depth-0 children of a scan root only: a nested dir named "Music"
         // inside a project is fine, and an explicitly supplied media root
         // arrives AS a root (never as a depth-0 child), so it still scans.
         if (depth === 0 && MEDIA_ROOT_DIRS.has(entry.name)) {
           return false
         }
+
         return !isLibraryPackage(entry.name)
       })
       .map(entry => path.join(dir, entry.name))

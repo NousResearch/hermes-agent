@@ -242,6 +242,54 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
 
+class TestExecuteRemoteRestoresTrackedCwd(unittest.TestCase):
+    """_execute_remote runs its own commands with cwd="/" and from the
+    sandbox dir; the terminal's tracked cwd must be what it was before."""
+
+    class FakeEnv:
+        def __init__(self, fail_script=False):
+            self.cwd = "/work/project"
+            self.commands = []
+            self.fail_script = fail_script
+
+        def get_temp_dir(self):
+            return "/tmp"
+
+        def execute(self, command, cwd=None, timeout=None):
+            self.commands.append((command, cwd, timeout))
+            # BaseEnvironment.execute tracks the cwd a command ran in.
+            self.cwd = cwd or self.cwd
+            if "command -v python3" in command:
+                return {"output": "OK\n"}
+            if "python3 script.py" in command:
+                if self.fail_script:
+                    raise RuntimeError("backend lost")
+                self.cwd = "/tmp"
+                return {"output": "hello\n", "returncode": 0}
+            return {"output": ""}
+
+    def _run(self, env):
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "bubblewrap")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=MagicMock()):
+            return json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
+
+    def test_tracked_cwd_restored_after_success(self):
+        env = self.FakeEnv()
+        result = self._run(env)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(any(cwd == "/" for _, cwd, _ in env.commands))
+        self.assertEqual(env.cwd, "/work/project")
+
+    def test_tracked_cwd_restored_when_the_script_raises(self):
+        env = self.FakeEnv(fail_script=True)
+        result = self._run(env)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("backend lost", result["error"])
+        self.assertEqual(env.cwd, "/work/project")
+
+
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""

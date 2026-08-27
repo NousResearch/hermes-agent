@@ -3385,6 +3385,49 @@ class TestSystemCompressionNoteAuthority:
         assert COMPRESSION_NOTE not in _HISTORICAL_COMPRESSION_NOTES
         assert "fully authoritative regardless of compaction" not in COMPRESSION_NOTE
 
+    @pytest.mark.parametrize("as_list", [False, True])
+    def test_apply_note_replaces_retired_string_or_multimodal_list(self, as_list):
+        from agent.context_compressor import (
+            COMPRESSION_NOTE,
+            _HISTORICAL_COMPRESSION_NOTES,
+            _apply_system_compression_note,
+            _content_text_for_contains,
+        )
+
+        retired = _HISTORICAL_COMPRESSION_NOTES[0]
+        prefix = "You are a helpful assistant.\n\n"
+        image = {"type": "image_url", "image_url": {"url": "x"}}
+        raw = prefix + retired
+        content = (
+            [{"type": "text", "text": raw}, image] if as_list else raw
+        )
+        applied = _apply_system_compression_note(content)
+        joined = _content_text_for_contains(applied)
+        lower = joined.lower()
+        assert joined.startswith("You are a helpful assistant.")
+        assert retired not in joined
+        assert COMPRESSION_NOTE in joined
+        assert lower.count("[note: some earlier conversation turns have been compacted") == 1
+        assert "fully authoritative regardless of compaction" not in lower
+        if as_list:
+            assert isinstance(applied, list)
+            assert applied[1] == image
+
+    def test_apply_note_appends_to_multimodal_list_without_note(self):
+        from agent.context_compressor import (
+            COMPRESSION_NOTE,
+            _apply_system_compression_note,
+            _content_text_for_contains,
+        )
+
+        content = [{"type": "text", "text": "You are a helpful assistant."}]
+        applied = _apply_system_compression_note(content)
+        assert isinstance(applied, list)
+        assert applied[0]["text"] == "You are a helpful assistant."
+        assert applied[-1]["type"] == "text"
+        assert COMPRESSION_NOTE in applied[-1]["text"]
+        assert _content_text_for_contains(applied).count(COMPRESSION_NOTE) == 1
+
 
 class TestSummaryPromptBounding:
 

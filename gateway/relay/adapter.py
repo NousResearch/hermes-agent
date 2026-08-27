@@ -1138,25 +1138,39 @@ class RelayAdapter(BasePlatformAdapter):
             urls = list(getattr(event, "media_urls", None) or [])
             if not urls:
                 return
+            # media_types is INDEXED IN PARALLEL with media_urls by every
+            # downstream classifier (_event_media_type_at). Any URL we drop or
+            # rewrite here must carry its MIME with it, or the surviving
+            # attachments inherit a neighbour's type and get mis-routed (an
+            # image classified by a PDF's mime is not treated as an image).
+            # Carry (url, mime) as PAIRS through the whole loop.
+            types = list(getattr(event, "media_types", None) or [])
+            pairs = [
+                (u, types[i] if i < len(types) else "") for i, u in enumerate(urls)
+            ]
             client = self._get_media_client()
-            localized: list[str] = []
-            for url in urls:
+            localized: list[tuple[str, str]] = []
+            for url, mime in pairs:
                 if not isinstance(url, str) or not url:
                     continue
                 if client is None:
                     # No authenticated client: keep public URLs, drop re-hosts.
                     if "/relay/media/" not in url:
-                        localized.append(url)
+                        localized.append((url, mime))
                     continue
                 path = await client.download(url)
                 if path:
-                    localized.append(path)
+                    localized.append((path, mime))
                 elif "/relay/media/" not in url:
                     # A public URL that failed to download still has value as
                     # a URL (native adapters pass URLs to vision in some
                     # lanes); a dead re-host reference does not.
-                    localized.append(url)
-            event.media_urls = localized
+                    localized.append((url, mime))
+            event.media_urls = [u for u, _ in localized]
+            # Keep the parallel-array invariant: one mime slot per surviving
+            # url, always. A short/stale media_types would shift entries onto
+            # the wrong url the moment anything indexes or merges them.
+            event.media_types = [m for _, m in localized]
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
 

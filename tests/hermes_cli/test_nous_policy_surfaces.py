@@ -160,3 +160,44 @@ class TestRecommendedDefaultEndpoint:
 
     def test_unrestricted_org_is_unaffected(self, monkeypatch, no_policy):
         assert self._call(monkeypatch)["model"] == "vendor/blocked"
+
+
+class TestAuxiliaryFastModel:
+    """``_fast_model_from_catalog`` treats the catalog's keys as a source of
+    ids, so an anonymous read there can select a model the gateway refuses."""
+
+    def _pick(self, monkeypatch, *, catalog):
+        import agent.auxiliary_client as aux
+
+        seen: dict = {}
+
+        def _fake_fetch(*, api_key=None, base_url="", timeout=8.0, **_k):
+            seen["api_key"] = api_key
+            return {mid: {} for mid in catalog}
+
+        monkeypatch.setattr(
+            models_mod, "_resolve_nous_pricing_credentials",
+            lambda: ("sk-nous", "https://inference.example.com"),
+        )
+        monkeypatch.setattr(models_mod, "fetch_models_with_pricing", _fake_fetch)
+        picked = aux._fast_model_from_catalog("nous")
+        return picked, seen
+
+    def test_reads_the_catalog_with_nous_oauth_credentials(self, monkeypatch, no_policy):
+        """The api-key resolver raises for OAuth providers; without a fallback
+        the read goes out anonymous and returns the unfiltered catalog."""
+        _, seen = self._pick(monkeypatch, catalog=["vendor/haiku-fast"])
+        assert seen["api_key"] == "sk-nous"
+
+    def test_hidden_model_is_not_selected(self, monkeypatch, policy):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            models_mod, "nous_policy_allowed_ids", lambda **_k: {"vendor/allowed"}
+        )
+        monkeypatch.setattr(aux, "_FAST_MODEL_FAMILIES", ("vendor/",))
+        monkeypatch.setattr(aux, "_FAST_MODEL_EXCLUDE", ())
+        picked, _ = self._pick(
+            monkeypatch, catalog=["vendor/blocked", "vendor/allowed"]
+        )
+        assert picked == "vendor/allowed"

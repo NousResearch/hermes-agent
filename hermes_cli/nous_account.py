@@ -99,6 +99,7 @@ class NousPortalAccountInfo:
     subscription: Optional[NousPortalSubscriptionInfo] = None
     paid_service_access: Optional[bool] = None
     paid_service_access_info: Optional[NousPaidServiceAccessInfo] = None
+    policy_present: Optional[bool] = None
     tool_access: Optional[NousToolAccessInfo] = None
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None
@@ -396,6 +397,36 @@ def get_nous_portal_account_info(
     )
 
 
+def nous_policy_present() -> Optional[bool]:
+    """Whether the caller's org carries a restrictive model/provider policy.
+
+    Read from the ``policy_present`` claim on the Nous OAuth access token, so
+    this costs no request. ``/api/oauth/account`` does not carry the claim,
+    which is why this reads the token directly rather than going through
+    :func:`get_nous_portal_account_info`.
+
+    ``None`` means unknown — an older mint, an unreadable token, or a
+    non-boolean claim. Unknown is NOT "no policy": callers must not report the
+    absence of the claim as the absence of a restriction.
+
+    The claim is stamped at mint time, so it goes stale until the next token
+    refresh.
+    """
+    try:
+        from hermes_cli.auth import get_provider_auth_state, _decode_jwt_claims
+
+        state = get_provider_auth_state("nous") or {}
+        access_token = state.get("access_token")
+        if not isinstance(access_token, str) or not access_token.strip():
+            return None
+        claims = _decode_jwt_claims(access_token)
+        if not claims:
+            return None
+        return _coerce_bool(claims.get("policy_present"))
+    except Exception:
+        return None
+
+
 def _fresh_account_info(
     *,
     state: dict[str, Any],
@@ -642,6 +673,7 @@ def _info_from_valid_jwt(
         expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
         paid_service_access=paid_access,
         paid_service_access_info=access_info,
+        policy_present=_coerce_bool(claims.get("policy_present")),
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
     )

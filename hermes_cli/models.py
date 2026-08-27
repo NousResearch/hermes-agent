@@ -2604,6 +2604,74 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     return (api_key, base_url)
 
 
+def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]]:
+    """The Nous model ids the caller's org may reach, or ``None`` to not filter.
+
+    The gateway filters ``GET /v1/models`` by the org's model policy for an
+    authenticated read, omitting blocked rows with no marker field, so the keys
+    of the authenticated pricing response are the reachable set. This reuses
+    that response rather than issuing a second round trip.
+
+    Returns ``None`` — meaning "leave the caller's list alone" — in three cases,
+    each of which would otherwise narrow a list on evidence that cannot support
+    it:
+
+    * the org carries no policy, or the token is too old to say (see
+      :func:`~hermes_cli.nous_account.nous_policy_present`). Filtering an
+      unrestricted org's list buys nothing and risks dropping a model the
+      Portal recommends before the gateway catalog lists it.
+    * credential resolution failed, so the read is anonymous and therefore
+      unfiltered. A full catalog must not be mistaken for a policy-filtered one.
+    * the read came back empty, which is a fetch failure rather than an org
+      that may reach nothing.
+    """
+    try:
+        from hermes_cli.nous_account import nous_policy_present
+
+        if nous_policy_present() is not True:
+            return None
+    except Exception:
+        return None
+
+    api_key, base_url = _resolve_nous_pricing_credentials()
+    if not api_key or not base_url:
+        return None
+
+    # Same arguments as get_pricing_for_provider's nous branch, so a caller
+    # that also asks for pricing shares this cache entry instead of paying for
+    # a second request.
+    pricing = fetch_models_with_pricing(
+        api_key=api_key,
+        base_url=base_url,
+        force_refresh=force_refresh,
+        include_sale_original=True,
+    )
+    return set(pricing) or None
+
+
+def restrict_to_nous_policy(
+    model_ids: list[str], allowed: Optional[set[str]]
+) -> list[str]:
+    """*model_ids* narrowed to *allowed*, preserving the caller's order.
+
+    A ``None`` or empty *allowed* leaves the list untouched — see
+    :func:`nous_policy_allowed_ids` for when that happens.
+
+    A ``:free`` sibling is kept when its base model is reachable. The gateway
+    admits a row when any of its requestable ids passes, and treats anything
+    unknown as a keep on the grounds that over-listing costs a 403 from the
+    authoritative gate while hiding a row the gate would serve is unrecoverable
+    from the client. This mirrors that.
+    """
+    if not allowed:
+        return list(model_ids)
+    return [
+        mid
+        for mid in model_ids
+        if mid in allowed or mid.split(":", 1)[0] in allowed
+    ]
+
+
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
     normalized = normalize_provider(provider)

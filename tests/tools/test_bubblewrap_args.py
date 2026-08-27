@@ -298,3 +298,116 @@ class TestRuntimeOverlays:
         i_cwd = argv.index(paths["initial_cwd"])
         for operand in (overlays[1], overlays[-1]):
             assert i_tmp < argv.index(operand) < i_cwd
+
+
+class TestAncestorPins:
+    """Ancestors of a hidden path that lie strictly inside a writable bind are
+    bound over themselves so the sandbox cannot rename them out from under
+    their overlay.
+    """
+
+    @staticmethod
+    def _pins(argv, paths):
+        """Every --bind of a path over itself other than the state dir."""
+        return [pair for pair in triples(argv, "--bind") if pair[0] == pair[1] and pair[0] != paths["state_dir"]]
+
+    @pytest.fixture
+    def home(self, paths):
+        home = Path(paths["home"])
+        (home / ".config" / "gcloud").mkdir(parents=True)
+        (home / ".ssh").mkdir()
+        return home
+
+    def test_cwd_at_home_pins_the_config_dir_only(self, paths, home):
+        argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        pins = triples(argv, "--bind")
+        assert (str(home / ".config"), str(home / ".config")) in pins
+        # The bind root and the hidden entries are mount points already.
+        assert (str(home), str(home)) not in pins
+        assert (str(home / ".ssh"), str(home / ".ssh")) not in pins
+        assert (str(home / ".config" / "gcloud"), str(home / ".config" / "gcloud")) not in pins
+
+    def test_cwd_above_home_pins_home_and_the_config_dir(self, paths, home):
+        parent = str(home.parent)
+        argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=parent, tracked_cwd=parent)
+        pins = triples(argv, "--bind")
+        assert (str(home), str(home)) in pins
+        assert (str(home / ".config"), str(home / ".config")) in pins
+        assert (parent, parent) not in pins
+
+    def test_restricted_profile_adds_no_pins(self, paths, home):
+        argv = build(BubblewrapConfig(profile="restricted"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+
+    def test_cwd_outside_home_adds_no_pins(self, paths, home):
+        argv = build(paths=paths)
+        assert self._pins(argv, paths) == []
+
+    def test_hermes_home_ancestors_are_pinned(self, paths, home, tmp_path):
+        hermes_home = tmp_path / "state" / "hermes"
+        hermes_home.mkdir(parents=True)
+        argv = build(paths=paths, initial_cwd=str(tmp_path), tracked_cwd=str(tmp_path), hermes_home=str(hermes_home))
+        pins = triples(argv, "--bind")
+        assert (str(tmp_path / "state"), str(tmp_path / "state")) in pins
+        assert (str(hermes_home), str(hermes_home)) not in pins
+
+    def test_rw_operator_bind_above_home_pins_and_ro_does_not(self, paths, home):
+        parent = str(home.parent)
+        rw = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),)), paths=paths)
+        ro = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=True),)), paths=paths)
+        assert (str(home), str(home)) in triples(rw, "--bind")
+        assert (str(home / ".config"), str(home / ".config")) in triples(rw, "--bind")
+        assert self._pins(ro, paths) == []
+
+    def test_pin_follows_a_bind_whose_dest_differs_from_its_src(self, paths, home, tmp_path):
+        # The pin's source is the host path the sandbox path maps to.
+        src = tmp_path / "elsewhere"
+        (src / "home" / ".config" / "gcloud").mkdir(parents=True)
+        parent = str(home.parent)
+        config = BubblewrapConfig(binds=(BindMount(src=str(src), dest=parent, readonly=False),))
+        argv = build(config, paths=paths)
+        assert (str(src / "home"), str(home)) in triples(argv, "--bind")
+        assert (str(src / "home" / ".config"), str(home / ".config")) in triples(argv, "--bind")
+
+    def test_ancestor_that_is_a_bind_dest_is_not_pinned(self, paths, home, tmp_path):
+        other = tmp_path / "other"
+        other.mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(other), dest=str(home / ".config"), readonly=False),))
+        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        pins = [p for p in triples(argv, "--bind") if p[1] == str(home / ".config")]
+        assert pins == [(str(other), str(home / ".config"))]
+
+    def test_symlinked_ancestor_is_not_pinned(self, paths, home, tmp_path):
+        # A mount cannot pin a symlink and would bind its target instead.
+        real = tmp_path / "real-config"
+        (real / "gcloud").mkdir(parents=True)
+        (home / ".config" / "gcloud").rmdir()
+        (home / ".config").rmdir()
+        (home / ".config").symlink_to(real)
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+        assert str(real) not in argv
+
+    def test_missing_ancestor_is_not_pinned(self, paths, home):
+        (home / ".config" / "gcloud").rmdir()
+        (home / ".config").rmdir()
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+
+    def test_pins_sit_after_the_operator_binds_and_before_the_overlays(self, paths, home, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(shared)),))
+        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        i_cwd = argv.index("--bind-try")
+        i_shared = argv.index(str(shared))
+        i_pin = argv.index(str(home / ".config"))
+        i_overlay = argv.index(str(home / ".ssh"))
+        assert i_cwd < i_shared < i_pin < i_overlay
+
+    def test_pins_are_deduplicated_across_binds(self, paths, home):
+        parent = str(home.parent)
+        config = BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),))
+        argv = build(config, paths=paths, initial_cwd=parent, tracked_cwd=parent)
+        pins = triples(argv, "--bind")
+        assert pins.count((str(home / ".config"), str(home / ".config"))) == 1

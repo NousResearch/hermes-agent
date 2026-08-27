@@ -78,8 +78,11 @@ need to read them from inside a command. With `terminal.home_mode: profile`
 the `HERMES_HOME/home` directory is the subprocess `HOME` and stays
 readable and writable; the rest of `HERMES_HOME` stays hidden.
 
-A path that does not exist on the host is simply skipped. Writes into a
-hidden directory land in the sandbox's copy and never reach the host.
+A path that does not exist on the host is simply skipped. An entry that
+is a symlink (a dotfiles repository that links `~/.ssh` to
+`~/dotfiles/ssh`) is hidden at its target, resolved when the backend
+starts. Writes into a hidden directory land in the sandbox's copy and
+never reach the host.
 
 ## Working directory
 

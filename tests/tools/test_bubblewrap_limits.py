@@ -29,6 +29,7 @@ import pytest
 
 from tools.environments import bubblewrap
 from tools.environments.bubblewrap import (
+    WRAPPER_PROCESS_ALLOWANCE,
     BubblewrapConfig,
     BubblewrapEnvironment,
     make_preexec,
@@ -87,8 +88,15 @@ class TestRlimitValues:
         assert limits == {
             resource.RLIMIT_AS: 256 * MB,
             resource.RLIMIT_CPU: 30,
-            resource.RLIMIT_NPROC: 100 + 256,
+            resource.RLIMIT_NPROC: 100 + 256 + WRAPPER_PROCESS_ALLOWANCE,
         }
+
+    def test_max_procs_gets_the_wrapper_allowance_on_top_of_the_uid_count(self):
+        # bwrap, its init, bash and its subshells fork before the command
+        # runs; the allowance keeps a tight max_procs from starving them.
+        limits = rlimit_values(BubblewrapConfig(max_procs=4), uid_threads=100)
+        assert limits[resource.RLIMIT_NPROC] == 100 + 4 + WRAPPER_PROCESS_ALLOWANCE
+        assert 4 <= WRAPPER_PROCESS_ALLOWANCE <= 64
 
     @pytest.mark.parametrize("key, res", [
         ("memory_mb", resource.RLIMIT_AS),
@@ -143,7 +151,7 @@ class TestPreexec:
         assert dict(recorded) == {
             resource.RLIMIT_AS: (256 * MB, 256 * MB),
             resource.RLIMIT_CPU: (30, 30),
-            resource.RLIMIT_NPROC: (356, 356),
+            resource.RLIMIT_NPROC: (356 + WRAPPER_PROCESS_ALLOWANCE, 356 + WRAPPER_PROCESS_ALLOWANCE),
         }
 
     def test_environment_preexec_skips_zeroed_keys(self, sandbox_root, work_dir, recorded, monkeypatch):
@@ -239,14 +247,17 @@ class TestLimitsIntegration:
         assert result["output"].strip() == "started=300 failed=0"
 
     def test_max_procs_bounds_what_the_sandbox_adds(self, make_env, fork_script):
-        result = make_env(max_procs=16).execute(f"python3 {fork_script} concurrent 100")
+        # max_procs=64 leaves room for the parallel test runner's own forks
+        # under the same uid between the preexec scan and bwrap's fork; 300
+        # concurrent children still overrun it by a wide margin.
+        result = make_env(max_procs=64).execute(f"python3 {fork_script} concurrent 300")
         assert result["returncode"] == 0, result["output"]
         counts = dict(part.split("=") for part in result["output"].split())
         assert int(counts["failed"]) >= 1, counts
         # Host activity (the parallel test runner included) shifts the uid
         # thread count between the preexec scan and the forks, so only the
         # ceiling itself is asserted, not its exact position.
-        assert int(counts["started"]) < 100, counts
+        assert int(counts["started"]) < 300, counts
 
     def test_max_procs_zero_disables_the_process_limit(self, make_env, fork_script):
         result = make_env(max_procs=0).execute(f"python3 {fork_script} concurrent 100")

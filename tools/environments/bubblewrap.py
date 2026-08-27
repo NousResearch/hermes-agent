@@ -27,7 +27,10 @@ Layout of the argv (later mounts overlay earlier ones):
    same for HERMES_HOME
 7. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
    that overlay (it is the subprocess HOME then)
-8. the per-environment state dir read-write at the same path
+8. the per-environment state dir read-write at the same path; between
+   commands it holds the shell snapshot and the cwd file, and for the
+   duration of an execute_code call the hermes_exec_<id> dir with the
+   script, the tools module and the rpc files
 9. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
 
@@ -476,9 +479,10 @@ def build_bwrap_args(
         if os.path.isdir(profile_home):
             argv += ["--bind", profile_home, profile_home]
 
-    # The state dir holds the shell snapshot and cwd file; it is bound after
-    # the sensitive overlays so it stays writable at the same path in every
-    # spawn.
+    # The state dir holds the shell snapshot and the cwd file between
+    # commands (and the execute_code sandbox dir during a call); it is
+    # bound after the sensitive overlays so it stays writable at the same
+    # path in every spawn.
     argv += ["--bind", state_dir, state_dir]
 
     argv += ["--chdir", tracked_cwd, "--"]

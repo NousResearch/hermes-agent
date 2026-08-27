@@ -8,9 +8,11 @@ stays green.
 
 import builtins
 import inspect
+import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -264,7 +266,7 @@ class TestProfileNetworkAndWritableSet:
         assert "ead-only" in result["output"]
 
 
-MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
+MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
 
 
 def _mounts(argv):
@@ -305,7 +307,7 @@ class TestConstructionTimeMounts:
         second = env._wrap_popen_args(["bash"])
         assert _chdir(second) == home
         assert _mounts(second) == _mounts(first)
-        assert (str(work_dir), str(work_dir)) in [m[1:] for m in _mounts(second) if m[0] == "--bind"]
+        assert (str(work_dir), str(work_dir)) in [m[1:] for m in _mounts(second) if m[0] == "--bind-try"]
         assert home not in {p for m in _mounts(second) for p in m[1:]}
 
     def test_builder_reads_nothing_from_state_dir(self, sandbox_root, work_dir, monkeypatch):
@@ -533,3 +535,134 @@ class TestEnvPassthroughParity:
         finally:
             local.cleanup()
             bwrap.cleanup()
+
+
+class TestInitialCwdGuard:
+    """The cwd is the writable set: / is refused and HOME gets a warning."""
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_root_cwd_is_refused_before_touching_disk(self, sandbox_root, fake_home):
+        with _no_session(), pytest.raises(ValueError, match="terminal.cwd must not be /"):
+            BubblewrapEnvironment(cwd="/", timeout=10)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    @pytest.mark.parametrize("which", ["home", "parent-of-home"])
+    def test_home_or_its_ancestor_as_cwd_warns(self, sandbox_root, fake_home, caplog, which):
+        cwd = fake_home if which == "home" else fake_home.parent
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            env = BubblewrapEnvironment(cwd=str(cwd), timeout=10)
+        env.cleanup()
+        assert any("covers the home directory" in r.getMessage() for r in caplog.records)
+
+    def test_project_dir_as_cwd_is_silent(self, sandbox_root, fake_home, work_dir, caplog):
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        env.cleanup()
+        assert not any("covers the home directory" in r.getMessage() for r in caplog.records)
+
+    def test_failed_bootstrap_leaves_no_state_behind(self, sandbox_root, work_dir):
+        with patch.object(LocalEnvironment, "init_session", autospec=True, side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+
+@pytest.fixture
+def host_dir(tmp_path):
+    """A scratch dir outside /tmp (which is a fresh tmpfs inside the sandbox)."""
+    if not str(tmp_path.resolve()).startswith("/tmp/"):
+        yield tmp_path
+        return
+    try:
+        base = Path(tempfile.mkdtemp(prefix="hermes-bwrap-r1-", dir=Path.home()))
+    except OSError:
+        pytest.skip("no writable directory outside /tmp")
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@needs_bwrap
+class TestDeletedCwdRecovery:
+    def test_deleted_cwd_recovers_to_the_parent_and_rebinds_when_recreated(self, sandbox_root, host_dir):
+        work = host_dir / "work"
+        work.mkdir()
+        env = BubblewrapEnvironment(cwd=str(work), timeout=30)
+        try:
+            assert env.execute("pwd")["output"].strip() == str(work)
+            shutil.rmtree(work)
+            # LocalEnvironment recovers the tracked cwd on the first spawn after
+            # the deletion, whose wrapper still targets the old dir (same as the
+            # local backend); every spawn after that must run, not wedge on the
+            # missing bind source.
+            env.execute("true")
+            result = env.execute("pwd")
+            assert result["returncode"] == 0, result["output"]
+            recovered = result["output"].strip()
+            assert recovered == env.cwd != str(work)
+            assert os.path.isdir(recovered)
+            # The recovered dir is on the read-only root: visible, not writable.
+            assert env.execute("touch ./r1-probe")["returncode"] != 0
+            work.mkdir()
+            result = env.execute(f"cd {work} && touch r1-probe")
+            assert result["returncode"] == 0, result["output"]
+            assert (work / "r1-probe").is_file()
+        finally:
+            env.cleanup()
+
+
+@needs_bwrap
+class TestRuntimeDirAndDockerSocketMasked:
+    @pytest.fixture
+    def env(self, sandbox_root, work_dir):
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            yield env
+        finally:
+            env.cleanup()
+
+    def test_runtime_dir_is_empty_inside(self, env):
+        runtime_dir = f"/run/user/{os.getuid()}"
+        if not os.path.isdir(runtime_dir) or not os.listdir(runtime_dir):
+            pytest.skip("host has no populated runtime dir")
+        result = env.execute(f"ls -A {runtime_dir} | wc -l")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].strip() == "0"
+
+    def test_host_socket_in_runtime_dir_is_not_connectable(self, env):
+        import socket
+
+        runtime_dir = f"/run/user/{os.getuid()}"
+        if not os.path.isdir(runtime_dir):
+            pytest.skip("host has no runtime dir")
+        path = f"{runtime_dir}/hermes-r1-{uuid.uuid4().hex[:8]}.sock"
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(path)
+        server.listen(1)
+        try:
+            probe = f"python3 -c \"import socket; socket.socket(socket.AF_UNIX).connect('{path}')\""
+            result = env.execute(probe)
+            assert result["returncode"] != 0
+            assert "No such file" in result["output"]
+        finally:
+            server.close()
+            os.unlink(path)
+
+    def test_docker_socket_is_a_plain_empty_file_inside(self, env):
+        from tools.environments.bubblewrap import DOCKER_SOCKETS
+
+        present = [s for s in DOCKER_SOCKETS if os.path.exists(s)]
+        if not present:
+            pytest.skip("host has no docker socket")
+        for sock in present:
+            result = env.execute(f"test -S {sock}")
+            assert result["returncode"] != 0, sock
+            result = env.execute(f"test -f {sock} && wc -c < {sock}")
+            assert result["returncode"] == 0 and result["output"].strip() == "0", (sock, result)

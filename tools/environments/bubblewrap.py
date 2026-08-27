@@ -9,9 +9,13 @@ argument; the tracked cwd is used for ``--chdir`` alone.
 Layout of the argv (later mounts overlay earlier ones):
 
 1. namespace and process-safety flags
-2. read-only root, fresh /dev, /proc and a tmpfs /tmp
+2. read-only root, fresh /dev, /proc and a tmpfs /tmp, then a tmpfs over
+   the user's runtime dir (/run/user/<uid>: agent and bus sockets) and an
+   empty file over the docker socket
 3. the initial cwd, read-write for workspace and network, read-only for
-   restricted
+   restricted; a ``-try`` bind, so a cwd deleted on the host (the agent's
+   own ``rm -rf``) skips the bind and the command runs in the recovered
+   cwd instead of wedging every later spawn
 4. operator binds from terminal.bubblewrap_binds, minus sensitive sources
 5. the sensitive overlays: a tmpfs over each sensitive directory and an
    empty file over each sensitive file that exists on the host, then the
@@ -21,6 +25,16 @@ Layout of the argv (later mounts overlay earlier ones):
 7. the per-environment state dir read-write at the same path
 8. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
+
+The paths in the argv are fixed at construction. What varies per spawn is
+presence only: an overlay is emitted for a sensitive path that exists on
+the host at spawn time, and never for one that does not, so host changes
+(or a sandbox with a writable HOME planting a symlink) can only add hiding
+mounts, never expose anything.
+
+Resource limits are applied through Popen's preexec_fn, as the spec asks.
+CPython documents preexec_fn as unsafe in a threaded process; the callable
+here only calls getrlimit and setrlimit, which take no locks.
 """
 
 from __future__ import annotations
@@ -37,7 +51,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_real_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
 from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
 
@@ -220,6 +234,39 @@ def sensitive_overlay_args(home: str, hermes_home: str, state_dir: str) -> list[
     return argv
 
 
+DOCKER_SOCKETS: tuple[str, ...] = ("/var/run/docker.sock", "/run/docker.sock")
+
+
+def runtime_overlay_args(state_dir: str, uid: int) -> list[str]:
+    """Hide the user's runtime dir and the docker socket.
+
+    A read-only bind of / still lets a command connect() to unix sockets:
+    the gpg-agent, keyring and ssh-agent sockets under /run/user/<uid>
+    would sign and decrypt with the user's loaded keys, and the docker
+    socket is a root-equivalent escape for a user in the docker group. The
+    runtime dir gets a tmpfs (nothing a command needs lives there) and each
+    docker socket that exists gets the empty file bound over it, which
+    makes it a plain file.
+    """
+    argv: list[str] = []
+    runtime_dir = f"/run/user/{uid}"
+    if os.path.isdir(runtime_dir):
+        argv += ["--tmpfs", runtime_dir]
+    empty = empty_file_path(state_dir)
+    seen: set[str] = set()
+    for sock in DOCKER_SOCKETS:
+        if not os.path.exists(sock):
+            continue
+        # Mount at the real path: bwrap cannot create a mount point through
+        # the /var/run -> /run symlink, and the symlink resolves to it anyway.
+        real = os.path.realpath(sock)
+        if real in seen:
+            continue
+        seen.add(real)
+        argv += ["--ro-bind", empty, real]
+    return argv
+
+
 def _is_within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
@@ -282,10 +329,15 @@ def build_bwrap_args(
         "--proc", "/proc",
         "--tmpfs", "/tmp",
     ]
+    argv += runtime_overlay_args(state_dir, os.getuid())
+
     # The cwd is always bound at its own path so --chdir resolves even when
     # it sits under the masked /tmp; the profile decides whether it is
-    # writable.
-    argv += ["--bind" if profile.writable_cwd else "--ro-bind", initial_cwd, initial_cwd]
+    # writable. The -try form skips the bind when the directory is gone
+    # from the host, so LocalEnvironment's cwd recovery (a parent dir on
+    # the read-only root) keeps commands running instead of every spawn
+    # failing on a missing bind source.
+    argv += ["--bind-try" if profile.writable_cwd else "--ro-bind-try", initial_cwd, initial_cwd]
 
     for bind in filter_binds(config.binds, home, hermes_home):
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
@@ -453,10 +505,13 @@ class BubblewrapEnvironment(LocalEnvironment):
         # the terminal tool turns into its degraded or error result.
         resolve_profile(self._config.profile)
         self._bwrap_path = probe_bwrap()
-        self._home = os.path.expanduser("~")
+        # The OS user's home anchors the sensitive set even when this process
+        # runs with HOME pointed at the profile home.
+        self._home = get_real_home() or os.path.expanduser("~")
         self._hermes_home = str(get_hermes_home())
-        # The mount set is fixed here; only --chdir follows the tracked cwd.
+        # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = _resolve_local_initial_cwd(cwd)
+        self._check_initial_cwd()
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
         # from get_temp_dir() and LocalEnvironment.__init__ runs the login
         # bootstrap straight away, so the state dir must exist first.
@@ -466,7 +521,29 @@ class BubblewrapEnvironment(LocalEnvironment):
         # write to what shows at the hidden file paths.
         self._empty_file = empty_file_path(self._state_dir)
         os.close(os.open(self._empty_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400))
-        super().__init__(cwd=self._initial_cwd, timeout=timeout, env=env)
+        try:
+            super().__init__(cwd=self._initial_cwd, timeout=timeout, env=env)
+        except BaseException:
+            self._remove_state()
+            raise
+
+    def _check_initial_cwd(self) -> None:
+        """Refuse a cwd of / and warn about HOME: the cwd is the writable set."""
+        cwd = self._initial_cwd.rstrip(os.sep) or os.sep
+        if cwd == os.sep:
+            raise ValueError(
+                "terminal.cwd must not be / with the bubblewrap backend: the whole "
+                "root would be writable inside the sandbox. Set terminal.cwd to a "
+                "project or scratch directory."
+            )
+        home = os.path.abspath(self._home).rstrip(os.sep) or os.sep
+        if cwd == home or _is_within(home, cwd):
+            logger.warning(
+                "bubblewrap cwd %s covers the home directory: every dotfile outside "
+                "the hidden set is writable inside the sandbox. Set terminal.cwd to "
+                "a project or scratch directory for a smaller writable set.",
+                self._initial_cwd,
+            )
 
     def get_temp_dir(self) -> str:
         return self._state_dir
@@ -494,7 +571,9 @@ class BubblewrapEnvironment(LocalEnvironment):
         path with this instance's state dir bound; the state dir is unique
         per instance and fixed at construction, so nothing from inside a
         sandbox can forge it. Zombies are left for the thread that spawned
-        them to reap.
+        them to reap. A child that is between fork and exec still shows
+        Python's cmdline and is missed; it then fails to bind the removed
+        state dir and exits, exposing nothing.
         """
         me = os.getpid()
         bwrap = self._bwrap_path.encode()
@@ -532,11 +611,14 @@ class BubblewrapEnvironment(LocalEnvironment):
         while self._live_sandbox_pids() and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def cleanup(self):
-        self._kill_live_sandboxes()
-        super().cleanup()
+    def _remove_state(self) -> None:
         shutil.rmtree(self._state_dir, ignore_errors=True)
         try:
             os.unlink(self._empty_file)
         except OSError:
             pass
+
+    def cleanup(self):
+        self._kill_live_sandboxes()
+        super().cleanup()
+        self._remove_state()

@@ -5,6 +5,7 @@ run on any platform, with or without bwrap installed.
 """
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,9 @@ from tools.environments.bubblewrap import (
     PROFILE_NAMES,
     SENSITIVE_HOME_PATHS,
     build_bwrap_args,
+    empty_file_path,
     load_bubblewrap_config,
+    runtime_overlay_args,
 )
 
 BWRAP = "/usr/bin/bwrap"
@@ -111,10 +114,13 @@ class TestProfiles:
     def test_cwd_writable_only_for_workspace_and_network(self, paths, profile, expect_bind):
         argv = build(BubblewrapConfig(profile=profile), paths=paths)
         cwd = paths["initial_cwd"]
-        assert ((cwd, cwd) in triples(argv, "--bind")) is expect_bind
+        # The -try form skips a cwd deleted on the host instead of failing the spawn.
+        assert ((cwd, cwd) in triples(argv, "--bind-try")) is expect_bind
         # Restricted still binds the cwd, read-only, so --chdir resolves when
         # the cwd lives under the masked /tmp.
-        assert ((cwd, cwd) in triples(argv, "--ro-bind")) is not expect_bind
+        assert ((cwd, cwd) in triples(argv, "--ro-bind-try")) is not expect_bind
+        assert (cwd, cwd) not in triples(argv, "--bind")
+        assert (cwd, cwd) not in triples(argv, "--ro-bind")
 
     def test_unknown_profile_raises_listing_valid_names(self, paths):
         with pytest.raises(ValueError) as excinfo:
@@ -253,4 +259,42 @@ class TestLoadConfig:
         config = load_bubblewrap_config({"TERMINAL_BUBBLEWRAP_PROFILE": "restricted"})
         argv = build(config, paths=paths)
         assert "--share-net" not in argv
-        assert (paths["initial_cwd"], paths["initial_cwd"]) not in triples(argv, "--bind")
+        assert (paths["initial_cwd"], paths["initial_cwd"]) not in triples(argv, "--bind-try")
+
+
+class TestRuntimeOverlays:
+    """The user's runtime dir and the docker socket are masked (agent sockets)."""
+
+    def test_runtime_dir_gets_a_tmpfs_when_present(self, paths):
+        uid = os.getuid()
+        runtime_dir = f"/run/user/{uid}"
+        argv = runtime_overlay_args(paths["state_dir"], uid)
+        present = os.path.isdir(runtime_dir)
+        assert (("--tmpfs" in argv) and argv[argv.index("--tmpfs") + 1] == runtime_dir) is present
+
+    def test_absent_runtime_dir_emits_no_tmpfs(self, paths):
+        argv = runtime_overlay_args(paths["state_dir"], 2**31 - 1)
+        assert "--tmpfs" not in argv
+
+    def test_existing_docker_sockets_get_the_empty_file_once(self, paths):
+        from tools.environments.bubblewrap import DOCKER_SOCKETS
+
+        argv = runtime_overlay_args(paths["state_dir"], 2**31 - 1)
+        pairs = triples(argv, "--ro-bind")
+        empty = empty_file_path(paths["state_dir"])
+        present = [s for s in DOCKER_SOCKETS if os.path.exists(s)]
+        distinct = {os.path.realpath(s) for s in present}
+        assert len(pairs) == len(distinct)
+        for src, dest in pairs:
+            assert src == empty
+            assert dest in distinct  # the real path, not the /var/run symlink
+
+    def test_overlays_sit_after_the_base_mounts_and_before_the_cwd(self, paths):
+        argv = build(paths=paths)
+        overlays = runtime_overlay_args(paths["state_dir"], os.getuid())
+        if not overlays:
+            pytest.skip("host has neither a runtime dir nor a docker socket")
+        i_tmp = argv.index("/tmp")
+        i_cwd = argv.index(paths["initial_cwd"])
+        for operand in (overlays[1], overlays[-1]):
+            assert i_tmp < argv.index(operand) < i_cwd

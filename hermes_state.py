@@ -9385,6 +9385,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do) > 0
 
+    def backfill_null_session_profiles(self, profile_name: str) -> int:
+        """One-shot owner backfill for legacy pre-ownership session rows.
+
+        Sessions created before the durable-ownership work (#95407 lineage)
+        carry ``profile_name = NULL``. On single-backend installs that was
+        harmless, but once a Desktop registers a second connection the
+        fail-closed owner ladder (which is correct for new sessions) can no
+        longer route those rows anywhere — every pre-campaign session becomes
+        unresumable after upgrade (#94724, field report).
+
+        This store belongs to exactly one profile — the profile whose
+        ``state.db`` this is — so stamping its own name onto rows that never
+        recorded one is a single-match backfill, not a guess. Rules mirror the
+        ``create_session`` COALESCE contract:
+
+        * only ``NULL``/empty ``profile_name`` rows are touched — a non-NULL
+          owner is NEVER overwritten;
+        * idempotent and one-shot-per-row: a second run matches zero rows.
+
+        Returns the number of rows stamped (0 when nothing was legacy).
+        """
+        stamp = (profile_name or "").strip()
+        if not stamp:
+            return 0
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE sessions
+                   SET profile_name = ?
+                 WHERE profile_name IS NULL OR TRIM(profile_name) = ''""",
+                (stamp,),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+
+        return int(self._execute_write(_do) or 0)
+
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Archive or unarchive a session.
 

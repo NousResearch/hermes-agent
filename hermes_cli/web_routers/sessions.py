@@ -26,6 +26,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
     SessionImport,
+    SessionOwnerBackfill,
     SessionPrune,
     SessionRename,
 )
@@ -700,6 +701,51 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
             db.close()
 
     return await asyncio.to_thread(_delete)
+
+
+@manage_router.post("/api/sessions/owner-backfill")
+async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
+    """Stamp legacy ``profile_name = NULL`` session rows with this store's own
+    serving-profile identity (#94724 legacy-session migration).
+
+    Pre-#95407 rows never recorded an owning profile. That was fine while one
+    backend served everything, but a Desktop with registry topology (≥2
+    registered connections) fails closed on unowned rows by design — leaving
+    every pre-campaign session unresumable with no migration path. Each
+    profile's ``state.db`` belongs to exactly one profile, so stamping that
+    store's own name is a single-match backfill, never a guess; the value
+    written is the SAME serving-profile identity the list endpoints already
+    stamp onto outgoing rows (``row_profile`` in ``get_sessions``). Idempotent
+    and one-shot-per-row: non-NULL owners are never overwritten and a second
+    call reports 0.
+    """
+    profile_name: Optional[str] = None
+    if body.profile:
+        profile_name, _ = _cron_profile_home(body.profile)
+    stamp = profile_name or _cron_default_profile()
+
+    def _backfill():
+        db = _open_session_db_for_profile(body.profile, read_only=False)
+        try:
+            return db.backfill_null_session_profiles(stamp)
+        finally:
+            db.close()
+
+    try:
+        stamped = await asyncio.to_thread(_backfill)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/sessions/owner-backfill failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    if stamped:
+        _log.info(
+            "owner-backfill: stamped %d legacy NULL-profile session row(s) with profile %r",
+            stamped,
+            stamp,
+        )
+    return {"ok": True, "stamped": stamped, "profile": stamp}
 
 
 @manage_router.patch("/api/sessions/{session_id}")

@@ -823,6 +823,105 @@ def _chat_messages_to_responses_input(
     return prune_pre_checkpoint_items(items, item_sources=item_sources)
 
 
+def _agent_is_codex_backend(agent: Any) -> bool:
+    if getattr(agent, "provider", None) == "openai-codex":
+        return True
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower()
+    lower = str(getattr(agent, "_base_url_lower", "") or "")
+    if not lower:
+        lower = str(getattr(agent, "base_url", "") or "").lower()
+    if hostname == "chatgpt.com" and "/backend-api/codex" in lower:
+        return True
+    return "chatgpt.com" in lower and "/backend-api/codex" in lower
+
+
+def _agent_is_github_responses(agent: Any) -> bool:
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower()
+    lower = str(getattr(agent, "_base_url_lower", "") or getattr(agent, "base_url", "") or "").lower()
+    return hostname in {"models.github.ai", "githubcopilot.com"} or (
+        "models.github.ai" in lower or "githubcopilot.com" in lower
+    )
+
+
+def _agent_is_xai_responses(agent: Any) -> bool:
+    provider = getattr(agent, "provider", None)
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower()
+    return provider in {"xai", "xai-oauth"} or hostname == "api.x.ai"
+
+
+def estimate_native_responses_preflight_tokens(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Estimate tokens for the checkpoint-pruned Responses payload.
+
+    Automatic preflight previously counted the full durable transcript.
+    On a natively compacted Codex session that overstates the wire by
+    several times and fires local compression against history the main
+    request will never send (#96155).
+
+    Returns None when native compaction is not proven eligible for this
+    request, or when conversion fails — the caller must then use the
+    generic durable-transcript estimate (conservative).
+    """
+    if getattr(agent, "api_mode", None) != "codex_responses":
+        return None
+    if not isinstance(messages, list):
+        return None
+
+    is_codex_backend = _agent_is_codex_backend(agent)
+    is_xai_responses = _agent_is_xai_responses(agent)
+    is_github_responses = _agent_is_github_responses(agent)
+
+    from agent.native_compaction import native_compaction_context_management
+
+    context_management = native_compaction_context_management(
+        agent,
+        is_codex_backend=is_codex_backend,
+        is_xai_responses=is_xai_responses,
+        is_github_responses=is_github_responses,
+    )
+    if not context_management:
+        return None
+
+    try:
+        items = _chat_messages_to_responses_input(
+            messages,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
+            current_issuer_kind=_classify_responses_issuer(
+                is_xai_responses=is_xai_responses,
+                is_github_responses=is_github_responses,
+                is_codex_backend=is_codex_backend,
+                base_url=getattr(agent, "base_url", None),
+            ),
+            native_compaction_eligible=True,
+        )
+    except Exception:
+        logger.debug(
+            "native Responses preflight conversion failed; falling back to generic estimate",
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(items, list):
+        return None
+
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    return estimate_request_tokens_rough(
+        items,
+        system_prompt=system_prompt or "",
+        tools=tools,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Input preflight / validation
 # ---------------------------------------------------------------------------

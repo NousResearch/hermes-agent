@@ -85,6 +85,11 @@ SENSITIVE_HOME_PATHS: tuple[str, ...] = (
     ".env",
 )
 
+# Variables that name host agent or bus sockets. LocalEnvironment passes them
+# through; the bwrap prefix unsets them so the sandbox env is local's minus
+# exactly these, with no change to LocalEnvironment.
+HOST_SOCKET_VARS: tuple[str, ...] = ("SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS")
+
 DEFAULT_PROFILE = "network"
 DEFAULT_HOME_MODE = "auto"
 DEFAULT_MEMORY_MB = 256
@@ -437,11 +442,6 @@ def build_bwrap_args(
     argv += ["--chdir", tracked_cwd, "--"]
     return argv
 
-
-# Variables that name host agent or bus sockets. LocalEnvironment passes them
-# through; the bwrap prefix unsets them so the sandbox env is local's minus
-# exactly these, with no change to LocalEnvironment.
-HOST_SOCKET_VARS: tuple[str, ...] = ("SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS")
 
 PROBE_ARGS: tuple[str, ...] = ("--unshare-user", "--ro-bind", "/", "/", "true")
 PROBE_TIMEOUT_SECONDS = 5

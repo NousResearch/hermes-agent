@@ -76,6 +76,30 @@ class TestTelegramModelPicker:
         assert button.text == "global.anthropic"
         assert button.callback_data == "mm:0"
 
+    def test_same_model_in_multiple_geo_profiles_keeps_geo_in_label(self, monkeypatch):
+        """Bedrock exposes the same model behind several routing namespaces
+        (``us.xai.grok-4.6`` and ``global.xai.grok-4.6`` coexist). Stripping
+        the namespace from both would render two identical buttons, so when
+        the stripped label collides within the list the geo segment must be
+        kept as the differentiator."""
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+        models = [
+            "us.xai.grok-4.6",
+            "global.xai.grok-4.6",
+            "eu.anthropic.claude-sonnet-4-6",
+        ]
+
+        keyboard, _ = adapter._build_model_keyboard(models, page=0)
+        flat = [b for row in keyboard.inline_keyboard for b in row]
+        labels = [b.text for b in flat[:3]]
+
+        assert labels == ["us: grok-4.6", "global: grok-4.6", "claude-sonnet-4-6"]
+        # All labels on the page must be pairwise distinct.
+        assert len(set(labels)) == len(labels)
+        assert [b.callback_data for b in flat[:3]] == ["mm:0", "mm:1", "mm:2"]
+
     @pytest.mark.asyncio
     async def test_send_model_picker_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()

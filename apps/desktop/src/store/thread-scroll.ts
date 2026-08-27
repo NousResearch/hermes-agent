@@ -1,5 +1,6 @@
 import { atom, type WritableAtom } from 'nanostores'
 
+import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
 import { readKey, writeKey } from '@/lib/storage'
 import { $activeProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -153,7 +154,7 @@ export function threadScrollTargetTop(
 const SCROLL_POS_KEY_BASE = 'hermes.desktop.threadScroll.v1'
 
 export function threadScrollStorageKey(profile: string): string {
-  return `${SCROLL_POS_KEY_BASE}.profile.${encodeURIComponent(normalizeProfileKey(profile))}`
+  return `${SCROLL_POS_KEY_BASE}.profile.${encodeURIComponent(normalizeProfileKey(profile))}${activeConnectionScopeSuffix()}`
 }
 
 // Bounded so a marathon runtime that touches hundreds of sessions doesn't grow
@@ -172,7 +173,12 @@ function isValidState(value: unknown): value is ThreadScrollState {
     return true
   }
 
-  return record.kind === 'offset' && typeof record.fromBottom === 'number' && Number.isFinite(record.fromBottom)
+  return (
+    record.kind === 'offset' &&
+    typeof record.fromBottom === 'number' &&
+    Number.isFinite(record.fromBottom) &&
+    record.fromBottom >= 0
+  )
 }
 
 function loadPositions(profile: string): Record<string, ThreadScrollState> {

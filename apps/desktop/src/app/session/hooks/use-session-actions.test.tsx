@@ -1714,8 +1714,11 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
 
     // The branch becomes the primary session — this is what routes the main
-    // workspace area to it, not just a new sidebar row.
+    // workspace area to it, not just a new sidebar row. Selection alone is not
+    // enough: leaving the URL on the parent makes chat/index see a permanent
+    // routeSessionMismatch and keeps the central loader mounted.
     expect($selectedStoredSessionId.get()).toBe('branch-stored')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('branch-stored'), { replace: true })
     // It must not ALSO exist as a tile: a session is either the main thread or
     // a tile, never both (resumeSession closes any tile with the same id).
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
@@ -1767,6 +1770,7 @@ describe('branchStoredSession desktop source tagging', () => {
     // Branching a session that is not the one currently open must not steal
     // the user's active view — "stored-other" stays selected.
     expect($selectedStoredSessionId.get()).toBe('stored-other')
+    expect(navigate).not.toHaveBeenCalled()
     // The branch instead opens as its own tile.
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
   })

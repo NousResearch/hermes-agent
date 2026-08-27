@@ -27,6 +27,7 @@ from tools.environments.bubblewrap import (
     BindMount,
     BubblewrapConfig,
     BubblewrapEnvironment,
+    HOST_SOCKET_VARS,
     build_bwrap_args,
 )
 from tools.environments.local import LocalEnvironment
@@ -127,6 +128,18 @@ class TestStateDir:
         i = argv.index("--bind", argv.index(temp) - 1)
         assert argv[i:i + 3] == ["--bind", temp, temp]
         assert argv[-3:] == ["/bin/bash", "-c", "true"]
+
+    def test_socket_variables_are_unset_in_the_argv(self, sandbox_root, work_dir):
+        """The host agent and bus socket variables are dropped by the
+        bwrap prefix, so LocalEnvironment's run env is left untouched."""
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        argv = env._wrap_popen_args(["/bin/bash", "-c", "true"])
+        prefix = argv[:argv.index("--")]
+        assert set(HOST_SOCKET_VARS) == {"SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS"}
+        for name in HOST_SOCKET_VARS:
+            i = prefix.index(name)
+            assert prefix[i - 1] == "--unsetenv", name
 
 
 @needs_bwrap
@@ -460,7 +473,8 @@ class TestKillAndCleanupIntegration:
 
 @needs_bwrap
 class TestEnvPassthroughParity:
-    """The sandbox gets the env LocalEnvironment would build, nothing more."""
+    """The sandbox gets the env LocalEnvironment would build, minus the
+    host agent and bus socket variables, nothing more."""
 
     @pytest.fixture
     def clean_passthrough(self):
@@ -506,13 +520,31 @@ class TestEnvPassthroughParity:
         cmd = "printf '%s' \"${SERVICE_TOKEN-unset}\""
         assert bwrap.execute(cmd)["output"] == local.execute(cmd)["output"] == "token"
 
-    def test_passthrough_variable_names_match_local(self, clean_passthrough, pair):
+    def test_socket_variables_are_removed_from_the_sandbox_env(self, clean_passthrough, monkeypatch, sandbox_root, work_dir):
+        for name in HOST_SOCKET_VARS:
+            monkeypatch.setenv(name, f"/run/user/1000/{name.lower()}")
+        monkeypatch.setenv("HERMES_PLAIN", "plain-marker")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            out = env.execute("env")["output"]
+        finally:
+            env.cleanup()
+        for name in HOST_SOCKET_VARS:
+            assert f"{name}=" not in out, name
+        assert "/run/user/1000/" not in out
+        # The plain variable proves the process env does reach the sandbox.
+        assert "HERMES_PLAIN=plain-marker" in out
+
+    def test_passthrough_variable_names_match_local(self, clean_passthrough, monkeypatch, pair):
+        for name in HOST_SOCKET_VARS:
+            monkeypatch.setenv(name, f"/run/user/1000/{name.lower()}")
         local, bwrap = pair
         cmd = "python3 -c 'import os; print(chr(10).join(sorted(os.environ)))'"
         local_names = set(local.execute(cmd)["output"].split())
         bwrap_names = set(bwrap.execute(cmd)["output"].split())
         assert bwrap_names - local_names == set(), "variables injected into the sandbox"
-        assert local_names - bwrap_names == set(), "variables missing from the sandbox"
+        # Exactly the socket variables are missing, nothing else.
+        assert local_names - bwrap_names == set(HOST_SOCKET_VARS), "variables missing from the sandbox"
 
     @pytest.mark.parametrize("mode", ["auto", "profile"])
     def test_passthrough_home_follows_home_mode_as_for_local(self, clean_passthrough, monkeypatch, sandbox_root, work_dir, mode):

@@ -58,9 +58,9 @@ degraded result that names the package (or an error under
   `network` profiles, read-only in `restricted`. `cd` persists between
   commands, and variables exported in one command are visible in the next,
   exactly as with the `local` backend.
-- The same environment the `local` backend builds: `env_passthrough`
-  applies, provider API keys stay out, and `HOME` follows
-  `terminal.home_mode`.
+- The same environment the `local` backend builds, minus the three socket
+  variables listed under Limitations: `env_passthrough` applies, provider
+  API keys stay out, and `HOME` follows `terminal.home_mode`.
 
 ## Hidden paths
 
@@ -181,10 +181,10 @@ detached process could not outlive it.
   directories) is readable by a command. Add to `bubblewrap_binds` only
   what you want the agent to see, and keep secrets in the hidden paths.
 - Unix sockets outside `/run/user/<uid>`, `/tmp` and the docker socket
-  stay connectable (a read-only mount does not block `connect()`), and the
+  stay connectable (a read-only mount does not block `connect()`). The
   agent environment variables that name them (`SSH_AUTH_SOCK`,
-  `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`) are passed through as for
-  `local`, although they point at masked paths on a standard desktop.
+  `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`) are removed from the
+  sandbox environment, so a command has to know a socket path to reach it.
 - One sandbox per command: processes, mounts and `/tmp` do not carry over
   between commands. Only the working directory and the shell state
   (`cd`, exported variables) persist.

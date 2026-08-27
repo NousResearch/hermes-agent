@@ -247,7 +247,10 @@ O teste `test_distinct_profiles_share_one_claude_refresh_without_duplicate_post`
 |---|---|
 | `hermes_cli/web_server.py` | Catálogo `anthropic` como `flow: "external"`; dispatcher rejeita `start`/`submit` |
 | `agent/credential_pool.py` | `_refresh_entry`, `_sync_anthropic_entry_from_pool_store`, lock compartilhado Claude Code e recuperação |
-| `agent/anthropic_adapter.py` | `claude_code_credentials_path`, refresh puro e fluxo CLI PKCE separado |
+| `agent/anthropic_credentials.py` | `claude_code_credentials_path`, refresh puro, fluxo CLI PKCE separado e `CredentialPersistError` |
+| `agent/anthropic_endpoints.py` | Predicados de família de endpoint por base URL |
+| `agent/anthropic_message_convert.py` | Conversão de payload OpenAI → Anthropic |
+| `agent/anthropic_adapter.py` | Construção de cliente e chamada da Messages API; re-exporta os três módulos acima |
 | `web/src/lib/api.ts` | `/api/providers/oauth` incluído no escopo de perfil |
 
 ---
@@ -275,3 +278,46 @@ O fluxo dashboard foi removido depois dessa validação. O que permanece
 verificável localmente é o fluxo de terminal e a ausência das rotas dashboard;
 uma validação em uma instalação publicada não foi executada nesta revisão e
 depende de distribuir uma versão que contenha a cabeça final do PR.
+
+---
+
+## 8. Commit do refresh como parte da transação (2026-08-27)
+
+O refresh token da Anthropic é single-use: o POST que devolve o par novo
+invalida o que foi enviado. O par novo só existe de fato quando chega ao store
+autoritativo — `~/.claude/.credentials.json` (`claude_code`) ou
+`~/.hermes/.anthropic_oauth.json` (`hermes_pkce`). Esses arquivos são
+autoritativos no sentido estrito: `credential_pool._seed_from_singletons()`
+os relê em todo `load_pool()` e escreve o que encontra por cima da linha do
+pool.
+
+Até esta revisão os dois escritores engoliam `OSError`/`IOError` em nível
+debug, então nenhum chamador distinguia commit durável de escrita perdida. Um
+refresh podia gastar o único refresh token, reportar sucesso e deixar no disco
+o par já consumido — que um restart re-semeava, fazendo o refresh seguinte
+reenviar um token gasto.
+
+O que mudou:
+
+- `_write_claude_code_credentials()` / `_write_hermes_oauth_credentials()`
+  levantam `CredentialPersistError` em vez de engolir o erro.
+- `_refresh_oauth_token()` trata commit falho como refresh falho.
+- `_refresh_entry_impl()` falha fechado nos caminhos primário e de retry: a
+  rotação nunca é marcada, persistida ou devolvida, e a entrada vai para
+  quarentena `DEAD` com razão `credential_persist_failed`, virando um pedido
+  explícito de reautenticação em vez de um fallback silencioso para outro
+  provedor. O retry commita no singleton antes de persistir a linha do pool.
+- `_upsert_entry()` deixou de tratar a re-semeadura de uma fonte *borrowed*
+  como rotação de chave (compara `secret_fingerprint`), senão cada load
+  limpava o `DEAD` recém-escrito e ressuscitava a credencial em quarentena.
+
+Cobertura: `tests/agent/test_anthropic_credential_persist_failure.py` força a
+falha do escritor a partir de cada ponto de entrada e prova, em todos, que um
+`load_pool()` posterior não devolve o par pré-refresh como credencial usável.
+
+`agent/anthropic_adapter.py` foi dividido na mesma revisão (3.423 → 1.215
+linhas) em `agent/anthropic_endpoints.py`, `agent/anthropic_message_convert.py`
+e `agent/anthropic_credentials.py`, para que a superfície de credencial tenha
+um único dono. O adapter re-exporta todos os nomes, então os imports existentes
+continuam resolvendo.
+

@@ -211,7 +211,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         the network refresh entirely.
         """
         monkeypatch.setattr(
-            "agent.anthropic_adapter.claude_code_credentials_path",
+            "agent.anthropic_credentials.claude_code_credentials_path",
             lambda: tmp_path / ".claude" / ".credentials.json",
         )
         fresh = {
@@ -220,7 +220,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             "expiresAt": self._FRESH,
         }
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             lambda: fresh,
         )
 
@@ -228,7 +228,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             raise AssertionError("refresh_anthropic_oauth_pure must not be called")
 
         monkeypatch.setattr(
-            "agent.anthropic_adapter.refresh_anthropic_oauth_pure",
+            "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
             _should_not_be_called,
         )
 
@@ -242,12 +242,12 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         ourselves using the freshest available refresh token.
         """
         monkeypatch.setattr(
-            "agent.anthropic_adapter.claude_code_credentials_path",
+            "agent.anthropic_credentials.claude_code_credentials_path",
             lambda: tmp_path / ".claude" / ".credentials.json",
         )
         # Live read returns an expired credential carrying a refresh token.
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {"accessToken": "expired", "refreshToken": "live-refresh", "expiresAt": 1},
         )
         captured = {}
@@ -261,10 +261,10 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             }
 
         monkeypatch.setattr(
-            "agent.anthropic_adapter.refresh_anthropic_oauth_pure", _fake_refresh
+            "agent.anthropic_credentials.refresh_anthropic_oauth_pure", _fake_refresh
         )
         monkeypatch.setattr(
-            "agent.anthropic_adapter._write_claude_code_credentials",
+            "agent.anthropic_credentials._write_claude_code_credentials",
             lambda *a, **k: None,
         )
 
@@ -277,7 +277,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         """Direct resolver refreshes must not spend one Claude token twice."""
         shared_credentials_path = tmp_path / ".claude" / ".credentials.json"
         monkeypatch.setattr(
-            "agent.anthropic_adapter.claude_code_credentials_path",
+            "agent.anthropic_credentials.claude_code_credentials_path",
             lambda: shared_credentials_path,
         )
 
@@ -315,9 +315,9 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
                     "expires_at_ms": self._FRESH,
                 }
 
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", read_credentials)
-        monkeypatch.setattr("agent.anthropic_adapter._write_claude_code_credentials", write_credentials)
-        monkeypatch.setattr("agent.anthropic_adapter.refresh_anthropic_oauth_pure", refresh)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", read_credentials)
+        monkeypatch.setattr("agent.anthropic_credentials._write_claude_code_credentials", write_credentials)
+        monkeypatch.setattr("agent.anthropic_credentials.refresh_anthropic_oauth_pure", refresh)
 
         results = {}
         errors = {}

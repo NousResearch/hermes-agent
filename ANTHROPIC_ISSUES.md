@@ -195,6 +195,45 @@ if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
 
 ---
 
+## Bug 6 — Rotação single-use confirmada como sucesso sem commit durável
+
+**Onde:** `agent/anthropic_credentials.py::_write_claude_code_credentials` e
+`::_write_hermes_oauth_credentials` (antes em `agent/anthropic_adapter.py`),
+consumidos por `_refresh_oauth_token()` e por
+`agent/credential_pool.py::_refresh_entry_impl()`.
+
+Os dois escritores capturavam `OSError`/`IOError`, logavam em nível debug e não
+devolviam sinal de falha. Nenhum chamador conseguia distinguir um commit durável
+de uma escrita perdida.
+
+O refresh token da Anthropic é *single-use*: o POST que devolve o par novo já
+invalida o que foi enviado. O par novo só passa a existir de fato quando chega
+ao seu store autoritativo — `~/.claude/.credentials.json` para `claude_code`,
+`~/.hermes/.anthropic_oauth.json` para `hermes_pkce`. Como
+`credential_pool._seed_from_singletons()` relê esses arquivos em todo
+`load_pool()` e sobrescreve a linha do pool com o que encontrar, uma escrita
+falha deixava o par **já consumido** no disco: o próximo processo re-semeava o
+par gasto por cima da linha nova e o refresh seguinte reenviava um token
+consumido (`invalid_grant` / `refresh_token_reused`).
+
+**Correção:** os dois escritores levantam `CredentialPersistError`; o resolver
+direto trata commit falho como refresh falho; `_refresh_entry_impl()` falha
+fechado nos caminhos primário e de retry, nunca marcando, persistindo ou
+devolvendo a rotação, e coloca a entrada em quarentena `DEAD` com razão
+`credential_persist_failed` para que ela saia da rotação em vez de cair
+silenciosamente em outro provedor. O caminho de retry passou a commitar no
+singleton **antes** de persistir a linha do pool.
+
+Um segundo defeito apareceu ao cobrir isso: `_upsert_entry()` tratava cada
+re-semeadura de uma fonte *borrowed* como rotação de chave. Linhas borrowed
+(`claude_code`, fontes de env) vão para o `auth.json` sem o segredo, então
+comparar o token re-semeado com o valor vazio guardado reportava rotação em
+todo load e limpava o estado `DEAD` recém-escrito — ressuscitando na
+reinicialização exatamente a credencial em quarentena. Agora a comparação usa o
+`secret_fingerprint` da linha.
+
+Cobertura: `tests/agent/test_anthropic_credential_persist_failure.py`.
+
 ## Zombie process — investigado, não confirmado
 
 Checado especificamente no fluxo Anthropic:
@@ -216,12 +255,13 @@ Checado especificamente no fluxo Anthropic:
 | `tests/agent/test_anthropic_keychain.py` | Resolver direto Claude Code sob lock compartilhado |
 | `tests/hermes_cli/test_auth_store_lock_concurrent.py` | Concorrência do lock real, marcada `windows_only` |
 | `tests/agent/test_credential_pool_oauth_writethrough.py` | Rotação `hermes_pkce` preservada no `.anthropic_oauth.json` |
+| `tests/agent/test_anthropic_credential_persist_failure.py` | Injeção de falha no *commit* do refresh: escritores, resolver direto, `claude_code`, `hermes_pkce` e caminho de retry |
 | `RELATORIO_ANTHROPIC_OAUTH_BUGS.md` | Relatório técnico histórico e estado da implementação |
 | `ANTHROPIC_ISSUES.md` | Este arquivo — resumo consolidado e matriz de escopo |
 
 **Nota sobre dados sensíveis:** este relatório foi verificado com busca por regex de chaves reais (`sk-ant-...`, `ANTHROPIC_API_KEY=`, `ANTHROPIC_TOKEN=`) — nenhuma encontrada. Só há valores sintéticos usados nos testes automatizados (ex: `sk-ant-oat-rotated-1`), nunca uma chave real. O diagnóstico do Bug 4 pede pro usuário rodar `hermes doctor` / checar o próprio `.env` localmente, mas o resultado desse comando **não foi colado neste relatório** — só a explicação da causa raiz no código.
 
-Arquivos de produção alterados pelo PR: `agent/anthropic_adapter.py`, `agent/credential_pool.py`, `hermes_cli/auth.py` e `hermes_cli/web_server.py`. O frontend também recebe a correção de escopo em `web/src/lib/api.ts` para que operações OAuth sigam o perfil selecionado.
+Arquivos de produção alterados pelo PR: `agent/anthropic_adapter.py` (agora dividido em `agent/anthropic_endpoints.py`, `agent/anthropic_message_convert.py` e `agent/anthropic_credentials.py`), `agent/credential_pool.py`, `agent/auxiliary_client.py`, `hermes_cli/auth.py` e `hermes_cli/web_server.py`. O frontend também recebe a correção de escopo em `web/src/lib/api.ts` para que operações OAuth sigam o perfil selecionado.
 
 ## Como validar o estado atual
 
@@ -244,5 +284,8 @@ Os resultados dependem do ambiente e devem ser registrados no PR junto com a cab
 |---|---|
 | `hermes_cli/web_server.py` | Catálogo `anthropic` como `flow: "external"`; dispatcher rejeita `start`/`submit` |
 | `agent/credential_pool.py` | `_refresh_entry`, `_sync_anthropic_entry_from_pool_store`, lock compartilhado Claude Code e fallback de recuperação |
-| `agent/anthropic_adapter.py` | `claude_code_credentials_path`, refresh puro, fluxo CLI PKCE separado e write-through Hermes |
+| `agent/anthropic_credentials.py` | `claude_code_credentials_path`, refresh puro, fluxo CLI PKCE separado, write-through Hermes e `CredentialPersistError` |
+| `agent/anthropic_endpoints.py` | Predicados de família de endpoint por base URL |
+| `agent/anthropic_message_convert.py` | Conversão de payload OpenAI → Anthropic |
+| `agent/anthropic_adapter.py` | Construção de cliente e chamada da Messages API; re-exporta os três módulos acima |
 | `web/src/lib/api.ts` | `/api/providers/oauth` incluído no escopo de perfil do dashboard |

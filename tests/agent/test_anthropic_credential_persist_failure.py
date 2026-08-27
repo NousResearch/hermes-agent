@@ -33,8 +33,8 @@ import time
 
 import pytest
 
-from agent import anthropic_adapter as AA
-from agent.anthropic_adapter import CredentialPersistError
+from agent import anthropic_credentials as AA
+from agent.anthropic_credentials import CredentialPersistError
 from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CREDENTIAL_PERSIST_FAILED_REASON,

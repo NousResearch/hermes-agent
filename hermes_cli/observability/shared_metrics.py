@@ -378,6 +378,12 @@ class SharedMetricsStore:
             # Only the ~36-byte id is stored: the body is recomputed from
             # payload_json, whose serialisation is deterministic.
             ("sent_install_id", "TEXT"),
+            # NULL until first claimed; rewritten on every claim. Settlement
+            # and the pre-POST revalidation are compare-and-set on this, so a
+            # claimant whose lease lapsed loses authority the moment another
+            # process reclaims (PR-review finding: without it, a suspended
+            # sender resuming after a reclaim double-POSTs the package).
+            ("claim_token", "TEXT"),
         ):
             if column not in existing:
                 connection.execute(

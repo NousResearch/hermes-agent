@@ -649,6 +649,87 @@ class TestClaimingAndBounds:
             f"{len(attempts)} requests burned on one doomed package"
         )
 
+    def test_a_lapsed_claimant_resuming_after_reclaim_cannot_double_post(
+        self, store
+    ):
+        """PR-review P1: expiry -> reclaim -> old claimant resumes.
+
+        A claims, then is suspended (laptop lid) BEFORE its POST. The lease
+        expires; B reclaims and POSTs; A wakes and proceeds. The pre-POST
+        ownership check must make A yield without transmitting.
+
+        Scope note: the check closes the claim->POST gap. A suspension that
+        lands mid-POST (bytes already leaving) is not client-fixable — that
+        residual needs server-side dedupe and is documented on _send_one.
+        """
+        _add_package(store, "pkg-1", "2026-08-26")
+
+        posts = []
+
+        def post_a(endpoint, payload, *, timeout):
+            posts.append("A")
+            return FakeResponse(202)
+
+        def post_b(endpoint, payload, *, timeout):
+            posts.append("B")
+            return FakeResponse(202)
+
+        sender_a = SharedMetricsSender(
+            store, ENDPOINT, post=post_a, sleep=lambda _s: None, now=lambda: NOW
+        )
+        # A claims, then the process is suspended before _send_one runs.
+        claimed_a = sender_a._claim_next(NOW, set())
+        assert claimed_a is not None and not claimed_a["skip"]
+
+        # 400s later (past the 300s lease) B claims and completes the send.
+        later = NOW + timedelta(seconds=400)
+        sender_b = SharedMetricsSender(
+            store, ENDPOINT, post=post_b, sleep=lambda _s: None, now=lambda: later
+        )
+        outcome_b = sender_b.send_pending()
+        assert outcome_b.sent == 1
+
+        # A resumes exactly where it left off.
+        result_a = sender_a._send_one(claimed_a)
+
+        row = _row(store, "pkg-1")
+        assert posts == ["B"], (
+            f"a lapsed claimant transmitted after reclaim: {posts}"
+        )
+        assert result_a == "deferred"
+        assert row["send_state"] == "sent", "B's settlement must stand"
+
+    def test_a_lapsed_claimants_backoff_cannot_clobber_the_new_claim(self, store):
+        """The token must fence DEFERS too, not just the 202 settlement.
+
+        A's transport fails after B has reclaimed; A's backoff write must
+        not move next_attempt_at under B's live lease.
+        """
+        _add_package(store, "pkg-1", "2026-08-26")
+        sender_a = SharedMetricsSender(
+            store, ENDPOINT,
+            post=FakeTransport(OSError("net"), OSError("net"), OSError("net")),
+            sleep=lambda _s: None, now=lambda: NOW,
+        )
+        claimed_a = sender_a._claim_next(NOW, set())
+        assert claimed_a is not None and not claimed_a["skip"]
+
+        later = NOW + timedelta(seconds=400)
+        sender_b = SharedMetricsSender(
+            store, ENDPOINT, post=FakeTransport(),
+            sleep=lambda _s: None, now=lambda: later,
+        )
+        claimed_b = sender_b._claim_next(later, set())
+        assert claimed_b is not None and not claimed_b["skip"]
+        lease_b = _row(store, "pkg-1")["next_attempt_at"]
+
+        # A's exhausted retries try to write a 15-minute backoff.
+        result = sender_a._send_one(claimed_a)
+        assert result == "deferred"
+        assert _row(store, "pkg-1")["next_attempt_at"] == lease_b, (
+            "a lapsed claimant's backoff overwrote the live claim's lease"
+        )
+
     def test_an_expired_lease_is_reclaimed(self, store):
         """A process killed mid-pass must not strand its packages."""
         _add_package(store, "pkg-1", "2026-08-26")

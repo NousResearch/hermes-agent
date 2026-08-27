@@ -484,7 +484,7 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     img = _allowed_file(tmp_path, monkeypatch, "flyer.png")
     adapter = _stream_adapter()
     runner = SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _thread_metadata_for_source=lambda source, anchor=None, event_metadata=None: {},
         _reply_anchor_for_event=lambda event: None,
     )
 

@@ -36,7 +36,7 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter, filters  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
 from hermes_cli.plugins import (  # noqa: E402
@@ -673,13 +673,16 @@ class TestRegisterHandlers:
         a._register_handlers(app)
 
         # Six core handlers (default group, no group kwarg — incl. the
-        # inline command picker) plus the gateway_platform_event observer
-        # alone in group 99, so it observes alongside rather than
-        # displacing the core handlers.
+        # inline command picker), an optional Telegram Business handler on
+        # PTB versions that expose BUSINESS_MESSAGE, and the observer alone
+        # in group 99.
         calls = app.add_handler.call_args_list
-        assert len(calls) == 7
+        has_business = getattr(
+            getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None
+        ) is not None
+        assert len(calls) == 7 + int(has_business)
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
-        assert len([c for c in calls if not c.kwargs]) == 6
+        assert len([c for c in calls if not c.kwargs]) == 6 + int(has_business)
 
     def test_rebuild_re_registers_observer(self):
         """A second call on a fresh app (e.g. a future rebuild) re-registers
@@ -691,7 +694,10 @@ class TestRegisterHandlers:
         a._register_handlers(first_app)
         a._register_handlers(rebuilt_app)  # the rebuild path
 
-        assert rebuilt_app.add_handler.call_count == 7
+        has_business = getattr(
+            getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None
+        ) is not None
+        assert rebuilt_app.add_handler.call_count == 7 + int(has_business)
         assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):

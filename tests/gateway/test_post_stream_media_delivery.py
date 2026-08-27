@@ -40,7 +40,7 @@ def _event():
 
 def _fake_runner(thread_meta):
     return SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
+        _thread_metadata_for_source=lambda source, anchor=None, event_metadata=None: thread_meta,
         _reply_anchor_for_event=lambda event: None,
     )
 
@@ -109,5 +109,39 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
     assert str(media_file) in images_kwargs["images"][0][0]
+
+
+@pytest.mark.asyncio
+async def test_business_identity_reaches_post_stream_media(tmp_path, monkeypatch):
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "business-chart.png")
+    adapter = _adapter()
+    event = MessageEvent(
+        text="hi",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="42",
+            chat_type="dm",
+            user_id="customer",
+            scope_id="telegram-business:bc-123",
+            thread_id="7",
+        ),
+        message_id="99",
+        metadata={
+            "allow_business_send_as_account": True,
+            "business_connection_id": "bc-123",
+        },
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        object.__new__(GatewayRunner),
+        f"MEDIA:{media_file}",
+        event,
+        adapter,
+    )
+
+    metadata = adapter.send_multiple_images.await_args.kwargs["metadata"]
+    assert metadata["allow_business_send_as_account"] is True
+    assert metadata["business_connection_id"] == "bc-123"
 
 

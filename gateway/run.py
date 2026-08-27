@@ -3993,7 +3993,11 @@ class GatewayRunner(
         history: Any = None
 
     def _thread_metadata_for_source(
-        self, source, reply_to_message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        self,
+        source,
+        reply_to_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None), getattr(source, "chat_id", None),
@@ -4019,6 +4023,26 @@ class GatewayRunner(
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        if getattr(source, "platform", None) == Platform.TELEGRAM:
+            # Send-as-account authority is per trusted inbound event, not durable
+            # session state. Propagate it only while its connection id matches
+            # the isolated Business scope.
+            business_connection_id = str(
+                (event_metadata or {}).get("business_connection_id") or ""
+            ).strip()
+            if (
+                (event_metadata or {}).get("allow_business_send_as_account") is True
+                and business_connection_id
+                and str(getattr(source, "scope_id", "") or "")
+                == f"telegram-business:{business_connection_id}"
+            ):
+                metadata = dict(metadata or {})
+                metadata.update(
+                    {
+                        "allow_business_send_as_account": True,
+                        "business_connection_id": business_connection_id,
+                    }
+                )
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
         # stamp is not the profile that wrote the binding (Telegram prune path needs it).
         # See #76423.

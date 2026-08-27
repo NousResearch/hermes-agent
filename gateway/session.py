@@ -96,6 +96,11 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Internal, wire-INVISIBLE Telegram Business authorization proof. The
+    # plugin adapter sets this only after enabled-config, chat-scope, trigger,
+    # actor, and connection-id checks pass. It is deliberately omitted from
+    # ``to_dict``/``from_dict`` so persisted or relayed input cannot forge it.
+    authorized_via_telegram_business: bool = False
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -644,9 +649,9 @@ def build_session_key(
 ) -> str:
     """Build a deterministic session key from a message source (single source of truth).
 
-    Layout: ``<ns>:<platform>:<chat_type>[:<slack scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
-    Slack ``scope_id`` precedes chat ids (Discord guild scope is deliberately NOT added, for key
-    compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
+    Layout: ``<ns>:<platform>:<chat_type>[:<routing scope>][:<chat_id>][:<thread_id>][:<user>]``.
+    Slack ``scope_id`` and Telegram Business ``telegram-business:`` scope precede chat ids
+    (Discord guild scope is deliberately NOT added, for key compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
     """
@@ -672,6 +677,12 @@ def build_session_key(
 
     parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
     if source.platform == Platform.SLACK and source.scope_id:
+        parts.append(str(source.scope_id))
+    elif (
+        source.platform == Platform.TELEGRAM
+        and source.scope_id
+        and str(source.scope_id).startswith("telegram-business:")
+    ):
         parts.append(str(source.scope_id))
     if chat_id:
         parts.append(chat_id)

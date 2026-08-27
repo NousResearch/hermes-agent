@@ -13173,28 +13173,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         return count
 
-    #: Selector shared by :meth:`count_empty_sessions` and
-    #: :meth:`delete_empty_sessions` so the button's count and the sweep it
-    #: triggers can never disagree about what "empty" means.
+    #: Shared selector for :meth:`count_empty_sessions` and
+    #: :meth:`delete_empty_sessions` so the badge and the sweep agree.
     #:
-    #: ``message_count`` alone is NOT a safe emptiness test. It is a
-    #: denormalized counter that tracks the LIVE (``active = 1``) row set, and
-    #: two production transcript-rewrite paths deliberately reset it while
-    #: keeping the dropped turns on disk as ``active = 0``:
-    #: :meth:`replace_messages` with ``archive_dropped=True`` (the rewind /
-    #: edit / regenerate mode from #82756) and :meth:`archive_and_compact`
-    #: (in-place compaction). ``prompt.submit`` reaches the first with an empty
-    #: prefix on a confirmed ordinal-0 rewind, so a chat whose first user turn
-    #: was regenerated reports ``message_count = 0`` while still holding its
-    #: entire recoverable transcript — and those soft-archived rows are the
-    #: ONLY copy, which is the whole point of archiving instead of deleting
-    #: (#70516 / #80763 / #82756). Deleting such a row destroys it silently.
-    #:
-    #: So the counter stays as a cheap prefilter and a real ``EXISTS`` probe is
-    #: the authority, exactly as every other emptiness test in this module
-    #: already does it (:meth:`delete_session_if_empty`,
-    #: :meth:`prune_empty_ghost_sessions`,
-    #: :meth:`list_never_active_keyed_sessions`). (#95868)
+    #: ``message_count`` tracks live (``active = 1``) rows only; rewind
+    #: (:meth:`replace_messages` w/ ``archive_dropped``) and in-place
+    #: compaction (:meth:`archive_and_compact`) reset it to 0 while keeping
+    #: dropped turns on disk as ``active = 0`` — the only recoverable copy
+    #: (#70516 / #80763 / #82756). The ``NOT EXISTS`` probe is the authority;
+    #: ``message_count = 0`` stays as a cheap prefilter. Same shape as every
+    #: other emptiness guard in this module. (#95868)
     _EMPTY_SESSION_WHERE = (
         "message_count = 0 "
         "AND ended_at IS NOT NULL "
@@ -13215,10 +13203,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         held open by the live agent — is never sniped out from under
         the runtime.
 
-        Emptiness is decided by :data:`_EMPTY_SESSION_WHERE`, which probes the
-        ``messages`` table instead of trusting the ``message_count`` counter —
-        see that constant for why the counter reads zero for rewound and
-        compacted sessions that still hold a full transcript.
+        Emptiness is decided by :data:`_EMPTY_SESSION_WHERE` — see that
+        constant for why the ``NOT EXISTS`` probe is needed instead of
+        trusting ``message_count`` alone.
 
         Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
         web dashboard hide its "Delete empty" button when there's nothing
@@ -13239,11 +13226,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Mirrors :meth:`prune_sessions`' transactional shape:
 
-        * Selects candidate IDs first (:data:`_EMPTY_SESSION_WHERE`: no
-          message rows AND ``ended_at IS NOT NULL`` AND ``archived = 0``)
-          so we never touch a live session, one the user deliberately
-          archived, or one whose transcript survives only as soft-archived
-          (``active = 0``) rows after a rewind or an in-place compaction.
+        * Selects candidate IDs first (:data:`_EMPTY_SESSION_WHERE`) so we
+          never touch a live session, one the user deliberately archived,
+          or one whose transcript survives as soft-archived rows.
         * Orphans any child whose parent is in the kill list — children
           of an empty parent are kept and re-parented to ``NULL`` rather
           than cascade-deleted, matching ``delete_session`` /

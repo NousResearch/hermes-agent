@@ -1,10 +1,10 @@
 ---
-title: "AI Providers"
+title: "LLM and Model Providers"
 sidebar_label: "AI Providers"
 sidebar_position: 1
 ---
 
-# AI Providers
+# LLM and Model Providers
 
 This page covers setting up inference providers for Hermes Agent — from cloud APIs like OpenRouter and Anthropic, to self-hosted endpoints like Ollama and vLLM, to advanced routing and fallback configurations. You need at least one provider configured to use Hermes.
 

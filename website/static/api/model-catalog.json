@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T20:49:36Z",
+  "updated_at": "2026-08-26T14:32:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -121,6 +121,10 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3-flash",
+          "description": ""
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
@@ -152,10 +156,6 @@
         {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
-        },
-        {
-          "id": "stealth/ox-alpha",
-          "description": "free"
         },
         {
           "id": "openrouter/elephant-alpha",
@@ -269,6 +269,9 @@
           "id": "z-ai/glm-5.3"
         },
         {
+          "id": "z-ai/glm-5.3-flash"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "default": true
         },
@@ -286,9 +289,6 @@
         },
         {
           "id": "sakana/fugu-ultra"
-        },
-        {
-          "id": "stealth/ox-alpha"
         }
       ]
     }

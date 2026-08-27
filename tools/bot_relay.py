@@ -24,8 +24,10 @@ How the relay works (three files under ``<root>/bot_relay/``):
 
 The gateway never holds another connection's credentials; the Desktop owns
 every socket and does all cross-connection I/O. Everything here is plain
-file plumbing on the gateway's own HERMES root — no network, never raises
-out of the public helpers.
+file plumbing on the gateway's own HERMES root — no network. The public
+helpers never raise, with one deliberate exception: ``enqueue_envelope``
+raises ``EnvelopeRefusedError`` when the target is definitively offline, so
+the sender fails fast instead of queueing a DM nobody will drain (#93091).
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -65,6 +68,30 @@ REPLY_WAIT_SECONDS = 900
 # Envelopes and replies older than this are stale artifacts (Desktop was
 # closed, connection died) and are swept opportunistically.
 STALE_AFTER_SECONDS = 6 * 3600
+
+# Fallback envelope TTL when config is unreachable — mirrors the
+# ``bot_mode.envelope_ttl_seconds`` default in hermes_cli/config_defaults.py.
+# Envelopes older than the TTL are refused at drain time with a
+# 'queued_expired' error reply instead of being delivered late.
+DEFAULT_ENVELOPE_TTL_SECONDS = 900
+
+# A roster older than this proves nothing about who is offline: the Desktop
+# pushes roster.sync on connection-state changes, so only a recently-written
+# roster is treated as an authoritative view for the fail-fast check.
+ROSTER_FRESH_SECONDS = 600
+
+
+class EnvelopeRefusedError(RuntimeError):
+    """``enqueue_envelope`` refused to queue — nothing was written to disk.
+
+    ``reason`` is a stable machine code; ``str(exc)`` is the human text.
+    'runtime_offline' matches the #93091 item-1 failure-reason enum (plain
+    literal here so the branches merge cleanly).
+    """
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
@@ -114,6 +141,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         "title": str(row.get("title") or "").strip()[:120],
         "description": " ".join(str(row.get("description") or "").split())[:160],
     }
+    # Optional explicit liveness flag (additive — the Desktop may push it).
+    # Preserved only when it is a real bool so absent stays distinguishable
+    # from false: absent == liveness unknown == fail-open on enqueue.
+    if isinstance(row.get("online"), bool):
+        out["online"] = row["online"]
     return out
 
 
@@ -260,6 +292,66 @@ def _next_outbox_sequence(base: Path) -> int:
         os.close(fd)
 
 
+def _envelope_ttl_seconds() -> int:
+    """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), lazily read.
+
+    tools/ must not pull heavy CLI config at import time, so the read happens
+    per-drain and falls back to ``DEFAULT_ENVELOPE_TTL_SECONDS`` when config
+    is unavailable (tests, stripped installs). ``0`` (or negative) disables
+    drain-time expiry.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        val = (cfg.get("bot_mode") or {}).get("envelope_ttl_seconds")
+        if val is not None:
+            return int(val)
+    except Exception:
+        logger.debug("bot_relay TTL config read failed", exc_info=True)
+    return DEFAULT_ENVELOPE_TTL_SECONDS
+
+
+def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
+    """Tri-state liveness for ``target``: True / False / None (unknown).
+
+    Roster rows carry no heartbeat today, so 'definitively offline' is keyed
+    off the two signals roster.json actually gives us:
+
+    - an explicit ``online: false`` on the target's row (additive field,
+      honored when the Desktop starts pushing it);
+    - the target's (connection_id, profile) being ABSENT from a *fresh*
+      roster — the Desktop re-pushes the whole roster on connection-state
+      changes, so a recently-synced roster that dropped the target means its
+      connection is gone.
+
+    A missing, unreadable, or stale (older than ``ROSTER_FRESH_SECONDS``)
+    roster proves nothing → None, and callers fail open. Never raises.
+    """
+    try:
+        roster_path = relay_root(root) / ROSTER_FILE
+        try:
+            age = time.time() - roster_path.stat().st_mtime
+        except OSError:
+            return None  # no roster ever synced — unknown
+        if age > ROSTER_FRESH_SECONDS:
+            return None  # stale view — unknown
+        roster = read_remote_roster(root)
+        if not roster:
+            return None  # empty/corrupt roster — treat as unknown, fail open
+        key = (str(target.get("connection_id") or ""), str(target.get("profile") or ""))
+        for row in roster:
+            if (row["connection_id"], row["profile"]) == key:
+                online = row.get("online")
+                if online is False:
+                    return False
+                return True if online is True else None
+        return False  # fresh roster no longer lists the target — offline
+    except Exception:
+        logger.debug("bot_relay liveness check failed", exc_info=True)
+        return None
+
+
 def enqueue_envelope(
     root: Path | str,
     *,
@@ -268,7 +360,23 @@ def enqueue_envelope(
     sender_profile: str,
     sender_handle: str,
 ) -> dict:
-    """Queue a cross-connection DM for the Desktop relay. Returns envelope."""
+    """Queue a cross-connection DM for the Desktop relay. Returns envelope.
+
+    Raises ``EnvelopeRefusedError`` (reason ``'runtime_offline'``) instead of
+    writing the outbox file when the target is definitively offline per
+    ``_target_liveness``. Unknown liveness enqueues as before (fail-open).
+    """
+    if _target_liveness(root, target) is False:
+        label = (
+            f"@{target.get('handle') or target.get('profile') or '?'} on "
+            f"{target.get('connection_label') or target.get('connection_id') or '?'}"
+        )
+        # 'runtime_offline' matches the #93091 item-1 reason enum.
+        raise EnvelopeRefusedError(
+            "runtime_offline",
+            f"{label} is offline right now — the message was NOT queued. "
+            "Try again once that machine reconnects to the Desktop.",
+        )
     base = _ensure_dirs(root)
     sequence = _next_outbox_sequence(base)
     envelope = {
@@ -294,12 +402,50 @@ def enqueue_envelope(
 
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
     """Drain the outbox (rename → claimed/, so a second drain can't double-
-    deliver). Sweeps stale claimed/reply artifacts opportunistically."""
+    deliver). Sweeps stale claimed/reply artifacts opportunistically.
+
+    Envelopes older than ``bot_mode.envelope_ttl_seconds`` are NOT delivered:
+    each gets an error reply (reason ``'queued_expired'``) so the sender's
+    waiter resolves, and its outbox file is removed (#93091 item 2).
+    """
     base = _ensure_dirs(root)
     _sweep_stale(base)
+    ttl = _envelope_ttl_seconds()
+    now = time.time()
     out: list[dict] = []
     outbox = base / OUTBOX_DIR
     for path in sorted(outbox.glob("*.json")):
+        if ttl > 0:
+            expired = False
+            try:
+                env = json.loads(path.read_text(encoding="utf-8"))
+                created = float(env.get("created_at") or path.stat().st_mtime)
+                if now - created > ttl:
+                    expired = True
+                    handle = str(env.get("target_handle") or "?")
+                    conn = str(env.get("target_connection") or "?")
+                    # 'queued_expired' matches the #93091 item-1 reason enum.
+                    write_reply(
+                        root,
+                        str(env.get("id") or ""),
+                        error=(
+                            f"queued message to @{handle} on {conn} expired after "
+                            f"{ttl}s waiting for the Desktop to drain it — it was "
+                            "NOT delivered. Resend once the Desktop reconnects."
+                        ),
+                        reason="queued_expired",
+                    )
+            except (OSError, ValueError):
+                # Unreadable envelope or invalid id: if it already counted as
+                # expired, still remove it below; otherwise let the normal
+                # claim attempt below deal with it.
+                pass
+            if expired:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
         claimed = base / CLAIMED_DIR / path.name
         try:
             os.replace(path, claimed)  # atomic claim
@@ -310,19 +456,32 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
 
 
 def write_reply(
-    root: Path | str, envelope_id: str, *, reply: str = "", error: str = ""
+    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = ""
 ) -> Path:
-    """Persist the relayed reply (or delivery error) for the waiter."""
+    """Persist the relayed reply (or delivery error) for the waiter.
+
+    ``reason`` is an optional typed failure code (see
+    ``tools.bot_failure_reasons``, e.g. 'queued_expired'); when omitted and
+    ``error`` is non-empty it is classified from the error text. The waiter
+    only surfaces the human ``error``.
+    """
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
         raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    err = str(error or "")
+    code = str(reason or "")
+    if not code and err:
+        from tools.bot_failure_reasons import classify_agent_error
+
+        code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
     payload = {
         "id": safe,
         "at": int(time.time()),
         "reply": str(reply or ""),
-        "error": str(error or ""),
+        "error": err,
+        "reason": code,
     }
     fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -389,16 +548,29 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     )
     # Encode label with !r so roster fields cannot break out of the generated
     # python -c source (quotes, parens, or extra statements in connection_id).
+    # The raw-string prefix keeps Windows paths viable: repr escapes each
+    # backslash ("C:\\Users\\..."), but the Windows execution layer the
+    # waiter runs under folds "\\" back to "\", which turns "\U" into an
+    # invalid unicode escape and SyntaxErrors the whole script (#93590).
+    # With the r prefix the folded single backslash parses as a literal.
+    # POSIX paths contain no backslashes, so the prefix is a no-op there,
+    # and \' inside a raw literal still cannot terminate the string, so
+    # the injection defense above is unchanged.
     code = (
         "import json,os,sys,time\n"
-        f"p = {reply_path!r}\n"
-        f"label = {label!r}\n"
+        f"p = r{reply_path!r}\n"
+        f"label = r{label!r}\n"
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        "            print('Delivery to ' + label + ' failed: ' + d['error'])\n"
+        # The typed reason code (#93091) rides ahead of the free text so the
+        # sending agent can branch on it (auth vs rate limit vs offline)
+        # without parsing provider prose.
+        "            code = str(d.get('reason') or '').strip()\n"
+        "            tag = ' [reason: ' + code + ']' if code else ''\n"
+        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
         "            sys.exit(1)\n"
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
@@ -414,10 +586,33 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 # ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
 
 
+def _hermes_cli() -> str:
+    """Resolve the hermes CLI beside this gateway's own interpreter.
+
+    The deliver RPC runs on the target gateway, whose process is the venv
+    python — its bin/Scripts directory holds the matching ``hermes``
+    entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
+    service contexts (systemd units, desktop launchers, non-login SSH
+    shells) do not provide, so delivery died with ENOENT there (#93590).
+    When no sibling exists (e.g. running from a source tree without an
+    installed script), a ``shutil.which`` lookup runs next — it honors
+    whatever PATH the process does have — before falling back to the bare
+    name, preserving today's behavior for interactive shells.
+    """
+    exe = Path(sys.executable or "")
+    sibling = exe.parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    if sibling.is_file():
+        return str(sibling)
+    found = shutil.which("hermes")
+    if found:
+        return found
+    return "hermes"
+
+
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
     return [
-        "hermes",
+        _hermes_cli(),
         "-p",
         profile,
         "chat",
@@ -491,15 +686,17 @@ def acquire_turn_lock(
     """Hold ``profile``'s cross-process turn lock for the ``with`` body.
 
     Non-blocking flock probe + short-sleep retry loop up to the budget
-    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given), so
-    waiters eventually acquire or fail within the budget without deadlocking.
-    Raises :class:`TurnBusyError` when the budget is exhausted. On platforms
-    without ``fcntl`` (Windows) the lock degrades to a no-op — those
-    installs never had this race path in production.
+    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given).
+    No ordering guarantee among waiters — whichever probe lands first after
+    release wins — but every waiter is bounded by the budget, so no
+    deadlock. Raises :class:`TurnBusyError` when the budget is exhausted.
+    On platforms without ``fcntl`` (Windows) the lock degrades to a no-op —
+    those installs never had this race path in production.
     """
     try:
         import fcntl
     except ImportError:  # pragma: no cover — Windows
+        logger.debug("bot turn lock disabled: fcntl unavailable on this platform")
         yield turn_lock_path(root, profile)
         return
 

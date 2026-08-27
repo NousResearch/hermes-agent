@@ -70,6 +70,7 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
 
     def _fake_run(argv, **kwargs):
         calls["argv"] = argv
+        calls["kwargs"] = kwargs
         return _Proc()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
@@ -77,13 +78,21 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
         srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
     )
     assert out["reply"] == "pong from ops"
+    # Decoding is pinned (#93590 sibling defect): without encoding= the
+    # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on
+    # Windows — mangling non-ASCII replies; errors="replace" keeps a bad
+    # byte from raising instead of delivering.
+    assert calls["kwargs"]["encoding"] == "utf-8"
+    assert calls["kwargs"]["errors"] == "replace"
     argv = calls["argv"]
-    assert argv[:3] == ["hermes", "-p", "ops"]
+    # argv[0] may be a resolved venv path (#93590) — match by basename.
+    assert argv[1:3] == ["-p", "ops"]
+    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
     assert "Bot Chat" in argv and "--query-file" in argv
 
     # 'hermes' alias resolves to default
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
-    assert calls["argv"][:3] == ["hermes", "-p", "default"]
+    assert calls["argv"][1:3] == ["-p", "default"]
 
     # unknown profile refuses without spawning
     calls.clear()

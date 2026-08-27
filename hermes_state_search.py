@@ -27,6 +27,7 @@ from hermes_state_common import (
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
     escape_like as _escape_like,
+    fts_rebuild_admission,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
@@ -2400,25 +2401,41 @@ class SessionSearchMixin:
         merges existing segments), ``rebuild`` discards and recreates the
         index data entirely.
 
+        A full structural rebuild must never run concurrently in two
+        processes sharing one state.db — that interleaving has structurally
+        corrupted the database in production (PR #93200) — so this admits
+        through the cross-process ``fts_rebuild_admission`` authority and
+        FAILS CLOSED: if another process holds the rebuild lock beyond the
+        bounded wait, this call defers (returns 0) rather than racing it.
+        Callers already treat 0 as "rebuild made no progress" and fall back
+        to the stale-FTS breadcrumb path, which retries at next startup.
+
         Safe to call when FTS tables don't exist (skips them).
         Returns the number of FTS indexes that were rebuilt.
         """
         rebuilt = 0
-        with self._lock:
-            for tbl in self._FTS_TABLES:
-                if not self._fts_table_exists(tbl):
-                    continue
-                try:
-                    self._conn.execute(
-                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
-                    )
-                    self._conn.commit()
-                    rebuilt += 1
-                except sqlite3.OperationalError as exc:
-                    self._conn.rollback()
-                    logger.warning(
-                        "FTS rebuild failed for %s: %s", tbl, exc
-                    )
+        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+            if not admitted:
+                logger.warning(
+                    "Deferred in-place FTS rebuild: another process holds "
+                    "the rebuild authority for this state.db."
+                )
+                return 0
+            with self._lock:
+                for tbl in self._FTS_TABLES:
+                    if not self._fts_table_exists(tbl):
+                        continue
+                    try:
+                        self._conn.execute(
+                            f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                        )
+                        self._conn.commit()
+                        rebuilt += 1
+                    except sqlite3.OperationalError as exc:
+                        self._conn.rollback()
+                        logger.warning(
+                            "FTS rebuild failed for %s: %s", tbl, exc
+                        )
         return rebuilt
 
     def _merge_fts_incrementally(

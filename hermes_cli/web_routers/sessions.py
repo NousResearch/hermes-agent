@@ -642,14 +642,34 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
     sid, _limit, messages = result
+    from agent.compaction_display import project_compaction_message_for_display
+    from agent.context_compressor import is_compaction_summary_message
+
+    projected_messages = []
+    for message in messages:
+        if not is_compaction_summary_message(message):
+            projected_messages.append(message)
+            continue
+        display_view = project_compaction_message_for_display(message)
+        projected = message.copy()
+        if display_view is None:
+            if not projected.get("display_kind"):
+                projected["display_kind"] = "hidden"
+        else:
+            # Keep the physical content for inspection/export compatibility;
+            # Desktop consumes this display-only projection. A legacy hidden
+            # wrapper must not hide a successfully recovered live ask.
+            projected["display_content"] = display_view.get("content")
+            projected.pop("display_kind", None)
+        projected_messages.append(projected)
     return {
         "session_id": sid,
-        "messages": messages,
+        "messages": projected_messages,
         "pagination": {
             "limit": _limit,
             "offset": offset,
             "order": order or ("latest" if limit is None else "oldest"),
-            "returned": len(messages),
+            "returned": len(projected_messages),
         },
     }
 
@@ -684,10 +704,11 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
 
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update a session: rename, archive, pin, and/or mark read/unread.
+    """Update a session: rename, archive, hide, pin, and/or mark read/unread.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session; ``pinned`` sets the durable keep flag (exempts the
+    restores the session; ``hidden`` controls generic list visibility;
+    ``pinned`` sets the durable keep flag (exempts the
     session from the auto-archive sweep); ``unread`` toggles the read-state
     watermark (True = explicitly unread, False = read up to now — see
     ``SessionDB.set_session_read``). Any field may be omitted. ``profile``
@@ -701,12 +722,13 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         if (
             body.title is None
             and body.archived is None
+            and body.hidden is None
             and body.pinned is None
             and body.unread is None
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', 'pinned', and/or 'unread'.",
+                detail="Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', and/or 'unread'.",
             )
         if body.title is not None:
             try:
@@ -716,6 +738,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 raise HTTPException(status_code=400, detail=str(e))
         if body.archived is not None:
             db.set_session_archived(sid, body.archived)
+        if body.hidden is not None:
+            db.set_session_hidden(sid, body.hidden)
         if body.pinned is not None:
             db.set_session_pinned(sid, body.pinned)
         if body.unread is not None:
@@ -723,6 +747,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
+        if body.hidden is not None:
+            result["hidden"] = bool(body.hidden)
         if body.pinned is not None:
             result["pinned"] = bool(body.pinned)
         if body.unread is not None:

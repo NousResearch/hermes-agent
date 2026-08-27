@@ -13,6 +13,7 @@ import fcntl
 import errno
 import json
 import os
+import re
 import threading
 import time
 
@@ -75,7 +76,7 @@ def test_timeout_is_structured_target_busy(root):
         assert err.profile == "ops"
         assert err.waited_seconds >= 0.3
         assert "target_busy" in str(err)
-        assert "0s" in str(err) or "1s" in str(err)  # rough wait duration surfaced
+        assert re.search(r"~\d+s", str(err))  # rough wait duration surfaced
     finally:
         release.set()
         t.join(timeout=5)
@@ -91,9 +92,11 @@ def test_different_profiles_do_not_contend(root):
     assert held.wait(timeout=5)
     try:
         start = time.monotonic()
-        with acquire_turn_lock(root, "scout", timeout_seconds=2):
+        with acquire_turn_lock(root, "scout", timeout_seconds=5):
             pass
-        assert time.monotonic() - start < 1.0
+        # Upper bound generous for loaded CI runners — the point is only
+        # that 'scout' never waited the busy 'ops' budget out.
+        assert time.monotonic() - start < 2.5
     finally:
         release.set()
         t.join(timeout=5)
@@ -172,6 +175,8 @@ def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch
 
         class _P:
             returncode = 0
+            stdout = ""
+            stderr = ""
 
         return _P()
 
@@ -252,6 +257,23 @@ def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):
 # ── wiring: relay deliver RPC (tui_gateway/methods_bot_relay.py) ─────────────
 
 
+def test_local_delivery_command_never_reenters_the_lock():
+    """The gateway deliver handler runs local_delivery_command ALREADY holding
+    the profile lock. That argv must stay a raw hermes CLI invocation:
+    routing it through the --run-delivery wrapper would make the child hit
+    _delivery_lock (hermes CLI + '-p'), burn the full wait
+    budget against its parent's flock, and fail every relay delivery with
+    target_busy. argv[0] may be a resolved venv path (#93590) — the lock
+    matcher and this assertion both go by basename."""
+    from pathlib import Path
+
+    argv = bot_relay.local_delivery_command("ops", "/tmp/q.txt")
+    assert argv[1:3] == ["-p", "ops"]
+    assert Path(argv[0]).name in ("hermes", "hermes.exe")
+    assert "--run-delivery" not in argv
+    assert not any("bot_mode_dm" in part for part in argv)
+
+
 def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
     import tui_gateway.server as srv
 
@@ -262,16 +284,25 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_run(argv, **kwargs):  # pragma: no cover — target turn must not run
-        if "Bot Chat" in argv:
+    # Deterministic spawn detection: sentinel argv from the exact factory the
+    # deliver handler uses. A global subprocess.run patch also intercepts
+    # unrelated gateway-init calls (git rev-parse / ls-remote in CI), so
+    # never fuzzy-match argv — mark the delivery command itself.
+    monkeypatch.setattr(
+        bot_relay, "local_delivery_command", lambda prof, tmp: ["__delivery__", prof]
+    )
+
+    def _fake_run(argv, **kwargs):
+        argv = list(argv or [])
+        if argv and argv[0] == "__delivery__":
             spawned["argv"] = argv
 
-        class _P:
+        class _Done:
             returncode = 0
             stdout = ""
             stderr = ""
 
-        return _P()
+        return _Done()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
 

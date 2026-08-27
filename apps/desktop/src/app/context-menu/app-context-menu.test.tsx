@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
@@ -82,6 +83,13 @@ describe('resolveDomTarget', () => {
 
     expect(resolveDomTarget(host.querySelector('textarea')).editable).toBeTruthy()
     expect(resolveDomTarget(host.querySelector('input')).editable).toBeNull()
+  })
+
+  it('resolves the enclosing dialog as the menu portal container', () => {
+    const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
+    const dialog = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
   })
 })
 
@@ -200,6 +208,43 @@ describe('AppContextMenu', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
+  it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
+    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({
+      contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'],
+      readClipboard: vi.fn().mockResolvedValue('clipboard payload')
+    })
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Modal editor</DialogTitle>
+            <textarea aria-label="modal textarea" />
+          </DialogContent>
+        </Dialog>
+      </MemoryRouter>
+    )
+    const textarea = screen.getByLabelText('modal textarea')
+
+    fireEvent.contextMenu(textarea)
+
+    const paste = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]') as HTMLElement
+
+    await waitFor(() => expect(paste.getAttribute('data-disabled')).toBeNull())
+
+    const menu = paste.closest('[data-slot="dropdown-menu-content"]')
+    const dialog = screen.getByRole('dialog')
+
+    expect(dialog.contains(menu)).toBe(true)
+
+    fireEvent.click(paste)
+
+    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('paste'))
+    expect(document.activeElement).toBe(textarea)
+  })
+
   it('grays out cut and copy when the field has text but no selection', async () => {
     installBridge()
     mountMenu()
@@ -290,22 +335,12 @@ describe('AppContextMenu', () => {
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
   })
 
-  it('grays out paste until the clipboard reports text', async () => {
-    const readClipboard = vi.fn().mockResolvedValue('clip content')
-
-    installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // The clipboard read is async — the item enables when it lands.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    await waitFor(() => expect(pasteItem.getAttribute('data-disabled')).toBeNull())
-  })
-
-  it('keeps paste grayed out on an empty clipboard', async () => {
+  it('keeps paste clickable even when the clipboard probe reports empty', async () => {
+    // #91553: the dom paste action runs webContents.paste() in main — the
+    // same path Ctrl+V takes, which resolves the system clipboard itself.
+    // A renderer-side probe that comes back empty (as the Win32
+    // clipboard.readText() bridge can while that path succeeds) must not
+    // gray the item out; pasting on a truly empty clipboard is a no-op.
     const readClipboard = vi.fn().mockResolvedValue('')
 
     installBridge({ readClipboard: readClipboard as unknown as Window['hermesDesktop']['readClipboard'] })
@@ -316,8 +351,19 @@ describe('AppContextMenu', () => {
 
     const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
 
-    await waitFor(() => expect(readClipboard).toHaveBeenCalled())
-    expect(pasteItem.getAttribute('data-disabled')).not.toBeNull()
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
+  })
+
+  it('keeps paste clickable when the bridge has no clipboard read at all', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea>text</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
+
+    expect(pasteItem.getAttribute('data-disabled')).toBeNull()
   })
 
   it('offers the window verbs on bare chrome', async () => {

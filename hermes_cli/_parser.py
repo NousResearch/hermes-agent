@@ -11,6 +11,7 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 """
 
 import argparse
+from functools import lru_cache
 
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
@@ -21,6 +22,54 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [
     ("--profile", True),
     ("-p", True),
 ]
+
+
+# Static snapshot fallback for ``top_level_value_flag_sets`` — used only if
+# introspecting the live parser fails (e.g. argparse surface broken mid-edit).
+# The derived path is authoritative; a parity test in
+# tests/hermes_cli/test_top_level_value_flags_parity.py fails CI if the parser
+# grows a value-taking flag this snapshot lacks AND derivation regresses.
+_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider", "--reasoning",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "--usage-file",
+        "--in",
+    }
+)
+_OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+
+@lru_cache(maxsize=1)
+def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """(required-value, optional-value) top-level flags, derived from the
+    REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the argv scanners in ``main.py`` (``_first_positional_argv``,
+    ``_apply_profile_override``) can never drift from the argparse surface —
+    the exact drift that made ``hermes --reasoning high chat …`` misread
+    ``high`` as the subcommand and forced eager plugin discovery (#93530).
+    Mirrors the ``update_cmd._holder_value_flags`` precedent, including the
+    handwritten-snapshot fallback for a broken parser import. Cached per
+    process.
+    """
+    try:
+        parser = build_top_level_parser()[0]
+        required: set[str] = set()
+        optional: set[str] = set()
+        for action in parser._actions:
+            if not action.option_strings or action.nargs == 0:
+                continue
+            target = optional if action.nargs == "?" else required
+            target.update(action.option_strings)
+        return frozenset(required), frozenset(optional)
+    except Exception:
+        return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
 def _inherited_flag(parser, *args, **kwargs):

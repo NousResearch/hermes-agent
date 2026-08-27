@@ -285,7 +285,10 @@ def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
     legacy sessions and host-fed histories still use, and let the rejected
     payload through.
     """
-    from agent.codex_responses_adapter import _split_responses_tool_id
+    from agent.codex_responses_adapter import (
+        _canonical_call_id_from_fc,
+        _split_responses_tool_id,
+    )
 
     def _pair_ids(raw: Any, explicit: Any = None) -> set:
         """Every call id a stored tool id could pair on, converter-order."""
@@ -295,8 +298,9 @@ def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
             ids.add(explicit.strip())
         if not ids and isinstance(raw, str) and raw.strip():
             ids.add(raw.strip())
-        if isinstance(item_id, str) and item_id.startswith("fc_") and item_id[3:]:
-            ids.add(f"call_{item_id[3:]}")
+        canonical = _canonical_call_id_from_fc(item_id)
+        if canonical:
+            ids.add(canonical)
         return ids
 
     trailing = set()

@@ -13,10 +13,14 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+if TYPE_CHECKING:
+    from agent.secret_scope import ProfileEnvBoundary
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -201,6 +205,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
+# Apptainer/Singularity rename these host variables before injecting them into
+# a container.  Evaluate the target name as well as the wrapper name so
+# ``APPTAINERENV_GH_TOKEN`` cannot tunnel a blocked credential past the common
+# child-process sanitizer.
+_CONTAINER_ENV_FORWARD_PREFIXES = ("APPTAINERENV_", "SINGULARITYENV_")
+
+
+def _credential_target_env_name(key: str) -> str:
+    """Return the effective credential name after nested forwarding wrappers."""
+    value = str(key)
+    changed = True
+    while changed:
+        changed = False
+        upper = value.upper()
+        for prefix in _CONTAINER_ENV_FORWARD_PREFIXES:
+            if upper.startswith(prefix):
+                value = value[len(prefix):]
+                changed = True
+                break
+    return value
+
 # Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
 # providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
 # Bedrock-specific bearer token, which is a Hermes inference secret exactly
@@ -336,6 +361,56 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_HERMES_PROVIDER_ENV_BLOCKLIST_UPPER = frozenset(
+    key.upper() for key in _HERMES_PROVIDER_ENV_BLOCKLIST
+)
+
+
+def _build_model_provider_env_names() -> frozenset[str]:
+    """Return exact model-provider credential and endpoint env names."""
+    names: set[str] = {
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_EC2_METADATA_DISABLED",
+    }
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for provider in PROVIDER_REGISTRY.values():
+            names.update(str(item).upper() for item in provider.api_key_env_vars)
+            if provider.base_url_env_var:
+                names.add(str(provider.base_url_env_var).upper())
+    except ImportError:
+        pass
+    return frozenset(name for name in names if name)
+
+
+_MODEL_PROVIDER_ENV_NAMES_UPPER = _build_model_provider_env_names()
+
+
+def _is_blocked_provider_env(key: str) -> bool:
+    """Match provider credentials case-insensitively and through wrappers.
+
+    Windows environment keys are case-insensitive, and Apptainer/Singularity
+    can rename ``APPTAINERENV_*`` / ``SINGULARITYENV_*`` entries inside the
+    container.  Both representations must resolve to the same policy key.
+    """
+    current = frozenset(name.upper() for name in _build_provider_env_blocklist())
+    return _credential_target_env_name(key).upper() in current
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
@@ -383,6 +458,16 @@ def _is_hermes_internal_secret(key: str) -> bool:
       ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
       (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
       and remain visible.
+    - ``BWS_ACCESS_TOKEN`` — the Bitwarden Secrets Manager bootstrap token,
+      under the **exact** name configured via ``secrets.bitwarden.access_token_env``
+      (default ``BWS_ACCESS_TOKEN``; may be remapped to any name, e.g.
+      ``MY_BWS_TOKEN``). Hermes's own vault credential; no spawned child
+      legitimately needs it. The one child that does — the ``bws`` CLI —
+      receives it explicitly via ``build_subprocess_env(scrub_secrets=False)``
+      in ``agent/secret_sources/bitwarden.py``, never through inheritance.
+      Only the exact configured name is matched (not a ``*_ACCESS_TOKEN``
+      suffix) so legitimate third-party access tokens stay
+      ``env_passthrough``-registerable — see ``tools/env_passthrough.py``.
 
     ``code_execution_tool.py`` already catches these via substring matching on
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
@@ -396,7 +481,7 @@ def _is_hermes_internal_secret(key: str) -> bool:
     ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
     a model-driving CLI legitimately needs matches these patterns.
     """
-    upper = key.upper()
+    upper = _credential_target_env_name(key).upper()
     if upper.startswith("AUXILIARY_") and (
         upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
     ):
@@ -405,7 +490,113 @@ def _is_hermes_internal_secret(key: str) -> bool:
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
+    if upper in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"}:
+        return True
+    if upper.startswith("OP_SESSION_"):
+        return True
+    if "BWS" in upper and upper.endswith("_TOKEN"):
+        return True
+    if upper == "BWS_ACCESS_TOKEN" or upper == _get_configured_bws_token_env().upper():
+        # Bitwarden Secrets Manager bootstrap token — the exact configured
+        # access_token_env name (default BWS_ACCESS_TOKEN; may be remapped to
+        # a non-suffix name like MY_BWS_TOKEN), plus the default name itself.
+        # A remapped profile sharing one process with a default profile must
+        # not let the default profile's BWS_ACCESS_TOKEN (which the shared
+        # os.environ carries across profile turns) cross its child boundary
+        # either — the Bitwarden rule holds in both directions.
+        return True
     return False
+
+
+def _get_configured_bws_token_env() -> str:
+    """Resolve the exact Bitwarden token env name for the active profile.
+
+    ``read_raw_config`` is already cached by profile-aware config path and file
+    revision. Adding another per-home cache here would hide runtime remaps and
+    leave the newly configured bootstrap token unclassified.
+    """
+    name = "BWS_ACCESS_TOKEN"
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        configured = cfg_get(
+            read_raw_config(), "secrets", "bitwarden", "access_token_env"
+        )
+        if isinstance(configured, str) and configured.strip():
+            name = configured.strip()
+    except Exception as exc:
+        # A remapped bootstrap name may have no credential-looking suffix. If
+        # config authority is unavailable, returning the default would let that
+        # arbitrary name cross. Refuse the child decision instead of widening.
+        raise RuntimeError("Bitwarden token policy unavailable") from exc
+    return name
+
+
+def _plugin_terminal_env_strip_keys() -> frozenset:
+    """Credential env keys owned by plugin-registered terminal backends."""
+    try:
+        from agent.terminal_env_registry import plugin_strip_env_keys
+
+        return plugin_strip_env_keys()
+    except Exception as exc:
+        # An unavailable plugin registry is not an empty deny set. Treat it as
+        # degraded policy and refuse the child boundary.
+        raise RuntimeError("plugin terminal environment policy unavailable") from exc
+
+
+def _is_credential_shaped_password(key: str) -> bool:
+    """True for password-class env names.
+
+    Matches password-shaped names plus bare PASSWORD and *_PWD variants,
+    excluding PWD itself because it is the shell working-directory variable.
+    """
+    upper = _credential_target_env_name(key).upper()
+    return "PASSWORD" in upper or (upper.endswith("_PWD") and upper != "PWD")
+
+
+def _finalize_child_env_policy(
+    env: dict[str, str],
+    is_passthrough,
+    explicit_force_targets=(),
+    *,
+    enforce_password_policy: bool = False,
+) -> dict[str, str]:
+    """Reapply generic policy after profile values are overlaid.
+
+    Profile provenance may replace a source-owned value with a target-owned
+    value. That replacement must not bypass generic credential filtering.
+    Explicit force-prefix targets remain the existing opt-in escape for
+    non-internal credentials, while internal secrets stay denied.
+    """
+    plugin_strip = {
+        _credential_target_env_name(name).upper()
+        for name in _plugin_terminal_env_strip_keys()
+    }
+    always_strip = {name.upper() for name in _ALWAYS_STRIP_KEYS}
+    force_targets = {str(name).upper() for name in explicit_force_targets}
+    for key in list(env):
+        target_key = _credential_target_env_name(key)
+        target_upper = target_key.upper()
+        allow_credential = (
+            target_upper in force_targets or is_passthrough(target_key)
+        )
+        if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(target_key):
+            env.pop(key, None)
+        elif target_upper in always_strip:
+            env.pop(key, None)
+        elif target_upper in plugin_strip:
+            env.pop(key, None)
+        elif _is_blocked_provider_env(target_key) and not allow_credential:
+            env.pop(key, None)
+        elif (
+            enforce_password_policy
+            and _is_credential_shaped_password(target_key)
+            and not allow_credential
+        ):
+            env.pop(key, None)
+    return env
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -467,48 +658,129 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+def _sanitize_subprocess_env(
+    base_env: dict | None,
+    extra_env: dict | None = None,
+    *,
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
+) -> dict:
+    """Filter Hermes-managed and cross-profile secrets from a child environment.
+
+    In multiplex mode the exact source-profile ownership boundary is applied
+    before the existing provider/blocklist policy. Explicit homes let
+    standalone workers such as Kanban enforce the same rule without gateway
+    process-global state.
+    """
+    protected_base = dict(base_env or {})
+    boundary = None
+    boundary_active = enforce_profile_boundary
+    cross_profile = False
+    try:
+        from agent.secret_scope import (
+            build_profile_env_boundary,
+            is_multiplex_active,
+        )
+
+        boundary_active = boundary_active or is_multiplex_active()
+        if boundary_active:
+            boundary = build_profile_env_boundary(
+                source_home=source_profile_home,
+                target_home=profile_home,
+            )
+            cross_profile = boundary.source_home != boundary.target_home
+            protected_base = boundary.sanitize(protected_base)
+    except Exception as exc:
+        if enforce_profile_boundary or boundary_active:
+            raise RuntimeError(
+                "profile environment boundary could not be constructed; refusing "
+                f"to spawn with ambient environment: {exc}"
+            ) from exc
+        logger.debug("profile environment boundary unavailable outside multiplex", exc_info=True)
+
     try:
         from tools.env_passthrough import (
-            is_env_passthrough as _is_passthrough,
+            is_env_passthrough as _is_passthrough_for_profile,
             resolve_passthrough_value as _resolve_passthrough_value,
+        )
+        _is_passthrough = lambda name: _is_passthrough_for_profile(  # noqa: E731
+            name,
+            profile_home=profile_home,
         )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    _plugin_strip = _plugin_terminal_env_strip_keys()
 
-    for key, value in (base_env or {}).items():
-        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+    for key, value in protected_base.items():
+        if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if _is_hermes_internal_secret(key):
             continue
+        if key in _plugin_strip:
+            continue
         passthrough = _is_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if _is_blocked_provider_env(key) and not passthrough:
+            continue
+        if cross_profile and _is_credential_shaped_password(key) and not passthrough:
             continue
         resolved = _resolve_passthrough_value(key, value) if passthrough else value
         if resolved is not None:
             sanitized[key] = resolved
 
     for key, value in (extra_env or {}).items():
-        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+        if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             if _is_hermes_internal_secret(real_key):
                 continue
             sanitized[real_key] = value
         elif _is_hermes_internal_secret(key):
             continue
+        elif key in _plugin_strip:
+            continue
         else:
             passthrough = _is_passthrough(key)
-            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if _is_blocked_provider_env(key) and not passthrough:
+                continue
+            if cross_profile and _is_credential_shaped_password(key) and not passthrough:
                 continue
             resolved = _resolve_passthrough_value(key, value) if passthrough else value
             if resolved is not None:
                 sanitized[key] = resolved
 
-    _inject_context_hermes_home(sanitized)
+    # Apply the profile boundary after all explicit force-prefix values have
+    # been unwrapped. This prevents ``extra_env`` from reintroducing a
+    # source-owned credential after the initial protected-base sanitization.
+    if boundary_active and boundary is not None:
+        sanitized = boundary.sanitize(sanitized)
+        sanitized = _materialize_target_passthrough_values(
+            sanitized,
+            boundary,
+            is_passthrough=_is_passthrough,
+            plugin_strip=_plugin_strip,
+        )
+    sanitized = _finalize_child_env_policy(
+        sanitized,
+        _is_passthrough,
+        {
+            key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            for key in (extra_env or {})
+            if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+        },
+        enforce_password_policy=cross_profile,
+    )
+
+    # An explicit target profile is authoritative for both HERMES_HOME and the
+    # derived subprocess HOME policy.  Install it before evaluating
+    # apply_subprocess_home_env(); otherwise standalone workers can get split
+    # identity (target HERMES_HOME with the dispatcher's HOME).
+    if profile_home is not None:
+        sanitized["HERMES_HOME"] = str(profile_home)
+    else:
+        _inject_context_hermes_home(sanitized)
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
@@ -523,11 +795,51 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # against the repo layout before trusting it.
     _strip_hermes_owned_pythonpath_and_runtime_markers(sanitized)
 
+    # Keep bare ``hermes`` invocations available to child jobs even when the
+    # gateway was launched by a service manager or cron without the console
+    # script's directory on PATH.  The terminal environment already applies
+    # this invariant; Cron scripts use this sanitizer directly (#92998).
+    path_key = _path_env_key(sanitized)
+    if path_key is not None:
+        sanitized[path_key] = _prepend_hermes_bin_dir(sanitized.get(path_key, ""))
+
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
 
     return sanitized
+
+
+def _materialize_target_passthrough_values(
+    env: dict[str, str],
+    boundary: "ProfileEnvBoundary",
+    *,
+    is_passthrough,
+    plugin_strip: frozenset[str] | set[str],
+) -> dict[str, str]:
+    """Add exact target-authored passthrough grants absent from ambient env.
+
+    The profile boundary is the value authority and the target profile's
+    passthrough configuration is the policy authority.  Keeping this step
+    shared prevents foreground local execution and process-registry execution
+    from disagreeing about target-only grants.
+    """
+    result = dict(env)
+    if boundary.source_home == boundary.target_home:
+        return result
+    for key, value in boundary.compiled_target_values().items():
+        if not is_passthrough(key):
+            continue
+        if _is_hermes_internal_secret(key) or key in plugin_strip:
+            continue
+        if _is_blocked_provider_env(key):
+            continue
+        # ``boundary.target_values`` is already an immutable, identity-bound
+        # target-profile snapshot. Re-resolving it through the ambient
+        # ContextVar would make a valid explicit boundary depend on caller
+        # thread context and can drop target-only grants on recovery threads.
+        result[key] = str(value)
+    return result
 
 
 def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
@@ -581,6 +893,14 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HASS_TOKEN",
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Bitwarden Secrets Manager bootstrap token.  Classified as a
+    # Hermes-internal secret by _is_hermes_internal_secret on the terminal
+    # path; enumerated here so the non-terminal inherit_credentials=True
+    # path (codex / copilot / TUI host) also strips it unconditionally.
+    # The bws secret-source child injects its token explicitly into its own
+    # child env (agent/secret_sources/bitwarden.py) and never relies on
+    # ambient inheritance, so Tier-1 stripping cannot break it.
+    "BWS_ACCESS_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -588,7 +908,11 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
 })
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *,
+    inherit_credentials: bool = False,
+    profile_boundary: "ProfileEnvBoundary | None" = None,
+) -> dict[str, str]:
     """Build a sanitized environment dict for a spawned subprocess.
 
     Centralized helper for the **non-terminal** spawn surface (browser,
@@ -622,29 +946,65 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     """
     env = os.environ.copy()
 
-    # Tier 1 — always strip.
-    for key in _ALWAYS_STRIP_KEYS:
-        env.pop(key, None)
+    from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+    multiplex_active = is_multiplex_active()
+    boundary = profile_boundary
+    boundary_active = multiplex_active or boundary is not None
+    if boundary_active:
+        boundary = boundary or build_profile_env_boundary()
+        env = boundary.sanitize(env)
+        if inherit_credentials:
+            for key, value in boundary.compiled_target_values().items():
+                target_name = _credential_target_env_name(key).upper()
+                if target_name in _build_model_provider_env_names():
+                    env[str(key)] = str(value)
+
+    # Tier 1 — always strip, including mixed-case Windows keys and
+    # Apptainer/Singularity forwarding wrappers around a Tier-1 target.
+    for key in list(env):
+        if _credential_target_env_name(key).upper() in _ALWAYS_STRIP_KEYS:
+            env.pop(key, None)
+    plugin_strip = {
+        _credential_target_env_name(name).upper()
+        for name in _plugin_terminal_env_strip_keys()
+    }
+    for key in list(env):
+        if _credential_target_env_name(key).upper() in plugin_strip:
+            env.pop(key, None)
+    # Password-shaped variables are provenance-isolated only when crossing
+    # profile authority. Single-profile helpers retain the trusted shell contract.
+    cross_profile = bool(
+        boundary is not None and boundary.source_home != boundary.target_home
+    )
+    if cross_profile:
+        for key in list(env):
+            if _is_credential_shaped_password(key):
+                env.pop(key, None)
     # Internal routing hints and Hermes-internal dynamic secrets
     # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
     # ``GATEWAY_RELAY_*`` relay-auth material) must never reach a child,
     # regardless of ``inherit_credentials`` — a model-driving CLI has no
     # legitimate use for them. See :func:`_is_hermes_internal_secret`.
     for key in list(env):
-        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+        if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             env.pop(key, None)
         elif _is_hermes_internal_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:
         # Tier 2 — strip provider/tool credentials unless explicitly inherited.
-        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
-            env.pop(key, None)
+        for key in list(env):
+            if _is_blocked_provider_env(key):
+                env.pop(key, None)
 
     # Windows UTF-8 safety for spawned processes (#31420).
     env.setdefault("PYTHONUTF8", "1")
 
-    _inject_context_hermes_home(env)
+    if boundary is not None:
+        env["HERMES_HOME"] = str(boundary.target_home)
+    else:
+        _inject_context_hermes_home(env)
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
 
@@ -677,6 +1037,9 @@ def build_subprocess_env(
     inherit_profile_home: bool = True,
     scrub_secrets: bool = True,
     extra: "Mapping[str, str] | None" = None,
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
 ) -> dict[str, str]:
     """Single factory for building a child-process environment.
 
@@ -714,6 +1077,10 @@ def build_subprocess_env(
       overrides (e.g. a session-scoped ``HERMES_HOME``) always win.  On the
       scrub path it is forwarded as ``_sanitize_subprocess_env``'s
       ``extra_env`` (same force-prefix / blocklist handling as today).
+    * ``profile_home`` / ``source_profile_home`` — optional explicit target
+      and source profile homes.  When supplied with
+      ``enforce_profile_boundary=True`` they make the profile ownership policy
+      usable by standalone workers such as Kanban.
     """
     if scrub_secrets:
         # _sanitize_subprocess_env already performs HERMES_HOME override
@@ -722,6 +1089,9 @@ def build_subprocess_env(
         return _sanitize_subprocess_env(
             dict(base) if base is not None else os.environ.copy(),
             dict(extra) if extra else None,
+            profile_home=profile_home,
+            source_profile_home=source_profile_home,
+            enforce_profile_boundary=enforce_profile_boundary,
         )
 
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
@@ -1292,9 +1662,32 @@ def _make_run_env(env: dict) -> dict:
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     merged = dict(os.environ | env)
+    _multiplex_active = False
+    _boundary = None
+    try:
+        from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+        _multiplex_active = is_multiplex_active()
+        if _multiplex_active:
+            _boundary = build_profile_env_boundary()
+            merged = _boundary.sanitize(merged)
+    except Exception as exc:
+        if _multiplex_active:
+            raise RuntimeError(
+                "profile environment boundary could not be constructed; refusing "
+                "to run with ambient environment"
+            ) from exc
+        logger.debug("profile environment boundary unavailable outside multiplex", exc_info=True)
     run_env = {}
+    explicit_force_names = {
+        key
+        for key in env
+        if isinstance(key, str) and key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+    }
     for k, v in merged.items():
-        if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+        if k.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            if k not in explicit_force_names:
+                continue
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             if _is_hermes_internal_secret(real_key):
                 continue
@@ -1303,11 +1696,31 @@ def _make_run_env(env: dict) -> dict:
             continue
         else:
             passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if _is_blocked_provider_env(k) and not passthrough:
+                continue
+            if _multiplex_active and _is_credential_shaped_password(k) and not passthrough:
                 continue
             value = _resolve_passthrough_value(k, v) if passthrough else v
             if value is not None:
                 run_env[k] = value
+    if _multiplex_active and _boundary is not None:
+        run_env = _boundary.sanitize(run_env)
+        run_env = _materialize_target_passthrough_values(
+            run_env,
+            _boundary,
+            is_passthrough=_is_passthrough,
+            plugin_strip=_plugin_terminal_env_strip_keys(),
+        )
+    run_env = _finalize_child_env_policy(
+        run_env,
+        _is_passthrough,
+        {
+            key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            for key in explicit_force_names
+        },
+        enforce_password_policy=_multiplex_active,
+    )
+
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
@@ -1715,6 +2128,10 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    # Commands run on the Hermes host itself — controller-side platform
+    # behavior (macOS TCC pruning, etc.) legitimately applies here.
+    is_local = True
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
@@ -1899,27 +2316,72 @@ class LocalEnvironment(BaseEnvironment):
                     if pgid is None:
                         raise
 
+                # Snapshot the descendant set BEFORE the first signal: once
+                # the wrapper dies its children reparent to init and a parent
+                # walk finds nothing (same rationale as agent/deadline.py
+                # kill_process_tree).  A descendant that called ``setsid``
+                # escapes the process group entirely and would survive the
+                # group-kill below — the #71148 class, terminal flavor
+                # (issue #84967's local sibling).  The snapshot must never
+                # break the kill path, so any failure just yields an empty
+                # sweep set.
+                descendants: list = []
+                try:
+                    import psutil
+
+                    descendants = psutil.Process(proc.pid).children(recursive=True)
+                except Exception:
+                    descendants = []
+
+                def _sweep_escaped_descendants() -> None:
+                    """SIGKILL snapshotted survivors outside the (dead) group.
+
+                    Runs after the TERM→KILL group escalation so in-group
+                    members keep their SIGTERM grace window; only escapees
+                    (own setsid sessions) are force-killed.  psutil's
+                    identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
+                    """
+                    for child in descendants:
+                        try:
+                            if not child.is_running():
+                                continue
+                            try:
+                                if os.getpgid(child.pid) == pgid:
+                                    continue  # group-kill already covers it
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                            child.kill()
+                        except Exception:
+                            continue
+
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
 
                 # Wait on the process group, not just the shell wrapper. Under
                 # load the wrapper can exit before grandchildren do; returning
                 # at that point leaves orphaned process-group members behind.
                 if _wait_for_group_exit(pgid, 1.0):
+                    _sweep_escaped_descendants()
                     return
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
                 _wait_for_group_exit(pgid, 2.0)
                 try:
                     proc.wait(timeout=0.2)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                _sweep_escaped_descendants()
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()

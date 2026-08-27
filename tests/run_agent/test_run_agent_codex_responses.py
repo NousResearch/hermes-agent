@@ -630,7 +630,12 @@ def test_run_codex_stream_strips_nested_request_override_retention(
     with caplog.at_level("WARNING", logger="agent.codex_runtime"):
         agent._run_codex_stream(request)
 
-    assert "extra_body" not in captured
+    # The transform bypass (#93650) re-introduces extra_body to carry the bulk
+    # payload fields; the guard's contract is that retention itself never
+    # crosses the wire boundary in either shape.
+    assert "prompt_cache_retention" not in captured
+    assert "prompt_cache_retention" not in captured.get("extra_body", {})
+    assert "input" in captured.get("extra_body", {})
     assert request["extra_body"] == {"prompt_cache_retention": "24h"}
     assert any(
         "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"

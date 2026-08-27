@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
-from tools.environments.local import hermes_subprocess_env
+from tools.environments.local import build_subprocess_env, hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 _Thread = threading.Thread
@@ -89,12 +89,9 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
     except Exception:
         return False
 
@@ -154,6 +151,22 @@ class HostSupervisor:
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = expected_build_sha if expected_build_sha is not None else _build_sha()
         self.expected_hermes_home = expected_hermes_home if expected_hermes_home is not None else str(get_hermes_home())
+        from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+        from hermes_constants import get_process_hermes_home
+
+        # Capture owner authority while the constructing profile context is
+        # available. Crash recovery runs in a fresh wait thread whose
+        # ContextVars are intentionally not trusted for authorization.
+        source_home = Path(get_process_hermes_home()).resolve()
+        target_home = Path(self.expected_hermes_home).resolve()
+        self._profile_env_boundary = None
+        if is_multiplex_active() or source_home != target_home:
+            self._profile_env_boundary = build_profile_env_boundary(
+                source_home=source_home,
+                target_home=target_home,
+            )
+            if self._profile_env_boundary.target_home != target_home:
+                raise RuntimeError("compute host owner/profile boundary mismatch")
 
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
@@ -315,10 +328,35 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = hermes_subprocess_env(inherit_credentials=True)
-        env.update(os.environ)
+        boundary = self._profile_env_boundary
+        if boundary is not None:
+            from agent.secret_scope import build_profile_env_boundary
+
+            # Refresh temporal authority at every initial spawn/respawn using
+            # the immutable owner identities captured at construction.  A wait
+            # thread's ContextVars are not authorization, and a prior value
+            # snapshot must not resurrect rotated or revoked credentials.
+            boundary = build_profile_env_boundary(
+                source_home=boundary.source_home,
+                target_home=boundary.target_home,
+            )
+            self._profile_env_boundary = boundary
+        env = hermes_subprocess_env(
+            inherit_credentials=True,
+            profile_boundary=boundary,
+        )
         if self.env:
-            env.update(self.env)
+            if boundary is not None:
+                explicit_env = build_subprocess_env(
+                    base={},
+                    extra=self.env,
+                    profile_home=boundary.target_home,
+                    source_profile_home=boundary.source_home,
+                    enforce_profile_boundary=True,
+                )
+            else:
+                explicit_env = build_subprocess_env(base={}, extra=self.env)
+            env.update(explicit_env)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         env.setdefault("PYTHONPATH", str(_repo_root()))
         if str(_repo_root()) not in env["PYTHONPATH"].split(os.pathsep):
@@ -544,7 +582,7 @@ class HostSupervisor:
                 return
             time.sleep(0.05)
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             return
         except Exception:

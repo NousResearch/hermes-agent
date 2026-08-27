@@ -27,7 +27,9 @@ test('AdvancedProfileConfig embeds the real McpTab with a live gateway + profile
 })
 
 test('AdvancedProfileConfig scopes SkillsView to the connection and backend target profile', () => {
-  assert.match(source, /const botRoute = botConnectionRoute\(bot\)/)
+  // Route lookup is the NON-throwing resolver (#93492): the dialog renders
+  // degraded for an orphaned row instead of crashing the pane.
+  assert.match(source, /const botRoute = resolveBotConnectionRoute\(bot\)\.route/)
   assert.match(source, /fixedProfile: backendProfile/)
   assert.match(source, /fixedConnection: botRoute\.connectionId/)
 })

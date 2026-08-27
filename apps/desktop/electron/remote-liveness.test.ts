@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
   REMOTE_LIVENESS_TIMEOUT_MS,
@@ -257,6 +259,47 @@ describe('revalidateRemoteConnection', () => {
   })
 })
 
+describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
+  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi.fn(async connection => {
+      if (connection === stale) {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:49525')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(probe).toHaveBeenCalledWith(stale, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
+})
+
 describe('revalidatePooledRemoteBackends', () => {
   interface TestRemoteConnection {
     authMode?: string
@@ -268,17 +311,12 @@ describe('revalidatePooledRemoteBackends', () => {
   const harness = (
     rawEntries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string; authMode?: string }]>
   ) => {
-    const entries: Array<[
-      string,
-      TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }
-    ]> = rawEntries.map(([profile, entry]) => {
-      const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
+    const entries: Array<[string, TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }]> =
+      rawEntries.map(([profile, entry]) => {
+        const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
 
-      return [
-        profile,
-        { ...connection, connectionPromise: Promise.resolve(connection) }
-      ]
-    })
+        return [profile, { ...connection, connectionPromise: Promise.resolve(connection) }]
+      })
 
     const unreachable = new Set<string>()
     const log = vi.fn()

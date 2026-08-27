@@ -29,9 +29,11 @@ import json
 import logging
 import socket
 import threading
+import time
 from typing import Any
 
 from tui_gateway import server
+from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ class WSTransport:
         #: browser-controller registration.
         self.auth_identity = auth_identity
         self._closed = False
+        self._last_inbound_at = time.monotonic()
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
         # "armed" flag against the worker threads that call write(); the timer
@@ -115,6 +118,17 @@ class WSTransport:
         # writes need an async boundary because several batches can be queued on
         # the owning loop while it recovers from a stall.
         self._send_lock = asyncio.Lock()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def last_inbound_at(self) -> float:
+        return self._last_inbound_at
+
+    def mark_inbound(self) -> None:
+        self._last_inbound_at = time.monotonic()
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -288,6 +302,17 @@ def _disable_nagle(ws: Any) -> None:
         sock = transport.get_extra_info("socket") if transport is not None else None
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Dead-peer detection: without keepalive a silently-dropped client
+            # (SSH tunnel reset, client sleep) leaves the TCP leg half-open
+            # forever, receive_text() blocks indefinitely, and the disconnect
+            # teardown (detach + orphan reap + resume replay) never runs.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):  # Linux
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+            elif hasattr(socket, "TCP_KEEPALIVE"):  # macOS idle seconds
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30)
     except Exception as exc:  # pragma: no cover - best-effort tuning
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
@@ -350,7 +375,15 @@ async def handle_ws(
                     # change_events: this backend broadcasts pet.changed /
                     # cron.changed / sessions.changed, so clients can demote
                     # their legacy polls to slow backstops.
-                    "payload": {"skin": skin_payload, "change_events": True},
+                    "payload": {
+                        "skin": skin_payload,
+                        "change_events": True,
+                        "heartbeat": True,
+                        # Replay-contract process identity: lets reconnecting
+                        # clients detect a backend restart and reset their
+                        # per-session seq watermarks (see event_replay).
+                        "replay_epoch": replay_epoch(),
+                    },
                 },
             }
         )
@@ -360,6 +393,15 @@ async def handle_ws(
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+        # Same once-per-process startup pass for session rows orphaned by a
+        # previous gateway process (#65194): the desktop app and web dashboard
+        # reach the agent through this WS sidecar, not entry.main(). Idempotent
+        # + config-gated inside, so a stdio TUI that already scheduled is a
+        # no-op.
+        try:
+            server._schedule_startup_orphan_sweep()
+        except Exception:
+            _log.warning("startup orphan sweep scheduling failed", exc_info=True)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -384,6 +426,7 @@ async def handle_ws(
             line = raw.strip()
             if not line:
                 continue
+            transport.mark_inbound()
             messages += 1
 
             try:
@@ -418,6 +461,22 @@ async def handle_ws(
             # response dict, which we write here from the loop.
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
+
+            if req_method == "gateway.ping":
+                ok = await transport.write_async(
+                    {
+                        "jsonrpc": "2.0",
+                        "result": {"ok": True},
+                        "id": req_id,
+                    }
+                )
+                if not ok:
+                    disconnect_reason = "send_failed_after_heartbeat"
+                    send_failures += 1
+                    _log.warning("ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
+                    break
+                continue
+
             try:
                 resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:

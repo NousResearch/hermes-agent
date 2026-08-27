@@ -30,6 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -97,6 +98,7 @@ function ZoneMenu({
   minimized,
   nodeId,
   stripVisible,
+  tabMenuPrefix,
   targetPane
 }: {
   children: ReactNode
@@ -111,6 +113,8 @@ function ZoneMenu({
   /** Whether the strip is on screen — the Hide/Show row toggles against what
    *  the user can see, not against the stored mode (a zone on auto has none). */
   stripVisible?: boolean
+  /** Domain verbs for the right-clicked pane, resolved when the menu opens. */
+  tabMenuPrefix?: (kit: MenuKit) => ReactNode
   /** The right-clicked chip (else the active pane) — what the close-others /
    *  to-the-right / all verbs measure from. Called when the menu RENDERS, not
    *  on every zone re-render: resolving the siblings reads the layout tree,
@@ -131,8 +135,12 @@ function ZoneMenu({
     const paneId = closable?.()
     const targetId = targetPane()
 
+    const prefix = tabMenuPrefix?.(kit)
+
     return (
       <>
+        {prefix}
+        {prefix ? <kit.Separator /> : null}
         {renderActionItem(kit, {
           icon: 'refresh',
           label: t.zones.reload,
@@ -142,7 +150,12 @@ function ZoneMenu({
         {paneTabCloseItems(kit, {
           counts: treeTabCloseTargets(targetId),
           onClose: paneId !== undefined ? () => closeTabPane(paneId) : undefined,
-          onCloseAll: () => closeAllTreeTabs(targetId),
+          onCloseAll: () => {
+            // Persist-close session tiles first so Bot Mode cannot
+            // rehydrate them from the shared tile bucket (#94137).
+            closeAllOpenSessionTiles(targetId)
+            closeAllTreeTabs(targetId)
+          },
           onCloseOthers: () => closeOtherTreeTabs(targetId),
           onCloseToRight: () => closeTreeTabsToRight(targetId)
         })}
@@ -270,6 +283,25 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
 
+  // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
+  // Browser tab makes another Browser, even stacked into the chat strip), then
+  // the chat "+" for any zone holding session tabs, then any other tenant that
+  // can mint its own kind — that last rung is what keeps the button from
+  // blinking out when you click a file tab sitting beside a Browser.
+  const ownNewTab = (id: string) => {
+    const mint = paneChrome(paneFor(id)).newTab
+
+    return mint ? { label: t.zones.newTab, onSelect: mint } : null
+  }
+
+  const newTab =
+    ownNewTab(activeId) ??
+    (shown.some(isSessionStripPane) && newSessionTabAction
+      ? { label: t.zones.newSessionTab, onSelect: newSessionTabAction }
+      : null) ??
+    shown.map(ownNewTab).find(Boolean) ??
+    null
+
   useEffect(() => {
     if (activeId) {
       rememberActivePane(memoryKey, activeId)
@@ -375,6 +407,7 @@ export function TreeGroup({
     minimized: node.minimized,
     nodeId: node.id,
     stripVisible,
+    tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane
   }
 
@@ -594,12 +627,13 @@ export function TreeGroup({
               return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
             })}
 
-            {/* Plain "+" after the last tab of a CHAT strip (the workspace
-                zone, or any zone holding session tabs) — always shown. Creates
-                a new session tab (mirrors ⌘T) via the app-registered action;
-                the pointerdown focuses this zone first, so the tab lands in
-                THIS strip. Hidden when unwired or the zone is minimized. */}
-            {shown.some(isSessionStripPane) && newSessionTabAction && !node.minimized && (
+            {/* Plain "+" after the last tab — it mints another tab of the kind
+                you are LOOKING AT, so a Browser strip makes another Browser
+                and a chat strip makes another session (mirrors ⌘T, via the
+                app-registered action). The pointerdown focuses this zone
+                first, so the tab lands in THIS strip. Hidden when the active
+                pane is one of a kind and the zone holds no session tabs. */}
+            {newTab && !node.minimized && (
               <span
                 // The action docks into the FOCUSED chat zone; clicking a
                 // background strip's "+" must make THAT zone the focused one
@@ -610,8 +644,8 @@ export function TreeGroup({
               >
                 <PaneStripGlyph
                   icon={<Codicon name="add" size="0.8125rem" />}
-                  label={t.zones.newSessionTab}
-                  onSelect={() => newSessionTabAction()}
+                  label={newTab.label}
+                  onSelect={newTab.onSelect}
                 />
               </span>
             )}

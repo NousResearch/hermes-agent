@@ -13,7 +13,7 @@ import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
-import { isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -65,7 +65,8 @@ function loadPersisted(): LayoutNode | null {
 function persist(tree: LayoutNode | null) {
   // A secondary window (single-chat pop-out) shares the origin's localStorage;
   // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
-  if (isSecondaryWindow()) {
+  // A popped-out Browser is the same class of window.
+  if (isSecondaryWindow() || isBrowserWindow()) {
     return
   }
 
@@ -75,7 +76,7 @@ function persist(tree: LayoutNode | null) {
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
+export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() || isBrowserWindow() ? null : loadPersisted())
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user

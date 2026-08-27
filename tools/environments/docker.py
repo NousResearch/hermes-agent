@@ -22,6 +22,7 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
+    sanitize_task_id_for_path,
 )
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -110,6 +111,18 @@ def _load_hermes_env_vars() -> dict[str, str]:
         return {}
 
 
+def _credential_file_mounts_for_boundary(profile_boundary) -> list[dict[str, str]]:
+    """Return mounts only when their process-global config cache is unambiguous."""
+    if profile_boundary is not None:
+        # tools.credential_files remains a separate owner and currently caches
+        # config-derived host paths process-wide. Quarantine this capability in
+        # a multiplexer rather than mount a path resolved for a sibling profile.
+        return []
+    from tools.credential_files import get_credential_file_mounts
+
+    return get_credential_file_mounts()
+
+
 # Docker label values must match [a-zA-Z0-9_.-] and stay ≤63 chars to round-trip
 # safely through `docker ps --filter label=key=value`. Profile and task names
 # can technically contain other characters; sanitize defensively.
@@ -130,6 +143,13 @@ def _sanitize_label_value(value: str) -> str:
     return cleaned
 
 
+# The task_id -> host-directory-name mapping is shared with every backend
+# that persists per-task state on the host filesystem (Singularity overlays
+# use the same helper), so the whole bug class is fixed in one place:
+# tools.environments.base.sanitize_task_id_for_path.
+_sandbox_dir_name = sanitize_task_id_for_path
+
+
 def _get_active_profile_name() -> str:
     """Return the active Hermes profile name, or ``"default"`` on any error.
 
@@ -143,6 +163,29 @@ def _get_active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
+
+
+def _container_identity(shared_key: str = "") -> str:
+    """Return the profile label used for reuse and orphan reaping.
+
+    Profiles remain isolated by default. An explicit shared key lets trusted
+    profiles that intentionally share a workspace use one Docker identity.
+
+    Shared keys are made collision-resistant the same way
+    :func:`sanitize_task_id_for_path` is: label sanitization is lossy
+    (``team/workspace`` and ``team_workspace`` both sanitize to
+    ``team_workspace``, and >63-char keys truncate), and since container
+    reuse is label-keyed, two DIFFERENT keys colliding after sanitization
+    would silently attach to the same running container. A digest of the
+    raw key disambiguates; identical raw keys still map to identical
+    labels across processes. Plain profile names keep their historical
+    un-suffixed labels for backward compatibility with existing containers.
+    """
+    if not shared_key:
+        return _sanitize_label_value(_get_active_profile_name())
+    digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
+    stem = _sanitize_label_value(shared_key)[:50]
+    return f"{stem}-{digest}"
 
 
 def reap_orphan_containers(
@@ -887,6 +930,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        shared_container_key: str = "",
     ):
         if cwd == "~":
             cwd = "/root"
@@ -980,7 +1024,9 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
+            sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
@@ -1012,12 +1058,13 @@ class DockerEnvironment(BaseEnvironment):
         # Read-only so the container can authenticate but not modify host creds.
         try:
             from tools.credential_files import (
-                get_credential_file_mounts,
                 get_skills_directory_mount,
                 get_cache_directory_mounts,
             )
 
-            for mount_entry in get_credential_file_mounts():
+            for mount_entry in _credential_file_mounts_for_boundary(
+                self._profile_env_boundary
+            ):
                 src = Path(mount_entry["host_path"])
                 if src.is_dir():
                     # Docker-in-Docker: Docker auto-created the source path as
@@ -1366,9 +1413,9 @@ class DockerEnvironment(BaseEnvironment):
         #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
-        # _sanitize_label_value(); the active Hermes profile is captured at
+        # _sanitize_label_value(); the configured reuse identity is captured at
         # container-start time and never changes for the container's lifetime.
-        profile_name = _sanitize_label_value(_get_active_profile_name())
+        profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
         label_args = [
             "--label", "hermes-agent=1",
@@ -1567,12 +1614,18 @@ class DockerEnvironment(BaseEnvironment):
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
         # keys are filtered. Also strip Hermes-internal dynamic secrets
-        # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) that the
-        # name-based blocklist doesn't cover — see _is_hermes_internal_secret.
+        # (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth,
+        # BWS_ACCESS_TOKEN) that the name-based blocklist doesn't cover — see
+        # _is_hermes_internal_secret.  Naming an internal bootstrap credential
+        # in docker_forward_env must NOT export it into the container: the
+        # forwarding list is a capability boundary, not an unconditional bypass.
         _implicit_forward = {
             k for k in passthrough_keys if not _is_hermes_internal_secret(k)
         }
-        forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        _explicit_forward = {
+            k for k in explicit_forward_keys if not _is_hermes_internal_secret(k)
+        }
+        forward_keys = _explicit_forward | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         unset_names: set[str] = set()
         for key in sorted(forward_keys):

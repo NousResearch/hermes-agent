@@ -97,4 +97,43 @@ describe('TreeGroup workspace scope', () => {
     expect(visibleTabs()).toEqual(['session-a'])
     expect(container?.textContent).toContain('Session A content')
   })
+
+  it('keeps a global Browser pane visible in Bot Mode', () => {
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    register('bot-a', 'Bot A', { workspaceMode: 'bots', workspaceOwnerKey: 'connection-a::default' })
+    register('preview-tile:url:browser', 'Browser')
+
+    const node: GroupNode = {
+      active: 'bot-a',
+      id: 'workspace-scope-zone',
+      panes: ['bot-a', 'preview-tile:url:browser'],
+      tabStrip: 'always',
+      type: 'group'
+    }
+
+    act(() => setWorkspaceScope('bots', 'connection-a::default'))
+    render(<TreeGroup node={node} parentAxis="column" />)
+
+    expect(visibleTabs()).toEqual(['bot-a', 'preview-tile:url:browser'])
+  })
+
+  it('hides a Sessions-only Browser pane in Bot Mode', () => {
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    register('bot-a', 'Bot A', { workspaceMode: 'bots', workspaceOwnerKey: 'connection-a::default' })
+    register('preview-tile:url:browser', 'Browser', { workspaceMode: 'sessions' })
+
+    const node: GroupNode = {
+      active: 'bot-a',
+      id: 'workspace-scope-zone',
+      panes: ['bot-a', 'preview-tile:url:browser'],
+      tabStrip: 'always',
+      type: 'group'
+    }
+
+    act(() => setWorkspaceScope('bots', 'connection-a::default'))
+    render(<TreeGroup node={node} parentAxis="column" />)
+
+    expect(visibleTabs()).toEqual(['bot-a'])
+    expect(container?.textContent).not.toContain('Browser content')
+  })
 })

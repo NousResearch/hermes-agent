@@ -130,6 +130,72 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
 
+## Pre-Compress Checkpoints (fail-closed)
+
+`on_pre_compress()` is best-effort by default: if your provider raises, the
+host logs the failure and compression proceeds. That is the right default for
+insight extraction — and the wrong one for a provider whose job is to archive
+transcript evidence to a durable store *before* the lossy rewrite. For that
+case the host offers an opt-in checkpoint contract (API v2):
+
+```python
+from agent.memory_provider import MemoryProvider
+
+class MyArchivingProvider(MemoryProvider):
+    # Opt in: every successful on_pre_compress() return means the durable
+    # checkpoint is committed. Raise on any failure — do not return partial
+    # success. Version 1 (the inherited default) is the implicit historical
+    # contract: best-effort semantics, raw message list.
+    pre_compress_checkpoint_api_version = 2
+
+    def on_pre_compress(self, messages):
+        ids = self._archive(messages)   # must be durable before returning
+        return f"checkpoint: {ids}"     # forwarded into the summary prompt
+```
+
+Operators enable enforcement per deployment:
+
+```yaml
+compression:
+  checkpoint_required: true   # default: false
+```
+
+With the gate on, compression **fails closed** before any lossy rewrite unless
+an active provider advertising the API completed its checkpoint: the
+uncompressed transcript is preserved, the compaction attempt errors with
+`BLOCKED_MISSING_PREREQUISITE`, and it can be retried once your store
+recovers. With the gate off (default), nothing changes for existing providers.
+
+The gate binds to every compaction authority, not just the Hermes
+summarizer: server-side native compaction (`compression.codex_responses_native`)
+is suppressed while the gate is armed, post-turn micro-compaction
+(`compression.micro_compact`) is forced off at agent init (it absorbs old
+exchanges into a rolling summary with no checkpoint hook in its path), and
+the `codex_app_server` API mode is refused at agent init — the codex agent
+compacts its own thread with no truthful pre-compaction boundary, so a
+required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
+compressor stays the only lossy authority.
+
+What your provider receives depends on its declared API version. Version 1
+providers (the implicit default — every pre-existing provider) keep the
+historical contract: the raw message list, exactly as before. Version 2
+checkpoint providers receive normalized direct evidence instead:
+user/assistant text rows only — tool results, system messages, the
+`tool_calls` payload of assistant messages (their prose is kept), and prior
+compaction summaries are filtered host-side. Prior summaries are recognized
+via a persistent `_compressed_summary` message marker that survives process
+restarts, so a resumed session never feeds derivative summaries back into
+your archive.
+
+**Checkpoints must be idempotent.** After a fail-closed block, the next
+compaction attempt calls `on_pre_compress()` again with the same transcript —
+and a transcript that grew only slightly produces largely overlapping
+evidence. Key your archive writes by content (for example a transcript
+digest) and upsert, so retries and overlaps deduplicate instead of
+accumulating duplicate archives.
+
+Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
+
 ## Config Schema
 
 `get_config_schema()` returns a list of field descriptors used by `hermes memory setup`:

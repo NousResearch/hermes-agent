@@ -10,7 +10,7 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import nodePty from 'node-pty'
 
-import { resolveTerminalConnection } from './connection-apply'
+import { resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
@@ -19,8 +19,8 @@ export interface TerminalIpcDeps {
   isWindows: boolean
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
-  activeSshTerminalTarget: () => unknown
-  ensureBackend: () => Promise<unknown>
+  activeSshTerminalTarget: (webContentsId: number) => unknown
+  ensureBackend: (webContentsId: number) => Promise<unknown>
   getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
 }
 
@@ -292,7 +292,8 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, ensureBackend)
+    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
+
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null
 

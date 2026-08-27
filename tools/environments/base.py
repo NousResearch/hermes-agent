@@ -7,6 +7,7 @@ or a temp file (local).
 """
 
 import codecs
+import hashlib
 import json
 import logging
 import os
@@ -294,6 +295,58 @@ def get_sandbox_dir() -> Path:
     return p
 
 
+# A persistent sandbox's host directory is named after task_id, and that name
+# then becomes the source half of a `-v <source>:<target>` spec (Docker) or a
+# writable-overlay directory (Singularity). Docker splits the spec on ':', so
+# a colon-bearing name arrives as extra mount fields and the run is refused
+# outright ("invalid spec ... too many colons" / "invalid mode", exit 125).
+# Path separators would additionally escape the sandbox root, and Windows
+# forbids ':' in path segments entirely.
+_SANDBOX_DIR_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_SANDBOX_DIR_MAX_LEN = 128
+_SANDBOX_DIR_HASH_LEN = 12
+
+
+def sanitize_task_id_for_path(task_id: str) -> str:
+    """Return a bind-mountable directory name for *task_id*'s sandbox.
+
+    Shared by every environment backend that turns a task id into a host
+    filesystem path component (Docker persistent sandboxes, Singularity
+    persistent overlays). Names that are already safe are returned verbatim,
+    so the shared ``default`` sandbox and RL/benchmark task ids keep resolving
+    to the directory they have always used — no installed package or ``/root``
+    state moves. Only ids that could never have produced a working bind mount
+    are rewritten.
+
+    A rewrite also appends a digest of the original id, because the character
+    substitution alone is not injective: ``a:b`` and ``a_b`` would otherwise
+    share one persistent sandbox and leak one session's ``/root`` into
+    another's container. The digest is a pure function of the id, so the same
+    session resolves to the same directory in every process — cross-process
+    container reuse depends on that.
+    """
+    value = task_id if isinstance(task_id, str) else ""
+    if not value:
+        # An empty component collapses the path onto the sandbox root, which
+        # would bind-mount every task's state at once.
+        return "default"
+
+    cleaned = _SANDBOX_DIR_UNSAFE_RE.sub("_", value)
+    if (
+        cleaned == value
+        and len(value) <= _SANDBOX_DIR_MAX_LEN
+        and value not in {".", ".."}
+        # Windows silently strips trailing dots/spaces, aliasing two ids onto
+        # one directory.
+        and not value.endswith((".", " "))
+    ):
+        return value
+
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:_SANDBOX_DIR_HASH_LEN]
+    stem = cleaned[: _SANDBOX_DIR_MAX_LEN - _SANDBOX_DIR_HASH_LEN - 1].strip("._")
+    return f"{stem or 'task'}-{digest}"
+
+
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------
@@ -364,12 +417,25 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
 def _popen_bash(
     cmd: list[str], stdin_data: str | None = None, **kwargs
 ) -> subprocess.Popen:
-    """Spawn a subprocess with standard stdout/stderr/stdin setup.
+    """Spawn a terminal-backend child through the shared sanitized boundary.
 
-    If *stdin_data* is provided, writes it asynchronously via :func:`_pipe_stdin`.
-    Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
-    this and call :func:`_pipe_stdin` directly.
+    Docker, SSH, and Singularity all converge here for model-authored command
+    execution.  Sanitize even when the caller supplies an ``env`` mapping so a
+    future backend cannot re-open ambient credential inheritance by omitting
+    the factory or passing an unsafe overlay.
     """
+    from tools.environments.local import build_subprocess_env
+
+    base_env = kwargs.pop("env", None)
+    profile_home = kwargs.pop("profile_home", None)
+    source_profile_home = kwargs.pop("source_profile_home", None)
+    enforce_profile_boundary = bool(kwargs.pop("enforce_profile_boundary", False))
+    kwargs["env"] = build_subprocess_env(
+        base=base_env,
+        profile_home=profile_home,
+        source_profile_home=source_profile_home,
+        enforce_profile_boundary=enforce_profile_boundary,
+    )
     kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
@@ -605,6 +671,13 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
+    # True only when commands execute on the SAME host as the Hermes process
+    # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
+    # only describe the execution target when this is True — remote/container
+    # backends must not inherit controller-side platform behavior (e.g. the
+    # macOS TCC search pruning in tools/file_operations.py).
+    is_local: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
@@ -626,6 +699,21 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        self._profile_env_boundary = None
+        _multiplex_active = False
+        if self._profile_scoped_passthrough:
+            try:
+                from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+                _multiplex_active = is_multiplex_active()
+                if _multiplex_active:
+                    self._profile_env_boundary = build_profile_env_boundary()
+            except Exception as exc:
+                if _multiplex_active:
+                    raise RuntimeError(
+                        "profile environment boundary could not be captured for "
+                        "the execution environment"
+                    ) from exc
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -675,26 +763,51 @@ class BaseEnvironment(ABC):
         """Return profile-scoped names that must not persist in the snapshot.
 
         The set is monotonic for the environment lifetime. A skill/config
-        allowlist can be cleared after a value was captured; retaining the
-        exclusion prevents that old value from becoming visible to a later
-        profile through the shared snapshot.
+        allowlist can be cleared or source-profile ownership can grow after
+        construction; retaining every observed exclusion prevents an old value
+        from becoming visible to a later profile through the shared snapshot.
         """
         if not self._profile_scoped_passthrough:
             return ()
+        _multiplex_active = False
         try:
-            from agent.secret_scope import is_multiplex_active
-            if is_multiplex_active():
+            from agent.secret_scope import (
+                build_profile_env_boundary,
+                get_profile_owned_secret_names,
+                is_multiplex_active,
+            )
+
+            _multiplex_active = is_multiplex_active()
+            if _multiplex_active:
                 from tools.env_passthrough import get_all_passthrough
+
+                boundary = getattr(self, "_profile_env_boundary", None)
+                if boundary is None:
+                    boundary = build_profile_env_boundary()
+                    self._profile_env_boundary = boundary
+                # Ownership can grow after this long-lived environment was
+                # constructed (dotenv reload / external-source refresh).
+                # Refresh at every snapshot boundary and merge monotonically.
+                source_owned_names = get_profile_owned_secret_names(
+                    boundary.source_home,
+                    fail_closed_external=True,
+                )
                 names = (
-                    *get_all_passthrough(),
+                    *get_all_passthrough(profile_home=boundary.target_home),
                     *self._additional_profile_scoped_passthrough_names(),
+                    *source_owned_names,
                 )
                 self._snapshot_passthrough_names.update(
                     name
                     for name in names
                     if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)
                 )
-        except Exception:
+        except Exception as exc:
+            if _multiplex_active:
+                raise RuntimeError(
+                    "profile-owned snapshot exclusions could not be refreshed; "
+                    "refusing to update or source the shared snapshot"
+                ) from exc
             logger.debug(
                 "Could not refresh profile-scoped snapshot exclusions",
                 exc_info=True,

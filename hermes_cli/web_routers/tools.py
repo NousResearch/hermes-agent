@@ -49,6 +49,10 @@ save_config = late("save_config")
 _MODEL_CATALOG_TOOLSETS = LateState("_MODEL_CATALOG_TOOLSETS")
 _TERMINAL_BACKENDS = LateState("_TERMINAL_BACKENDS")
 _TERMINAL_BACKEND_NAMES = LateState("_TERMINAL_BACKEND_NAMES")
+# Dynamic variants: built-ins + plugin-registered backends, computed per
+# request so a plugin installed after server start still shows up.
+_terminal_backend_rows = late("_terminal_backend_rows")
+_terminal_backend_names = late("_terminal_backend_names")
 # Config read-modify-write serialization for off-loop handlers (defined in
 # web_server.py; LateState supports ``with``-blocks, so this is the live lock).
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
@@ -725,12 +729,13 @@ async def get_terminal_backends(profile: Optional[str] = None):
             terminal_cfg = config.get("terminal")
             if not isinstance(terminal_cfg, dict):
                 terminal_cfg = {}
+            rows = _terminal_backend_rows()
             active = str(terminal_cfg.get("backend") or "local").strip().lower()
-            if active not in _TERMINAL_BACKEND_NAMES:
+            if active not in {row["name"] for row in rows}:
                 active = "local"
 
             backends = []
-            for row in _TERMINAL_BACKENDS:
+            for row in rows:
                 status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
                 backends.append({
                     "name": row["name"],
@@ -756,11 +761,12 @@ async def select_terminal_backend(
     allowed — the picker shows guidance instead of blocking, matching the CLI.
     """
     backend = (body.backend or "").strip().lower()
-    if backend not in _TERMINAL_BACKEND_NAMES:
+    valid_names = _terminal_backend_names()
+    if backend not in valid_names:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown terminal backend: {body.backend!r}. "
-            f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
+            f"Use one of: {', '.join(sorted(valid_names))}",
         )
 
     def _run():

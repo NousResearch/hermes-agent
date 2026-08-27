@@ -248,6 +248,125 @@ def test_schema_does_not_expose_approval_token():
 # ── bounded embedded daemon ─────────────────────────────────────────────
 
 
+def test_macos_embedded_daemon_launches_through_cuadriver_app(monkeypatch):
+    validated = []
+    monkeypatch.setattr(cb, "_validate_cua_driver_app_signature", lambda app: validated.append(app))
+    command = cb._embedded_daemon_spawn_command(
+        "/tmp/cua-driver",
+        ["serve", "--embedded", "--socket", "/tmp/private.sock"],
+        platform="darwin",
+        app_path="/Applications/CuaDriver.app",
+    )
+
+    # Signature validation is mandatory before any launch command is built.
+    assert validated == ["/Applications/CuaDriver.app"]
+    assert command == [
+        "/usr/bin/open",
+        "-n",
+        "-g",
+        "-a",
+        "/Applications/CuaDriver.app",
+        "--args",
+        "serve",
+        "--embedded",
+        "--socket",
+        "/tmp/private.sock",
+    ]
+
+
+def _codesign_proc(returncode=0, stderr=""):
+    import subprocess as _sp
+
+    return _sp.CompletedProcess(["codesign"], returncode, stdout="", stderr=stderr)
+
+
+def _patch_codesign(monkeypatch, proc):
+    monkeypatch.setattr(cb.shutil, "which", lambda name: "/usr/bin/codesign")
+    monkeypatch.setattr(cb.subprocess, "run", lambda *a, **kw: proc)
+
+
+def test_driver_signature_valid_official_identity(monkeypatch):
+    _patch_codesign(
+        monkeypatch,
+        _codesign_proc(stderr="Identifier=com.trycua.driver\nTeamIdentifier=4YEC26S9KF\n"),
+    )
+    cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")  # no raise
+
+
+def test_driver_signature_rejects_suffixed_identifier(monkeypatch):
+    import pytest
+
+    _patch_codesign(
+        monkeypatch,
+        _codesign_proc(stderr="Identifier=com.trycua.driver.evil\nTeamIdentifier=4YEC26S9KF\n"),
+    )
+    with pytest.raises(RuntimeError, match="identifier"):
+        cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")
+
+
+def test_driver_signature_rejects_wrong_team(monkeypatch):
+    import pytest
+
+    _patch_codesign(
+        monkeypatch,
+        _codesign_proc(stderr="Identifier=com.trycua.driver\nTeamIdentifier=EVIL000000\n"),
+    )
+    with pytest.raises(RuntimeError, match="team"):
+        cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")
+
+
+def test_driver_signature_unsigned_rejected_by_default(monkeypatch):
+    import pytest
+
+    _patch_codesign(
+        monkeypatch,
+        _codesign_proc(stderr="Identifier=com.trycua.driver\nTeamIdentifier=not set\n"),
+    )
+    monkeypatch.setattr(cb, "_computer_use_cfg", lambda: {})
+    with pytest.raises(RuntimeError, match="team"):
+        cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")
+
+
+def test_driver_signature_unsigned_allowed_by_config_opt_in(monkeypatch):
+    _patch_codesign(
+        monkeypatch,
+        _codesign_proc(stderr="Identifier=com.trycua.driver\nTeamIdentifier=not set\n"),
+    )
+    monkeypatch.setattr(cb, "_computer_use_cfg", lambda: {"allow_unsigned_driver": True})
+    cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")  # no raise
+
+
+def test_driver_signature_rejects_unsigned_bundle(monkeypatch):
+    import pytest
+
+    _patch_codesign(monkeypatch, _codesign_proc(returncode=1, stderr="code object is not signed at all"))
+    with pytest.raises(RuntimeError, match="not code-signed"):
+        cb._validate_cua_driver_app_signature("/Applications/CuaDriver.app")
+
+
+def test_resolve_app_path_has_no_applications_fallback(tmp_path):
+    # A driver binary OUTSIDE any .app bundle must resolve to None — the old
+    # /Applications fallback could launch a DIFFERENT install than the
+    # resolved driver.
+    assert cb._resolve_cua_driver_app_path(str(tmp_path / "cua-driver")) is None
+
+
+def test_non_macos_embedded_daemon_keeps_direct_binary_launch():
+    command = cb._embedded_daemon_spawn_command(
+        "/tmp/cua-driver",
+        ["serve", "--embedded", "--socket", "/tmp/private.sock"],
+        platform="linux",
+    )
+
+    assert command == [
+        "/tmp/cua-driver",
+        "serve",
+        "--embedded",
+        "--socket",
+        "/tmp/private.sock",
+    ]
+
+
 def test_bounded_daemon_requires_a_manifest():
     with pytest.raises(ValueError, match="capability_manifest"):
         _EmbeddedCuaDaemon("cua-driver", "bounded")

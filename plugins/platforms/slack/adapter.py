@@ -18,7 +18,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
 import aiohttp
 
@@ -286,7 +286,8 @@ class _ThreadContextCache:
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
-    parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+    # Cached root text used by mention wake checks.
+    parent_text: str = ""
     # The Slack user_id of the thread parent message author. Used by
     # _bot_authored_thread_root (#63530) to detect threads whose root was
     # posted by the bot via direct chat.postMessage (outside the gateway's
@@ -424,6 +425,68 @@ def _rewrite_known_bang_command(text: str) -> str:
     return text
 
 
+def _slack_permalink_path(channel_id: str | None, message_ts: str | None) -> str:
+    """The workspace-independent tail of a Slack message permalink.
+
+    A permalink is ``https://<workspace>.slack.com/archives/<channel>/p<ts>``;
+    only the tail can be rebuilt from a payload, so both sides of a dedupe
+    comparison are reduced to it.
+    """
+    if not channel_id or not message_ts:
+        return ""
+    return f"archives/{channel_id}/p{str(message_ts).replace('.', '')}"
+
+
+def _slack_str_field(el: dict, name: str) -> str:
+    """Read a string field of a Block Kit element.
+
+    Block Kit carries text as an object in many places, and a non-string would
+    raise in ``str.join`` below and cost the whole message.
+    """
+    value = el.get(name)
+    return value if isinstance(value, str) else ""
+
+
+def _render_slack_inline_element(el: dict) -> str:
+    """Render one Block Kit inline element, empty when it carries nothing.
+
+    Slack adds inline types without notice, so unknown ones fall back to
+    whatever human-readable field they carry rather than rendering as nothing.
+    """
+    el_type = el.get("type", "")
+    if el_type == "text":
+        return _slack_str_field(el, "text")
+    if el_type == "channel":
+        return f"<#{el.get('channel_id', '')}>"
+    if el_type == "user":
+        return f"<@{el.get('user_id', '')}>"
+    if el_type == "usergroup":
+        return f"<!subteam^{el.get('usergroup_id', '')}>"
+    if el_type == "team":
+        return f"<!team^{el.get('team_id', '')}>"
+    if el_type == "emoji":
+        return f":{el.get('name', '')}:"
+    if el_type == "broadcast":
+        return f"<!{el.get('range', 'here')}>"
+    if el_type == "color":
+        return _slack_str_field(el, "value")
+    if el_type == "date":
+        fallback = _slack_str_field(el, "fallback")
+        if fallback:
+            return fallback
+    # ``link``, ``message_mention``, a ``date`` without a ``fallback`` and any
+    # unknown type: a URL plus an optional label.
+    url = _slack_str_field(el, "url")
+    label = _slack_str_field(el, "text") or _slack_str_field(el, "fallback")
+    if not url and el_type == "message_mention":
+        # ``url`` is optional here; ``channel_id`` and ``message_ts`` are not,
+        # and they are the permalink's own components.
+        url = _slack_permalink_path(el.get("channel_id"), el.get("message_ts"))
+    if url:
+        return f"{label} ({url})" if label and label != url else url
+    return label
+
+
 def _extract_text_from_slack_blocks(blocks: list) -> str:
     """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
 
@@ -443,28 +506,7 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
 
     def _render_inline_elements(elements: list) -> str:
         """Render inline elements (text, link, channel, user, emoji, etc.)."""
-        pieces: list[str] = []
-        for el in elements:
-            el_type = el.get("type", "")
-            if el_type == "text":
-                pieces.append(el.get("text", ""))
-            elif el_type == "link":
-                url = el.get("url", "")
-                text = el.get("text", "")
-                pieces.append(f"{text} ({url})" if text and text != url else url)
-            elif el_type == "channel":
-                pieces.append(f"<#{el.get('channel_id', '')}>")
-            elif el_type == "user":
-                pieces.append(f"<@{el.get('user_id', '')}>")
-            elif el_type == "usergroup":
-                pieces.append(f"<!subteam^{el.get('usergroup_id', '')}>")
-            elif el_type == "emoji":
-                pieces.append(f":{el.get('name', '')}:")
-            elif el_type == "broadcast":
-                pieces.append(f"<!{el.get('range', 'here')}>")
-            elif el_type == "date":
-                pieces.append(el.get("fallback", ""))
-        return "".join(pieces)
+        return "".join(_render_slack_inline_element(el) for el in elements)
 
     def _append_line(text: str, quote_depth: int = 0, bullet: str = "") -> None:
         if not text or not text.strip():
@@ -540,6 +582,10 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
     for att in attachments:
         if not isinstance(att, dict):
             continue
+        # A permalink unfurl carries the linked message's own body, which the
+        # agent is already reading. The live inbound path skips these too.
+        if att.get("is_msg_unfurl"):
+            continue
         got: list[str] = [
             str(att[key]) for key in ("pretext", "title", "text") if att.get(key)
         ]
@@ -560,34 +606,132 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
+#: Any ``<scheme:target|label>`` autolink; Slack is not limited to ``https``
+#: and ``mailto``.
 _SLACK_MRKDWN_LINK_RE = re.compile(
-    r"<((?:https?|mailto):[^>|]+)(?:\|([^>]+))?>"
+    r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
 )
+#: The optional label Slack may attach to a mention in the flat text, while
+#: the blocks carry the bare id: ``<@U…|name>``, ``<#C…|general>``,
+#: ``<!subteam^S…|@marketing>``, ``<!here|@here>``.
+_SLACK_ENTITY_LABEL_RE = re.compile(r"<([@#!][^>|]*)\|[^>]*>")
+_SLACK_FENCED_CODE_RE = re.compile(
+    r"(?<!`)\n*```[ \t]*\n?(.*?)\n?[ \t]*```\n*(?!`)", re.DOTALL
+)
+_SLACK_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_SLACK_DATE_RE = re.compile(r"<!date\^([^>|]*)(?:\|([^>]*))?>")
+#: A message permalink, reduced to the tail :func:`_slack_permalink_path`
+#: rebuilds: the workspace host and the thread query differ between the flat
+#: text and a payload that carries only ``channel_id``/``message_ts``.
+_SLACK_PERMALINK_RE = re.compile(
+    r"https?://[^\s/]+/(archives/[A-Za-z0-9]+/p\d+)(?:\?[^\s)]*)?"
+)
+_SLACK_INLINE_STYLE_RE = re.compile(r"([*_~])([^\n]+?)\1")
+_SLACK_HTML_ENTITY_RE = re.compile(r"&(amp|lt|gt);")
+_SLACK_HTML_ENTITIES = {"amp": "&", "lt": "<", "gt": ">"}
 
 
-def _normalize_slack_text_for_dedupe(text: str) -> str:
-    """Canonicalize equivalent Slack plain-text and rich-block link forms.
+def _unescape_slack_entities(text: str) -> str:
+    """Undo Slack's HTML escaping of ``&``/``<``/``>`` in flat message text.
 
-    Slack serializes the same authored link as ``<url|label>`` in the event's
-    plain ``text`` field and as a structured ``link`` element in ``blocks``.
-    Comparing those raw strings makes a normal rich-text message look like
-    additional quoted content and appends the whole message a second time.
+    Slack escapes those three characters in the flat ``text`` field but leaves
+    the ``blocks`` payload raw, so any comparison between the two must run on
+    a common form. Thread permalinks make this load-bearing: every "Copy link"
+    URL carries ``?thread_ts=…&cid=…``.
     """
+    return _SLACK_HTML_ENTITY_RE.sub(
+        lambda match: _SLACK_HTML_ENTITIES[match.group(1)], text or ""
+    )
+
+
+def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
+    """Normalize Slack text for comparison with rendered rich text."""
 
     def _link(match: re.Match) -> str:
         url, label = match.group(1), match.group(2)
         return f"{label} ({url})" if label and label != url else url
 
-    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, text or "")
+    def _date(match: re.Match) -> str:
+        # ``<!date^ts^format^url|fallback>``, read down to what the rich-text
+        # side renders: the fallback, or the URL when there is no fallback.
+        fallback = match.group(2)
+        if fallback:
+            return fallback
+        parts = match.group(1).split("^")
+        return parts[2] if len(parts) > 2 else ""
+
+    canonical = text or ""
+    # Before link canonicalization, so both sides see the same angle brackets
+    # and the same ``&`` in query parameters.
+    canonical = _unescape_slack_entities(canonical)
+    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, canonical)
+    canonical = _SLACK_DATE_RE.sub(_date, canonical)
+    # After the link form, so that a pasted permalink is already a bare URL.
+    canonical = _SLACK_PERMALINK_RE.sub(r"\1", canonical)
+    # After the date form, which carries a label of its own.
+    canonical = _SLACK_ENTITY_LABEL_RE.sub(r"<\1>", canonical)
+    # After the label, so that ``<@U…|hermes>`` is stripped like ``<@U…>``.
+    if bot_uid:
+        canonical = canonical.replace(f"<@{bot_uid}>", "")
+    canonical = _SLACK_FENCED_CODE_RE.sub(r"\1", canonical)
+    canonical = _SLACK_INLINE_CODE_RE.sub(r"\1", canonical)
+    while True:
+        unstyled = _SLACK_INLINE_STYLE_RE.sub(r"\2", canonical)
+        if unstyled == canonical:
+            break
+        canonical = unstyled
     return re.sub(r"\s+", " ", canonical).strip()
 
 
-def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
-    """Return a compact, redacted JSON view of the current message's Block Kit payload."""
-    if not blocks:
-        return ""
+def _extract_additional_text_from_slack_blocks(
+    blocks: list, primary_text: str, bot_uid: str = ""
+) -> str:
+    """Render rich-text content not already represented by primary_text."""
+    primary = _normalize_slack_text_for_dedupe(primary_text, bot_uid)
+    primary_fenced = {
+        _normalize_slack_text_for_dedupe(match.group(0), bot_uid)
+        for match in _SLACK_FENCED_CODE_RE.finditer(primary_text or "")
+    }
+    parts: list[str] = []
 
-    if all((block or {}).get("type") == "rich_text" for block in blocks):
+    for block in blocks or []:
+        if (block or {}).get("type") != "rich_text":
+            continue
+        for element in block.get("elements", []):
+            element_type = element.get("type", "")
+            rendered = _extract_text_from_slack_blocks(
+                [{"type": "rich_text", "elements": [element]}]
+            ).strip()
+            if not rendered:
+                continue
+            normalized = _normalize_slack_text_for_dedupe(rendered, bot_uid)
+            if element_type == "rich_text_preformatted":
+                is_duplicate = normalized in primary_fenced
+            else:
+                is_duplicate = normalized == primary or normalized in primary
+            if normalized and is_duplicate:
+                continue
+            parts.append(rendered)
+
+    return "\n".join(parts)
+
+
+def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
+    """Return a compact, redacted JSON view of the current message's Block Kit payload.
+
+    Only blocks the agent cannot already read are serialized. ``rich_text``
+    blocks are the authored message itself and are rendered into the message
+    text by :func:`_extract_text_from_slack_blocks`; dumping them here would
+    repeat the author's own words — and, because the allowlist below drops
+    ``url``, the repeat reads as the same sentence with every link silently
+    removed. This view exists for the UI-heavy blocks bots post (``section``,
+    ``actions``, ``accessory``, …), so a single such block must not drag the
+    authored text along with it.
+    """
+    inspectable = [
+        block for block in (blocks or []) if (block or {}).get("type") != "rich_text"
+    ]
+    if not inspectable:
         return ""
 
     scalar_allowlist = {
@@ -639,9 +783,9 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
         return repr(value)
 
     try:
-        payload = json.dumps(_sanitize(blocks), ensure_ascii=False, indent=2)
+        payload = json.dumps(_sanitize(inspectable), ensure_ascii=False, indent=2)
     except Exception:
-        payload = repr(blocks)
+        payload = repr(inspectable)
 
     if len(payload) > max_chars:
         payload = payload[: max_chars - 18].rstrip() + "\n... [truncated]"
@@ -694,6 +838,39 @@ def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
     """Apply a resolved proxy to a Slack SDK client or clear it explicitly."""
     if hasattr(client, "proxy"):
         client.proxy = proxy_url
+
+
+def _slack_per_request_proxy_middleware(
+    proxy_url: Optional[str],
+) -> Callable[..., Awaitable[Any]]:
+    """Build the Bolt middleware that re-applies *proxy_url* to each request.
+
+    ``slack_bolt`` builds a fresh ``AsyncWebClient`` for every inbound request
+    and copies ``proxy=app.client.proxy`` into its constructor. ``slack_sdk``
+    reads a ``None``/blank ``proxy`` *argument* as "unspecified" and reloads
+    ``HTTP(S)_PROXY`` from the environment, so a resolved "go direct" decision
+    — a NO_PROXY bypass, or a proxy scheme the transport cannot use — survives
+    only until that client is built. ``aiohttp`` then treats the env proxy as
+    an explicit one and skips its own NO_PROXY check, which is why clearing
+    ``proxy`` on ``app.client`` alone is not enough (assigning the attribute
+    post-construction is the only way to say "no proxy" to ``slack_sdk``).
+
+    Only the request-scoped client is affected, and it is the client
+    authorization calls ``auth.test`` with — so the failure looks like a
+    healthy bot: Socket Mode connects, outbound sends work, and every inbound
+    event is rejected with "Failed to authorize with the given token".
+
+    Registered as ``AsyncApp(before_authorize=...)`` so it runs once the
+    request-scoped client exists and before that first call.
+    """
+
+    async def pin_per_request_proxy(
+        client: Any, next_: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        _apply_slack_proxy(client, proxy_url)
+        return await next_()
+
+    return pin_per_request_proxy
 
 
 # SocketModeClient's own background tasks. Looked up with getattr so a rename
@@ -1955,7 +2132,11 @@ class SlackAdapter(BasePlatformAdapter):
                 token=primary_token,
                 user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
             )
-            self._app = AsyncApp(token=primary_token, client=primary_client)
+            self._app = AsyncApp(
+                token=primary_token,
+                client=primary_client,
+                before_authorize=_slack_per_request_proxy_middleware(proxy_url),
+            )
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
@@ -4864,6 +5045,27 @@ class SlackAdapter(BasePlatformAdapter):
             "user_id": user_id,
         }
 
+    def _remember_processed_message_ts(self, ts: str) -> None:
+        """Mark a Slack message ts as claimed by this handler.
+
+        Used by the ``message_changed`` guard to tell "we already took this
+        message" from "this is new". Called on ENTRY (so an unfurl arriving
+        mid-flight is suppressed) and again after successful construction
+        (refreshing recency so the LRU keeps genuinely active messages).
+
+        Bounded by ``_PROCESSED_MESSAGE_TS_MAX``: oldest entries are evicted
+        first so a busy workspace cannot grow this map without limit.
+        """
+        if not ts:
+            return
+        self._processed_message_ts[ts] = time.time()
+        if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
+            newest_items = sorted(
+                self._processed_message_ts.items(),
+                key=lambda item: item[1],
+            )[-self._PROCESSED_MESSAGE_TS_MAX :]
+            self._processed_message_ts = dict(newest_items)
+
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from an event plus Bolt's outer payload.
@@ -5293,10 +5495,8 @@ class SlackAdapter(BasePlatformAdapter):
         used by the Feishu and Photon adapters — ``reaction:added:<emoji>`` /
         ``reaction:removed:<emoji>`` — with common Slack reaction names
         translated to unicode emoji (👍, 👎, ✅, …) so agents and skills see
-        the same shape on every platform. Because the synthesized event is
-        threaded under the reacted-to message, the existing reply-context
-        plumbing injects the target message's text as ``reply_to_text`` and
-        the agent sees WHAT was reacted to.
+        the same shape on every platform. The event is routed to the
+        reacted-to message's thread, whose history supplies the context.
 
         Message-pipeline routing is OPT-IN via ``slack.reaction_triggers``
         (default off) so busy channels don't wake the agent on every emoji.
@@ -5747,6 +5947,43 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slack_message(
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
+        """Handle an incoming Slack message event.
+
+        Thin guard around :meth:`_handle_slack_message_impl`: the impl claims
+        the message ts on entry (before the slow enrichment awaits) so a link
+        unfurl arriving mid-flight can't become a second turn — but a claim
+        held by an invocation that then RAISES would permanently swallow the
+        message: neither a Slack retry nor a user edit could ever re-drive it.
+        So if this invocation newly claimed the ts and then failed, release
+        the claim before re-raising. A ts that was already claimed before we
+        started (the sequential-suppression case) is left untouched.
+        """
+        _ts = str((event or {}).get("ts") or "")
+        # getattr: bare test doubles (object.__new__) may lack the map.
+        _claims = getattr(self, "_processed_message_ts", None)
+        _was_claimed = bool(_ts) and _claims is not None and _ts in _claims
+        try:
+            return await self._handle_slack_message_impl(event, payload)
+        except BaseException:
+            _claims = getattr(self, "_processed_message_ts", None)
+            if (
+                _ts
+                and not _was_claimed
+                and _claims is not None
+                and _ts in _claims
+            ):
+                _claims.pop(_ts, None)
+                logger.warning(
+                    "[%s] handler failed after claiming ts=%s; claim released "
+                    "so a retry or edit can re-drive the turn",
+                    self.name,
+                    _ts,
+                )
+            raise
+
+    async def _handle_slack_message_impl(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> None:
         """Handle an incoming Slack message event."""
         # DEBUG entry log — fires BEFORE any filtering so users debugging
         # bot-to-bot interop, allow_bots config, or SLACK_ALLOWED_USERS
@@ -5898,17 +6135,17 @@ class SlackAdapter(BasePlatformAdapter):
         # model name appears to contain spaces).
         blocks = event.get("blocks")
         if blocks and not is_command_text:
-            blocks_text = _extract_text_from_slack_blocks(blocks)
-            if blocks_text:
-                # Only append if the blocks contain text not already present
-                # in the plain text field (avoids duplication).
-                stripped_blocks = blocks_text.strip()
-                block_text_is_duplicate = (
-                    stripped_blocks in text.strip()
-                    or _normalize_slack_text_for_dedupe(stripped_blocks)
-                    == _normalize_slack_text_for_dedupe(text)
+            blocks_text = _extract_additional_text_from_slack_blocks(
+                blocks,
+                text,
+                bot_uid=self._team_bot_user_ids.get(
+                    dedup_team_id, self._bot_user_id
                 )
-                if stripped_blocks and not block_text_is_duplicate:
+                or "",
+            )
+            if blocks_text:
+                stripped_blocks = blocks_text.strip()
+                if stripped_blocks:
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content; chars=%d)",
@@ -6236,6 +6473,38 @@ class SlackAdapter(BasePlatformAdapter):
                     chat_type="dm" if is_dm else "group",
                 ):
                     return
+
+        # Claim the underlying message ts now that this event is known to be a
+        # real, deliverable turn — not at the end of the coroutine.
+        #
+        # A link unfurl (or any edit) makes Slack emit `message_changed` for
+        # the SAME message, carrying a DIFFERENT event ts. That different ts
+        # misses the `_dedup` check above by design, so the only thing that
+        # stops it becoming a second user turn is the `_processed_message_ts`
+        # guard at the top of the `message_changed` branch.
+        #
+        # That guard used to be satisfied only after the first copy had walked
+        # the entire handler — thread context, permalink resolution, file
+        # downloads: several awaits and hundreds of ms of Slack API latency. An
+        # unfurl arriving inside that window found the guard still empty and
+        # was promoted to a duplicate turn, producing a spurious "Interrupting
+        # current task" plus the same answer twice.
+        #
+        # Observed 2026-08-22 02:23:30-31Z: original ts 1787365409.908499 was
+        # still resolving two permalinks when the unfurl's `message_changed`
+        # (event ts 1787365411.012100) arrived 957ms later.
+        #
+        # Placement matters in BOTH directions. Claiming right after the dedup
+        # check also claims messages the handler then discards (ignored
+        # channel, bot sender, unauthorized user, no mention). That breaks
+        # editing "@bot" INTO a previously ignored message to summon the bot
+        # (test_message_edit_with_new_mention_processed): the ignored original
+        # would claim the ts and the summoning edit would be dropped. So the
+        # claim belongs here — after every filter has passed, before the slow
+        # enrichment awaits that open the race.
+        _claim_ts = str(event.get("ts") or "")
+        if _claim_ts:
+            self._remember_processed_message_ts(_claim_ts)
 
         if is_mentioned:
             # Strip the bot mention from the text
@@ -6763,29 +7032,6 @@ class SlackAdapter(BasePlatformAdapter):
             None,
         )
 
-        # Extract reply context if this message is a thread reply.
-        # Mirrors the Telegram/Discord implementations so that gateway.run
-        # can inject a `[Replying to: "..."]` prefix when the parent is not
-        # already in the session history. Uses the thread-context cache when
-        # available to avoid redundant conversations.replies calls.
-        reply_to_text = None
-        if thread_ts and thread_ts != ts:
-            try:
-                reply_to_text = (
-                    await self._fetch_thread_parent_text(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        team_id=team_id,
-                    )
-                    or None
-                )
-                if reply_to_text:
-                    reply_to_text = await self._humanize_user_mentions(
-                        reply_to_text, chat_id=channel_id, team_id=team_id
-                    )
-            except Exception:  # pragma: no cover - defensive
-                reply_to_text = None
-
         # Humanize remaining user mentions: the bot's own mention was already
         # stripped above, so any ``<@UID>`` left in the trigger text refers to
         # OTHER participants. Render them as ``@DisplayName`` so the agent can
@@ -6808,7 +7054,9 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
             channel_context=channel_context,
-            reply_to_text=reply_to_text,
+            # thread_ts identifies the thread root, not an explicit reply;
+            # channel_context hydrates the root separately.
+            reply_to_text=None,
             auto_skill=_auto_skill,
             metadata={
                 "slack_team_id": team_id,
@@ -6852,13 +7100,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         if ts:
-            self._processed_message_ts[ts] = time.time()
-            if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
-                newest_items = sorted(
-                    self._processed_message_ts.items(),
-                    key=lambda item: item[1],
-                )[-self._PROCESSED_MESSAGE_TS_MAX :]
-                self._processed_message_ts = dict(newest_items)
+            self._remember_processed_message_ts(ts)
 
         await self.handle_message(msg_event)
 
@@ -7656,8 +7898,10 @@ class SlackAdapter(BasePlatformAdapter):
         blocks = msg.get("blocks")
         extras: list[str] = []
         if blocks:
-            rich_text = _extract_text_from_slack_blocks(blocks).strip()
-            if rich_text and rich_text not in msg_text:
+            rich_text = _extract_additional_text_from_slack_blocks(
+                blocks, msg_text, bot_uid=bot_uid
+            ).strip()
+            if rich_text:
                 extras.append(rich_text)
             for block in blocks:
                 block_type = (block or {}).get("type", "")
@@ -7679,7 +7923,15 @@ class SlackAdapter(BasePlatformAdapter):
             extras.append(attachments_text)
         if blocks:
             urls = _extract_urls_from_slack_blocks(blocks)
-            new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
+            # ``msg.text`` escapes ``&`` inside URLs while the block payload
+            # keeps it raw, so a plain substring check re-lists a URL the
+            # message already shows.
+            msg_text_raw = _unescape_slack_entities(msg_text)
+            new_urls = [
+                u
+                for u in urls
+                if u not in msg_text_raw and all(u not in e for e in extras)
+            ]
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))
         # Surface file/image attachments as compact text markers. The
@@ -7859,8 +8111,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         When ``after_ts`` is set, only messages with ts strictly greater than
         the watermark are included (delta refresh, #23918); the thread parent
-        text is still captured regardless so reply_to_text callers keep
-        working from the shared cache.
+        text is still captured in the shared cache.
 
         Returns ``(content, parent_text)``.
         """
@@ -8009,16 +8260,15 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> str:
         """Return the text of the thread parent message.
 
-        Used for reply_to_text injection (mention stripped) and for the
-        parent-mentioned-bot wake check (#24848 — pass
-        ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
+        Used to check whether the root mentions the bot (#24848). Set
+        ``strip_bot_mention=False`` to preserve the mention.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
         message fetch (``limit=1, inclusive=True``) when the cache is cold.
 
         Returns empty string on any failure — callers should treat an empty
-        return as "no parent context to inject".
+        return as an unavailable parent message.
         """
         cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()

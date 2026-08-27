@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _make_task(kb, *, assignee: str):
     return kb.Task(
@@ -36,6 +38,8 @@ def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path)
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
     profile.mkdir(parents=True)
+    profile_home = profile / "home"
+    profile_home.mkdir()
     profile.joinpath("config.yaml").write_text(
         """
 platform_toolsets:
@@ -58,6 +62,7 @@ agent:
     )
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
 
     from hermes_cli import kanban_db as kb
 
@@ -82,6 +87,7 @@ agent:
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
+    assert captured["env"]["HOME"] == str(profile_home)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
@@ -161,3 +167,57 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+def test_default_spawn_refuses_unresolved_assignee_before_popen(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    def _missing(_profile):
+        raise FileNotFoundError("missing profile")
+
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", _missing)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Popen must not run"),
+    )
+
+    with pytest.raises(RuntimeError, match="unresolved profile"):
+        kb._default_spawn(_make_task(kb, assignee="missing"), str(tmp_path))
+
+
+def test_default_spawn_same_profile_preserves_trusted_shell_password(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import kanban_db as kb
+
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    (root / ".env").write_text("", encoding="utf-8")
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("DB_PASSWORD", "trusted-shell")
+    monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: root)
+    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _profile: root)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(_cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    pid = kb._default_spawn(
+        _make_task(kb, assignee="default"),
+        str(workspace),
+    )
+
+    assert pid == 4245
+    assert captured["env"]["DB_PASSWORD"] == "trusted-shell"
+    assert captured["env"]["HERMES_HOME"] == str(root)

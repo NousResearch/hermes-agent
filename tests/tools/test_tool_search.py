@@ -287,10 +287,24 @@ class TestAssembly:
 
 
 class TestBridgeDispatch:
-    def test_tool_search_requires_query(self):
+    def test_tool_search_requires_queries(self):
         from tools.tool_search import dispatch_tool_search
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
+
+    def test_tool_search_rejects_empty_and_overcap_queries(self):
+        import tools.tool_search as tool_search
+
+        cfg = tool_search.ToolSearchConfig.from_raw({})
+        assert "error" in json.loads(tool_search.dispatch_tool_search(
+            {"queries": []}, current_tool_defs=[], config=cfg))
+        assert "error" in json.loads(tool_search.dispatch_tool_search(
+            {"queries": ["  ", ""]}, current_tool_defs=[], config=cfg))
+        over = ["q"] * (tool_search._MAX_QUERIES_PER_CALL + 1)
+        parsed = json.loads(tool_search.dispatch_tool_search(
+            {"queries": over}, current_tool_defs=[], config=cfg))
+        assert "error" in parsed
+        assert "too many queries" in parsed["error"]
 
     def test_empty_search_keeps_connected_sources_discoverable(self):
         from tools.registry import registry
@@ -306,17 +320,21 @@ class TestBridgeDispatch:
         )
 
         result = json.loads(dispatch_tool_search(
-            {"query": "unrelated vocabulary"},
+            {"queries": ["unrelated vocabulary"]},
             current_tool_defs=[tool_def],
         ))
 
-        assert result["matches"] == []
+        [group] = result["results"]
+        assert group["query"] == "unrelated vocabulary"
+        assert group["matches"] == []
+        assert result["tools"] == {}
         assert result["total_available"] == 1
-        assert result["available_sources"] == [
+        assert group["available_sources"] == [
             {"name": "recovery-catalog", "tool_count": 1},
         ]
-        assert "remain available" in result["hint"]
-        assert "before concluding" in result["hint"]
+        assert "remain available" in group["hint"]
+        assert "before concluding" in group["hint"]
+        assert "available_sources" not in result
 
 
     def test_resolve_underlying_call_parses_object_args(self):
@@ -351,12 +369,12 @@ class TestHandleFunctionCallIntegration:
         import model_tools
         result = model_tools.handle_function_call(
             function_name="tool_search",
-            function_args={"query": "nothing matches this"},
+            function_args={"queries": ["nothing matches this"]},
         )
         parsed = json.loads(result)
         # Without a real registry, the matches will be empty, but the
         # dispatch path completed without error.
-        assert "matches" in parsed or "error" in parsed
+        assert "results" in parsed or "error" in parsed
 
     def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
         """Inline bridge results still complete the tool lifecycle."""
@@ -378,12 +396,12 @@ class TestHandleFunctionCallIntegration:
         monkeypatch.setattr(
             tool_search,
             "dispatch_tool_search",
-            lambda *args, **kwargs: json.dumps({"matches": []}),
+            lambda *args, **kwargs: json.dumps({"results": []}),
         )
 
         result = model_tools.handle_function_call(
             function_name="tool_search",
-            function_args={"query": "private-query"},
+            function_args={"queries": ["private-query"]},
             session_id="private-session",
             task_id="private-task",
             turn_id="private-turn",
@@ -391,7 +409,7 @@ class TestHandleFunctionCallIntegration:
             tool_call_id="private-call",
         )
 
-        assert json.loads(result) == {"matches": []}
+        assert json.loads(result) == {"results": []}
         assert len(events) == 1
         hook_name, payload = events[0]
         assert hook_name == "post_tool_call"
@@ -494,7 +512,7 @@ class TestRegression_ToolsetScoping:
         # out-of-scope plugin tool (or any of the host registry).
         result = model_tools.handle_function_call(
             function_name="tool_search",
-            function_args={"query": "mcp_scoped_gh", "limit": 5},
+            function_args={"queries": ["mcp_scoped_gh"], "limit": 5},
             enabled_toolsets=["mcp-scoped-gh"],
         )
         parsed = json.loads(result)
@@ -502,7 +520,8 @@ class TestRegression_ToolsetScoping:
             f"expected scoped catalog of 12, got {parsed['total_available']} "
             "— catalog leaked tools outside the session's toolsets"
         )
-        hit_names = {m["name"] for m in parsed["matches"]}
+        hit_names = set(parsed["tools"])
+        assert hit_names == {n for g in parsed["results"] for n in g["matches"]}
         assert "scoped_oos_plugin" not in hit_names
 
 

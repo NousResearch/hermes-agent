@@ -92,7 +92,7 @@ def test_arg_canonicalization_ignores_key_order():
 
 def test_allowlisted_pollers_never_fire():
     c = ToolCallGuardrailController()
-    for tool in ("process", "bfl_flux3_get_result", "vendor_get_result", "job_poll"):
+    for tool in ("process", "vendor_get_result", "job_poll"):
         for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD + 2):
             assert c.observe_identical_call(tool, {"id": "j1"}, "Generating") is None
 
@@ -248,7 +248,7 @@ def test_pollers_get_stub_but_never_loop_notice():
     agent = _fake_agent()
     args = {"id": "job1"}
     results = [
-        agent._append("bfl_flux3_get_result", args, _BIG, tool_call_id=f"c{i}")
+        agent._append("vendor_get_result", args, _BIG, tool_call_id=f"c{i}")
         for i in range(4)
     ]
     assert results[0] == _BIG

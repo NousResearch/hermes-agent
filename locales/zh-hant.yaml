@@ -166,10 +166,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "結果：{summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "這是自動任務狀態通知，不是再次分解任務的請求。建立後續任務前請先檢查目前看板；不要重複建立已存在的任務或任務圖。"
 
   personality:
@@ -280,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
     kept_user_edits:       "↷ 已保留您的手動編輯：{files}\n若也要還原這些檔案，請使用 /rollback <N> --all。"
+    kept_oversize:         "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
+    failed_deletes:        "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed:        "❌ {error}"
 
   diff:

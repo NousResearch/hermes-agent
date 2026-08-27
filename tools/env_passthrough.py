@@ -22,7 +22,9 @@ through the current profile's secret scope rather than the process environment.
 from __future__ import annotations
 
 import logging
+import os
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Iterable
 from hermes_cli.config import cfg_get
 
@@ -43,7 +45,9 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
+# Last observed config projection. Kept for test/debug compatibility only; it
+# is never an authorization cache because the active profile may change on
+# every multiplexed turn.
 _config_passthrough: frozenset[str] | None = None
 
 
@@ -69,7 +73,7 @@ def _is_hermes_provider_credential(name: str) -> bool:
     """
     try:
         from tools.environments.local import (
-            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _is_blocked_provider_env,
             _is_hermes_internal_secret,
         )
     except Exception as e:
@@ -87,7 +91,7 @@ def _is_hermes_provider_credential(name: str) -> bool:
     # as passthrough and tunnel them into an execute_code / terminal child.
     if _is_hermes_internal_secret(name):
         return True
-    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    return _is_blocked_provider_env(name)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -123,16 +127,26 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
         logger.debug("env passthrough: registered %s", name)
 
 
-def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached)."""
-    global _config_passthrough
-    if _config_passthrough is not None:
-        return _config_passthrough
+def _load_config_passthrough(
+    profile_home: str | os.PathLike[str] | None = None,
+) -> frozenset[str]:
+    """Load the active profile's ``terminal.env_passthrough`` exactly now.
 
+    ``read_raw_config`` already maintains a path-and-file-identity cache. A
+    second process-global cache here loses the profile identity and lets the
+    first routed profile authorize later siblings, so this layer deliberately
+    reloads through the canonical profile-aware config owner on every call.
+    """
+    global _config_passthrough
     result: set[str] = set()
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
+        from hermes_cli.config import read_raw_config, read_user_config_raw
+
+        cfg = (
+            read_user_config_raw(Path(profile_home) / "config.yaml")
+            if profile_home is not None
+            else read_raw_config()
+        )
         passthrough = cfg_get(cfg, "terminal", "env_passthrough")
         if isinstance(passthrough, list):
             for item in passthrough:
@@ -163,7 +177,11 @@ def _load_config_passthrough() -> frozenset[str]:
     return _config_passthrough
 
 
-def is_env_passthrough(var_name: str) -> bool:
+def is_env_passthrough(
+    var_name: str,
+    *,
+    profile_home: str | os.PathLike[str] | None = None,
+) -> bool:
     """Check whether *var_name* is allowed to pass through to sandboxes.
 
     Returns ``True`` if the variable was registered by a skill or listed in
@@ -171,12 +189,15 @@ def is_env_passthrough(var_name: str) -> bool:
     """
     if var_name in _get_allowed():
         return True
-    return var_name in _load_config_passthrough()
+    return var_name in _load_config_passthrough(profile_home)
 
 
-def get_all_passthrough() -> frozenset[str]:
+def get_all_passthrough(
+    *,
+    profile_home: str | os.PathLike[str] | None = None,
+) -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    return frozenset(_get_allowed()) | _load_config_passthrough(profile_home)
 
 
 def resolve_passthrough_value(

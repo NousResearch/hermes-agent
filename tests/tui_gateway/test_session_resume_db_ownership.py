@@ -117,12 +117,21 @@ def _resume(**params):
 
 
 def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
-    """The 'session not found' early return must not leak the handle."""
+    """The 'session not found' early return must not leak the handle.
+
+    The stranded-session adoption fallback (#93296 follow-up) may lazily
+    construct the SHARED launch handle via ``_get_db()`` while probing the
+    default store for a donor row; that handle carries ``db_path=None`` and
+    is never closed by design (see module docstring). Only the dedicated
+    profile-scoped open (``db_path=<profile>/state.db``) is the caller's to
+    close, so the leak assertion filters to path-scoped opens.
+    """
     resp = _resume(session_id="missing", profile="work")
 
     assert resp["error"]["code"] == 4007
-    assert len(profile_dbs) == 1
-    assert profile_dbs[0].closed == 1
+    scoped = [db for db in profile_dbs if db.db_path is not None]
+    assert len(scoped) == 1
+    assert scoped[0].closed == 1
 
 
 def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
@@ -159,7 +168,14 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         return db
 
     monkeypatch.setattr("hermes_state.SessionDB", _factory)
-    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: ("live-sid", {}))
+    live_session = {}
+    with server._sessions_lock:
+        server._sessions["live-sid"] = live_session
+    monkeypatch.setattr(
+        server,
+        "_find_live_session_by_key",
+        lambda _key: ("live-sid", live_session),
+    )
     monkeypatch.setattr(
         server,
         "_live_session_payload",

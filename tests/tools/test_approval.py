@@ -849,6 +849,52 @@ class TestLaunchctlGatewayLifecycle:
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_quote_spliced_verbs_detected(self):
+        """#80269: the shell joins ``kick"start"`` into the literal verb
+        ``kickstart`` before execution, so the spliced form runs exactly as
+        the gated one. Backslash splices already normalized here; quote
+        splices sit in an argument position that word-scoped deobfuscation
+        deliberately does not touch, so they auto-approved.
+        """
+        for cmd in (
+            'launchctl kick"start" -k gui/501/ai.hermes.gateway',
+            "launchctl kick'start' -k gui/501/ai.hermes.gateway",
+            'launchctl boot"out" gui/501/ai.hermes.gateway',
+            'launchctl bootout gui/501/ai.hermes."gateway"',
+            'hermes gateway re"start"',
+            'systemctl re"start" hermes-gateway',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+
+    def test_spliced_detection_does_not_flag_prose_or_other_services(self):
+        """The splice pass must not widen the blast radius: it is anchored on
+        a hermes-gateway identifier, so quoted prose and non-gateway hermes
+        services stay auto-approved."""
+        for cmd in (
+            'launchctl kick"start" -k gui/501/ai.hermes.update-checker',
+            'echo "restart the payment gateway"',
+            'git commit -m "document the api gateway restart flow"',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+    def test_label_built_before_verb_detected(self):
+        """2026-08-02 incident: the label was defined in a shell for-loop
+        BEFORE the `launchctl bootout` call, referenced only via a `$label`
+        variable at the point of the verb. The old sequential regex required
+        "hermes"/"ai.hermes" to appear AFTER the verb and missed this
+        entirely, restarting 4 gateways with zero approval."""
+        cmd = (
+            "uid=$(id -u); for item in 'ai.hermes.gateway-apollo:/a.plist' "
+            "'ai.hermes.gateway:/Users/botuser/Library/LaunchAgents/ai.hermes.gateway.plist'; "
+            "do label=${item%%:*}; plist=${item#*:}; "
+            'launchctl bootout "gui/$uid/$label"; '
+            'launchctl bootstrap "gui/$uid" "$plist"; done'
+        )
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, cmd
+        assert "launchd" in desc.lower()
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy
@@ -1782,3 +1828,73 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert result.get("user_consent") is False
         assert "timed out without user response" in result["message"]
         assert "Silence is not consent" in result["message"]
+
+
+# launchd verbs that stop, unload or deregister a running gateway. `disable`
+# does not stop a live job on its own, but it is what makes an unload survive
+# a reboot, so it belongs to the same family.
+GATEWAY_LIFECYCLE_LAUNCHCTL = (
+    "launchctl kickstart -k gui/501/ai.hermes.gateway",
+    "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
+    "launchctl load ~/Library/LaunchAgents/ai.hermes.gateway.plist",
+    "launchctl stop ai.hermes.gateway",
+    "launchctl restart ai.hermes.gateway",
+    "launchctl bootout gui/501/ai.hermes.gateway",
+    "launchctl remove ai.hermes.gateway",
+    "launchctl disable gui/501/ai.hermes.gateway",
+)
+
+
+class TestLifecycleGuardLaunchctlParity:
+    """The in-gateway hard block must cover every launchd verb the approval
+    layer already treats as gateway lifecycle.
+
+    These two layers are not interchangeable. In ``tools/terminal_tool.py``
+    under ``_HERMES_GATEWAY == "1"``, the ``cron.lifecycle_guard`` block is
+    documented as applying unconditionally ("force=True cannot help here"),
+    while ``detect_dangerous_command`` below it is explicitly skipped when
+    ``force=True``. A verb covered only by the approval layer is therefore
+    reachable from inside the gateway, where SIGTERM propagates to the child
+    before the command completes and the service may never come back (#74973).
+
+    ``bootout`` was missing exactly this way: it is the modern replacement for
+    the ``unload`` the guard already listed. See #80260.
+    """
+
+    def test_hard_block_covers_every_lifecycle_verb(self):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+
+        for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
+            assert contains_gateway_lifecycle_command(cmd) is True, cmd
+
+    def test_bypassable_layer_is_never_stricter(self):
+        """One-directional invariant: anything ``detect_dangerous_command``
+        flags as gateway lifecycle, the hard block must also catch.
+
+        Not equality — the hard block is legitimately stricter (it also covers
+        ``load``/``restart``, which the approval layer leaves alone). What must
+        never happen is the reverse: a command stopped only by the layer that
+        ``force=True`` skips, leaving no cover inside the gateway."""
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+
+        for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            if not dangerous:
+                continue
+            assert contains_gateway_lifecycle_command(cmd) is True, (
+                f"approval layer flags this but the unbypassable hard block "
+                f"does not: {cmd}"
+            )
+
+    def test_unrelated_labels_are_not_blocked(self):
+        """The label anchor must still scope this to the gateway — unrelated
+        services, including other Hermes ones, stay runnable."""
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+
+        for cmd in (
+            "launchctl bootout gui/501/com.example.unrelated",
+            "launchctl remove ai.hermes.update-checker",
+            "launchctl disable gui/501/com.apple.WindowServer",
+            "launchctl print system/com.apple.WindowServer",
+        ):
+            assert contains_gateway_lifecycle_command(cmd) is False, cmd

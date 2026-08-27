@@ -114,15 +114,14 @@ export function useGatewayRequest() {
       try {
         return await gateway.request<T>(method, params, timeoutMs, signal)
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-
-        if (!/not connected|connection closed/i.test(message)) {
+        if (!isGatewayTransportError(error)) {
           throw error
         }
 
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
-        // single-use ticket); background profiles are always local pool
-        // backends, so the registry handles their reconnect with no reauth.
+        // single-use ticket). Background profiles stay on the registry's
+        // connection-owned reconnect path, including composite remote/SSH
+        // sources.
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
@@ -145,4 +144,43 @@ export function useGatewayRequest() {
   )
 
   return { connectionRef, gateway, gatewayRef, requestGateway }
+}
+
+const GATEWAY_TRANSPORT_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ERR_NETWORK',
+  'ERR_SOCKET_CLOSED'
+])
+
+function errorCode(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const code = (value as { code?: unknown }).code
+
+  return typeof code === 'string' ? code.toUpperCase() : null
+}
+
+function isGatewayTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (/not connected|connection closed|connection reset|ECONNRESET/i.test(message)) {
+    return true
+  }
+
+  const cause = typeof error === 'object' && error !== null ? (error as { cause?: unknown }).cause : undefined
+
+  return [error, cause].some(value => {
+    const code = errorCode(value)
+
+    return code !== null && GATEWAY_TRANSPORT_ERROR_CODES.has(code)
+  })
 }

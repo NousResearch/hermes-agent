@@ -240,6 +240,41 @@ class TestProviderEnvBlocklist:
         assert "USER" in result_env
         assert "PATH" in result_env
 
+    def test_bare_hermes_resolves_from_sanitized_subprocess_path(self):
+        """Cron children can resolve Hermes even when the gateway PATH cannot."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/home/user/.local/bin",
+        ):
+            result = _sanitize_subprocess_env(
+                {
+                    "PATH": os.pathsep.join(["/usr/bin", "/bin"]),
+                    "HOME": "/home/user",
+                }
+            )
+
+        assert result["PATH"] == os.pathsep.join(
+            ["/home/user/.local/bin", "/usr/bin", "/bin"]
+        )
+
+    def test_bare_hermes_path_does_not_duplicate_existing_install_dir(self):
+        """The PATH repair is idempotent for already-correct environments."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/home/user/.local/bin",
+        ):
+            result = _sanitize_subprocess_env(
+                {"PATH": os.pathsep.join(["/home/user/.local/bin", "/usr/bin"])}
+            )
+
+        assert result["PATH"] == os.pathsep.join(
+            ["/home/user/.local/bin", "/usr/bin"]
+        )
+
     def test_self_env_blocked_vars_also_stripped(self):
         """Blocked vars in self.env are stripped; non-blocked vars pass through."""
         result_env = _run_with_env(self_env={
@@ -274,6 +309,61 @@ class TestForceEnvOptIn:
         )
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
+
+    def test_force_prefix_cannot_override_tier1_secret(self):
+        result_env = _run_with_env(self_env={
+            f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}GH_TOKEN": "fake-explicit-github",
+        })
+
+        assert "GH_TOKEN" not in result_env
+
+    def test_force_prefix_cannot_override_plugin_tier1_secret(self):
+        with patch(
+            "tools.environments.local._plugin_terminal_env_strip_keys",
+            return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+        ):
+            result_env = _run_with_env(self_env={
+                f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}PLUGIN_AUTH_TOKEN": "fake-plugin",
+            })
+
+        assert "PLUGIN_AUTH_TOKEN" not in result_env
+
+    def test_container_wrapper_cannot_tunnel_plugin_tier1_secret(self):
+        with patch(
+            "tools.environments.local._plugin_terminal_env_strip_keys",
+            return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+        ):
+            result_env = _run_with_env(extra_os_env={
+                "APPTAINERENV_PLUGIN_AUTH_TOKEN": "fake-plugin-wrapper",
+            })
+
+        assert "APPTAINERENV_PLUGIN_AUTH_TOKEN" not in result_env
+
+    def test_nonterminal_plugin_and_nested_wrapper_secrets_are_denied(self):
+        from tools.environments.local import hermes_subprocess_env
+
+        planted = {
+            "PLUGIN_AUTH_TOKEN": "direct-plugin",
+            "plugin_auth_token": "mixed-plugin",
+            "APPTAINERENV_PLUGIN_AUTH_TOKEN": "wrapped-plugin",
+            "SINGULARITYENV_APPTAINERENV_PLUGIN_AUTH_TOKEN": "nested-plugin",
+            "APPTAINERENV_SINGULARITYENV_GH_TOKEN": "nested-tier1",
+            "PATH": "/usr/bin",
+        }
+        with (
+            patch.dict(os.environ, planted, clear=True),
+            patch(
+                "tools.environments.local._plugin_terminal_env_strip_keys",
+                return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+            ),
+        ):
+            for inherit_credentials in (False, True):
+                result_env = hermes_subprocess_env(
+                    inherit_credentials=inherit_credentials
+                )
+                for key in planted:
+                    if key != "PATH":
+                        assert key not in result_env
 
 
 class TestActiveVenvMarkerStripping:

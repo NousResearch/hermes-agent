@@ -228,7 +228,9 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
-    payload: dict[str, Any] = {"error": message}
+    from tools.bot_failure_reasons import classify_agent_error
+
+    payload: dict[str, Any] = {"error": message, "reason": classify_agent_error(message)}
     if roster is not None:
         payload["teammates"] = roster
     if peers is not None:
@@ -383,6 +385,7 @@ def _try_relay_delivery(
     """
     try:
         from tools.bot_relay import (
+            EnvelopeRefusedError,
             enqueue_envelope,
             read_remote_roster,
             resolve_remote_target,
@@ -405,13 +408,19 @@ def _try_relay_delivery(
                 f"'{raw_target}' exists on several connected machines — "
                 f"disambiguate with one of: {forms}."
             )
-        envelope = enqueue_envelope(
-            root,
-            target=match,
-            message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
-            sender_profile=me,
-            sender_handle=sender_handle,
-        )
+        try:
+            envelope = enqueue_envelope(
+                root,
+                target=match,
+                message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
+                sender_profile=me,
+                sender_handle=sender_handle,
+            )
+        except EnvelopeRefusedError as exc:
+            # Fail fast: target definitively offline — nothing was queued.
+            # Structured refusal so the agent can distinguish it from a
+            # resolution error ('runtime_offline' per the #93091 reason enum).
+            return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
         return _spawn_delivery(
             waiter_command(root, envelope), label, task_id=task_id, agent=agent
@@ -518,7 +527,19 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     lock in ``tools.bot_relay``. Peer transports (stdin mode) run on the
     remote gateway; their turn is locked THERE by its own deliver path.
     """
-    if stdin_file or len(argv) < 3 or argv[0] != "hermes" or argv[1] != "-p":
+    # The CLI element is matched by basename: local_delivery_command now
+    # resolves the venv-relative hermes next to this gateway's interpreter
+    # (#93590 — service contexts lack PATH), so argv[0] may be an absolute
+    # path (and on Windows carries the .exe suffix). Split on both
+    # separators so the shape matches regardless of which platform built
+    # the argv.
+    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    if (
+        stdin_file
+        or len(argv) < 3
+        or cli not in ("hermes", "hermes.exe")
+        or argv[1] != "-p"
+    ):
         return contextlib.nullcontext()
     from tools.bot_relay import acquire_turn_lock
 
@@ -532,6 +553,14 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     The turn execution window (not the enqueue) holds the target profile's
     cross-process lock, so two deliveries into one profile queue instead of
     racing; a bounded wait ends in a structured 'target_busy' refusal.
+
+    Local (query-file) turns get one policy-gated retry (#93091 item 5):
+    transient failures re-run the same session; a context_overflow re-run
+    lets the retried turn's pre-API compaction pass compact the Bot Chat
+    transcript first (agent/conversation_loop.py) — the sanctioned
+    compression lever; no fresh session is ever minted. Auth/quota/config
+    failures never retry. Peer transports (stdin mode) retry on their own
+    gateway's deliver path, not here.
     """
     try:
         with _delivery_lock(argv, stdin_file=stdin_file):
@@ -540,10 +569,36 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 # after subprocess.run returns, not merely after stdin reaches EOF.
                 with open(dm_file, "r", encoding="utf-8") as stream:
                     return subprocess.run(argv, stdin=stream, check=False).returncode
-            return subprocess.run(
+            proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
-            ).returncode
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                from tools.bot_failure_reasons import (
+                    RETRY_NONE,
+                    classify_agent_error,
+                    retry_action,
+                )
+
+                detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                if retry_action(classify_agent_error(detail)) != RETRY_NONE:
+                    proc = subprocess.run(
+                        [*argv, "--query-file", dm_file],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+            # Re-emit the transport's streams: stdout is the reply text the
+            # completion notification carries back to the sending agent.
+            if proc.stdout:
+                sys.stdout.write(proc.stdout)
+                sys.stdout.flush()
+            if proc.stderr:
+                sys.stderr.write(proc.stderr)
+                sys.stderr.flush()
+            return proc.returncode
     finally:
         _unlink_dm_file(dm_file)
 

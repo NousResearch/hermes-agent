@@ -250,3 +250,58 @@ class TestAncestorExclusion:
             "gateway ancestor invisible to venv scan — /update from the "
             f"gateway can never pause it (#87594): {payload}"
         )
+
+
+class TestConcurrentGateClassification:
+    """#37039 — the pre-update concurrent-instance gate must classify LIVE
+    processes: gateway runtimes drop out of the abort list (the pause
+    machinery owns them), everything else keeps aborting the update."""
+
+    def test_live_gateway_process_classified_gateway(self):
+        """A real process whose argv carries `-m hermes_cli.main gateway run`
+        classifies as ``gateway`` via real psutil against the live table."""
+        from hermes_cli.update_cmd import _classify_concurrent_instance
+
+        proc = _spawn(["-m", "hermes_cli.main", "gateway", "run"])
+        try:
+            assert _classify_concurrent_instance(proc.pid) == "gateway"
+        finally:
+            _kill(proc)
+
+    def test_live_non_gateway_processes_keep_the_abort(self):
+        """A REPL-shaped process and a gateway MANAGEMENT command both
+        classify as ``non-gateway`` — they stay in the abort list."""
+        from hermes_cli.update_cmd import _classify_concurrent_instance
+
+        repl = _spawn(["-m", "hermes_cli.main"])
+        mgmt = _spawn(["-m", "hermes_cli.main", "gateway", "status"])
+        try:
+            assert _classify_concurrent_instance(repl.pid) == "non-gateway"
+            assert _classify_concurrent_instance(mgmt.pid) == "non-gateway"
+        finally:
+            _kill(repl, mgmt)
+
+    def test_live_filter_drops_only_the_gateway(self):
+        """End-to-end filter over a mixed live process set: the gateway PID
+        drops, the serve-backend PID stays, a dead PID stays (unknown)."""
+        from hermes_cli.update_cmd import (
+            _filter_non_gateway_concurrent_instances,
+        )
+
+        gw = _spawn(["-m", "hermes_cli.main", "gateway", "run"])
+        backend = _spawn(["-m", "hermes_cli.main", "serve", "--port", "8127"])
+        dead = _spawn([])
+        _kill(dead)  # reaped → unreadable cmdline → unknown → kept
+        try:
+            matches = [
+                (gw.pid, "hermes.exe"),
+                (backend.pid, "hermes.exe"),
+                (dead.pid, "hermes.exe"),
+            ]
+            kept = _filter_non_gateway_concurrent_instances(matches)
+            kept_pids = {pid for pid, _ in kept}
+            assert gw.pid not in kept_pids, "gateway must drop from abort list"
+            assert backend.pid in kept_pids, "serve backend must keep aborting"
+            assert dead.pid in kept_pids, "unknown must keep aborting"
+        finally:
+            _kill(gw, backend)

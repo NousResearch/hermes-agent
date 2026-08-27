@@ -245,10 +245,15 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "retry",
     "resets at",
     "reset in",
+    "resets in",
+    "reset after",
+    "available in",
     "wait",
     "requests remaining",
     "periodic",
     "window",
+    "per minute",
+    "per second",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -803,6 +808,7 @@ def classify_api_error(
         status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
+    response_headers = _extract_response_headers(error)
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's
@@ -1047,6 +1053,7 @@ def classify_api_error(
             provider=provider_lower, model=model_lower,
             approx_tokens=approx_tokens, context_length=context_length,
             num_messages=num_messages,
+            response_headers=response_headers,
             result_fn=_result,
         )
         if classified is not None:
@@ -1204,6 +1211,7 @@ def _classify_by_status(
     approx_tokens: int,
     context_length: int,
     num_messages: int = 0,
+    response_headers=None,
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
@@ -1338,6 +1346,48 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # Account/subscription usage exhaustion is a quota wall, not a
+        # request-rate throttle. Anthropic returns this as 429, so the generic
+        # branch below used to retry it and Desktop rendered a provider error
+        # instead of the billing/quota recovery. Preserve periodic quotas when
+        # the response supplies an explicit reset/retry signal.
+        #
+        # The check covers the narrow #93419 core (Anthropic's
+        # ``usage_limit_reached``) plus the broader ``_USAGE_LIMIT_PATTERNS``
+        # ("quota", "limit exceeded", "key limit exceeded") so other providers'
+        # hard quota walls also route to billing — but ONLY when the message is
+        # not itself an explicit rate-limit phrase. Without that guard,
+        # "Rate limit exceeded" ("limit exceeded" substring) would wrongly
+        # promote to non-retryable billing. (broadening + guard credit #39441)
+        has_usage_limit = (
+            error_code.lower() == "usage_limit_reached"
+            or "usage_limit_reached" in error_msg
+            or any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        )
+        # Explicit billing phrases in a 429 body are a hard wall regardless of
+        # usage-limit wording — a provider that wraps "insufficient credits" in
+        # a 429 (rather than 402) was previously retried as a rate limit and
+        # burned the pool. (credit #39441)
+        has_billing = any(p in error_msg for p in _BILLING_PATTERNS)
+        has_explicit_rate_limit = any(
+            p in error_msg for p in _RATE_LIMIT_PATTERNS
+        )
+        has_transient_signal = _has_usage_limit_transient_signal(
+            error_msg,
+            body,
+            response_headers,
+        )
+        if (
+            (has_billing or has_usage_limit)
+            and not has_explicit_rate_limit
+            and not has_transient_signal
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1443,6 +1493,41 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None
+
+
+def _has_usage_limit_transient_signal(
+    error_msg: str,
+    body: dict,
+    response_headers,
+) -> bool:
+    """Return whether a usage-limit response identifies a reset window."""
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+        return True
+
+    payloads = [body]
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        payloads.append(body["error"])
+    reset_fields = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if any(
+            payload.get(field) is not None and payload.get(field) != ""
+            for field in reset_fields
+        ):
+            return True
+
+    if response_headers and hasattr(response_headers, "get"):
+        for header in (
+            "retry-after",
+            "Retry-After",
+            "x-ratelimit-reset",
+            "X-RateLimit-Reset",
+        ):
+            value = response_headers.get(header)
+            if value is not None and value != "":
+                return True
+    return False
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
@@ -1958,6 +2043,21 @@ def _extract_error_body(error: Exception) -> dict:
                     return json_body
             except Exception:
                 pass
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return {}
+
+
+def _extract_response_headers(error: Exception):
+    """Walk the error and its cause chain to find response headers."""
+    current = error
+    for _ in range(5):
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers and hasattr(headers, "get"):
+            return headers
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None or cause is current:
             break

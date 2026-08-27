@@ -90,6 +90,11 @@ const ID = 'hermes-bots'
  *  opens and, on its rising edge, yields the center to the chat. */
 const BOTS_HOME_PANE_ID = `plugin-workspace:${ID}:home`
 const ROSTER_KEY = [ID, 'roster']
+// Bounded retries. `retry: true` keeps React Query in isLoading until the
+// first success, so a stalled profiles.list (live state.db write lock, SSH
+// flap) leaves the Bots sidebar on a spinner with no error card. The 5s
+// refetchInterval and the gateway-open effect already recover drops.
+const ROSTER_QUERY_RETRY = 2
 const ROUTINES_KEY = [ID, 'routines']
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const BOT_META_V1_KEY = 'bot-meta'
@@ -185,6 +190,98 @@ function trackInboundActivity(roster) {
   }
 }
 
+// ── needs-attention badge (#93091 item 3) ───────────────────────────────────
+// Attention-worthy failure classes — matches the #93091 item-1 reason-code
+// enum (shipped separately). Until reason codes flow end-to-end,
+// attentionReasonFromError ALSO classifies raw error text as a fallback so
+// the badge works against current gateway error strings.
+const BOT_ATTENTION_CLASSES = new Set([
+  'agent_blocked',
+  'provider_auth_or_access',
+  'provider_quota_limit',
+  'missing_config'
+])
+
+/** One-line user hint per attention class (roster badge tooltip). */
+const BOT_ATTENTION_HINTS = {
+  provider_auth_or_access: 'Sign in again for this profile',
+  provider_quota_limit: 'Quota or balance exhausted',
+  missing_config: 'Provider not configured — run hermes model',
+  agent_blocked: 'Bot is blocked — see its last message'
+}
+
+/** Map an error (a #93091 reason code or raw error text) to an attention
+ *  class, or null when the failure is transient (rate limit, server error,
+ *  timeout) — transient classes must NEVER badge. Pure; tested directly. */
+function attentionReasonFromError(errorTextOrReason) {
+  const raw = String(errorTextOrReason || '').trim()
+
+  if (!raw) {
+    return null
+  }
+
+  if (BOT_ATTENTION_CLASSES.has(raw)) {
+    return raw
+  }
+
+  const text = raw.toLowerCase()
+
+  // Transient failures first, so a retryable error never sticks a badge.
+  if (/rate.?limit|too many requests|\b429\b|\b5\d\d\b|server error|overloaded|timed?.?out|timeout|temporar/.test(text)) {
+    return null
+  }
+
+  if (/no llm provider|no access token|not configured|no api key|missing api key/.test(text)) {
+    return 'missing_config'
+  }
+
+  if (/\b401\b|\b403\b|unauthorized|forbidden|authentication|invalid.?api.?key|credentials? (are )?(invalid|expired)/.test(text)) {
+    return 'provider_auth_or_access'
+  }
+
+  if (/quota|out of funds|insufficient (credits?|funds|balance)|payment required|\b402\b|billing/.test(text)) {
+    return 'provider_quota_limit'
+  }
+
+  if (/\bblocked\b/.test(text)) {
+    return 'agent_blocked'
+  }
+
+  return null
+}
+
+/** Per-bot needs-attention state: roster key -> {reason, at, message}.
+ *  Display-only presentation state (never persisted, never alters delivery).
+ *  Latest failure wins; the bot's next good turn clears it. Hidden bots keep
+ *  their entry — hiding is a roster-DISPLAY concern only. */
+const $botAttention = atom({})
+
+/** Record attention for a bot after a failed turn/delivery. Transient errors
+ *  classify to null and set nothing. Latest failure wins. */
+function noteBotAttention(key, errorTextOrReason) {
+  const reason = attentionReasonFromError(errorTextOrReason)
+
+  if (!key || !reason) {
+    return
+  }
+
+  $botAttention.set({
+    ...$botAttention.get(),
+    [key]: { reason, at: Date.now(), message: String(errorTextOrReason || '').trim().slice(0, 200) }
+  })
+}
+
+/** A good turn clears the badge. */
+function clearBotAttention(key) {
+  if (!key || !$botAttention.get()[key]) {
+    return
+  }
+
+  const next = { ...$botAttention.get() }
+  delete next[key]
+  $botAttention.set(next)
+}
+
 /** Last good cron list, same idea as the roster snapshot. */
 const $lastJobs = atom([])
 
@@ -224,6 +321,10 @@ const $botsHomeFronted = atom(false)
 
 let botsHomeClose = null
 let suppressBotsHomeReopen = false
+// Latched while a re-front attempt has not yet been answered with visibility.
+// Cleared the moment the home is actually fronted, and whenever the tab is
+// retired — a fresh open starts the budget over. See openBotsHomeWorkspace.
+let botsHomeRefrontTried = false
 
 function saveSelectedRosterBot(bot) {
   const key = botRosterKey(bot)
@@ -306,7 +407,6 @@ function fallbackFocusedBotOwner(profile = $focusedBotProfile.get?.()) {
   }
 }
 
-const hasFocusedSessionOwnerSupport = Boolean(host.state.focusedSessionOwner)
 const $focusedBotOwner = host.state.focusedSessionOwner || {
   get: () => fallbackFocusedBotOwner(),
   listen: listener => {
@@ -411,7 +511,8 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
-  delivered: 'delivered a late reply'
+  delivered: 'delivered a late reply',
+  held: 'is held (stopped by you) — @mention it or say resume to release'
 }
 
 const GROUP_ACTIVITY_GLYPHS = {
@@ -423,7 +524,8 @@ const GROUP_ACTIVITY_GLYPHS = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
-  delivered: 'mail-read'
+  delivered: 'mail-read',
+  held: 'debug-pause'
 }
 
 /** Text tone for an activity row: quiet for pass/cancel/settle, accent for
@@ -968,6 +1070,125 @@ function persistGroupChatRooms(all = $groupChats.get()) {
   }
 }
 
+// ── deleted-connection roster hygiene (#93492 root cause) ───────────────────
+// Deleting a cloud/remote connection used to leave every persisted group-chat
+// member descriptor that referenced it behind untouched. Those orphaned rows
+// (remoteSource: true, connection gone) are exactly the shape that made
+// render-path route lookups throw "Bot X has no connection owner" on every
+// group open, permanently — the poisoned row lives in plugin storage. The
+// sweep below runs on the registry's 'removed' push (and its annotate helper
+// again at hydrate for rows orphaned before this build). It never hard-deletes
+// user data: the member row is kept and marked, so panes render the existing
+// degraded 'Gateway removed' botSourceStatus state instead of crashing.
+
+/** Keep the member's identity; mark it so botSourceStatus reads
+ *  'Gateway removed' and no render-path route lookup can throw on it. */
+function markOrphanedGroupMemberDescriptor(member) {
+  return {
+    ...member,
+    sourceMissing: true,
+    sourceReachable: false
+  }
+}
+
+function groupMemberReferencesConnection(member, connectionId) {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return false
+  }
+
+  return (
+    String(member?.connectionId || '').trim() === id ||
+    String(member?.route?.connectionId || '').trim() === id
+  )
+}
+
+/** Register-removed sweep: annotate (not delete) every persisted group-chat
+ *  member owned by the deleted connection, in the atom AND plugin storage.
+ *  Writes ride updateGroupChat so the durable record keeps its full shape
+ *  (sessionOwners, holds — durableGroupChatRooms would drop them).
+ *  Returns whether anything changed. */
+function sweepGroupChatMembersForRemovedConnection(connectionId) {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return false
+  }
+
+  let changed = false
+
+  for (const [name, room] of Object.entries($groupChats.get())) {
+    const members = Array.isArray(room?.members) ? room.members : []
+
+    if (!members.some(member => groupMemberReferencesConnection(member, id) && !member?.sourceMissing)) {
+      continue
+    }
+
+    changed = true
+    updateGroupChat(name, current => ({
+      ...current,
+      members: (Array.isArray(current.members) ? current.members : []).map(member =>
+        groupMemberReferencesConnection(member, id) ? markOrphanedGroupMemberDescriptor(member) : member
+      )
+    }))
+  }
+
+  return changed
+}
+
+/** Hydrate-time pass for rows orphaned BEFORE this build (the poisoned rows
+ *  that made #93492 survive app restarts). Two shapes are annotated, never
+ *  deleted:
+ *  - a descriptor that already lost its connectionId (route unresolvable —
+ *    exactly what a stale row looks like once its connection was deleted);
+ *  - a descriptor whose connectionId is absent from the live registry, when
+ *    the caller could obtain one (liveConnectionIds === null means "registry
+ *    unavailable", which must NOT read as "everything is orphaned").
+ *  Pure on the rooms map; returns { rooms, changed }. */
+function annotateOrphanedGroupChatMembers(rooms, liveConnectionIds = null) {
+  // Duck-typed, not instanceof: callers (and vm-based tests) may hand a Set
+  // constructed in another realm.
+  const live = liveConnectionIds && typeof liveConnectionIds.has === 'function' ? liveConnectionIds : null
+  const next = {}
+  let changed = false
+
+  for (const [name, room] of Object.entries(rooms || {})) {
+    const members = Array.isArray(room?.members) ? room.members : []
+    const orphaned = member => {
+      if (!member || member.sourceMissing) {
+        return false
+      }
+
+      if (!member.sourceScoped && !member.remoteSource) {
+        return false
+      }
+
+      const id = String(member.route?.connectionId || member.connectionId || '').trim()
+
+      if (!id) {
+        // Route unresolvable: this is the row shape that threw on render.
+        return true
+      }
+
+      return live ? !live.has(id) : false
+    }
+
+    if (!members.some(orphaned)) {
+      next[name] = room
+      continue
+    }
+
+    changed = true
+    next[name] = {
+      ...room,
+      members: members.map(member => (orphaned(member) ? markOrphanedGroupMemberDescriptor(member) : member))
+    }
+  }
+
+  return { rooms: next, changed }
+}
+
 function groupChatSyncConnectionId() {
   return String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || '')
 }
@@ -1283,7 +1504,17 @@ function handleSessionsGatewayTransition() {
 // Older backends without the RPCs fail per-call and are skipped — the
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
-const RELAY_DRAIN_INTERVAL_MS = 4_000
+// Backstop cadence only (#93594): the push path below carries envelope latency,
+// so the interval poll exists for older backends and missed events — 30s
+// matches LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS. It was 4s back when the
+// poll WAS the delivery path, which (before route retention) also meant a
+// fresh WebSocket dial + teardown per registered connection every 4s.
+const RELAY_DRAIN_INTERVAL_MS = 30_000
+// Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
+// an envelope lands on disk; a burst of signals inside this window collapses
+// to ONE drain. The interval poll above stays as the backstop for older
+// backends (and connections whose events don't reach the tap).
+const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DELIVERY_CONCURRENCY = 3
 let relayDisposed = false
 let relayRosterTimer = null
@@ -1374,6 +1605,65 @@ function createRelayDeliveryScheduler({ concurrency = RELAY_DELIVERY_CONCURRENCY
   }
 }
 
+let relayPushUnsub = null
+let relayPushDebounceTimer = null
+// A push landing while a drain is ALREADY running would be lost forever —
+// the gateway signature is monotone (one event per new envelope, never
+// re-broadcast) — so remember it and re-schedule after the drain finishes.
+let relayDrainRerun = false
+// Relay-route socket retention (#93594): connection id → release fn. While
+// the relay is active each registered connection's pooled socket is pinned
+// open (host.retainProfileSocket) so drain RPCs reuse ONE persistent
+// WebSocket instead of dialing and tearing down a fresh one per tick.
+// Feature-detected — older shells lack the door and fall back to per-call
+// leases. Local routes get a no-op release inside the host (idle-reaper
+// exemption). stopBotRelay releases everything.
+const relayRouteRetentions = new Map()
+
+/** Reconcile retention with the CURRENT connection set: pin new connections,
+ *  release removed ones. Runs on every drain/roster connection fetch. */
+function syncRelayRetention(connections) {
+  if (typeof host.retainProfileSocket !== 'function') {
+    return
+  }
+
+  const live = new Set(connections.map(connection => connection.id))
+
+  for (const [id, release] of [...relayRouteRetentions]) {
+    if (!live.has(id)) {
+      relayRouteRetentions.delete(id)
+      try {
+        release()
+      } catch {
+        // Never let a release failure break the relay loop.
+      }
+    }
+  }
+
+  if (relayDisposed) {
+    return
+  }
+
+  for (const connection of connections) {
+    if (!relayRouteRetentions.has(connection.id)) {
+      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    }
+  }
+}
+
+/** Drop every relay pin — stop/dispose path. */
+function releaseRelayRetention() {
+  for (const release of relayRouteRetentions.values()) {
+    try {
+      release()
+    } catch {
+      // Disposer from an older shell shape — never break teardown.
+    }
+  }
+
+  relayRouteRetentions.clear()
+}
+
 /** One representative route per reachable connection id. */
 async function relayConnections() {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
@@ -1398,7 +1688,12 @@ async function relayConnections() {
   }
 }
 
-/** The agents living on one connection, as relay roster rows. */
+/** The agents living on one connection, as relay roster rows.
+ *  Returns null on FAILURE (transient RPC blip, slow socket) — distinct from
+ *  a genuine empty profile list. Conflating the two would push a fresh union
+ *  roster missing a LIVE connection's agents, and the gateway-side liveness
+ *  check (bot_relay._target_liveness) reads "absent from a fresh roster" as
+ *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection) {
   try {
     const res = await host.requestProfile(connection.route, 'profiles.list', { include_sessions: false })
@@ -1418,9 +1713,13 @@ async function relayAgentsOn(connection) {
       }))
       .filter(row => row.profile)
   } catch {
-    return []
+    return null
   }
 }
+
+/** Last good agent rows per connection id — reused when a fetch blips so a
+ *  transient failure never reads as "everyone on that machine went away". */
+const relayAgentsCache = new Map()
 
 /** Push every gateway the union roster of agents on the OTHER connections. */
 async function syncRelayRosters() {
@@ -1440,9 +1739,29 @@ async function syncRelayRosters() {
     const agentsByConnection = new Map()
     await Promise.all(
       connections.map(async connection => {
-        agentsByConnection.set(connection.id, await relayAgentsOn(connection))
+        const agents = await relayAgentsOn(connection)
+
+        if (agents === null) {
+          // Transient fetch failure: reuse the last good rows for this
+          // connection (or contribute nothing this cycle) so the pushed
+          // roster never drops a live machine's agents — absence from a
+          // fresh roster means offline to the gateway-side fail-fast.
+          agentsByConnection.set(connection.id, relayAgentsCache.get(connection.id) || [])
+        } else {
+          relayAgentsCache.set(connection.id, agents)
+          agentsByConnection.set(connection.id, agents)
+        }
       })
     )
+
+    // Connections gone from profileRoutes are genuinely disconnected — drop
+    // their cache so a later reconnect starts from live data.
+    const liveIds = new Set(connections.map(connection => connection.id))
+    for (const id of [...relayAgentsCache.keys()]) {
+      if (!liveIds.has(id)) {
+        relayAgentsCache.delete(id)
+      }
+    }
 
     await Promise.all(
       connections.map(async connection => {
@@ -1470,7 +1789,16 @@ async function syncRelayRosters() {
  *  connection's own socket; the reply (or error) is posted back to the
  *  sender gateway for its waiter. */
 async function drainRelayOutboxes() {
-  if (relayDisposed || relayDrainBusy) {
+  if (relayDisposed) {
+    return
+  }
+
+  if (relayDrainBusy) {
+    // A push signal raced an in-flight drain. The gateway never re-sends it
+    // (monotone signature), so without this flag the envelope would wait out
+    // the full poll interval — exactly the latency the push path removes.
+    relayDrainRerun = true
+
     return
   }
 
@@ -1480,6 +1808,10 @@ async function drainRelayOutboxes() {
     const scheduler = relayDeliveryScheduler || createRelayDeliveryScheduler()
     relayDeliveryScheduler = scheduler
     const connections = await relayConnections()
+
+    // Retention follows the relay-eligible set: with fewer than two
+    // connections there is nothing to relay, so nothing stays pinned.
+    syncRelayRetention(connections.length >= 2 ? connections : [])
 
     if (connections.length < 2) {
       return
@@ -1520,6 +1852,7 @@ async function drainRelayOutboxes() {
 
         const targetProfile = String(envelope?.target_profile || '')
         const targetKey = `${target.id}\u0000${targetProfile}`
+        const attentionKey = `${target.id}::${targetProfile}`
         deliveries.push(
           scheduler
             .enqueue(targetKey, () =>
@@ -1528,8 +1861,18 @@ async function drainRelayOutboxes() {
                 message: String(envelope?.message || '')
               })
             )
-            .then(res => postReply({ reply: String(res?.reply || '') }))
-            .catch(error => postReply({ error: String(error?.message || error || 'delivery failed') }))
+            .then(async res => {
+              clearBotAttention(attentionKey)
+              await postReply({ reply: String(res?.reply || '') })
+            })
+            .catch(async error => {
+              const reason = String(error?.data?.reason || '').trim()
+              noteBotAttention(attentionKey, reason || error?.message || error)
+              await postReply({
+                error: String(error?.message || error || 'delivery failed'),
+                ...(reason ? { reason } : {})
+              })
+            })
         )
       }
     }
@@ -1537,7 +1880,31 @@ async function drainRelayOutboxes() {
     await Promise.all(deliveries)
   } finally {
     relayDrainBusy = false
+
+    if (relayDrainRerun && !relayDisposed) {
+      // Envelopes signaled mid-drain: schedule one follow-up pass (debounced)
+      // instead of leaving them to the interval poll.
+      relayDrainRerun = false
+      scheduleRelayPushDrain()
+    }
   }
+}
+
+/** Push-notified drain (#93091): collapse a burst of pending signals into
+ *  one drain call ~RELAY_PUSH_DEBOUNCE_MS after the first signal. */
+function scheduleRelayPushDrain() {
+  if (relayDisposed || typeof setTimeout !== 'function') {
+    return
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    return
+  }
+
+  relayPushDebounceTimer = setTimeout(() => {
+    relayPushDebounceTimer = null
+    void drainRelayOutboxes()
+  }, RELAY_PUSH_DEBOUNCE_MS)
 }
 
 function startBotRelay() {
@@ -1558,12 +1925,26 @@ function startBotRelay() {
   if (relayDrainTimer === null) {
     relayDrainTimer = setInterval(() => void drainRelayOutboxes(), RELAY_DRAIN_INTERVAL_MS)
   }
+
+  // Push path: the gateway change watcher broadcasts when an envelope hits
+  // the outbox; drain immediately (debounced) instead of waiting the poll
+  // out. Feature-detected — older shells have no host.onEvent — and the 4s
+  // poll above stays untouched as the backstop either way.
+  if (relayPushUnsub === null && typeof host.onEvent === 'function') {
+    relayPushUnsub = host.onEvent('bot_relay.outbox.pending', () => scheduleRelayPushDrain())
+  }
 }
 
 function stopBotRelay() {
   relayDisposed = true
   relayDeliveryScheduler?.close()
   relayDeliveryScheduler = null
+  // A rerun remembered mid-drain must not leak into the next start —
+  // it would fire one stale drain after restart.
+  relayDrainRerun = false
+  // Unpin every relay-retained socket (#93594): with the relay stopped the
+  // pooled entries return to dispose-at-refcount-0 semantics.
+  releaseRelayRetention()
 
   if (relayRosterTimer !== null) {
     clearInterval(relayRosterTimer)
@@ -1573,6 +1954,20 @@ function stopBotRelay() {
   if (relayDrainTimer !== null) {
     clearInterval(relayDrainTimer)
     relayDrainTimer = null
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    clearTimeout(relayPushDebounceTimer)
+    relayPushDebounceTimer = null
+  }
+
+  if (relayPushUnsub !== null) {
+    try {
+      relayPushUnsub()
+    } catch {
+      // Disposer from an older shell shape — never break teardown.
+    }
+    relayPushUnsub = null
   }
 }
 
@@ -1927,8 +2322,69 @@ function fallbackSelectionAfterHide(name) {
  *  everything else — canonical Bot Chats are identified by name (the
  *  registry row titled "Bot Chat"), so the title sweep is what hides them;
  *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op
- *  on already-hidden rows) and feature-detected: older gateways lack
- *  session.set_hidden and simply keep the rows visible. */
+ *  on already-hidden rows) and feature-detected: older Desktop hosts defer
+ *  reconciliation rather than activating an absent profile backend. */
+function startHideSweepScheduler(ctx) {
+  let timer = null
+  let inflight = null
+  let pending = false
+  let disposed = false
+
+  const run = () => {
+    timer = null
+    if (disposed) {
+      return
+    }
+    if (inflight) {
+      pending = true
+      return
+    }
+
+    inflight = Promise.resolve()
+      .then(() => hideOwnedBotSessions())
+      .catch(() => undefined)
+      .finally(() => {
+        inflight = null
+        if (pending && !disposed) {
+          pending = false
+          schedule()
+        }
+      })
+  }
+  const schedule = () => {
+    if (disposed) {
+      return
+    }
+
+    try {
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+      timer = setTimeout(run, 0)
+    } catch {
+      run()
+    }
+  }
+  const stopGatewayListener = host.state.gateway.listen(state => {
+    if (state === 'open') {
+      schedule()
+    }
+  })
+
+  const teardown = () => {
+    disposed = true
+    stopGatewayListener()
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+  if (typeof ctx.onDispose === 'function') {
+    ctx.onDispose(teardown)
+  }
+  schedule()
+}
+
 function hideOwnedBotSessions() {
   const roomEntries = Object.values($groupChats.get()).flatMap(room =>
     Object.entries(room?.sessions || {})
@@ -1966,13 +2422,26 @@ function hideOwnedBotSessions() {
 
   const known = Promise.all(
     rooms.map(({ owner, id }) =>
-      Promise.resolve(requestForBot(owner, 'session.set_hidden', { session_id: id, hidden: true })).catch(
-        () => undefined
-      )
+      hidePersistedBotSession(owner, id).catch(() => undefined)
     )
   )
 
   return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
+}
+
+/** Reconcile durable visibility through the source's primary REST backend.
+ *  Never fall back to requestForBot: that compatibility path activates an
+ *  absent profile backend, which is worse than deferring this best-effort sweep. */
+function hidePersistedBotSession(bot, sessionId, profileOverride = '') {
+  if (typeof host.setPersistedSessionHidden !== 'function') {
+    return Promise.resolve()
+  }
+
+  const route = botConnectionRoute(bot)
+  const fallback = String(bot?.name || '').trim() || 'default'
+  const profile = profileOverride || backendTargetProfile(route, fallback)
+
+  return Promise.resolve(host.setPersistedSessionHidden(route, { sessionId, profile, hidden: true }))
 }
 
 // Titles Bot Mode itself mints for its plumbing sessions. Bot-to-bot CLI
@@ -1983,10 +2452,23 @@ function hideOwnedBotSessions() {
 // user's real conversation inside a bot profile keeps whatever title the
 // user gave it and is never touched.
 const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
+const BOT_MODE_SWEEP_MIN_AGE_SECONDS = 5 * 60
 
 function isBotModeSweepTitle(title) {
   const t = String(title || '').trim()
   return BOT_MODE_SWEEP_TITLES.has(t) || t.startsWith('Group: ')
+}
+
+function isBotModeSweepCandidate(row, nowSeconds = Date.now() / 1000) {
+  const startedAt = Number(row?.started_at)
+  return (
+    row &&
+    row.id &&
+    isBotModeSweepTitle(row.title) &&
+    Number.isFinite(startedAt) &&
+    startedAt > 0 &&
+    nowSeconds - startedAt >= BOT_MODE_SWEEP_MIN_AGE_SECONDS
+  )
 }
 
 /** Ownership-based sweep: the id-based sweep above only covers sessions the
@@ -1996,12 +2478,21 @@ function isBotModeSweepTitle(title) {
  *  profile) — and those ids the plugin never learns. So: enumerate each
  *  roster bot's OWN profile sessions (only bot profiles — a non-bot profile
  *  is never listed, so its sessions are never touched) and hide any VISIBLE
- *  row whose title is Bot Mode plumbing. session.list without include_hidden
- *  returns only visible rows, which keeps the sweep naturally idempotent.
- *  Remote-source bots route to their own connection via requestForBot.
- *  Feature-detected + fire-and-forget: older gateways without per-profile
- *  session.list / session.set_hidden simply reject and the sweep no-ops. */
-async function sweepBotProfileSessions() {
+ *  row whose title is Bot Mode plumbing and whose creation grace period has
+ *  elapsed. The grace period protects a new desktop draft while its first-turn
+ *  title is pending; after five minutes an unchanged plumbing title is treated
+ *  as Bot Mode-owned. session.list supplies epoch seconds; missing, malformed,
+ *  millisecond, or future timestamps fail closed and stay visible. session.list
+ *  without include_hidden returns only visible rows, which keeps the sweep
+ *  naturally idempotent.
+ *  Reads and writes go through the owning source's primary REST backend, which
+ *  opens persisted state directly and never starts an inactive profile backend.
+ *  Feature-detected + fire-and-forget: older Desktop hosts defer the sweep. */
+async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
+  if (typeof host.listPersistedSessions !== 'function' || typeof host.setPersistedSessionHidden !== 'function') {
+    return
+  }
+
   const cached = $lastRoster.get()
   let roster = Array.isArray(cached) && cached.length ? cached : null
 
@@ -2027,15 +2518,17 @@ async function sweepBotProfileSessions() {
       }
 
       try {
-        const res = await requestForBot(bot, 'session.list', { profile: name, limit: PROFILE_SESSION_LIST_LIMIT })
+        const route = botConnectionRoute(bot)
+        const profile = backendTargetProfile(route, name)
+        const res = await host.listPersistedSessions(route, { profile, limit: PROFILE_SESSION_LIST_LIMIT })
         const rows = Array.isArray(res?.sessions) ? res.sessions : []
 
         await Promise.all(
           rows
-            .filter(row => row && row.id && isBotModeSweepTitle(row.title))
+            .filter(row => isBotModeSweepCandidate(row, nowSeconds))
             .map(row =>
               Promise.resolve(
-                requestForBot(bot, 'session.set_hidden', { session_id: row.id, hidden: true, profile: name })
+                hidePersistedBotSession(bot, row.id, profile)
               ).catch(() => undefined)
             )
         )
@@ -4330,9 +4823,7 @@ function useRoster() {
     },
     refetchInterval: 5000,
     staleTime: 5000,
-    // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
-    // retrying instead of latching a terminal error card.
-    retry: true,
+    retry: ROSTER_QUERY_RETRY,
     retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
   })
 }
@@ -4846,11 +5337,13 @@ function botSourceStatus(bot) {
 // active-gateway door. Feature-detected: older desktops without
 // requestProfile simply have no remote routes (callers fall back / disable).
 
-/** Immutable owner descriptor for every source-scoped row. The active
- *  gateway is presentation state and is never consulted here. */
-function botConnectionRoute(bot) {
+/** Non-throwing resolver behind botConnectionRoute(). Returns a typed status
+ *  instead of throwing, so passive callers (display/meta lookups) can branch
+ *  on `resolved | owner_removed | not_scoped` rather than catching whatever
+ *  exception the strict wrapper below happens to throw. */
+function resolveBotConnectionRoute(bot) {
   if (!bot?.sourceScoped && !bot?.remoteSource) {
-    return null
+    return { status: 'not_scoped', route: null }
   }
 
   const candidate = bot.route || {
@@ -4864,21 +5357,42 @@ function botConnectionRoute(bot) {
   const targetProfile = String(candidate?.targetProfile || profile).trim() || profile
 
   if (!connectionId) {
-    throw new Error(`Bot ${profile} has no connection owner`)
+    return { status: 'owner_removed', route: null, profile }
   }
 
-  return Object.freeze({
-    connectionId,
-    mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
-    profile,
-    targetProfile
-  })
+  return {
+    status: 'resolved',
+    route: Object.freeze({
+      connectionId,
+      mode: candidate.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
+      profile,
+      targetProfile
+    })
+  }
+}
+
+/** Immutable owner descriptor for every source-scoped row. The active
+ *  gateway is presentation state and is never consulted here. Strict: throws
+ *  when the owning connection is gone -- correct for real dispatch
+ *  (requestForBot, session creation, etc.), covered by
+ *  remote-routing-races.test.mjs. Passive lookups (rendering, meta) must call
+ *  resolveBotConnectionRoute() directly instead of catching this throw. */
+function botConnectionRoute(bot) {
+  const resolved = resolveBotConnectionRoute(bot)
+
+  if (resolved.status === 'owner_removed') {
+    throw new Error(`Bot ${resolved.profile} has no connection owner`)
+  }
+
+  return resolved.route
 }
 
 const BOTS_HOME_OWNER_KEY = 'bots:home'
 
 function botWorkspaceOwnerKey(bot) {
-  const route = botConnectionRoute(bot)
+  // Render-reachable (sidebar sync, Bots home open, context menus): an
+  // orphaned row must yield a stable degraded key, never the dispatch throw.
+  const route = resolveBotConnectionRoute(bot).route
 
   return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
 }
@@ -4888,7 +5402,9 @@ function groupWorkspaceOwnerKey(group) {
 }
 
 function setBotsWorkspaceOwner(ownerKey, bot = null, blockedMessage = 'Select a Bot or group first.') {
-  const route = bot ? botConnectionRoute(bot) : null
+  // Render-reachable (sidebar listener fires on visibility flips). An
+  // orphaned row degrades to the blocked target instead of throwing.
+  const route = bot ? resolveBotConnectionRoute(bot).route : null
   const target = route ? { kind: 'route', route } : { kind: 'blocked', message: blockedMessage }
 
   host.setWorkspaceScope?.('bots', ownerKey || BOTS_HOME_OWNER_KEY, target)
@@ -4964,10 +5480,55 @@ async function requestForBot(bot, method, params = {}) {
       throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
     }
 
-    return host.requestProfile(route, method, scopedBotParams(route, method, params))
+    try {
+      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+    } catch (error) {
+      // React 19 formats query errors with `(error.name || '').trim()`. IPC /
+      // JSON-RPC rejections are often plain objects whose `name` is a number,
+      // which crashes the Routines pane and hides the original failure (#94471).
+      throw asRpcError(error, `Gateway request ${method} failed`)
+    }
   }
 
-  return host.request(method, params)
+  try {
+    return await host.request(method, params)
+  } catch (error) {
+    throw asRpcError(error, `Gateway request ${method} failed`)
+  }
+}
+
+/** Coerce an IPC/JSON-RPC rejection into an Error with a string `name`.
+ *
+ *  React Query stores whatever the queryFn throws. React 19 then formats it
+ *  with `(e.name || '').trim()`, which throws TypeError when `name` is a
+ *  number (JSON-RPC codes) or another non-string — the Routines pane crash
+ *  in #94471. Real Error instances are returned as-is when already safe.
+ */
+function asRpcError(value, fallback) {
+  // Duck-type across realms (plugin tests run the source in `vm`, and IPC
+  // can deliver Error-like objects whose prototype is not this realm's
+  // Error). React 19 only needs a string `name`. Never mutate the rejection:
+  // frozen/sealed objects make `name = 'Error'` a silent no-op in sloppy
+  // mode, so a non-string name always becomes a fresh Error with cause.
+  const isObject = value != null && typeof value === 'object'
+  const name = isObject ? value.name : undefined
+  const message = isObject ? value.message : undefined
+  const hasStringName = typeof name === 'string'
+  const hasStringMessage = typeof message === 'string'
+  const hasStack = isObject && typeof value.stack === 'string'
+
+  if (isObject && hasStringName && (hasStack || hasStringMessage)) {
+    return value
+  }
+
+  if (isObject) {
+    const text = hasStringMessage && String(message).trim() ? String(message) : fallback
+    const error = new Error(text)
+    error.cause = value
+    return error
+  }
+
+  return new Error(value == null || value === '' ? fallback : String(value))
 }
 
 /** Stable per-member identity inside a group room. Local members keep their
@@ -5078,7 +5639,13 @@ function aliasIdentityFor(bot) {
 // aliasRouteIndex above — which is connection-exact, never name-based.
 function botRosterMeta(bot, metaByName) {
   if (bot?.sourceScoped || bot?.remoteSource) {
-    const route = botConnectionRoute(bot)
+    // Passive meta lookup: branch on the typed status instead of catching
+    // botConnectionRoute's throw, so an owner_removed row (e.g. a stale
+    // persisted group roster after its connection was deleted) reads as "no
+    // route" without masking an unrelated failure under the same catch.
+    const resolved = resolveBotConnectionRoute(bot)
+    const route = resolved.status === 'resolved' ? resolved.route : null
+
     const direct = route ? metaByName?.[botRouteKey(route)] : null
 
     if (direct) {
@@ -5163,12 +5730,20 @@ async function openStoredBotChat(owner, storedId, summary) {
   // asks the SDK layer to retry that same wait internally, BEFORE it arms the
   // core stranded-session overlay: a plugin-side retry can't do this because
   // only host.openSession sees the resume-exhausted latch that overlay reads.
+  //
+  // forceResume: an explicit bot switch must never trust a cached transcript.
+  // The SDK's surface-health check passes whenever ANY non-empty transcript is
+  // painted, including a stale snapshot the session-states cache kept from the
+  // previous time this bot was open — which left the pane showing old messages
+  // until an app restart (hermes-agent#93604). A resume is cheap and
+  // idempotent, so on this explicit user navigation we always request one.
   await host.openSession(storedId, {
     ...(route ? { route } : {}),
     profile: name,
     intent: 'tab',
     awaitHydration: true,
     expectHistory,
+    forceResume: true,
     keepAllProfilesScope: true,
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
@@ -5253,26 +5828,62 @@ async function findExistingCanonicalChat(owner) {
   return rows.find(row => isCanonicalBotChatHistory(row)) || null
 }
 
-/** Create the bot's ONE forever chat: a real session titled "Bot Chat",
- *  opened with a kickoff message (the gateway prunes zero-message sessions,
- *  so the chat is born with the bot introducing itself). Adopts the existing
- *  "Bot Chat" row instead of creating when the profile already has one —
- *  minting while a "Bot Chat" row exists is always wrong twice over: it
- *  forks the forever-chat AND the new row can never take the (already held)
- *  canonical title. Creates on the bot's own source via requestForBot. */
-function createCanonicalChat(owner) {
+/** Create the bot's ONE forever chat: a real session titled "Bot Chat".
+ *  Adopts the existing "Bot Chat" row instead of creating when the profile
+ *  already has one — minting while a "Bot Chat" row exists is always wrong
+ *  twice over: it forks the forever-chat AND the new row can never take the
+ *  (already held) canonical title. Creates on the bot's own source via
+ *  requestForBot.
+ *
+ *  `kickoff` (New Agent creation ONLY): submit the self-introduction prompt
+ *  so a brand-new bot greets its owner once. Every other caller — the bot
+ *  row's click-path canonical resolution above all — must NOT pass it: a
+ *  resolution miss (retitled row, hidden-listing gap, post-update skew)
+ *  re-mints the session, and re-firing the intro there burned a model turn
+ *  and stamped a user-attributed "Hey, tell me about yourself!" into the
+ *  chat on every click (ScottFive report). The kickoff's original session-
+ *  persistence job is done by the eager session.title write below on modern
+ *  gateways; older gateways that reject the eager write keep a narrow
+ *  compat kickoff, else the pruner reaps the empty lazy session and the
+ *  chat never survives its own creation.
+ *
+ *  `openingStillCurrent` (click-path opens): a staleness probe consulted
+ *  before every navigation — when the user has already moved on (opened a
+ *  group, clicked another bot), the create still completes registry-side
+ *  but never steals the workspace (#89834 family). */
+function createCanonicalChat(owner, { kickoff = false, openingStillCurrent = null } = {}) {
   const { bot, name, key, route } = botOwner(owner)
   const inflight = canonicalCreations.get(key)
 
   if (inflight) {
-    return inflight
+    if (!openingStillCurrent) {
+      return inflight.run
+    }
+
+    return inflight.run.then(async sid => {
+      if (sid && openingStillCurrent() && typeof host.openSession === 'function') {
+        await host.openSession(sid, {
+          ...(route ? { route } : {}),
+          profile: name,
+          intent: 'main',
+          keepAllProfilesScope: route ? true : false,
+          workspaceMode: 'bots',
+          workspaceOwnerKey: botWorkspaceOwnerKey(bot),
+          tabTitle: CANONICAL_CHAT_TITLE
+        })
+      }
+      return sid
+    })
   }
+
+  const flight = { run: null }
+  const canNavigate = () => !openingStillCurrent || openingStillCurrent()
 
   const run = (async () => {
     const existing = await findExistingCanonicalChat(owner)
 
     if (existing?.id) {
-      if (typeof host.openSession === 'function') {
+      if (typeof host.openSession === 'function' && canNavigate()) {
         // The exact-lookup gateway reports the compression-lineage tip as
         // resolved_id; open the tip, the registry row stays the identity.
         await openStoredBotChat(owner, existing.resolved_id || existing.id, existing)
@@ -5303,10 +5914,32 @@ function createCanonicalChat(owner) {
     // before either the open or kickoff, closing both the 404 race and the
     // untitled window. Older gateways may not support the eager write; retain
     // the kickoff-and-retry fallback below.
+    let titled = false
+
     if (runtime) {
       try {
         await requestForBot(bot, 'session.title', { session_id: runtime, title: CANONICAL_CHAT_TITLE })
-      } catch {
+        titled = true
+      } catch (error) {
+        // ADOPT-BEFORE-MINT: a title-uniqueness rejection is not an old
+        // gateway — it means another writer took the canonical title between
+        // our registry miss and this write (peer dm minting server-side, a
+        // second machine, cross-connection sync). Falling through to the
+        // compat path would prompt into OUR stray session and fork the
+        // forever chat. Re-consult the registry and adopt the winner; the
+        // stray lazy session holds zero messages and is simply abandoned
+        // (the gateway prunes it).
+        if (/already in use/i.test(String(error?.message || ''))) {
+          const winner = await findExistingCanonicalChat(owner)
+
+          if (winner?.id) {
+            if (typeof host.openSession === 'function') {
+              await openStoredBotChat(owner, winner.resolved_id || winner.id, winner)
+            }
+
+            return winner.id
+          }
+        }
         /* compatibility fallback: prompt.submit will persist the lazy row */
       }
     }
@@ -5315,13 +5948,16 @@ function createCanonicalChat(owner) {
     // an unmounted session left the intro reply invisible until reopen.
     let opened = false
 
-    if (sid && typeof host.openSession === 'function') {
+    if (sid && typeof host.openSession === 'function' && canNavigate()) {
       try {
         await host.openSession(sid, {
           ...(route ? { route } : {}),
           profile: name,
           intent: 'main',
-          keepAllProfilesScope: route ? true : false
+          keepAllProfilesScope: route ? true : false,
+          ...(openingStillCurrent
+            ? { workspaceMode: 'bots', workspaceOwnerKey: botWorkspaceOwnerKey(bot), tabTitle: CANONICAL_CHAT_TITLE }
+            : {})
         })
         opened = true
       } catch {
@@ -5331,29 +5967,62 @@ function createCanonicalChat(owner) {
     }
 
     if (runtime) {
-      await new Promise(resolve => window.setTimeout(resolve, 400))
+      // Intro turn: only on genuine New Agent creation (`kickoff`), or as the
+      // COMPAT persistence write when the eager title failed — an old gateway
+      // prunes the zero-message lazy session, so without some first prompt
+      // the chat never survives its own creation. A titled row needs neither:
+      // the user speaks first.
+      const submitIntro = kickoff || !titled
 
-      try {
-        await requestForBot(bot, 'prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+      if (submitIntro) {
+        await new Promise(resolve => window.setTimeout(resolve, 400))
 
-        if (!opened && sid && typeof host.openSession === 'function') {
+        try {
+          await requestForBot(bot, 'prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+
+          if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {
+            await host.openSession(sid, {
+              ...(route ? { route } : {}),
+              profile: name,
+              intent: 'main',
+              keepAllProfilesScope: route ? true : false,
+              ...(openingStillCurrent
+                ? { workspaceMode: 'bots', workspaceOwnerKey: botWorkspaceOwnerKey(bot), tabTitle: CANONICAL_CHAT_TITLE }
+                : {})
+            })
+          }
+        } catch {
+          // The chat already exists under the canonical title — the next click
+          // finds it by name instead of making a second Bot Chat.
+        }
+      } else if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {
+        // No intro turn: still finish mounting the chat when the first open
+        // raced the (now titled) row.
+        try {
           await host.openSession(sid, {
             ...(route ? { route } : {}),
             profile: name,
             intent: 'main',
-            keepAllProfilesScope: route ? true : false
+            keepAllProfilesScope: route ? true : false,
+            ...(openingStillCurrent
+              ? { workspaceMode: 'bots', workspaceOwnerKey: botWorkspaceOwnerKey(bot), tabTitle: CANONICAL_CHAT_TITLE }
+              : {})
           })
+        } catch {
+          /* row is titled and persistent — the next click opens it by name */
         }
-      } catch {
-        // The chat already exists under the canonical title — the next click
-        // finds it by name instead of making a second Bot Chat.
       }
     }
 
     return sid || null
-  })().finally(() => canonicalCreations.delete(key))
+  })().finally(() => {
+    if (canonicalCreations.get(key) === flight) {
+      canonicalCreations.delete(key)
+    }
+  })
 
-  canonicalCreations.set(key, run)
+  flight.run = run
+  canonicalCreations.set(key, flight)
 
   return run
 }
@@ -5366,10 +6035,13 @@ function createCanonicalChat(owner) {
  *  anywhere in this path — remote bots included. The owner route rides
  *  every RPC (requestForBot) and the open (openStoredBotChat), so a remote
  *  bot's chat opens without re-homing Desktop's chrome. */
-async function openBotCanonicalChat(owner) {
+async function openBotCanonicalChat(owner, openingStillCurrent = null) {
   const existing = await findExistingCanonicalChat(owner)
 
   if (existing?.id && typeof host.openSession === 'function') {
+    if (openingStillCurrent && !openingStillCurrent()) {
+      return null
+    }
     const openedId = existing.resolved_id || existing.id
     await openStoredBotChat(owner, openedId, existing)
     // Both identities matter downstream: the durable registry row names the
@@ -5379,7 +6051,7 @@ async function openBotCanonicalChat(owner) {
     return { registryId: String(existing.id), openedId: String(openedId) }
   }
 
-  const created = await createCanonicalChat(owner)
+  const created = await createCanonicalChat(owner, { openingStillCurrent })
   return created ? { registryId: String(created), openedId: String(created) } : null
 }
 
@@ -5437,12 +6109,39 @@ async function openRosterBot(bot) {
   // has actually fronted a new owner; a failed home open must not steal the
   // center from a group the user was reading.
   const previousGroup = $groupChatWorkspace.get()
+  const previousGroupRef = previousGroup
+    ? { group: previousGroup, roomId: String($groupChats.get()[previousGroup]?.roomId || '') }
+    : null
 
   haptic('tap')
   saveSelectedRosterBot(bot)
   setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
 
-  $groupChatWorkspace.set(null)
+  const dismissedGroup = bot.remoteSource ? null : dismissGroupChatForLocalBotOpen()
+
+  if (!dismissedGroup) {
+    $groupChatWorkspace.set(null)
+  }
+
+  const restorePreviousGroup = () => {
+    if (!previousGroupRef || $groupChatWorkspace.get()) {
+      return
+    }
+
+    const restoreRef = dismissedGroup || previousGroupRef
+    const rooms = $groupChats.get()
+    const currentGroup = restoreRef.roomId
+      ? Object.keys(rooms).find(name => !rooms[name]?.tombstone && String(rooms[name]?.roomId || '') === restoreRef.roomId)
+      : liveGroupChatNames().includes(restoreRef.group)
+        ? restoreRef.group
+        : null
+
+    if (!currentGroup) {
+      return
+    }
+
+    openGroupChat(currentGroup)
+  }
 
   if ($botUnread.get()[key]) {
     const next = { ...$botUnread.get() }
@@ -5457,9 +6156,7 @@ async function openRosterBot(bot) {
   } catch (error) {
     if (generation === botOpenGeneration) {
       $openBotChat.set(null)
-      if (previousGroup && !$groupChatWorkspace.get()) {
-        $groupChatWorkspace.set(previousGroup)
-      }
+      restorePreviousGroup()
       syncBotsHomeWorkspace()
 
       notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
@@ -5473,7 +6170,7 @@ async function openRosterBot(bot) {
   }
 
   try {
-    const opened = await openBotCanonicalChat(bot)
+    const opened = await openBotCanonicalChat(bot, () => generation === botOpenGeneration)
 
     if (generation !== botOpenGeneration) {
       return false
@@ -5499,9 +6196,7 @@ async function openRosterBot(bot) {
   } catch (error) {
     if (generation === botOpenGeneration) {
       $openBotChat.set(null)
-      if (previousGroup && !$groupChatWorkspace.get()) {
-        $groupChatWorkspace.set(previousGroup)
-      }
+      restorePreviousGroup()
       syncBotsHomeWorkspace()
 
       notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
@@ -5514,9 +6209,7 @@ async function openRosterBot(bot) {
   // do not navigate the current workspace or create a draft on the wrong owner.
   if (typeof host.newChat !== 'function') {
     $openBotChat.set(null)
-    if (previousGroup && !$groupChatWorkspace.get()) {
-      $groupChatWorkspace.set(previousGroup)
-    }
+    restorePreviousGroup()
     syncBotsHomeWorkspace()
     return false
   }
@@ -5826,6 +6519,62 @@ function groupMembershipPatch(meta, group, enabled) {
   return { groups, group: groups[0] || null }
 }
 
+/** Build the exact metadata cleanup for a room disband. The rendered member
+ *  list is only a presentation snapshot and can already be empty on a remote
+ *  connection while bot metadata still names the room. Durable room members
+ *  and the full roster recover source-qualified owners; every remaining
+ *  metadata record is still cleared locally, but an unresolved scoped key is
+ *  never guessed into a server route. */
+function groupDisbandMetadataPlan(group, members, room, roster, metaByName) {
+  const owners = new Map()
+  const patches = new Map()
+
+  const rememberOwner = (owner, required = false) => {
+    if (!owner?.name) {
+      return
+    }
+
+    let key
+    try {
+      key = botMetaKey(owner)
+    } catch {
+      return
+    }
+
+    const meta = metaByName?.[key] || botRosterMeta(owner, metaByName) || {}
+    if (!required && !botGroups(meta).includes(group)) {
+      return
+    }
+
+    if (!owners.has(key)) {
+      owners.set(key, owner)
+    }
+    patches.set(key, groupMembershipPatch(meta, group, false))
+  }
+
+  for (const owner of members || []) {
+    rememberOwner(owner, true)
+  }
+  for (const owner of room?.members || []) {
+    rememberOwner(owner, true)
+  }
+  for (const owner of roster || []) {
+    rememberOwner(owner)
+  }
+
+  // Metadata itself is the final source of a metadata-only `0 bots` row.
+  // Clear every record that names the room even when its exact server owner is
+  // temporarily absent from the roster. Known owners still get a routed
+  // profiles.configure write below; unknown scoped records remain local-only.
+  for (const [key, meta] of Object.entries(metaByName || {})) {
+    if (botGroups(meta).includes(group)) {
+      patches.set(key, groupMembershipPatch(meta, group, false))
+    }
+  }
+
+  return { owners, patches }
+}
+
 /** Group chats that should hold a roster row: every group named in bot meta
  *  (local members) plus every room record that still has stored members or
  *  log — cross-connection rooms whose members can't ride bot-meta. */
@@ -5874,7 +6623,17 @@ function groupChatMemberBots(group, roster, metaByName) {
   const remote = []
 
   for (const descriptor of stored) {
-    const key = botRosterKey(descriptor)
+    // Legacy descriptors can carry a FRIENDLY name as `name` (older builds
+    // persisted display names — #92794: `name: '大司命'` for slug `taiyi`).
+    // Key-matching alone then seats the descriptor as a ghost NEXT TO its own
+    // live row ("4 bots" in a 2-bot room), and anything that passes ghost
+    // identity onward targets a profile that does not exist on disk.
+    // Normalize first: a same-connection roster row whose friendly names
+    // include the descriptor's name IS this member. The next persistence
+    // pass (durableGroupChatMembers writes from the seated roster) rewrites
+    // the stored descriptor to the slug, so the repair is self-healing.
+    const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+    const key = botRosterKey(resolved)
 
     if (seated.has(key)) {
       continue
@@ -5884,10 +6643,55 @@ function groupChatMemberBots(group, roster, metaByName) {
     // A selected-but-offline ghost intentionally carries only enough identity
     // to paint the roster. Never let it replace the room's durable descriptor,
     // which owns the full handle/title used by mentions and remote sync.
-    remote.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || descriptor)
+    remote.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || resolved)
   }
 
   return [...local, ...remote]
+}
+
+/** A stored member descriptor, resolved against the live roster when its
+ *  `name` is not a real slug (#92794). Exact key matches pass through
+ *  untouched; only a descriptor whose key matches NO roster row is re-tried
+ *  by friendly name against rows on the same connection. Unresolvable
+ *  descriptors return as-is — they stay visible-but-degraded ghosts and must
+ *  never be used as a `profile:` target. */
+function resolveLegacyMemberDescriptor(descriptor, roster) {
+  const rows = roster || []
+
+  if (rows.some(bot => botRosterKey(bot) === botRosterKey(descriptor))) {
+    return descriptor
+  }
+
+  const wanted = String(descriptor?.name || '').trim().toLowerCase()
+
+  if (!wanted) {
+    return descriptor
+  }
+
+  // Connection scope: a descriptor WITH a connectionId only matches rows on
+  // that connection (two `default`s on different machines must never merge).
+  // A descriptor WITHOUT one predates connection scoping entirely — those
+  // rooms only ever contained this machine's bots, so local (non-remote)
+  // rows are the legal candidate set.
+  const descriptorConnection = String(descriptor?.connectionId || '')
+  const candidates = rows.filter(bot => {
+    if (bot?.ghost) {
+      return false
+    }
+
+    return descriptorConnection
+      ? String(bot?.connectionId || '') === descriptorConnection
+      : !bot?.remoteSource
+  })
+  const match = candidates.find(
+    bot =>
+      // Case-drifted slug ('Testbot' persisted for profile 'testbot') …
+      String(bot?.name || '').trim().toLowerCase() === wanted ||
+      // … or a friendly name persisted as `name` ('大司命' for 'taiyi').
+      botFriendlyNames(bot).some(name => String(name || '').trim().toLowerCase() === wanted)
+  )
+
+  return match || descriptor
 }
 
 /** Persist source-qualified identities for every selected member. The active
@@ -5895,7 +6699,11 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
   return (bots || []).map(bot => {
-    const route = botConnectionRoute(bot)
+    // Persistence pass over the whole seated roster: an orphaned member
+    // (connection deleted) keeps its identity and simply persists with no
+    // route — the same degraded shape the hydrate annotate produces. The
+    // strict throw here would lose the entire room update over one row.
+    const route = resolveBotConnectionRoute(bot).route
     // Keep the friendly identity on the stored descriptor: after a
     // connection switch the live roster row may be gone, and renamed-tag
     // mentions must still resolve against the persisted member.
@@ -5910,6 +6718,9 @@ function durableGroupChatMembers(bots) {
       connectionKind: bot.connectionKind,
       connectionLabel: bot.connectionLabel,
       ...(route ? { route, targetProfile: route.targetProfile } : {}),
+      // A swept/annotated member keeps its degraded mark across the rebuild —
+      // otherwise the next room send would silently un-mark an orphaned row.
+      ...(bot.sourceMissing ? { sourceMissing: true, sourceReachable: false } : {}),
       remoteSource: true,
       sourceScoped: Boolean(route)
     }
@@ -6209,6 +7020,10 @@ function updateGroupChat(group, mutate, { sync = true } = {}) {
         // with the pre-turn message baseline. Survives reloads so finished
         // work is still harvested after a window restart.
         stranded: room.stranded || {},
+        // #93129: sticky per-member stop holds. Watermarks persist, so holds
+        // must too — otherwise a window restart silently releases a bot the
+        // user explicitly stopped.
+        holds: room.holds || {},
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
@@ -6242,6 +7057,26 @@ async function disbandGroupChat(group, members) {
   // the user just discarded.
   const all = { ...$groupChats.get() }
   const prior = all[group] || {}
+  const metaBefore = $botMeta.get()
+  const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
+  let metadataPersistence = Promise.resolve()
+
+  if (cleanup.patches.size) {
+    const nextMeta = { ...metaBefore }
+
+    for (const [key, patch] of cleanup.patches) {
+      nextMeta[key] = { ...(nextMeta[key] || {}), ...patch }
+      noteBotMetaWrite(key)
+    }
+
+    // Paint the deletion before any remote write can stall. This also removes
+    // orphaned legacy metadata that cannot safely be routed to a source.
+    $botMeta.set(nextMeta)
+    metadataPersistence = persistBotMetaSnapshot(
+      nextMeta,
+      botMetaV2Active || Object.keys(nextMeta).some(key => key.includes('::'))
+    )
+  }
 
   delete all[group]
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
@@ -6293,17 +7128,16 @@ async function disbandGroupChat(group, members) {
     /* storage unavailable — the atom reset above still empties the room */
   }
   scheduleGroupChatServerSync($groupChats.get(), { allowEmpty: true, deletedRooms: [group] })
+  await metadataPersistence
 
-  // Remove this membership last. saveBotMeta never throws (local storage +
-  // best-effort profiles.configure per member), so a flaky gateway can't
-  // strand the disband halfway with the room log already gone.
-  for (const member of members) {
-    if (!member?.name) {
-      continue
+  // Persist the cleanup to every exact owner we can prove. saveBotMeta never
+  // throws (local storage + best-effort profiles.configure per owner), so a
+  // flaky gateway cannot strand the local disband halfway.
+  for (const [key, owner] of cleanup.owners) {
+    const patch = cleanup.patches.get(key)
+    if (patch) {
+      await saveBotMeta(owner, patch)
     }
-
-    const meta = botRosterMeta(member, $botMeta.get()) || {}
-    await saveBotMeta(member, groupMembershipPatch(meta, group, false))
   }
 
   // Converge on server truth: the cached roster still carries the pre-disband
@@ -6450,6 +7284,17 @@ function appendGroupChatEntry(group, from, text, thread, images) {
     entry.images = images
   }
 
+  // #93127 insurance: a residual double-append path (stale loop + fresh
+  // loop both committing the same member reply) lands back-to-back and
+  // byte-identical. Drop the echo instead of flooding the room. User
+  // entries and non-adjacent repeats are never touched.
+  const priorLog = ($groupChats.get()[group] || {}).log || []
+  const lastEntry = priorLog[priorLog.length - 1]
+
+  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+    return lastEntry
+  }
+
   updateGroupChat(group, room => {
     room.log.push(entry)
     return room
@@ -6506,6 +7351,17 @@ async function ensureGroupChatSession(group, member) {
   const known = room.sessions && room.sessions[key]
 
   // Try resuming what we know (stored sid first, then title lookup).
+  //
+  // FAIL CLOSED on a transient lookup failure — mirrors the sibling fix in
+  // findExistingCanonicalChat (87b645f52c). session.resume signals "this
+  // target genuinely doesn't exist" with JSON-RPC code 4007; every other
+  // failure (network blip, the backend still warming up after a restart,
+  // an oversized-resume refusal) means the real session might still be
+  // there and must not be read as "no session, mint a new one" — that
+  // forks the member's real history, and the fork silently overwrites
+  // room.sessions[key] so the old session becomes unreachable from the
+  // room. Only a genuine 4007 on BOTH targets means there truly is nothing
+  // to resume yet, so the loop falls through to session.create below.
   for (const target of [known, title]) {
     if (!target || target === true) {
       continue
@@ -6531,8 +7387,12 @@ async function ensureGroupChatSession(group, member) {
 
         return { runtime: res.session_id, stored }
       }
-    } catch {
-      /* fall through to create */
+    } catch (error) {
+      if (error?.code !== 4007) {
+        const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+        throw new Error(`Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`)
+      }
+      /* genuinely doesn't exist (4007) — try the next target / fall through to create */
     }
   }
 
@@ -6557,6 +7417,94 @@ async function ensureGroupChatSession(group, member) {
 
 const GROUP_TURN_TIMEOUT_MS = 180000
 const GROUP_TURN_POLL_MS = 2000
+
+// --- group-turn session-lease helpers (#93602) ------------------------------
+// A member turn is a session-scoped RPC SEQUENCE (resume → attach → submit →
+// poll) issued with the runtime id its first RPC minted. requestForBot routes
+// each RPC through a per-request socket lease (retained:false secondaries in
+// store/gateway), so between two RPCs the refcount can hit 0, the leased
+// socket closes, the gateway detaches the runtime session on WS disconnect,
+// and the orphan reaper frees it — the next RPC then fails 4001 "not in
+// memory" and the bot goes silent in the room.
+
+/** 4001-class "the runtime session was reaped" failure. Distinct from 4007
+ *  ("genuinely never existed"), which must keep flowing to session.create. */
+function isSessionGoneError(error) {
+  if (!error || error.code === 4007) {
+    return false
+  }
+
+  if (error.code === 4001) {
+    return true
+  }
+
+  // Duck-typed (not instanceof): gateway errors can cross realm boundaries.
+  const message = typeof error?.message === 'string' ? error.message : typeof error === 'string' ? error : ''
+
+  return message.includes('not in memory') || /session not found/i.test(message)
+}
+// --- end group-turn session-lease helpers ---
+
+/** Hold the member's pooled socket open for the WHOLE turn. Feature-detected:
+ *  hosts without retainProfile (or members on the active gateway, which never
+ *  closes mid-turn) get a no-op release. A failed acquire must not kill the
+ *  turn — the catch-retry on submit still covers the race. */
+async function retainGroupTurnRoute(member) {
+  const noop = () => undefined
+
+  let route = null
+
+  try {
+    route = botConnectionRoute(member)
+  } catch {
+    return noop
+  }
+
+  if (!route || typeof host.retainProfile !== 'function') {
+    return noop
+  }
+
+  try {
+    const release = await host.retainProfile(route)
+
+    return typeof release === 'function' ? release : noop
+  } catch {
+    return noop
+  }
+}
+
+/** prompt.submit with one belt-and-braces retry: when the runtime session was
+ *  reaped between minting and submitting (4001 class), re-resume via the
+ *  STORED id — the durable identity — to mint a fresh runtime id, and submit
+ *  exactly once more. Returns the runtime id the submit actually landed on so
+ *  the poll loop keeps a live fallback target. */
+async function submitGroupTurnPrompt(member, runtime, stored, text) {
+  try {
+    await requestForBot(member, 'prompt.submit', { session_id: runtime, text })
+
+    return runtime
+  } catch (error) {
+    if (!isSessionGoneError(error) || !stored) {
+      throw error
+    }
+
+    const res = await requestForBot(member, 'session.resume', {
+      session_id: stored,
+      profile: member.name,
+      omit_messages: true
+    })
+    const fresh = res?.session_id
+
+    if (!fresh) {
+      throw error
+    }
+
+    await requestForBot(member, 'prompt.submit', { session_id: fresh, text })
+
+    return fresh
+  }
+}
+
 // A member turn that is VISIBLY still working (session reports
 // inflight/running) keeps its slot alive up to this hard cap. The base
 // timeout alone silently dropped long real turns: a 7-minute research run
@@ -6711,6 +7659,20 @@ async function answerGroupClarify(entry, member, answers) {
  *  records a stranded marker so the finished reply can be harvested into
  *  the room at the member's next turn instead of being lost. */
 async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
+  // #93602: hold the member's route socket for the whole turn. Without the
+  // lease, every RPC below rides its own request-scoped socket lease; the
+  // socket that minted `runtime` can close between RPCs, the gateway reaps
+  // the runtime session, and prompt.submit dies 4001 — the bot goes silent.
+  const releaseTurnLease = await retainGroupTurnRoute(member)
+
+  try {
+    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
+  } finally {
+    releaseTurnLease()
+  }
+}
+
+async function runGroupChatMemberTurnLeased(group, member, prompt, thread, images) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
@@ -6781,7 +7743,10 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
 
-  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: turnText })
+  // #93602: one-shot recovery when the runtime session was reaped between
+  // minting and submitting. Tracks the runtime id the submit landed on so
+  // the poll fallback below targets a live session.
+  const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
 
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -6793,7 +7758,7 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
 
     try {
       state = await requestForBot(member, 'session.resume', {
-        session_id: stored || runtime,
+        session_id: stored || liveRuntime,
         profile: member.name
       })
     } catch {
@@ -6938,6 +7903,138 @@ async function harvestStrandedGroupReply(group, member) {
   }
 }
 
+// --- room-turn decision helpers (#93127) — pure, vm-sliced by tests ---
+
+/** #93127: whether a finished member turn may still commit (append its reply
+ *  and advance its watermark). A turn dispatched under an older epoch was
+ *  superseded mid-flight by a newer user send — its late result must be
+ *  dropped, because the new send's own loop re-drives this member with the
+ *  full delta and committing both is exactly the double-delivery bug.
+ *
+ *  The re-drive premise is only true for a send in the SAME thread (delta
+ *  filters are thread-scoped): a cross-thread epoch bump must NOT discard
+ *  finished work no fresh loop will regenerate. Callers pass whether a newer
+ *  USER entry landed in this thread since dispatch; the default (true)
+ *  preserves the conservative drop when the caller can't tell. */
+function shouldCommitMemberTurn(epochAtDispatch, currentEpoch, newerUserEntryInThread = true) {
+  if (epochAtDispatch === currentEpoch) {
+    return true
+  }
+
+  return !newerUserEntryInThread
+}
+
+/** #93127 insurance: byte-identical member echo detection. TRUE only when
+ *  the immediately-preceding log entry has the same author (kind + name +
+ *  source), same thread, and identical text, within a short recency window —
+ *  a residual double-append fires back-to-back; two legitimately identical
+ *  replies hours apart (or with anything in between) are never dropped. */
+const GROUP_DUPLICATE_APPEND_WINDOW_MS = 10 * 60 * 1000
+
+function isDuplicateGroupAppend(lastEntry, from, text, thread, now = Date.now()) {
+  if (!lastEntry || !from || from.kind !== 'member' || lastEntry.from?.kind !== 'member') {
+    return false
+  }
+
+  if (String(lastEntry.from?.name || '') !== String(from.name || '')) {
+    return false
+  }
+
+  if (String(lastEntry.from?.source || '') !== String(from.source || '')) {
+    return false
+  }
+
+  if (String(lastEntry.thread || 'legacy') !== String(thread || 'legacy')) {
+    return false
+  }
+
+  if (now - (lastEntry.at || 0) > GROUP_DUPLICATE_APPEND_WINDOW_MS) {
+    return false
+  }
+
+  return String(lastEntry.text || '') === String(text || '').trim()
+}
+
+// --- end room-turn decision helpers ---
+
+// --- member-hold helpers (#93129) — pure, vm-sliced by tests ---
+
+/** #93129: classify a USER room message's effect on member holds. Only user
+ *  sends ever reach this (bot replies are appended by the round loop, never
+ *  through sendToGroupChat), so a bot saying "stopped working on it" can
+ *  never set a hold. Conservative on purpose: any standalone stop/halt/pause
+ *  word next to a mention holds those members — "don't stop @x" therefore
+ *  also holds, which errs toward the bot staying quiet until re-addressed
+ *  (a wrongly-held bot is one mention away from release; a wrongly-running
+ *  one keeps doing work it was told to stop). A non-stop direct mention
+ *  releases the mentioned members — the user addressing a bot directly
+ *  overrides its hold. */
+function classifyGroupHoldDirective(text, mentionedKeys, everyone) {
+  const value = String(text || '')
+  const mentioned = [...(mentionedKeys || [])]
+  const stop = /\b(stop|halt|pause)\b/i.test(value)
+  const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
+
+  if (stop) {
+    // "@all stop" holds every member — symmetric with "@all resume".
+    return { hold: mentioned, holdAll: Boolean(everyone), release: [], releaseAll: false }
+  }
+
+  if (resume) {
+    return { hold: [], holdAll: false, release: mentioned, releaseAll: Boolean(everyone) }
+  }
+
+  return { hold: [], holdAll: false, release: mentioned, releaseAll: false }
+}
+
+/** #93129: next holds map after one user message. Holds are keyed by
+ *  memberKey at ROOM scope (not thread scope): every main-composer send
+ *  mints a NEW thread, so a thread-scoped hold would never block the next
+ *  send's turns and the stop would not stick. Returns the same object when
+ *  nothing changed. */
+function applyGroupHoldDirective(holds, mentions, text, stamp, allMemberKeys = []) {
+  const prior = holds && typeof holds === 'object' ? holds : {}
+  const action = classifyGroupHoldDirective(text, mentions?.mentioned || [], Boolean(mentions?.everyone))
+
+  if (action.releaseAll) {
+    return Object.keys(prior).length ? {} : prior
+  }
+
+  // "@all stop": expand to every member key the caller knows about.
+  const toHold = action.holdAll ? [...allMemberKeys] : action.hold
+
+  let next = prior
+
+  for (const key of toHold) {
+    if (next === prior) {
+      next = { ...prior }
+    }
+
+    next[key] = { at: stamp?.at || Date.now(), byMessageId: stamp?.byMessageId || null, thread: stamp?.thread || null }
+  }
+
+  for (const key of action.release) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      if (next === prior) {
+        next = { ...prior }
+      }
+
+      delete next[key]
+    }
+  }
+
+  return next
+}
+
+/** #93129: a held member's skip must consume its delta exactly once —
+ *  advance the watermark past the current log so the same entries never
+ *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
+function heldMemberWatermarkAdvance(seen, logLength) {
+  return logLength > (seen || 0) ? logLength : null
+}
+
+// --- end member-hold helpers ---
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
@@ -7000,6 +8097,35 @@ async function runGroupChatRounds(group, members, thread) {
           continue
         }
 
+        // #93129: a member the user told to stop is HELD — no turn until an
+        // explicit release (resume / @all resume / a direct non-stop
+        // mention). Consume the delta exactly once (watermark past the
+        // current log) so the same entries never re-trigger this skip, and
+        // surface WHY the bot is silent in the activity feed the first time.
+        const heldEntry = (room.holds || {})[memberKey]
+
+        if (heldEntry) {
+          const advance = heldMemberWatermarkAdvance(seen, room.log.length)
+
+          updateGroupChat(group, r => {
+            if (advance !== null) {
+              r.watermarks[markKey] = advance
+            }
+
+            if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+              r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
+            }
+
+            return r
+          })
+
+          if (!heldEntry.noted) {
+            recordGroupActivity(group, { kind: 'held', member: member.name, thread })
+          }
+
+          continue
+        }
+
         const prompt = buildGroupChatTurnPrompt({
           groupName: group,
           members,
@@ -7025,9 +8151,45 @@ async function runGroupChatRounds(group, members, thread) {
 
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
-        } catch {
+
+          // Needs-attention hook (#93091 item 3): a turn that produced a real
+          // reply (or an explicit pass) is a good turn — clear the badge.
+          // A timed-out turn also returns null but never threw; leaving any
+          // prior badge in place there is the conservative choice.
+          if (reply !== null) {
+            clearBotAttention(groupMemberKey(member))
+          }
+        } catch (error) {
           recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
+          noteBotAttention(groupMemberKey(member), error?.message || error)
           reply = null // a failed turn is a pass, never a room error
+        }
+
+        // #93127: the turn may have finished AFTER a newer user send bumped
+        // the room epoch. That newer send's loop re-drives this member with
+        // the full delta, so committing this stale result (watermark advance
+        // + append) would double-deliver the same reply. Drop it here —
+        // BEFORE the watermark advance and BEFORE the append. Only a newer
+        // USER entry in THIS thread makes the re-drive premise true: a
+        // cross-thread send bumps the epoch too, but its loop filters this
+        // thread out and would never regenerate the finished reply. The
+        // during-turn tail is anchored by entry id, not index — the history
+        // trim drops entries from the FRONT, so an index slice could
+        // overshoot after a mid-turn trim and silently commit a stale turn.
+        const roomNow = $groupChats.get()[group] || { log: [] }
+        const epochNow = roomNow.epoch || 0
+        const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
+        const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex(e => e.id === anchorId)
+        // Anchor trimmed away ⇒ every pre-turn entry was dropped, so every
+        // surviving entry is newer — scanning the whole log stays exact.
+        const turnTail = anchorIdx >= 0 ? roomNow.log.slice(anchorIdx + 1) : roomNow.log
+        const newerUserEntryInThread = turnTail.some(
+          e => e.from?.kind === 'user' && groupThreadOf(e) === thread
+        )
+
+        if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
+          recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+          return
         }
 
         // The member has now seen everything up to the pre-reply log length.
@@ -7140,13 +8302,24 @@ function sendToGroupChat(group, members, text, thread, images) {
     room.members = durableGroupChatMembers(members)
     return room
   })
-  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
+  const sent = appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
 
   updateGroupChat(group, room => {
     room.epoch = (room.epoch || 0) + 1
     room.running = true
+    // #93129: user text is the ONLY input that changes member holds. An
+    // explicit "stop @member" sets a sticky hold; "@member resume" (or
+    // @all resume, or any direct non-stop mention of the held member)
+    // releases it. Bot replies never flow through this function.
+    room.holds = applyGroupHoldDirective(
+      room.holds,
+      parseGroupChatMentions(trimmed, members),
+      trimmed,
+      { at: sent?.at, byMessageId: sent?.id, thread: target },
+      members.map(member => groupMemberKey(member))
+    )
     return room
   })
 
@@ -7539,6 +8712,18 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   // thin to rich; conditionally calling useValue here breaks React hook order.
   const unreadByName = useValue($botUnread)
   const unread = Boolean(unreadByName[botSelectionKey(bot)])
+  // Needs-attention badge (#93091 item 3): background failures record under
+  // the selection key (group turns) or the route key (relay deliveries) —
+  // check both. Local/unannotated rows carry no connectionId, so their relay
+  // failures live under `<activeConnectionId>::<name>` — resolve that shape
+  // too or active-gateway bots never badge. Hidden bots keep their entry;
+  // hiding is display-only.
+  const attentionByKey = useValue($botAttention)
+  const attention =
+    attentionByKey[botSelectionKey(bot)] ||
+    attentionByKey[botRosterKey(bot)] ||
+    attentionByKey[`${bot?.connectionId || activeConnectionId}::${bot?.name || 'default'}`] ||
+    null
   // WHO sent the last message (bot-to-bot DM vs human) — the full stored
   // history lives in the canonical chat, not inline.
   // Preview identity must match click identity (#88200): when the backend
@@ -7644,6 +8829,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
                   }),
                 ]
               }),
+              attention
+                ? jsx(Tip, {
+                    label: BOT_ATTENTION_HINTS[attention.reason] || 'Needs attention',
+                    children: jsx(Codicon, {
+                      name: 'warning',
+                      className: 'shrink-0 text-[0.6875rem] text-(--ui-warning,#f59e0b)',
+                      'aria-label': 'needs attention'
+                    })
+                  })
+                : null,
               unread
                 ? jsx('span', {
                     className: 'size-2 shrink-0 rounded-full bg-(--ui-accent)',
@@ -7770,7 +8965,11 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
 function useModelOptions(bot = null) {
-  const route = botConnectionRoute(bot)
+  // Hook body runs during render: an orphaned row must paint the picker
+  // disabled/erroring, not throw into the pane's error boundary.
+  const resolved = bot ? resolveBotConnectionRoute(bot) : null
+  const route = resolved?.status === 'resolved' ? resolved.route : null
+  const orphaned = resolved?.status === 'owner_removed'
 
   return useQuery({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
@@ -7779,6 +8978,7 @@ function useModelOptions(bot = null) {
       explicit_only: false,
       refresh: true
     }),
+    enabled: !orphaned,
     staleTime: 120000,
     retry: false
   })
@@ -7982,7 +9182,9 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const [loaded, setLoaded] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
   const [skillFilter, setSkillFilter] = useState('')
-  const botRoute = botConnectionRoute(bot)
+  // Component body = render path: degrade an orphaned row to the bot's own
+  // name scope instead of throwing into the dialog's error boundary.
+  const botRoute = resolveBotConnectionRoute(bot).route
   const backendProfile = botRoute?.targetProfile || botRoute?.profile || bot.name
   const backendScope = botBackendProfileScope(botRoute, bot.name)
 
@@ -8479,6 +9681,10 @@ function HubSkillsSection({ forProfile, onInstalled }) {
             value: query,
             onChange: event => setQuery(event.target.value),
             onKeyDown: event => {
+              // IME guard: Enter confirming a composed word must not search.
+              if (event.nativeEvent?.isComposing || event.keyCode === 229) {
+                return
+              }
               if (event.key === 'Enter') {
                 event.preventDefault()
                 void search()
@@ -9147,8 +10353,11 @@ function CreateAgentDialog({ open, onClose, roster }) {
       // Birth the bot's forever chat right away: it introduces itself as
       // the first thing the user sees, and the pin exists from minute one.
       try {
-        // Creates, pins, opens, and kicks off the intro in one flow.
-        const sid = await createCanonicalChat(slug)
+        // Creates, pins, opens, and kicks off the intro in one flow. This is
+        // the ONE caller allowed to request the intro turn — genuine New
+        // Agent creation. Click-path resolution (openBotCanonicalChat) mints
+        // silently so a resolution miss never burns a turn (ScottFive).
+        const sid = await createCanonicalChat(slug, { kickoff: true })
 
         if (!sid && typeof host.newChat === 'function') {
           host.newChat(slug)
@@ -9859,7 +11068,117 @@ function scheduleLabel(schedule) {
   return schedule || ''
 }
 
-function RoutineRow({ job, owner }) {
+/** Absolute + relative rendering of a cron timestamp, or null when the job
+ *  has never carried one (a job that has not run yet has no `last_run_at`). */
+function routineTimestamp(value) {
+  const ms = value ? new Date(value).getTime() : Number.NaN
+  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+}
+
+/** The facts `cron.manage list` already sends with every job, as label/value
+ *  rows. Pure so the detail contract is testable without a renderer, and so
+ *  the dialog cannot invent a field the gateway never sent: an absent value
+ *  drops its row instead of rendering "undefined". */
+function routineDetailRows(job) {
+  const paused = job?.enabled === false || job?.state === 'paused'
+  const label = scheduleLabel(job?.schedule)
+  const raw = String(job?.schedule || '').trim()
+
+  return [
+    ['Status', paused ? 'Paused' : 'Active'],
+    ['Schedule', label],
+    // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
+    // raw string when it says something the label dropped.
+    ['Schedule (raw)', raw && raw !== label ? raw : null],
+    ['Repeat', job?.repeat],
+    ['Next run', paused ? null : routineTimestamp(job?.next_run_at)],
+    ['Last run', routineTimestamp(job?.last_run_at)],
+    ['Last result', job?.last_status],
+    ['Delivers to', job?.deliver],
+    ['Model', job?.model],
+    ['Working directory', job?.workdir]
+  ]
+    .filter(([, value]) => typeof value === 'string' && value.trim())
+    .map(([name, value]) => ({ label: name, value: value.trim() }))
+}
+
+/** Why a job is not doing what the user expects. The row only ever showed
+ *  "paused"; the scheduler's own reason and the last fire/delivery failures
+ *  had no surface in Bot Mode at all. */
+function routineDetailIssue(job) {
+  const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
+  const first = reasons.find(value => typeof value === 'string' && value.trim())
+
+  return first ? first.trim() : null
+}
+
+/** Read-only inspector for one cronjob, rendered from the list payload the
+ *  pane already holds — no extra RPC, and no second mutation path beside the
+ *  row's own switch and delete. */
+function RoutineDetailDialog({ job, onClose, open }) {
+  const rows = job ? routineDetailRows(job) : []
+  const issue = job ? routineDetailIssue(job) : null
+  const instruction = String(job?.prompt_preview || '').trim()
+
+  return jsx(Dialog, {
+    open: Boolean(open && job),
+    onOpenChange: value => {
+      if (!value) {
+        onClose()
+      }
+    },
+    children: jsxs(DialogContent, {
+      className: 'max-w-md',
+      children: [
+        jsxs(DialogHeader, {
+          children: [
+            jsx(DialogTitle, { className: 'truncate', children: routineTitle(job) }),
+            jsx(DialogDescription, { children: 'What this cronjob runs, and when it runs next.' })
+          ]
+        }),
+        jsxs('div', {
+          className: 'grid gap-3.5',
+          children: [
+            issue
+              ? jsx('div', {
+                  className:
+                    'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs leading-5 text-(--ui-accent)',
+                  children: issue
+                })
+              : null,
+            jsx('div', {
+              className: 'grid gap-1.5',
+              children: rows.map(row =>
+                jsxs('div', {
+                  className: 'flex items-baseline justify-between gap-3 text-xs',
+                  children: [
+                    jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: row.label }),
+                    jsx('span', { className: 'min-w-0 truncate text-right', children: row.value })
+                  ]
+                }, row.label)
+              )
+            }),
+            instruction
+              ? labeled(
+                  'Instruction',
+                  jsx('div', {
+                    className:
+                      'max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs leading-5 text-(--ui-text-secondary)',
+                    children: instruction
+                  })
+                )
+              : null
+          ]
+        }),
+        jsx(DialogFooter, {
+          children: jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Close' })
+        })
+      ]
+    })
+  })
+}
+
+function RoutineRow({ job, onOpen, owner }) {
   const profile = typeof owner === 'string' ? owner : owner?.name
   const [busy, setBusy] = useState(false)
   // Optimistic overlay: null = trust server state. Set immediately on
@@ -9904,13 +11223,24 @@ function RoutineRow({ job, owner }) {
       jsxs('div', {
         className: 'flex items-center gap-2',
         children: [
-          jsx('span', {
-            'aria-hidden': true,
-            className: cn('size-1.5 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-(--ui-text-quaternary)')
-          }),
-          jsx('span', {
-            className: cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)'),
-            children: routineTitle(job)
+          // The row's own button, not a click handler on the card: the switch
+          // and delete control are siblings, so opening the details can never
+          // swallow a toggle (and a nested button would be invalid markup).
+          jsxs('button', {
+            type: 'button',
+            title: 'Cronjob details',
+            className: 'flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground',
+            onClick: () => onOpen?.(job),
+            children: [
+              jsx('span', {
+                'aria-hidden': true,
+                className: cn('size-1.5 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-(--ui-text-quaternary)')
+              }),
+              jsx('span', {
+                className: cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)'),
+                children: routineTitle(job)
+              })
+            ]
           }),
           jsx(Switch, {
             checked: active,
@@ -10277,7 +11607,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               'Send results to',
               pickerSelect(target, setTarget, [
                 { id: 'history', label: 'Run history only' },
-                { id: 'bot-chat', label: `${displayName({ name: bot }, $botMeta.get()[bot])}\u2019s chat (bot responds)` }
+                { id: 'bot-chat', label: `${displayName(typeof bot === 'string' ? { name: bot } : bot, botRosterMeta(bot, $botMeta.get()))}\u2019s chat (bot responds)` }
               ])
             ),
             jsxs('label', {
@@ -10350,29 +11680,38 @@ function bindProfileSync(ownerStore) {
 }
 
 function resolveRoutineOwner(roster, focusedOwner, selected) {
-  if (hasFocusedSessionOwnerSupport && !focusedOwner) {
-    return null
-  }
-
+  // A null focused owner is NOT a failure: the SDK fails closed to null
+  // whenever the focused session has no unique bot owner (a normal chat,
+  // ambiguous owner hints) — the common case while the user browses the
+  // Bots pane. Fall through to the roster-clicked bot (the previously
+  // working scope) instead of dead-ending the pane on the unavailable
+  // placeholder for every agent (#94516).
+  const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
   const focusedBot = focusedOwner
     ? roster.find(bot => isActiveRosterBot(bot, focusedOwner))
     : null
 
   if (focusedOwner?.authoritative) {
+    // An authoritative focused owner wins, but only through its exact roster
+    // row. If that row is absent, fail closed instead of routing cron
+    // reads/mutations through a stale selection or an unscoped profile name.
     return focusedBot || null
   }
 
-  const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
   return focusedBot || selectedBot || (focusedOwner ? { name: focusedOwner.name } : null)
 }
 
 function RoutinesPane() {
   const selected = useValue($selectedBot)
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
-  // A complete focused owner is authoritative. If its exact roster row is
-  // absent, fail closed instead of routing cron reads/mutations through a
+  // Subscribe instead of a bare read: BotsHomeView owns the roster fetch and
+  // can hydrate (or replace) rows after this pane mounted, so a .get()
+  // snapshot captured while the roster was still empty pinned the pane on
+  // "unavailable" until some unrelated atom happened to re-render it (#94483).
+  // A complete focused owner is still authoritative. If its exact roster row
+  // is absent, fail closed rather than routing cron reads/mutations through a
   // stale selection or an unscoped profile name.
-  const owner = resolveRoutineOwner($lastRoster.get(), focusedOwner, selected)
+  const owner = resolveRoutineOwner(useValue($lastRoster), focusedOwner, selected)
   const bot = String(owner?.name || focusedOwner?.name || 'default').trim() || 'default'
   const allMeta = useValue($botMeta)
   const meta = owner ? botRosterMeta(owner, allMeta) : null
@@ -10380,6 +11719,10 @@ function RoutinesPane() {
   const { data, error, isLoading, refetch } = useRoutines(owner)
   const [createOpen, setCreateOpen] = useState(false)
   const [createOwner, setCreateOwner] = useState(null)
+  // Hold the id, not the record: the 20s poll replaces every job object, and
+  // an open inspector must follow the live row (next run, pause, last error)
+  // instead of freezing the snapshot that was on screen when it opened.
+  const [detailJobId, setDetailJobId] = useState(null)
   const createTarget = owner ? routineCreateTarget(createOwner, bot) : null
 
   const openCreate = () => {
@@ -10403,6 +11746,7 @@ function RoutinesPane() {
     $lastJobs.set(view.live)
   }
   const jobs = view.jobs
+  const detailJob = detailJobId ? jobs.find(job => job.job_id === detailJobId) || null : null
   const staleNotice = error && !view.live && view.all.length
     ? 'Could not refresh cronjobs. Showing the last list we had.'
     : null
@@ -10506,9 +11850,16 @@ function RoutinesPane() {
               className: 'min-h-0 flex-1',
               children: jsx('div', {
                 className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, owner }, job.job_id))
+                children: jobs.map(job =>
+                  jsx(RoutineRow, { job, onOpen: opened => setDetailJobId(opened.job_id), owner }, job.job_id)
+                )
               })
             }),
+      jsx(RoutineDetailDialog, {
+        job: detailJob,
+        open: Boolean(detailJob),
+        onClose: () => setDetailJobId(null)
+      }),
       jsx(CreateRoutineDialog, {
         bot: createTarget,
         open: createOpen,
@@ -11254,6 +12605,14 @@ function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputPr
         },
         onClick: event => refreshToken(event.target),
         onKeyDown: event => {
+          // IME composition guard (same as the core composer): Enter here
+          // confirms the composed Chinese/Japanese/Korean text — it must not
+          // insert a mention nor submit the draft. nativeEvent.isComposing
+          // covers Chromium; keyCode 229 covers macOS Chinese IMEs that fire
+          // Enter after compositionend with isComposing already false.
+          if (event.nativeEvent?.isComposing || event.keyCode === 229) {
+            return
+          }
           if (open) {
             if (event.key === 'ArrowDown') {
               event.preventDefault()
@@ -11440,6 +12799,10 @@ function GroupClarifyCard({ entry, members }) {
                     setDrafts(prev => ({ ...prev, [q.qid]: value }))
                   },
                   onKeyDown: event => {
+                    // IME guard: Enter confirming a composed word must not submit.
+                    if (event.nativeEvent?.isComposing || event.keyCode === 229) {
+                      return
+                    }
                     if (event.key === 'Enter' && questions.length === 1) {
                       event.preventDefault()
                       void submit()
@@ -12638,6 +14001,10 @@ function closeBotsHomeWorkspace() {
   const close = botsHomeClose
   botsHomeClose = null
   suppressBotsHomeReopen = true
+  // Retiring the tab ends the current attempt's budget: the next open is a
+  // new surface, and it gets its own re-front chance. The re-front path sets
+  // the latch again AFTER calling us, so this cannot erase its own attempt.
+  botsHomeRefrontTried = false
 
   try {
     close()
@@ -12725,10 +14092,27 @@ function openBotsHomeWorkspace(explicit = false) {
   // and each of those either legitimately claims the center or cleared it.
   if (botsHomeClose) {
     if (botsHomeVisible()) {
+      botsHomeRefrontTried = false
+
+      return true
+    }
+
+    // A re-front is a close + re-open, so it REMOUNTS the whole Bots view.
+    // That is affordable once, against the backgrounded-tab case above. It is
+    // not affordable per signal: the shell does not always answer a reveal
+    // with the active slot (revealTreePane returns early for a pane in
+    // $hiddenTreePanes without activating it; a minimized zone and a pane the
+    // tree never adopted are never visible either). Pinned in one of those
+    // states the old code re-fronted on every passive pass — sidebar flips,
+    // focus churn and group changes all reach here — and the view strobed.
+    // One attempt proves whether this shell will front the tab; if it will
+    // not, keep the surface and wait for a signal that changes the answer.
+    if (botsHomeRefrontTried && !explicit) {
       return true
     }
 
     closeBotsHomeWorkspace()
+    botsHomeRefrontTried = true
   }
 
   try {
@@ -12745,6 +14129,15 @@ function openBotsHomeWorkspace(explicit = false) {
         }
       }
     })
+
+    // The reveal has already either granted the tab its zone's active slot or
+    // refused it, so settle the re-front budget on that answer directly rather
+    // than waiting for a visibility notification to schedule another pass. A
+    // computed store stays silent when the value does not change, so on the
+    // shells that refuse, no such pass is coming.
+    if (botsHomeVisible()) {
+      botsHomeRefrontTried = false
+    }
 
     return typeof botsHomeClose === 'function'
   } catch {
@@ -12793,6 +14186,21 @@ function releaseStaleOpenBotChat(focusedStoredId) {
   if (stale) {
     $openBotChat.set(null)
   }
+}
+
+/** Bot-open handoff: capture the selected group and retire its registered
+ * main tab (or clear the in-panel selection) before async source prep /
+ * canonical open. */
+function dismissGroupChatForLocalBotOpen() {
+  const group = $groupChatWorkspace.get()
+
+  if (!group) {
+    return null
+  }
+
+  const roomId = String($groupChats.get()[group]?.roomId || '')
+  closeGroupChatMainTab(group)
+  return { group, roomId }
 }
 
 /** Main-window wrapper: seats the member roster reactively (live roster +
@@ -13977,6 +15385,10 @@ export default {
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
                   stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
+                  // #93129: rehydrate sticky stop holds with the same shape
+                  // guard as the other maps — a held bot stays held across
+                  // window restarts until explicitly released.
+                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
@@ -13988,6 +15400,35 @@ export default {
             }
 
             $groupChats.set({ ...rooms, ...$groupChats.get() })
+
+            // #93492: annotate rows orphaned before this build (their
+            // connection was deleted while an older Desktop ran, so no
+            // 'removed' push ever swept them). Registry read is
+            // feature-detected; when unavailable only the unresolvable-route
+            // shape (lost connectionId) is annotated.
+            try {
+              const registry =
+                typeof window !== 'undefined'
+                  ? await Promise.resolve(window.hermesDesktop?.connections?.list?.()).catch(() => null)
+                  : null
+              const liveIds = Array.isArray(registry?.connections)
+                ? new Set(registry.connections.map(connection => String(connection?.id || '').trim()).filter(Boolean))
+                : null
+              const annotated = annotateOrphanedGroupChatMembers($groupChats.get(), liveIds)
+
+              if (annotated.changed) {
+                // Per-room updateGroupChat keeps the durable record's full
+                // shape (sessionOwners, holds) in storage; sync:false —
+                // the scheduleGroupChatServerSync below publishes once.
+                for (const [roomName, room] of Object.entries(annotated.rooms)) {
+                  if (room !== $groupChats.get()[roomName]) {
+                    updateGroupChat(roomName, () => room, { sync: false })
+                  }
+                }
+              }
+            } catch {
+              /* registry unavailable — the lost-connectionId shape is still safe to render */
+            }
           }
 
           // Receive before publish. A fresh Desktop with no local room cache
@@ -14012,6 +15453,28 @@ export default {
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
 
+    // #93492 root fix: the registry pushes a lifecycle event when a
+    // connection is removed. The gateway store already disposes the dead
+    // sockets; the persisted group-chat rosters referencing that connection
+    // were never touched, which is what left panes throwing "Bot X has no
+    // connection owner" forever. Annotate (never silently delete) those
+    // member rows the moment the connection goes away. Feature-detected:
+    // older Electron mains don't emit it, and bare vm test harnesses have
+    // no window global.
+    let unbindConnectionsChanged = null
+    try {
+      if (typeof window !== 'undefined') {
+        unbindConnectionsChanged =
+          window.hermesDesktop?.connections?.onChanged?.(payload => {
+            if (payload?.reason === 'removed') {
+              sweepGroupChatMembersForRemovedConnection(payload.connectionId)
+            }
+          }) || null
+      }
+    } catch {
+      /* registry lifecycle push unavailable — hydrate-time annotate still covers it */
+    }
+
     if (typeof ctx.onDispose === 'function') {
       ctx.onDispose(() => {
         stopGroupChatServerSync()
@@ -14021,6 +15484,9 @@ export default {
         if (typeof unbindGatewayListener === 'function') {
           unbindGatewayListener()
         }
+        if (typeof unbindConnectionsChanged === 'function') {
+          unbindConnectionsChanged()
+        }
       })
     }
 
@@ -14029,19 +15495,7 @@ export default {
     // rows were created before the always-hidden policy). Deferred a tick so
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
-    const scheduleHideSweep = () => {
-      try {
-        setTimeout(() => void hideOwnedBotSessions(), 0)
-      } catch {
-        void hideOwnedBotSessions()
-      }
-    }
-    host.state.gateway.listen(state => {
-      if (state === 'open') {
-        scheduleHideSweep()
-      }
-    })
-    scheduleHideSweep()
+    startHideSweepScheduler(ctx)
 
     ctx.register({
       id: 'pane',

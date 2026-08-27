@@ -414,6 +414,14 @@ def finalize_turn(
                     and getattr(_compressor, '_micro_compact_enabled', False) is True
                     and callable(getattr(_compressor, '_micro_compact', None))
                     and final_response
+                    # compression.checkpoint_required: agent init already
+                    # forces _micro_compact_enabled off, but the compressor
+                    # attribute is plain state a future path could flip on a
+                    # live agent. Micro-compaction has no checkpoint hook in
+                    # its path, so it must never run while the gate is armed.
+                    and getattr(
+                        agent, "compression_checkpoint_required", False
+                    ) is not True
                     # Persistence-isolated agents (background review fork)
                     # must not micro-compact: the pass burns a real aux-LLM
                     # call on a throwaway replay transcript, and if the

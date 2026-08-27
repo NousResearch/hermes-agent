@@ -863,11 +863,13 @@ def test_driver_verdict_fields_are_preserved_and_surfaced_additively():
     assert payload["verified"] is False
 
     bare = json.loads(_text_response(ActionResult(ok=True, action="click")))
-    assert bare == {
-        "ok": True,
-        "action": "click",
-        "verdict": {"decision": "verify_fresh_state"},
-    }
+    assert bare["ok"] is True
+    assert bare["action"] == "click"
+    # Verdict routes to fresh verification; a human hint may accompany the
+    # decision (contract is the decision, not the exact dict shape).
+    assert bare["verdict"]["decision"] == "verify_fresh_state"
+    for k in ("effect", "escalation", "code", "verified", "path", "degraded", "delivery_mode"):
+        assert k not in bare
 
 
 def test_call_tool_restarts_a_dead_session():

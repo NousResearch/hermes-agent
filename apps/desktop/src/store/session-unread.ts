@@ -13,7 +13,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from './session'
-import { isSecondaryWindow } from './windows'
+import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
  * PERSISTED UNREAD ("finished — unread" green dot) — the durable layer under
@@ -554,7 +554,7 @@ function onListChange(): void {
 // (single-chat pop-out, watch window) sees a sliver of the session lists, and
 // letting it seed/ack against that partial view would clobber the primary's
 // whole-record writes — same isolation rule as the persisted session tiles.
-if (!isSecondaryWindow()) {
+if (!isSecondaryWindow() && !isBrowserWindow()) {
   $sessions.listen(onListChange)
   $cronSessions.listen(onListChange)
   $messagingSessions.listen(onListChange)

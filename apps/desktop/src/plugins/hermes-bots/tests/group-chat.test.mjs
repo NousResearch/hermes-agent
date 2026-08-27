@@ -130,7 +130,15 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
         if (method === 'session.resume') {
           const session = resolveSession(params.profile, params.session_id)
           if (!session) {
-            throw new Error(`session not found: ${params.session_id}`)
+            // Shaped like the real gateway's JsonRpcGatewayError (a `.code`
+            // property, per apps/shared/src/json-rpc-gateway.ts) so
+            // ensureGroupChatSession's fail-closed `.code !== 4007` check
+            // exercises the same branch production sees. 4007 mirrors
+            // session.resume's own "session not found" JSON-RPC error code
+            // (tui_gateway/methods_session.py).
+            const err = new Error(`session not found: ${params.session_id}`)
+            err.code = 4007
+            throw err
           }
           const profile = params.profile
           const seen = (resumeCallCounts.get(profile) || 0) + 1
@@ -196,7 +204,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, groupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -422,6 +430,71 @@ test('recreating a same-name group after disband mints fresh member sessions', a
   assert.notEqual(first.stored, second.stored, 'the recreated room must not resume the old member session')
   assert.equal(gc.sessions.get(first.stored).title, 'Group: r-one')
   assert.equal(gc.sessions.get(second.stored).title, 'Group: r-two')
+})
+
+test('a transient resume failure fails closed instead of forking the member session', async () => {
+  // Mirrors findExistingCanonicalChat's fix (87b645f52c): a resume that
+  // fails for any reason OTHER than "genuinely doesn't exist" (JSON-RPC
+  // code 4007) must surface, not be read as "no session, mint a new one" —
+  // that would fork the member's real history and silently overwrite
+  // room.sessions[key] so the old session becomes unreachable.
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.updateGroupChat('Alpha', r => {
+    r.roomId = 'r-one'
+    return r
+  })
+  const first = await gc.ensureGroupChatSession('Alpha', member)
+  const roomBefore = gc.$groupChats.get().Alpha
+
+  // Simulate a transient failure (backend still warming up after a restart,
+  // a network blip on a cross-connection lookup, ...) on the NEXT resume of
+  // the member's own stored session — a real gateway error, not "not found".
+  const originalRequest = gc.host.request
+  gc.host.request = async (method, params) => {
+    if (method === 'session.resume' && params.session_id === first.stored) {
+      const err = new Error('gateway temporarily unavailable')
+      err.code = 5000
+      throw err
+    }
+    return originalRequest(method, params)
+  }
+
+  await assert.rejects(
+    () => gc.ensureGroupChatSession('Alpha', member),
+    /Could not check .*group session/
+  )
+
+  gc.host.request = originalRequest
+
+  // Nothing was forked: the room's session pointer is untouched, and the
+  // original session is still the only one on record for this member.
+  assert.deepEqual(gc.$groupChats.get().Alpha.sessions, roomBefore.sessions)
+  assert.equal(gc.sessions.size, 1)
+})
+
+test('a genuinely nonexistent stored session (4007) still falls through to the title lookup, then create', async () => {
+  const gc = load(() => '(pass)')
+  const member = { name: 'research', title: '' }
+
+  gc.updateGroupChat('Alpha', r => {
+    r.roomId = 'r-one'
+    return r
+  })
+
+  // A stored sid pointing at a session the gateway no longer has (e.g. an
+  // out-of-band deletion) is a genuine 4007 on the first target — the loop
+  // must still try the title lookup and, finding nothing there either,
+  // create a fresh session rather than throwing.
+  gc.updateGroupChat('Alpha', r => {
+    r.sessions = { research: 'sid-gone' }
+    return r
+  })
+
+  const result = await gc.ensureGroupChatSession('Alpha', member)
+  assert.ok(result.stored, 'a fresh session must be minted when nothing resumable exists')
+  assert.notEqual(result.stored, 'sid-gone')
 })
 
 test('group session titles are pinned to the roomId, with a legacy fallback to the display name', async () => {
@@ -1207,6 +1280,59 @@ test('disband: removes only this membership, room log, workspace, and needs-you 
   assert.ok('Keep' in durable, 'surviving room still persisted')
   assert.equal(durable.Keep.members.length, 1, 'surviving room keeps remote member descriptors')
   assert.equal(durable.Keep.members[0].connectionId, 'remote-1')
+})
+
+test('disband: an empty rendered roster cannot leave a metadata-only group row', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.$botMeta.set({ builder: { groups: ['Remote'], group: 'Remote' } })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(gc.$groupChats.get().Remote, undefined, 'room record is deleted')
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get().builder.group, null)
+  assert.equal(
+    JSON.stringify(gc.groupChatNames(gc.$botMeta.get(), gc.$groupChats.get())),
+    JSON.stringify([]),
+    'stale bot metadata cannot reconstruct a deleted zero-member row'
+  )
+})
+
+test('disband: an empty rendered roster recovers the exact source-qualified metadata owner', async () => {
+  const gc = load(() => '(pass)')
+  const remote = {
+    name: 'builder',
+    connectionId: 'remote-1',
+    connectionKind: 'remote',
+    sourceScoped: true,
+    remoteSource: true,
+    route: {
+      connectionId: 'remote-1',
+      mode: 'remote',
+      profile: 'builder',
+      targetProfile: 'builder'
+    }
+  }
+
+  gc.$lastRoster.set([remote])
+  gc.$botMeta.set({
+    builder: { groups: ['Keep'], group: 'Keep' },
+    'remote-1::builder': { groups: ['Remote'], group: 'Remote' }
+  })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(JSON.stringify(gc.$botMeta.get()['remote-1::builder'].groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get()['remote-1::builder'].group, null)
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify(['Keep']))
+  assert.equal(gc.$botMeta.get().builder.group, 'Keep', 'same-named local metadata is untouched')
 })
 
 test('disband: skips source-qualified remote members instead of mutating same-named local metadata', async () => {

@@ -55,6 +55,21 @@ def _materialize_mcp_sdk_symbols():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _clear_web_result_cache():
+    """Reset the web_search TTL memo between tests.
+
+    The memo is module-global state in tools/web_result_cache.py; without
+    this, a test that exercised web_search_tool leaves a cached response
+    that a later test with the same query would receive instead of its own
+    mocked provider result.
+    """
+    from tools.web_result_cache import search_memo
+    search_memo.clear()
+    yield
+    search_memo.clear()
+
+
 def register_all_web_providers():
     """Register all bundled web-search providers into the global registry.
 

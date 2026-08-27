@@ -282,14 +282,20 @@ DEFAULT_COMMAND_TIMEOUT = 30
 MIN_OPEN_TIMEOUT = 60
 MIN_FIRST_OPEN_TIMEOUT = 120
 
-# Max chars for snapshot content before truncation/summarization. Aligned
-# with web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
+# Default max chars for snapshot content before truncation. Aligned with
+# web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
 # web_extract paths share the same truncate-and-store pattern, so the model
-# gets the same per-page budget from both.
-SNAPSHOT_SUMMARIZE_THRESHOLD = 15000
+# gets the same per-page budget from both. Configurable via
+# ``browser.snapshot_threshold`` in config.yaml.
+DEFAULT_SNAPSHOT_THRESHOLD = 15000
+MIN_SNAPSHOT_THRESHOLD = 1000
+
+# Backwards-compatible import surface. Runtime call sites use
+# ``get_browser_snapshot_threshold()`` so config overrides take effect.
+SNAPSHOT_SUMMARIZE_THRESHOLD = DEFAULT_SNAPSHOT_THRESHOLD
 
 # Hard ceiling on the full-snapshot file written to cache/web when a snapshot
-# is truncated or LLM-summarized. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
+# is truncated. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
 # the model only ever sees the truncated view; the stored copy exists for
 # read_file paging and must not write unbounded bytes to disk.
 MAX_STORED_SNAPSHOT_CHARS = 2_000_000
@@ -299,6 +305,8 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_snapshot_threshold: Optional[int] = None
+_snapshot_threshold_resolved = False
 
 
 def _sanitize_url_for_logs(value: object) -> str:
@@ -351,6 +359,33 @@ def _safe_command_timeout() -> int:
     """
     val = _get_command_timeout()
     return val if val is not None else DEFAULT_COMMAND_TIMEOUT
+
+
+def get_browser_snapshot_threshold() -> int:
+    """Return the configured maximum browser snapshot size in characters.
+
+    Reads the raw profile-aware config so tool JSON output is not affected by
+    config-loader warnings. The value is cached for the browser lifecycle and
+    reset by :func:`cleanup_all_browsers`.
+    """
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
+    if _snapshot_threshold_resolved and _cached_snapshot_threshold is not None:
+        return _cached_snapshot_threshold
+
+    result = DEFAULT_SNAPSHOT_THRESHOLD
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "snapshot_threshold")
+        if val is not None:
+            result = max(int(val), MIN_SNAPSHOT_THRESHOLD)
+    except Exception as exc:
+        logger.debug("Could not read browser.snapshot_threshold: %s", exc)
+
+    # Preserve the same race-safety invariant as the command-timeout cache.
+    _cached_snapshot_threshold = result
+    _snapshot_threshold_resolved = True
+    return result
 
 
 def _get_open_command_timeout(*, first_open: bool = False) -> int:
@@ -442,11 +477,6 @@ def _format_browser_timeout_error(
 def _get_vision_model() -> Optional[str]:
     """Model for browser_vision (screenshot analysis — multimodal)."""
     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-
-
-def _get_extraction_model() -> Optional[str]:
-    """Model for page snapshot text summarization — same as web_extract."""
-    return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:
@@ -2637,7 +2667,26 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
     orphaned). By the time this is called, the caller has already burned its
     full timeout budget waiting for a graceful exit — there's nothing to gain
     from waiting again here, only more delay on an already-timed-out call.
+
+    Delegates to :func:`agent.deadline.kill_process_tree` (#85125 4d): same
+    ``taskkill /T /F`` on Windows and killpg-when-group-leader on POSIX, plus
+    a psutil descendant sweep that also reaches descendants that ``setsid``'d
+    into their own session (agent-browser's detached daemon grandchild).
+    SIGKILL-only instead of the old zero-grace SIGTERM→SIGKILL pair — the
+    grace period was already zero, so the observable effect is identical.
+    Any delegation failure falls back to the original local implementation
+    (:func:`_legacy_kill_process_tree`); never raises either way.
     """
+    try:
+        from agent.deadline import kill_process_tree as _deadline_kill_tree
+
+        _deadline_kill_tree(proc.pid)
+    except Exception:
+        _legacy_kill_process_tree(proc)
+
+
+def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable."""
     if os.name == "nt":
         try:
             subprocess.run(
@@ -3135,85 +3184,25 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
                 + f"\n\n[... stored copy truncated at {MAX_STORED_SNAPSHOT_CHARS:,} chars "
                 f"of {len(content):,} ...]"
             )
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
+
         cache_dir = get_hermes_dir("cache/web", "web_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_spill_dir(cache_dir, private=False)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
         path = cache_dir / f"browser-snapshot-{digest}.txt"
-        path.write_text(content, encoding="utf-8")
+        # Deterministic filename in a well-known dir: refuse symlinks via
+        # lstat-unlink + exclusive create. Re-snapshotting the same page
+        # state legitimately overwrites (same content-hash name). Not
+        # private: cache/web is bind-mounted into remote backends whose
+        # container UID must be able to read it.
+        write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to store full browser snapshot: %s", exc)
         return None
 
 
-def _extract_relevant_content(
-    snapshot_text: str,
-    user_task: Optional[str] = None
-) -> str:
-    """Use LLM to extract relevant content from a snapshot based on the user's task.
-
-    The full snapshot is stored to cache/web first (summarization is lossy —
-    the pointer lets the agent read anything the summary dropped). Falls back
-    to simple truncation when no auxiliary text model is configured.
-    """
-    stored_path = _store_full_snapshot(snapshot_text)
-    stored_note = (
-        f'\n\n[Summarized from a {len(snapshot_text):,}-char snapshot. Full snapshot '
-        f'saved to: {stored_path} — read it with read_file if anything is missing.]'
-    ) if stored_path else ""
-    if user_task:
-        extraction_prompt = (
-            f"You are a content extractor for a browser automation agent.\n\n"
-            f"The user's task is: {user_task}\n\n"
-            f"Given the following page snapshot (accessibility tree representation), "
-            f"extract and summarize the most relevant information for completing this task. Focus on:\n"
-            f"1. Interactive elements (buttons, links, inputs) that might be needed\n"
-            f"2. Text content relevant to the task (prices, descriptions, headings, important info)\n"
-            f"3. Navigation structure if relevant\n\n"
-            f"Keep ref IDs (like [ref=e5]) for interactive elements so the agent can use them.\n\n"
-            f"Page Snapshot:\n{snapshot_text}\n\n"
-            f"Provide a concise summary that preserves actionable information and relevant content."
-        )
-    else:
-        extraction_prompt = (
-            f"Summarize this page snapshot, preserving:\n"
-            f"1. All interactive elements with their ref IDs (like [ref=e5])\n"
-            f"2. Key text content and headings\n"
-            f"3. Important information visible on the page\n\n"
-            f"Page Snapshot:\n{snapshot_text}\n\n"
-            f"Provide a concise summary focused on interactive elements and key content."
-        )
-
-    # Redact secrets from snapshot before sending to auxiliary LLM.
-    # Without this, a page displaying env vars or API keys would leak
-    # secrets to the extraction model before run_agent.py's general
-    # redaction layer ever sees the tool result.
-    from agent.redact import redact_sensitive_text
-    extraction_prompt = redact_sensitive_text(extraction_prompt)
-
-    try:
-        call_kwargs = {
-            "task": "web_extract",
-            "messages": [{"role": "user", "content": extraction_prompt}],
-            "max_tokens": 4000,
-            "temperature": 0.1,
-        }
-        model = _get_extraction_model()
-        if model:
-            call_kwargs["model"] = model
-        response = _lazy_call_llm(**call_kwargs)
-        extracted = (response.choices[0].message.content or "").strip()
-        if not extracted:
-            # _truncate_snapshot stores its own pointer (dedupes to the same
-            # cache file by content hash), so return it without stored_note.
-            return _truncate_snapshot(snapshot_text)
-        # Redact any secrets the auxiliary LLM may have echoed back.
-        return redact_sensitive_text(extracted) + stored_note
-    except Exception:
-        return _truncate_snapshot(snapshot_text)
-
-
-def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_THRESHOLD) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
@@ -3224,11 +3213,15 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_T
 
     Args:
         snapshot_text: The snapshot text to truncate
-        max_chars: Maximum characters to keep
+        max_chars: Maximum characters to keep. Defaults to the configured
+            ``browser.snapshot_threshold`` (see
+            :func:`get_browser_snapshot_threshold`).
 
     Returns:
         Truncated text with a stored-full-text pointer if truncated
     """
+    if max_chars is None:
+        max_chars = get_browser_snapshot_threshold()
     if len(snapshot_text) <= max_chars:
         return snapshot_text
 
@@ -3523,8 +3516,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
-                if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-                    snapshot_text = _truncate_snapshot(snapshot_text)
+                threshold = get_browser_snapshot_threshold()
+                if len(snapshot_text) > threshold:
+                    snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
                 response["snapshot"] = _redact_browser_output(snapshot_text)
                 response["element_count"] = len(refs) if refs else 0
                 if snap_result.get("fallback_warning") and not response.get("fallback_warning"):
@@ -3551,14 +3545,15 @@ def browser_snapshot(
     Args:
         full: If True, return complete snapshot. If False, return compact view.
         task_id: Task identifier for session isolation
-        user_task: The user's current task (for task-aware extraction)
+        user_task: Deprecated — accepted for call-site compatibility, unused.
+            Oversized snapshots always truncate-and-store (no LLM pass).
 
     Returns:
         JSON string with page snapshot
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
-        return camofox_snapshot(full, task_id, user_task)
+        return camofox_snapshot(full, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3605,11 +3600,14 @@ def browser_snapshot(
             except Exception as _url_exc:
                 logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
 
-        # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
-            snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            snapshot_text = _truncate_snapshot(snapshot_text)
+        # Oversized snapshots truncate at line boundaries; the full
+        # accessibility tree is stored to cache/web and the appended note
+        # tells the agent how to page through it with read_file (same
+        # pattern as web_extract — no LLM summarization). Threshold is
+        # configurable via browser.snapshot_threshold.
+        threshold = get_browser_snapshot_threshold()
+        if len(snapshot_text) > threshold:
+            snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
 
         response = {
             "success": True,
@@ -5072,6 +5070,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
@@ -5081,6 +5080,8 @@ def cleanup_all_browsers() -> None:
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
     _command_timeout_resolved = False
     _cached_command_timeout = None
+    _snapshot_threshold_resolved = False
+    _cached_snapshot_threshold = None
     _cached_chromium_installed = None
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False

@@ -1000,7 +1000,9 @@ class TestInterimAssistantMessageConfig:
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
-    def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
+    def test_migrate_to_v15_supplies_interim_message_gate_at_read_time(
+        self, tmp_path, capsys
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump({"_config_version": 14, "display": {"tool_progress": "off"}}),
@@ -1008,7 +1010,7 @@ class TestInterimAssistantMessageConfig:
         )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
+            results = migrate_config(interactive=False, quiet=False)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             loaded = load_config()
 
@@ -1021,6 +1023,11 @@ class TestInterimAssistantMessageConfig:
         # was the config-bloat bug). It is still effective via load_config().
         assert "interim_assistant_messages" not in raw.get("display", {})
         assert loaded["display"]["interim_assistant_messages"] is True
+        assert not any(
+            "interim_assistant_messages" in item
+            for item in results["config_added"]
+        )
+        assert "Added display.interim_assistant_messages" not in capsys.readouterr().out
 
 
 class TestCliRefreshIntervalConfig:
@@ -1086,7 +1093,7 @@ class TestDiscordChannelPromptsConfig:
 class TestEnvWriteDenylist:
     """``save_env_value`` refuses to persist env-var names that
     influence how subprocesses execute — ``LD_PRELOAD``, ``PYTHONPATH``,
-    ``PATH``, ``EDITOR``, etc. — or any ``HERMES_*`` runtime flag.
+    ``PATH``, ``EDITOR``, etc. — or selected Hermes runtime/security controls.
 
     The dashboard exposes ``PUT /api/env`` to any authed caller (and
     the session token lives in the SPA's HTML where any future plugin
@@ -1116,14 +1123,96 @@ class TestEnvWriteDenylist:
         ],
     )
     def test_hermes_integration_keys_still_writable(self, allowed_key):
-        """``HERMES_*`` overall is NOT blocked — only the four runtime
-        location names (HOME/PROFILE/CONFIG/ENV) are. Integration
-        credentials following the ``HERMES_*`` convention must keep
-        working or we'd regress every provider setup wizard that
-        currently writes one of these (auth.py, Spotify, Langfuse, …)."""
+        """``HERMES_*`` overall is NOT blocked.
+
+        Integration credentials following that convention must keep working
+        or we'd regress provider setup flows (auth.py, Spotify, Langfuse, …).
+        """
         save_env_value(allowed_key, "test-value-123")
         env = load_env()
         assert env[allowed_key] == "test-value-123"
+
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            "HERMES_CONFIG_PATH",
+            "HERMES_ENV_PATH",
+            "HERMES_OPTIONAL_MCPS",
+            "HERMES_COPILOT_ACP_COMMAND",
+            "HERMES_COPILOT_ACP_ARGS",
+            "HERMES_YOLO_MODE",
+            "HERMES_ACCEPT_HOOKS",
+            "HERMES_REDACT_SECRETS",
+            "HERMES_INTERACTIVE",
+            "HERMES_EXEC_ASK",
+            "HERMES_GATEWAY_SESSION",
+            "HERMES_CRON_SESSION",
+            "HERMES_SINGLE_QUERY_SESSION",
+            "HERMES_SESSION_KEY",
+            "HERMES_SESSION_PLATFORM",
+        ],
+    )
+    def test_hermes_security_control_keys_are_not_writable(self, protected_key):
+        """Generic writers must not persist runtime or approval controls."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
+
+        assert protected_key not in load_env()
+
+    def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
+        """The writer gate must not migrate or ignore operator-owned .env state."""
+        from hermes_cli.config import invalidate_env_cache
+
+        catalog = tmp_path / "custom-mcp-catalog"
+        (tmp_path / ".env").write_text(
+            f"HERMES_OPTIONAL_MCPS={catalog}\n",
+            encoding="utf-8",
+        )
+        invalidate_env_cache()
+
+        assert load_env()["HERMES_OPTIONAL_MCPS"] == str(catalog)
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            ("Path", "PATH"),
+            ("Hermes_Yolo_Mode", "HERMES_YOLO_MODE"),
+            ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
+            ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
+            ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),
+        ],
+    )
+    def test_windows_policy_names_are_case_insensitive(self, key, expected):
+        from hermes_cli.config import _env_var_policy_name
+
+        assert _env_var_policy_name(key, is_windows=True) == expected
+
+    def test_posix_policy_names_remain_case_sensitive(self):
+        from hermes_cli.config import _env_var_policy_name
+
+        assert _env_var_policy_name("Path", is_windows=False) == "Path"
+
+    @pytest.mark.parametrize("prefix", ["", "export "])
+    def test_windows_env_assignment_matching_is_case_insensitive(self, prefix):
+        from hermes_cli.config import _env_line_defines_key
+
+        line = f"{prefix}Path=C:\\Windows\\System32\n"
+        assert _env_line_defines_key(line, "PATH", is_windows=True)
+        assert not _env_line_defines_key(line, "PATH", is_windows=False)
+
+    @pytest.mark.windows_only
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            "Hermes_Yolo_Mode",
+            "Hermes_Optional_Mcps",
+            "Hermes_Copilot_Acp_Command",
+            "Hermes_Copilot_Acp_Args",
+        ],
+    )
+    def test_windows_writer_rejects_mixed_case_protected_name(self, protected_key):
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
 
 
 

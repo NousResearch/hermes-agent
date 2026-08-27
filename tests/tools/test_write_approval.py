@@ -33,7 +33,7 @@ def _set_approval(subsystem, enabled):
 
 
 def _set_approval_dict(subsystem, value):
-    """Set the write_approval value as a dict (config v39+ shape)."""
+    """Set the write_approval value as a dict (config v40+ shape)."""
     import hermes_cli.config as cfg
     c = cfg.load_config()
     c.setdefault(subsystem, {})["write_approval"] = value
@@ -69,7 +69,7 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("off") is False
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
-    # Dict (config v39+ shape) → reads the 'enabled' sub-key.
+    # Dict (config v40+ shape) → reads the 'enabled' sub-key.
     assert wa._normalize_enabled({"enabled": True, "only": [], "exclude": []}) is True
     assert wa._normalize_enabled({"enabled": False}) is False
     assert wa._normalize_enabled({}) is False
@@ -88,7 +88,7 @@ def test_should_gate_skill_gate_off(hermes_home):
 
 
 def test_should_gate_skill_gate_on_no_lists(hermes_home):
-    """Gate on, no only/exclude → gate everything (pre-v39 behaviour)."""
+    """Gate on, no only/exclude → gate everything (pre-v40 behaviour)."""
     from tools import write_approval as wa
     _set_approval_dict("skills", {"enabled": True, "only": [], "exclude": []})
     assert wa.should_gate_skill("any-skill") is True

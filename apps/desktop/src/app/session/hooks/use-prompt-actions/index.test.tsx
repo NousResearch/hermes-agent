@@ -3309,6 +3309,56 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
+  it('publishes the recovered runtime binding before retrying through the remote owner router', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let bindingPublished = false
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new JsonRpcGatewayError('session not found', { code: 4001 })
+        }
+
+        if (!bindingPublished) {
+          throw new JsonRpcGatewayError('session not found on ambient gateway', { code: 4001 })
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={(runtimeId, storedId) => {
+          if (runtimeId === RECOVERED_SESSION_ID && storedId === STORED_SESSION_ID) {
+            bindingPublished = true
+          }
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('remote follow-up after reap')).toBe(true)
+    expect(bindingPublished).toBe(true)
+    expect(calls.map(call => call.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'remote follow-up after reap' })
+  })
+
   it('resumes the stored session and retries once when reloadFromMessage (regenerate) reports "session not found"', async () => {
     // reloadFromMessage builds its own prompt.submit call inline instead of
     // going through the shared send() path submitText/redirectPrompt use, so

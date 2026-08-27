@@ -4,6 +4,7 @@ import json
 
 from agent.tool_result_classification import (
     file_mutation_result_landed,
+    is_skill_view_dedup_result,
 )
 
 
@@ -29,3 +30,20 @@ def test_side_effect_classification_keeps_session_mutations():
     assert tool_may_have_side_effect("mcp_unknown") is True
     assert tool_may_have_side_effect("read_file") is False
     assert tool_may_have_side_effect("web_search") is False
+
+
+def test_skill_view_dedup_result_requires_complete_typed_shape():
+    payload = {
+        "success": False,
+        "status": "deduplicated",
+        "dedup": True,
+        "content_returned": False,
+        "error": "already loaded",
+    }
+
+    assert is_skill_view_dedup_result("skill_view", payload) is True
+    assert is_skill_view_dedup_result("skill_view", json.dumps(payload)) is True
+    assert is_skill_view_dedup_result("read_file", payload) is False
+    assert is_skill_view_dedup_result(
+        "skill_view", {**payload, "status": "unchanged"}
+    ) is False

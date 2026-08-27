@@ -19,7 +19,8 @@ from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal,
+    is_skill_view_dedup_result)
 
 logger = logging.getLogger(__name__)
 
@@ -1029,6 +1030,12 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
     if isinstance(data, dict) and data.get("user_summary"):
         return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+    # skill_view repeats use ``success: false`` with ``status: "deduplicated"`` as a model-facing
+    # stop signal — not a failed execution. Keep that benign control result out of the
+    # operational failure classifier chain.
+    if is_skill_view_dedup_result(tool_name, result):
+        return False, ""
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":

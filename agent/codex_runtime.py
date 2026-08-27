@@ -1094,8 +1094,8 @@ def _consume_codex_event_stream(
     * ``on_commentary_message(str)`` — fires once per completed
       ``phase=commentary`` message, before any following tool item executes.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
-    * ``on_event(event)`` — fires for every event before any other processing.
-      Used for watchdog activity, debug logging, anything wire-shape-agnostic.
+    * ``on_event(event)`` — fires for every parsed Responses/provider-status
+      event before processing. Raw bytes and SSE comments are not activity.
     * ``interrupt_check()`` — returns True to break the loop early.
     """
     collected_output_items: List[Any] = []
@@ -1136,7 +1136,20 @@ def _consume_codex_event_stream(
     next_output_sequence = 0
 
     for event in event_iter:
-        if on_event is not None:
+        event_type = _event_field(event, "type", "")
+        if not isinstance(event_type, str):
+            event_type = ""
+
+        # The watchdog measures parsed protocol activity, not socket reads.
+        # Responses events cover reasoning/content/tools/usage/lifecycle status;
+        # ``codex.*`` covers provider status such as rate-limit updates. Raw
+        # bytes and comment-only SSE keepalives intentionally do not satisfy
+        # TTFB or refresh event-idle.
+        if on_event is not None and (
+            event_type.startswith("response.")
+            or event_type.startswith("codex.")
+            or event_type == "error"
+        ):
             try:
                 on_event(event)
             except (TimeoutError, InterruptedError):
@@ -1149,10 +1162,6 @@ def _consume_codex_event_stream(
                 logger.debug("Codex stream on_event hook raised", exc_info=True)
         if interrupt_check is not None and interrupt_check():
             break
-
-        event_type = _event_field(event, "type", "")
-        if not isinstance(event_type, str):
-            event_type = ""
 
         # ``error`` SSE frames carry the provider's real failure reason
         # (subscription / quota / model-not-available / rejected-reasoning-replay)
@@ -1613,7 +1622,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._fire_streamed_codex_commentary(text)
 
     def _on_event(event: Any) -> None:
-        # TTFB watchdog and activity touch — runs once per SSE event.
+        # TTFB watchdog and activity touch — one authoritative parsed-event clock.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
 

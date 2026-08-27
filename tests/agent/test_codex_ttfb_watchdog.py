@@ -340,9 +340,10 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         elapsed = time.time() - t0
         # Must die at the hard ceiling (3s), nowhere near the raised stale floor.
         assert elapsed < 30, f"hard ceiling took {elapsed:.1f}s — stall not reclaimed"
-        assert "stale_call_kill" in closes, f"stale kill expected, got {closes}"
-        assert "timed out after" in str(excinfo.value)
-        assert "with no response" in str(excinfo.value)
+        assert "codex_hard_timeout_kill" in closes, (
+            f"hard-ceiling kill expected, got {closes}"
+        )
+        assert "hard ceiling" in str(excinfo.value)
     finally:
         stop["flag"] = True
 

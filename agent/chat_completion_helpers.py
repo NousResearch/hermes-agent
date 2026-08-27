@@ -1507,28 +1507,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
 
-    # ── Codex absolute hard ceiling (#64507) ──────────────────────────
-    # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
-    # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
-    # The scaled no-byte TTFB watchdog catches dead streams that never emit a
-    # first byte, but a request that emits SOME bytes and then wedges (the
-    # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
-    # is only reclaimed at the (high) stale floor. Add a flat, finite hard
-    # ceiling on total request time that ALWAYS applies to openai-codex
-    # requests regardless of the TTFB/stale interaction, so a stalled request
-    # is recovered (retry loop / visible failure) instead of hanging
-    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
-    # it never clamps an intentionally-raised timeout for healthy large
-    # requests — it is a backstop against unbounded growth, not a tighter
-    # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
-    # disable the ceiling entirely; that restores the pre-fix behavior).
+    # ── Codex Responses absolute hard ceiling (#64507) ────────────────
+    # This is provider-neutral and independent of the generic non-stream stale
+    # timeout: TTFB owns the pre-event phase, parsed-event idle owns the active
+    # stream phase, and this ceiling is the final absolute-from-start bound.
+    # The default remains above the maximum openai-codex stale floor (1200s).
+    # Set to 0 to preserve the existing operator override that disables it.
     _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
-    if (
-        _codex_watchdog_enabled
-        and _openai_codex_backend
-        and _codex_hard_timeout > 0
-    ):
-        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
+    _codex_hard_enabled = _codex_watchdog_enabled and _codex_hard_timeout > 0
 
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
@@ -1595,7 +1581,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Reset before the worker starts so a marker left over from a previous
         # call on this agent can't be misread as first-byte for this one.
         agent._codex_stream_last_event_ts = None
-        agent._codex_stream_last_progress_ts = None
 
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
@@ -1738,9 +1723,43 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             break
 
+        # Absolute hard ceiling: unlike TTFB and event-idle this is deliberately
+        # measured from request start and applies even while parsed events flow.
+        # It is provider-neutral for every codex_responses request.
+        if _codex_hard_enabled and _elapsed > _codex_hard_timeout:
+            logger.warning(
+                "Codex Responses request exceeded absolute hard ceiling "
+                "(%.0fs > %.0fs, model=%s). Killing connection.",
+                _elapsed,
+                _codex_hard_timeout,
+                api_kwargs.get("model", "unknown"),
+            )
+            agent._buffer_status(
+                f"⚠️ Codex Responses request exceeded its {int(_codex_hard_timeout)}s "
+                f"absolute hard ceiling (model: {api_kwargs.get('model', 'unknown')}). "
+                f"Reconnecting."
+            )
+            try:
+                _close_request_client_once("codex_hard_timeout_kill")
+            except Exception:
+                pass
+            agent._touch_activity(
+                f"codex stream killed at {int(_elapsed)}s absolute hard ceiling"
+            )
+            t.join(timeout=2.0)
+            if result["error"] is None and result["response"] is None:
+                result["error"] = TimeoutError(
+                    f"Codex Responses request exceeded the absolute hard ceiling "
+                    f"of {int(_codex_hard_timeout)}s"
+                )
+            break
+
         # Stale-call detector: kill the connection if no response
-        # arrives within the configured timeout.
-        if _elapsed > _stale_timeout:
+        # arrives within the configured timeout. Codex Responses has the
+        # phase-aware TTFB → parsed-event idle → hard-ceiling hierarchy above;
+        # applying this generic absolute-from-start detector as well would kill
+        # a healthy active stream merely because total generation is long.
+        if not _codex_watchdog_enabled and _elapsed > _stale_timeout:
             _silent_hint: Optional[str] = None
             _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
             if callable(_hint_fn):

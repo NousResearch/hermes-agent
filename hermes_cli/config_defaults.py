@@ -104,10 +104,13 @@ DEFAULT_CONFIG = {
         "evidence_labels": False,
         # Emit a standalone council-report.html alongside the verdict.
         "html_report": False,
-        # Deliberation protocol. Only "deliberate" (and the vote/synthesize
-        # subsets) are implemented; others raise NotImplementedError.
+        # Deliberation protocol:
+        #   deliberate — cross-exam + ranking + optional cascade + chairman
+        #   vote       — ranking + deterministic majority verdict
+        #   synthesize — chairman synthesis without peer ranking
         "protocol": "deliberate",
-        # Convergence-based early stopping for future multi-round debate.
+        # For deliberate + cross-examination, skip ranking when Phase 1 and
+        # revised confidence distributions converge.
         "adaptive_stopping": False,
     },
 

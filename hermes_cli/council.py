@@ -151,11 +151,9 @@ class CouncilConfig:
     html_report: bool = False
     """Emit a standalone council-report.html alongside the verdict."""
     protocol: str = "deliberate"
-    """Deliberation protocol. Only "deliberate" (and the vote/synthesize
-    subsets) are wired; other protocols raise NotImplementedError."""
+    """Protocol: deliberate, deterministic vote, or chairman-only synthesize."""
     adaptive_stopping: bool = False
-    """Convergence-based early stopping for future multi-round debate
-    protocols. Not used by the 3-phase deliberate flow."""
+    """Skip ranking when initial and cross-exam confidence distributions converge."""
 
     @classmethod
     def from_config(cls, cfg: dict) -> "CouncilConfig":
@@ -272,6 +270,8 @@ class CouncilCritique:
     simpler_alternatives: str   # could this be done simpler?
     overall: str                # overall assessment paragraph
     raw_response: str           # the raw model response for audit
+    confidence: float = 0.5     # calibrated self-confidence, 0.0-1.0
+    member_index: int = 0       # original panel index before parallel completion
 
     def to_markdown(self) -> str:
         return f"""### {self.member_label} — **{self.verdict}**
@@ -282,6 +282,7 @@ class CouncilCritique:
 - **Scope creep:** {self.scope_creep}
 - **Missing/weak AC:** {self.missing_ac}
 - **Simpler alternatives:** {self.simpler_alternatives}
+- **Confidence:** {self.confidence:.2f}
 
 **Overall:** {self.overall}
 """
@@ -443,7 +444,8 @@ Return ONLY valid JSON with these exact keys:
   "scope_creep": "Any out-of-scope bloat or unnecessary complexity detected",
   "missing_ac": "Missing or weak acceptance criteria that would let bugs through",
   "simpler_alternatives": "Could this be done simpler? If yes, how. If no, say so.",
-  "overall": "One-paragraph overall assessment"
+  "overall": "One-paragraph overall assessment",
+  "confidence": 0.0-1.0
 }
 
 Rules:
@@ -513,6 +515,9 @@ _COMPOSE_SYSTEM = "You are an expert at designing diverse debate panels."
 
 _COMPOSE_PROMPT = """Design {n} expert reviewing advisors for a technical architecture council.
 
+The panel must be tailored to the specific PRD and tech spec below:
+{documents}
+
 CRITICAL DIRECTIVE: Prioritize diversity of INITIAL POSITION over diversity of
 expertise. A group with distinct approaches to a problem outperforms a group
 with more expertise but shared framing.
@@ -563,21 +568,20 @@ dynamics."""
 
 _CASCADE_BREAKER_PROMPT = """You are re-deriving a verdict on a PRD and tech spec.
 
-Available critiques from the panel (for reference only — do NOT build on their
-reasoning):
-{critiques}
+First-party decision documents:
+{documents}
 
-Re-derive your own independent verdict from first principles. Do not defer to
-the majority. Look for:
-1. Plausible-but-wrong shortcuts that the panel might be cascading on
+Re-derive your own independent verdict from first principles. You have not
+been shown the panel's critiques. Look for:
+1. Plausible-but-wrong shortcuts
 2. Claims that sound reasonable but lack empirical grounding
-3. Areas where the panel's consensus could be a socially propagated shortcut
+3. Assumptions that could become socially propagated shortcuts
 
 Return ONLY valid JSON:
 {{
   "independent_verdict": "APPROVED" or "REVISE",
+  "first_principles_reasoning": ["point 1", "..."],
   "shortcut_cascade_risk": "any cascade risk identified or 'none'",
-  "disagreements_with_panel": ["point 1", "..."],
   "confidence": 0.0-1.0
 }}"""
 
@@ -611,6 +615,10 @@ _EVIDENCE_LABEL_DIRECTIVE = (
 # ---------------------------------------------------------------------------
 # LLM calling
 # ---------------------------------------------------------------------------
+
+class CouncilTokenCapExceeded(RuntimeError):
+    """A completed provider call would exceed the configured council cap."""
+
 
 def _call_llm_with_fallback(
     member: CouncilMember,
@@ -678,11 +686,18 @@ def _call_llm_with_fallback(
             content = response.choices[0].message.content or ""
             usage = response.usage
             tokens_used = usage.total_tokens if usage else 0
+            if token_cap and current_total_tokens + tokens_used > token_cap:
+                raise CouncilTokenCapExceeded(
+                    f"Council token cap ({token_cap:,}) exceeded: "
+                    f"{current_total_tokens:,} + {tokens_used:,}"
+                )
             # Mark this model as in-use for dedup
             active.add(model_name)
             if active_models is not None:
                 active_models.add(model_name)
             return content, tokens_used
+        except CouncilTokenCapExceeded:
+            raise
         except Exception as exc:
             last_error = str(exc)
             err_lower = last_error.lower()
@@ -714,14 +729,43 @@ def _call_llm_with_fallback(
 
 
 def _parse_json_response(raw: str, label: str) -> dict:
-    """Parse JSON from an LLM response, handling markdown code fences.
-
-    Delegates to the shared ``hermes_cli.llm_json.parse_llm_json``
-    (JSON-1 consolidation).  Raises ValueError on failure; the council
-    callers catch it and record an ERROR critique.
-    """
+    """Parse a JSON object from an LLM response."""
     from hermes_cli.llm_json import parse_llm_json
     return parse_llm_json(raw, label=label, raise_on_failure=True)
+
+
+def _parse_json_value(raw: str, label: str) -> Any:
+    """Parse a top-level JSON object or array from model output."""
+    text = (raw or "").strip()
+    if "```" in text:
+        for part in text.split("```"):
+            candidate = part.strip()
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].lstrip()
+            if candidate.startswith(("{", "[")):
+                text = candidate
+                break
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char not in "[{":
+                continue
+            try:
+                value, _end = decoder.raw_decode(text[index:])
+                return value
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"{label}: could not parse JSON from response: {raw[:500]}")
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return min(max(confidence, 0.0), 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +807,8 @@ def _run_phase_1(
     token_cap: Optional[int],
     fallback_pool: Optional[List[Dict[str, str]]] = None,
     *,
-    total_timeout: int = 600,
+    total_timeout: float = 600,
+    current_tokens: int = 0,
     evidence_labels: bool = False,
     personas: Optional[List[dict]] = None,
 ) -> Tuple[List[CouncilCritique], int, set]:
@@ -809,8 +854,8 @@ def _run_phase_1(
             system = system + "\n\n" + _EVIDENCE_LABEL_DIRECTIVE
         return system
 
-    critiques: List[CouncilCritique] = []
-    total_tokens = 0
+    critique_results: Dict[int, CouncilCritique] = {}
+    total_tokens = current_tokens
     active_models: set = set()
 
     with ThreadPoolExecutor(max_workers=len(panel)) as executor:
@@ -826,10 +871,10 @@ def _run_phase_1(
                 member, messages, member_timeout, token_cap, total_tokens,
                 active_models, fallback_pool,
             )
-            future_to_member[future] = (member, label)
+            future_to_member[future] = (i, member, label)
 
         for future in as_completed(future_to_member, timeout=total_timeout):
-            member, label = future_to_member[future]
+            member_index, member, label = future_to_member[future]
             try:
                 raw, tokens = future.result()
                 total_tokens += tokens
@@ -840,7 +885,7 @@ def _run_phase_1(
                     )
 
                 parsed = _parse_json_response(raw, label)
-                critiques.append(CouncilCritique(
+                critique_results[member_index] = CouncilCritique(
                     member_label=label,
                     verdict=parsed.get("verdict", "REVISE"),
                     completeness=parsed.get("completeness", ""),
@@ -851,15 +896,18 @@ def _run_phase_1(
                     simpler_alternatives=parsed.get("simpler_alternatives", ""),
                     overall=parsed.get("overall", ""),
                     raw_response=raw,
-                ))
+                    confidence=_coerce_confidence(parsed.get("confidence", 0.5)),
+                    member_index=member_index,
+                )
                 logger.info("Council %s (%s/%s): %s (tokens: %d)",
                             label, member.provider, member.model,
                             parsed.get("verdict"), tokens)
+            except CouncilTokenCapExceeded:
+                raise
             except Exception as exc:
-                # One member failing doesn't kill the council — record as error critique
                 error_msg = str(exc)[:500]
                 logger.error("Council %s failed: %s", label, error_msg)
-                critiques.append(CouncilCritique(
+                critique_results[member_index] = CouncilCritique(
                     member_label=label,
                     verdict="ERROR",
                     completeness="",
@@ -870,9 +918,11 @@ def _run_phase_1(
                     simpler_alternatives="",
                     overall=f"ERROR: This reviewer could not complete their review: {error_msg}",
                     raw_response=error_msg,
-                ))
+                    member_index=member_index,
+                )
 
-    return critiques, total_tokens, active_models
+    critiques = [critique_results[index] for index in sorted(critique_results)]
+    return critiques, total_tokens - current_tokens, active_models
 
 
 def _run_phase_2(
@@ -884,7 +934,7 @@ def _run_phase_2(
     active_models: Optional[set] = None,
     fallback_pool: Optional[List[Dict[str, str]]] = None,
     *,
-    total_timeout: int = 600,
+    total_timeout: float = 600,
 ) -> Tuple[str, int]:
     """Phase 2: Cross-ranking (anonymised).
 
@@ -898,11 +948,13 @@ def _run_phase_2(
         label = f"Reviewer {chr(65 + i)}"  # A, B, C...
         anonymised += f"\n### {label}\n\n**Verdict:** {c.verdict}\n\n{c.overall}\n\n---\n"
 
-    user_prompt = f"""Below are {len(critiques)} independent reviews of a PRD and tech spec.
-Review each one and rank them.
-
-{anonymised}
-"""
+    user_prompt = (
+        _DATA_PREAMBLE
+        + f"Below are {len(critiques)} independent reviews of a PRD and tech spec.\n"
+        + "Review each one and rank them.\n\n"
+        + _wrap_as_data("Anonymised Phase 1 Reviews", anonymised)
+        + "\n"
+    )
 
     messages = [
         {"role": "system", "content": _PHASE_2_SYSTEM},
@@ -935,6 +987,8 @@ Review each one and rank them.
                     raise RuntimeError(f"Council token cap ({token_cap:,}) exceeded during Phase 2")
                 all_rankings_text.append(f"\n### {anon} rankings:\n\n```json\n{raw[:2000]}\n```")
                 logger.info("Council Phase 2 — %s done (tokens: %d)", anon, tokens)
+            except CouncilTokenCapExceeded:
+                raise
             except Exception as exc:
                 logger.error("Council Phase 2 — %s failed: %s", anon, exc)
                 all_rankings_text.append(f"\n### {anon} rankings:\n\nERROR: {exc}")
@@ -1044,19 +1098,22 @@ def _run_phase_3(
         + "\n\n"
         + _wrap_as_data("Tech Spec", spec_content)
         + "\n\n---\n\n## Phase 1 — Independent Reviews\n\n"
-        + critiques_text
-        + tally_block
+        + _wrap_as_data("Phase 1 Reviews", critiques_text + tally_block)
         + "\n\n---\n\n## Phase 2 — Cross-Ranking\n\n"
-        + rankings_snapshot
-        + consensus_block
+        + _wrap_as_data(
+            "Phase 2 Rankings",
+            rankings_snapshot + consensus_block,
+        )
         + "\n"
     )
 
-    # Additive: cascade-breaker output (skeptic's independent re-derivation).
     if cascade_breaker_output:
         user_prompt += (
             "\n\n---\n\n## Cascade-Breaker (Independent Re-derivation)\n\n"
-            + json.dumps(cascade_breaker_output, indent=2)
+            + _wrap_as_data(
+                "Cascade Breaker",
+                json.dumps(cascade_breaker_output, indent=2),
+            )
             + "\n"
         )
 
@@ -1074,6 +1131,8 @@ def _run_phase_3(
         logger.info("Council chairman verdict: %s (tokens: %d)",
                     parsed.get("verdict"), tokens)
         return parsed, tokens
+    except CouncilTokenCapExceeded:
+        raise
     except Exception as exc:
         # Chairman failure → auto-REVISE with error
         logger.error("Council chairman failed: %s", exc)
@@ -1112,7 +1171,13 @@ def _run_phase_0(
     Returns (personas_or_None, tokens_used).  None when composition fails —
     the caller then falls back to generic personas / default reviewers.
     """
-    prompt = _COMPOSE_PROMPT.format(n=n)
+    documents = (
+        _DATA_PREAMBLE
+        + _wrap_as_data("PRD", prd_content)
+        + "\n\n"
+        + _wrap_as_data("Tech Spec", spec_content)
+    )
+    prompt = _COMPOSE_PROMPT.format(n=n, documents=documents)
     messages = [
         {"role": "system", "content": _COMPOSE_SYSTEM},
         {"role": "user", "content": prompt},
@@ -1122,7 +1187,7 @@ def _run_phase_0(
             chairman, messages, member_timeout, token_cap, current_tokens,
             active_models, fallback_pool,
         )
-        parsed = _parse_json_response(raw, "Compose")
+        parsed = _parse_json_value(raw, "Compose")
         personas = parsed if isinstance(parsed, list) else parsed.get("advisors", [])
         if not isinstance(personas, list) or len(personas) < 2:
             logger.warning(
@@ -1133,6 +1198,8 @@ def _run_phase_0(
         logger.info("Council Compose: assembled %d advisor personas (tokens: %d)",
                     len(personas), tokens)
         return personas[:n], tokens
+    except CouncilTokenCapExceeded:
+        raise
     except Exception as exc:
         logger.error("Council Compose failed: %s — falling back to generic personas", exc)
         return _generic_personas(n), 0
@@ -1167,7 +1234,7 @@ def _run_cross_examination(
     active_models: Optional[set] = None,
     fallback_pool: Optional[List[Dict[str, str]]] = None,
     *,
-    total_timeout: int = 600,
+    total_timeout: float = 600,
     personas: Optional[List[dict]] = None,
 ) -> Tuple[Optional[dict], int]:
     """Cross-examination: each member sees others' anonymised Phase 1
@@ -1190,7 +1257,9 @@ def _run_cross_examination(
             f"### {labels[j]}\n\n**Verdict:** {critiques[j].verdict}\n\n{critiques[j].overall}"
             for j in range(len(critiques)) if j != idx
         )
-        prompt = _CROSS_EXAM_PROMPT.format(critiques=anonymised)
+        prompt = _CROSS_EXAM_PROMPT.format(
+            critiques=_wrap_as_data("Anonymised Peer Critiques", anonymised)
+        )
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -1203,6 +1272,8 @@ def _run_cross_examination(
             parsed = _parse_json_response(raw, f"Cross-exam {labels[idx]}")
             parsed["member_label"] = labels[idx]
             return idx, parsed, tokens
+        except CouncilTokenCapExceeded:
+            raise
         except Exception as exc:
             logger.error("Council cross-examination %s failed: %s", labels[idx], exc)
             return idx, {"member_label": labels[idx], "error": str(exc)}, 0
@@ -1229,16 +1300,19 @@ def _run_cascade_breaker(
     current_tokens: int,
     active_models: Optional[set] = None,
     fallback_pool: Optional[List[Dict[str, str]]] = None,
+    *,
+    prd_content: str = "",
+    spec_content: str = "",
 ) -> Tuple[Optional[dict], int]:
-    """Cascade-breaker: chairman re-derives verdict from first principles,
-    ignoring prior agent signals.
-
-    Returns (cascade_breaker_dict_or_None, tokens_used).
-    """
-    critiques_text = "\n\n".join(
-        f"Reviewer {chr(65 + i)}: {c.overall}" for i, c in enumerate(critiques)
+    """Re-derive from first-party documents without panel signals."""
+    del critiques  # Retained in the signature for compatibility.
+    documents = (
+        _DATA_PREAMBLE
+        + _wrap_as_data("PRD", prd_content)
+        + "\n\n"
+        + _wrap_as_data("Tech Spec", spec_content)
     )
-    prompt = _CASCADE_BREAKER_PROMPT.format(critiques=critiques_text)
+    prompt = _CASCADE_BREAKER_PROMPT.format(documents=documents)
     messages = [
         {"role": "system", "content": _CASCADE_BREAKER_SYSTEM},
         {"role": "user", "content": prompt},
@@ -1252,6 +1326,8 @@ def _run_cascade_breaker(
         logger.info("Council cascade-breaker: %s (tokens: %d)",
                     parsed.get("independent_verdict"), tokens)
         return parsed, tokens
+    except CouncilTokenCapExceeded:
+        raise
     except Exception as exc:
         logger.error("Council cascade-breaker failed: %s", exc)
         return {"error": str(exc), "shortcut_cascade_risk": "unknown"}, 0
@@ -1266,36 +1342,27 @@ def _run_minority_report(
     active_models: Optional[set] = None,
     fallback_pool: Optional[List[Dict[str, str]]] = None,
 ) -> Tuple[Optional[dict], int]:
-    """Minority report: the lowest-confidence panel member writes a dissent.
-
-    The production critiques carry verdicts rather than numeric confidence,
-    so the "lowest-confidence" member is approximated as the one whose
-    verdict is the minority among non-ERROR critiques (ties → first).
-
-    Returns (minority_report_dict_or_None, tokens_used).
-    """
+    """Minority report: the lowest-confidence successful member writes dissent."""
     viable = [c for c in critiques if c.verdict != "ERROR"]
     if not viable:
         return None, 0
 
-    # Approximate lowest-confidence as the minority-position member.
-    approve = [c for c in viable if c.verdict.upper() == "APPROVED"]
-    revise = [c for c in viable if c.verdict.upper() == "REVISE"]
-    minority_group = approve if len(approve) <= len(revise) else revise
-    subject = minority_group[0] if minority_group else viable[0]
-
-    idx = critiques.index(subject)
-    member = panel[idx] if idx < len(panel) else panel[0]
-    confidence = 0.5  # production critiques carry no numeric confidence
+    subject = min(viable, key=lambda item: item.confidence)
+    member_index = subject.member_index
+    member = panel[member_index] if 0 <= member_index < len(panel) else panel[0]
+    confidence = subject.confidence
 
     prompt = _MINORITY_REPORT_PROMPT.format(
         confidence=confidence,
-        critique=json.dumps({
-            "verdict": subject.verdict,
-            "overall": subject.overall,
-            "risks": subject.risks,
-            "simpler_alternatives": subject.simpler_alternatives,
-        }, indent=2),
+        critique=_wrap_as_data(
+            "Original Minority Critique",
+            json.dumps({
+                "verdict": subject.verdict,
+                "overall": subject.overall,
+                "risks": subject.risks,
+                "simpler_alternatives": subject.simpler_alternatives,
+            }, indent=2),
+        ),
     )
     messages = [
         {"role": "system", "content": _MINORITY_REPORT_SYSTEM},
@@ -1312,6 +1379,8 @@ def _run_minority_report(
         logger.info("Council minority report from %s (tokens: %d)",
                     subject.member_label, tokens)
         return parsed, tokens
+    except CouncilTokenCapExceeded:
+        raise
     except Exception as exc:
         logger.error("Council minority report failed: %s", exc)
         return {"error": str(exc)}, 0
@@ -1326,7 +1395,7 @@ def _generate_html_report(artifact_dir: str) -> None:
     verdict_json_path = os.path.join(artifact_dir, "council-verdict.json")
     html_path = os.path.join(artifact_dir, "council-report.html")
     try:
-        with open(verdict_json_path) as f:
+        with open(verdict_json_path, encoding="utf-8") as f:
             verdict = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("Council HTML report: cannot read %s: %s", verdict_json_path, exc)
@@ -1334,7 +1403,7 @@ def _generate_html_report(artifact_dir: str) -> None:
 
     try:
         html = _render_html_report(verdict)
-        with open(html_path, "w") as f:
+        with open(html_path, "w", encoding="utf-8") as f:
             f.write(html)
         logger.info("Council HTML report written to %s", html_path)
     except Exception as exc:
@@ -1453,9 +1522,8 @@ def _should_stop_adaptive(
 ) -> bool:
     """True when two debate rounds' confidence distributions have converged.
 
-    Compares the KS statistic of confidence values across two rounds against
-    ``epsilon``.  Not used by the 3-phase deliberate flow — reserved for
-    future multi-round debate protocols gated by ``adaptive_stopping``.
+    Compares Phase 1 and cross-examination confidence values. The deliberate
+    path uses this to skip peer ranking when the distribution has stabilised.
     """
     def _confs(round_data: List[dict]) -> List[float]:
         out = []
@@ -1470,22 +1538,64 @@ def _should_stop_adaptive(
     return _ks_statistic(_confs(prev_round), _confs(curr_round)) < epsilon
 
 
-def _run_protocol(
-    protocol: str,
-) -> None:
-    """Dispatch to a protocol. Only "deliberate" (and its vote/synthesize
-    subsets) are implemented; the rest raise NotImplementedError.
-
-    This is an additive dispatch guard — ``deliberate()`` checks the protocol
-    and routes accordingly.  Kept separate so future protocols have a single
-    place to hook in.
-    """
-    supported = {"deliberate", "vote", "synthesize"}
-    if protocol not in supported:
+def _run_protocol(protocol: str) -> dict:
+    """Return the concrete execution plan for an implemented protocol."""
+    plans = {
+        "deliberate": {
+            "cross_examination": True,
+            "phase_2": True,
+            "cascade_breaker": True,
+            "chairman": True,
+            "aggregate": None,
+        },
+        "vote": {
+            "cross_examination": False,
+            "phase_2": True,
+            "cascade_breaker": False,
+            "chairman": False,
+            "aggregate": "vote",
+        },
+        "synthesize": {
+            "cross_examination": False,
+            "phase_2": False,
+            "cascade_breaker": False,
+            "chairman": True,
+            "aggregate": None,
+        },
+    }
+    if protocol not in plans:
         raise NotImplementedError(
             f"Council protocol '{protocol}' is not implemented. "
-            f"Supported protocols: {', '.join(sorted(supported))}."
+            f"Supported protocols: {', '.join(sorted(plans))}."
         )
+    return plans[protocol]
+
+
+def _aggregate_vote_verdict(critiques: List[CouncilCritique]) -> Dict[str, Any]:
+    """Close the vote protocol deterministically without a chairman call."""
+    tally = _tally_votes(critiques)
+    approved = tally["approved"] > tally["revise"]
+    issues: List[Dict[str, str]] = []
+    for item in critiques:
+        if item.verdict.upper() != "REVISE":
+            continue
+        description = item.overall or item.risks or item.missing_ac or "Reviewer requested revision."
+        issues.append({"severity": "high", "description": description})
+    if not approved and not issues:
+        issues.append({
+            "severity": "high",
+            "description": "Vote did not produce an approval majority.",
+        })
+    rationale = (
+        f"Deterministic vote: {tally['approved']} APPROVED, "
+        f"{tally['revise']} REVISE, {tally['error']} ERROR."
+    )
+    return {
+        "verdict": "APPROVED" if approved else "REVISE",
+        "rationale": rationale,
+        "issues": issues,
+        "dissents": [item.overall for item in critiques if item.verdict.upper() == "REVISE"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1517,9 +1627,7 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
     if not council_cfg.chairman.provider:
         raise RuntimeError("Council chairman not configured — check council.chairman in config.yaml")
 
-    # Protocol dispatch — only "deliberate" (and vote/synthesize subsets) are
-    # implemented.  Unsupported protocols raise NotImplementedError.
-    _run_protocol(council_cfg.protocol)
+    protocol_plan = _run_protocol(council_cfg.protocol)
 
     # Validate diversity; log warnings but don't block (informational gate)
     diversity_warnings = council_cfg.validate_diversity()
@@ -1531,6 +1639,20 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
     member_timeout = council_cfg.member_timeout_seconds
     total_timeout = council_cfg.timeout_seconds
 
+    def remaining_for(phase: str) -> float:
+        remaining = total_timeout - (time.monotonic() - start_time)
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Council timed out before {phase} ({total_timeout}s overall limit)"
+            )
+        return remaining
+
+    def enforce_token_cap(total: int, phase: str) -> None:
+        if token_cap and total > token_cap:
+            raise CouncilTokenCapExceeded(
+                f"Council token cap ({token_cap:,}) exceeded after {phase}: {total:,}"
+            )
+
     # Load artifacts
     prd_path = os.path.join(artifact_dir, "prd.md")
     spec_path = os.path.join(artifact_dir, "spec.md")
@@ -1540,30 +1662,21 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
     if not os.path.exists(spec_path):
         raise FileNotFoundError(f"Spec artifact not found: {spec_path}")
 
-    with open(prd_path) as f:
+    with open(prd_path, encoding="utf-8") as f:
         prd_content = f.read()
-    with open(spec_path) as f:
+    with open(spec_path, encoding="utf-8") as f:
         spec_content = f.read()
 
     logger.info("Council deliberation starting for %s — %d panellists + chairman %s/%s",
                 task_id, len(council_cfg.panel),
                 council_cfg.chairman.provider, council_cfg.chairman.model)
 
-    # Phase 1 — Independent review (parallel)
-    elapsed = time.monotonic() - start_time
-    remaining = total_timeout - elapsed
-    if remaining <= 0:
-        raise TimeoutError(f"Council timed out before Phase 1 could start ({total_timeout}s)")
-
     fallback_pool = council_cfg.fallback_pool or None
 
-    # Phase 0 — Compose (additive, gated by compose flag)
+    # Phase 0 — Compose (additive and available to each implemented protocol)
     personas: Optional[List[dict]] = None
     if council_cfg.compose:
-        elapsed = time.monotonic() - start_time
-        remaining = total_timeout - elapsed
-        if remaining <= 0:
-            raise TimeoutError(f"Council timed out before Phase 0 could start ({total_timeout}s)")
+        remaining = remaining_for("Phase 0")
         personas, phase0_tokens = _run_phase_0(
             council_cfg.chairman,
             prd_content, spec_content,
@@ -1575,21 +1688,25 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
             fallback_pool=fallback_pool,
         )
         tokens_used0 = phase0_tokens
+        enforce_token_cap(tokens_used0, "Phase 0")
         logger.info("Council Phase 0 complete: %d personas, %d tokens",
                     len(personas) if personas else 0, tokens_used0)
     else:
         tokens_used0 = 0
 
+    remaining = remaining_for("Phase 1")
     critiques, tokens_used, active_models = _run_phase_1(
         council_cfg.panel, prd_content, spec_content,
-        member_timeout=min(member_timeout, int(remaining)),
+        member_timeout=min(member_timeout, max(1, int(remaining))),
         token_cap=token_cap,
         fallback_pool=fallback_pool,
-        total_timeout=total_timeout,
+        total_timeout=remaining,
+        current_tokens=tokens_used0,
         evidence_labels=council_cfg.evidence_labels,
         personas=personas,
     )
     tokens_used += tokens_used0
+    enforce_token_cap(tokens_used, "Phase 1")
     logger.info("Council Phase 1 complete: %d critiques, %d tokens — active models: %s",
                 len(critiques), tokens_used, active_models)
 
@@ -1628,98 +1745,119 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
         os.makedirs(artifact_dir, exist_ok=True)
         verdict_md_path = os.path.join(artifact_dir, "council-verdict.md")
         verdict_json_path = os.path.join(artifact_dir, "council-verdict.json")
-        with open(verdict_md_path, "w") as f:
+        with open(verdict_md_path, "w", encoding="utf-8") as f:
             f.write(verdict.to_markdown(task_id))
-        with open(verdict_json_path, "w") as f:
+        with open(verdict_json_path, "w", encoding="utf-8") as f:
             json.dump(verdict.to_json(), f, indent=2)
         return verdict
 
-    # Cross-examination (additive, gated by cross_examination flag)
+    # Cross-examination is part of the deliberate protocol only.
     cross_exam: Optional[dict] = None
-    if council_cfg.cross_examination:
-        elapsed = time.monotonic() - start_time
-        remaining = total_timeout - elapsed
+    if protocol_plan["cross_examination"] and council_cfg.cross_examination:
+        remaining = remaining_for("cross-examination")
         cross_exam, cross_tokens = _run_cross_examination(
             council_cfg.panel, critiques,
-            member_timeout=min(member_timeout, int(max(remaining, 1))),
+            member_timeout=min(member_timeout, max(1, int(remaining))),
             token_cap=token_cap,
             current_tokens=tokens_used,
             active_models=active_models,
             fallback_pool=fallback_pool,
-            total_timeout=total_timeout,
+            total_timeout=remaining,
             personas=personas,
         )
         tokens_used += cross_tokens
+        enforce_token_cap(tokens_used, "cross-examination")
         logger.info("Council cross-examination complete: +%d tokens (total: %d)",
                     cross_tokens, tokens_used)
 
-    # Phase 2 — Cross-ranking (parallel on all members)
-    elapsed = time.monotonic() - start_time
-    remaining = total_timeout - elapsed
-    rankings_snapshot, phase2_tokens = _run_phase_2(
-        council_cfg.panel, critiques,
-        member_timeout=min(member_timeout, int(remaining)),
-        token_cap=token_cap,
-        current_tokens=tokens_used,
-        active_models=active_models,
-        fallback_pool=fallback_pool,
-    )
-    tokens_used += phase2_tokens
-    logger.info("Council Phase 2 complete: +%d tokens (total: %d)",
-                phase2_tokens, tokens_used)
+    rankings_snapshot = ""
+    adaptive_stopped = False
+    if (
+        council_cfg.adaptive_stopping
+        and protocol_plan["phase_2"]
+        and cross_exam
+        and cross_exam.get("round")
+    ):
+        initial_round = [{"confidence": item.confidence} for item in critiques]
+        revised_round = cross_exam.get("round", [])
+        if len(initial_round) == len(revised_round):
+            adaptive_stopped = _should_stop_adaptive(initial_round, revised_round)
+            if adaptive_stopped:
+                rankings_snapshot = (
+                    "Adaptive stopping: confidence distribution converged after "
+                    "cross-examination; peer ranking was skipped."
+                )
 
-    # Cascade-breaker (additive, gated by cascade_breaker flag)
-    cascade_breaker_output: Optional[dict] = None
-    if council_cfg.cascade_breaker:
-        elapsed = time.monotonic() - start_time
-        remaining = total_timeout - elapsed
-        cascade_breaker_output, cascade_tokens = _run_cascade_breaker(
-            council_cfg.chairman,
-            critiques,
-            member_timeout=min(member_timeout, int(max(remaining, 1))),
+    if protocol_plan["phase_2"] and not adaptive_stopped:
+        remaining = remaining_for("Phase 2")
+        rankings_snapshot, phase2_tokens = _run_phase_2(
+            council_cfg.panel, critiques,
+            member_timeout=min(member_timeout, max(1, int(remaining))),
             token_cap=token_cap,
             current_tokens=tokens_used,
             active_models=active_models,
             fallback_pool=fallback_pool,
+            total_timeout=remaining,
+        )
+        tokens_used += phase2_tokens
+        enforce_token_cap(tokens_used, "Phase 2")
+        logger.info("Council Phase 2 complete: +%d tokens (total: %d)",
+                    phase2_tokens, tokens_used)
+
+    cascade_breaker_output: Optional[dict] = None
+    if protocol_plan["cascade_breaker"] and council_cfg.cascade_breaker:
+        remaining = remaining_for("cascade-breaker")
+        cascade_breaker_output, cascade_tokens = _run_cascade_breaker(
+            council_cfg.chairman,
+            critiques,
+            member_timeout=min(member_timeout, max(1, int(remaining))),
+            token_cap=token_cap,
+            current_tokens=tokens_used,
+            active_models=active_models,
+            fallback_pool=fallback_pool,
+            prd_content=prd_content,
+            spec_content=spec_content,
         )
         tokens_used += cascade_tokens
+        enforce_token_cap(tokens_used, "cascade-breaker")
         logger.info("Council cascade-breaker complete: +%d tokens (total: %d)",
                     cascade_tokens, tokens_used)
 
-    # Phase 3 — Chairman synthesis
-    elapsed = time.monotonic() - start_time
-    remaining = total_timeout - elapsed
-    if remaining < 30:
-        logger.warning("Council: only %ds remaining for chairman — may be tight", int(remaining))
-    if remaining <= 0:
-        raise TimeoutError(f"Council timed out before Phase 3 ({total_timeout}s)")
+    if protocol_plan["chairman"]:
+        remaining = remaining_for("Phase 3")
+        if remaining < 30:
+            logger.warning(
+                "Council: only %ds remaining for chairman — may be tight",
+                int(remaining),
+            )
+        chairman_verdict, phase3_tokens = _run_phase_3(
+            council_cfg.chairman,
+            prd_content, spec_content, critiques, rankings_snapshot,
+            member_timeout=min(member_timeout, max(1, int(remaining))),
+            token_cap=token_cap,
+            current_tokens=tokens_used,
+            active_models=active_models,
+            fallback_pool=fallback_pool,
+            cascade_breaker_output=cascade_breaker_output,
+        )
+        tokens_used += phase3_tokens
+        enforce_token_cap(tokens_used, "Phase 3")
+    else:
+        chairman_verdict = _aggregate_vote_verdict(critiques)
 
-    chairman_verdict, phase3_tokens = _run_phase_3(
-        council_cfg.chairman,
-        prd_content, spec_content, critiques, rankings_snapshot,
-        member_timeout=min(member_timeout, int(max(remaining, 30))),
-        token_cap=token_cap,
-        current_tokens=tokens_used,
-        active_models=active_models,
-        fallback_pool=fallback_pool,
-        cascade_breaker_output=cascade_breaker_output,
-    )
-    tokens_used += phase3_tokens
-
-    # Minority report (additive, gated by minority_report flag)
     minority_report: Optional[dict] = None
     if council_cfg.minority_report:
-        elapsed = time.monotonic() - start_time
-        remaining = total_timeout - elapsed
+        remaining = remaining_for("minority report")
         minority_report, minority_tokens = _run_minority_report(
             council_cfg.panel, critiques,
-            member_timeout=min(member_timeout, int(max(remaining, 1))),
+            member_timeout=min(member_timeout, max(1, int(remaining))),
             token_cap=token_cap,
             current_tokens=tokens_used,
             active_models=active_models,
             fallback_pool=fallback_pool,
         )
         tokens_used += minority_tokens
+        enforce_token_cap(tokens_used, "minority report")
         logger.info("Council minority report complete: +%d tokens (total: %d)",
                     minority_tokens, tokens_used)
 
@@ -1747,9 +1885,9 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
     os.makedirs(artifact_dir, exist_ok=True)
     verdict_md_path = os.path.join(artifact_dir, "council-verdict.md")
     verdict_json_path = os.path.join(artifact_dir, "council-verdict.json")
-    with open(verdict_md_path, "w") as f:
+    with open(verdict_md_path, "w", encoding="utf-8") as f:
         f.write(verdict.to_markdown(task_id))
-    with open(verdict_json_path, "w") as f:
+    with open(verdict_json_path, "w", encoding="utf-8") as f:
         json.dump(verdict.to_json(), f, indent=2)
     logger.info("Council verdict written to %s + %s", verdict_md_path, verdict_json_path)
 
@@ -1766,7 +1904,7 @@ def deliberate(task_id: str, artifact_dir: str) -> CouncilVerdict:
             f"- **Risk if ignored:** {mr.get('risk_if_ignored', 'N/A')}\n"
             f"- **Confidence in dissent:** {mr.get('confidence_in_dissent', 'N/A')}\n"
         )
-        with open(minority_md_path, "w") as f:
+        with open(minority_md_path, "w", encoding="utf-8") as f:
             f.write(minority_md)
         logger.info("Council minority report written to %s", minority_md_path)
 

@@ -298,3 +298,33 @@ def test_unsupported_tts_selection_is_retained_without_installing(extra, monkeyp
     assert setup_tts._tts_local_install_step(extra) == extra
     output = capsys.readouterr().out
     assert "not supported" in output and "selection is saved" in output
+
+
+def test_bubblewrap_setup_prompts_for_a_profile_on_linux(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # setup_terminal_backend imports the platform module locally, so patch the module.
+    import platform as _platform
+    monkeypatch.setattr(_platform, "system", lambda: "Linux")
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            idx = next(i for i, c in enumerate(choices) if c.startswith("Bubblewrap"))
+            assert idx == 7  # six fixed choices, then singularity, then bubblewrap on Linux
+            return idx
+        if question == "Select bubblewrap profile:":
+            assert [c.split(" - ")[0] for c in choices] == ["restricted", "workspace", "network"]
+            assert default == 2  # network is the documented default
+            return 1
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "bubblewrap"
+    assert config["terminal"]["bubblewrap_profile"] == "workspace"
+    assert config["terminal"]["cwd"]

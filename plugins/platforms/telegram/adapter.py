@@ -4049,20 +4049,42 @@ class TelegramAdapter(BasePlatformAdapter):
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
-        for i, model_id in enumerate(page_models):
+
+        def _split_geo(model_id: str) -> tuple:
+            """Return (stripped_label, geo_segment) for a model ID.
+
+            Bedrock inference-profile IDs repeat a routing namespace and a
+            vendor prefix (``global.anthropic.``, ``us.anthropic.``,
+            ``eu.amazon.``, ``us-gov.anthropic.``, ...) in every button.
+            Remove both segments only from the display label so the model
+            family/version remains visible; ``model_id`` is still retained
+            in picker state and is selected through the index callback
+            below. The length guard keeps degenerate two-segment IDs
+            (e.g. ``global.anthropic``) intact — a blank label would be
+            rejected by Telegram (BUTTON_TEXT_INVALID).
+            """
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            # Bedrock inference-profile IDs repeat a routing namespace and a
-            # vendor prefix (``global.anthropic.``, ``us.anthropic.``,
-            # ``eu.amazon.``, ``us-gov.anthropic.``, ...) in every button.
-            # Remove both segments only from the display label so the model
-            # family/version remains visible; ``model_id`` is still retained
-            # in picker state and is selected through the index callback
-            # below. The length guard keeps degenerate two-segment IDs
-            # (e.g. ``global.anthropic``) intact — a blank label would be
-            # rejected by Telegram (BUTTON_TEXT_INVALID).
             parts = short.split(".")
             if len(parts) >= 3 and parts[0].replace("-", "").isalpha() and len(parts[0]) <= 7:
-                short = ".".join(parts[2:])
+                return ".".join(parts[2:]), parts[0]
+            return short, ""
+
+        # The same model often ships behind several routing namespaces at
+        # once (``us.xai.grok-4.6`` and ``global.xai.grok-4.6`` coexist in
+        # a real Bedrock listing). Stripping the namespace from both would
+        # render identical buttons, so count stripped labels over the FULL
+        # list — not just this page, keeping labels stable across
+        # pagination — and keep the geo segment as a differentiator when a
+        # label collides.
+        stripped_counts: dict = {}
+        for m in models:
+            label, _ = _split_geo(m)
+            stripped_counts[label] = stripped_counts.get(label, 0) + 1
+
+        for i, model_id in enumerate(page_models):
+            short, geo = _split_geo(model_id)
+            if geo and stripped_counts.get(short, 0) > 1:
+                short = f"{geo}: {short}"
             if len(short) > 38:
                 short = short[:35] + "..."
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))

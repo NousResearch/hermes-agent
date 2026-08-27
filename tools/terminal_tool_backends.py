@@ -26,7 +26,7 @@ logger = logging.getLogger("tools.terminal_tool")
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, bubblewrap, docker, singularity, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -101,6 +101,20 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
 # --- Environment builders. Signature: (*, env_type, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
 def _build_local_env(*, cwd, timeout, **_):
     return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+
+def _build_bubblewrap_env(*, cwd, timeout, **_):
+    # Host-path backend: every command runs inside a bwrap sandbox on this host. The
+    # terminal.bubblewrap_* settings arrive through their TERMINAL_BUBBLEWRAP_* env names and
+    # are read at construction through the per-turn terminal scope, so under gateway
+    # multiplexing the routed profile's settings win over the process env (see #68559).
+    from tools.environments import bubblewrap
+    from tools.terminal_scope import terminal_env
+    names = (bubblewrap.ENV_PROFILE, bubblewrap.ENV_BINDS, bubblewrap.ENV_MEMORY_MB,
+             bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS, bubblewrap.ENV_HOME_MODE)
+    scoped = {name: value for name in names if (value := terminal_env(name, "")) != ""}
+    return bubblewrap.BubblewrapEnvironment(cwd=cwd, timeout=timeout,
+                                            config=bubblewrap.load_bubblewrap_config(scoped))
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
@@ -201,7 +215,8 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 
 
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
-_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
+_ENV_BUILDERS = {"local": _build_local_env, "bubblewrap": _build_bubblewrap_env,
+                 "docker": _build_docker_env, "singularity": _build_singularity_env,
                  "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
                  "ssh": _build_ssh_env}
 
@@ -269,6 +284,14 @@ def _ssh_pre(config: Dict[str, Any]) -> bool:
     return False
 
 
+def _bubblewrap_pre(config: Dict[str, Any]) -> bool:
+    from tools.environments.bubblewrap import run_probe
+    _path, failure = run_probe()
+    if failure:
+        logger.error("bubblewrap backend unavailable: %s", failure)
+    return failure is None
+
+
 def _daytona_post(config: Dict[str, Any]) -> bool:
     from daytona import Daytona  # noqa: F401 — SDK presence check (ImportError propagates)
     from agent.secret_scope import get_secret
@@ -277,6 +300,7 @@ def _daytona_post(config: Dict[str, Any]) -> bool:
 
 _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "local": {},
+    "bubblewrap": {"pre": _bubblewrap_pre},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker executable not found in PATH or common install locations")},
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},

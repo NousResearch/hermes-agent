@@ -329,7 +329,11 @@ async function isAttachedSharedRemote(connectionId: null | string, profile: stri
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
   } catch {
-    return false
+    // Probe failed. A secondary at this already-attached source is the #96493
+    // ghost WebSocket (accept/close, messages=1). Prefer the primary until a
+    // later probe can prove isolation (`sharedRemote: false`). Isolated SSH
+    // still dials its own socket when getConnectionFor succeeds.
+    return true
   }
 }
 
@@ -341,7 +345,7 @@ async function requestOnPrimaryGateway<T>(
 ): Promise<T> {
   const gateway = g.primaryGateway
 
-  if (!gateway) {
+  if (!gateway || !isOpen(gateway)) {
     throw new Error('Hermes gateway unavailable')
   }
 
@@ -1332,6 +1336,10 @@ export async function openGatewayForAgent(
   }
 
   if (await isAttachedSharedRemote(connectionId, profile)) {
+    if (!isOpen(g.primaryGateway)) {
+      throw new Error('Hermes gateway unavailable')
+    }
+
     return
   }
 
@@ -1382,7 +1390,7 @@ export async function ensureGatewayForAgent(
   }
 
   if (await isAttachedSharedRemote(connectionId, profile)) {
-    return !signal?.aborted
+    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {

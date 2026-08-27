@@ -635,4 +635,46 @@ describe('attached shared-remote group turns (#96493)', () => {
     expect(secondaryGateways).toHaveLength(1)
     expect(primary.request).not.toHaveBeenCalled()
   })
+
+  it('reuses the primary when the shared-remote probe fails instead of dialing a ghost secondary', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
+      getConnectionFor: vi.fn(async () => {
+        throw new Error('Timed out connecting to profile "voter"')
+      }),
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://homelab/voter' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForAgent('homelab', 'voter', 'session.create', { title: 'g' })
+
+    expect(secondaryGateways).toHaveLength(0)
+    expect(primary.request).toHaveBeenCalledOnce()
+  })
+
+  it('openGatewayForAgent and ensureGatewayForAgent do not dial a secondary', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    installAttachedSharedRemote()
+    await ensureGatewayForProfile('default')
+
+    await openGatewayForAgent('homelab', 'voter')
+    expect(await ensureGatewayForAgent('homelab', 'voter')).toBe(true)
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
+  it('ensureGatewayForAgent is false when the attached primary socket is closed', async () => {
+    const primary = { connectionState: 'closed', request: vi.fn() }
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    installAttachedSharedRemote()
+
+    expect(await ensureGatewayForAgent('homelab', 'voter')).toBe(false)
+    expect(secondaryGateways).toHaveLength(0)
+  })
 })

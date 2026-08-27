@@ -2854,6 +2854,11 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
+        'bubblewrap': lambda: [
+            f"  Profile:      {terminal.get('bubblewrap_profile', 'network')}",
+            f"  Limits:       {terminal.get('bubblewrap_memory_mb', 256)} MB memory, "
+            f"{terminal.get('bubblewrap_cpu_seconds', 30)}s CPU, "
+            f"{terminal.get('bubblewrap_max_procs', 256)} extra procs"],
         'modal': lambda: [
             f"  Modal image:  {terminal.get('modal_image', default_img)}",
             f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],

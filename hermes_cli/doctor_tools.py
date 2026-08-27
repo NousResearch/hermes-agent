@@ -130,7 +130,7 @@ def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 
 
-_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh"}
+_BUILTIN_TERMINAL_BACKENDS = {"local", "bubblewrap", "docker", "singularity", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh"}
 
 
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
@@ -205,6 +205,28 @@ def _check_vercel_backend(issues: list[str]) -> None:
                if persistent else "Vercel persistence: ephemeral filesystem")
 
 
+def _check_bubblewrap_backend(issues: list[str]) -> None:
+    """bwrap on PATH with its version, then the sandbox probe (unprivileged user namespaces)."""
+    bwrap_path = _safe_which("bwrap")
+    if not bwrap_path:
+        return _fail_and_issue("bwrap not found", "(required for TERMINAL_ENV=bubblewrap)",
+                               "Install the bubblewrap package (apt, dnf or pacman: bubblewrap) or change TERMINAL_ENV", issues)
+    try:
+        _ver = subprocess.run([bwrap_path, "--version"], capture_output=True, text=True, timeout=5)
+        bwrap_version = (_ver.stdout or _ver.stderr).strip() or "version unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        bwrap_version = "version unknown"
+    check_ok("bwrap", f"(found: {bwrap_version})")
+    try:
+        from tools.environments.bubblewrap import run_probe as _bwrap_probe
+        _path, probe_failure = _bwrap_probe()
+    except Exception as exc:
+        probe_failure = f"probe could not run: {exc}"
+    if probe_failure:
+        _fail_and_issue("bwrap sandbox probe failed", f"({probe_failure})",
+                        "Allow unprivileged user namespaces for this user or change TERMINAL_ENV", issues)
+
+
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
         from hermes_cli.plugins import discover_plugins
@@ -220,7 +242,8 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
         _require(ok, (label, detail), (label, detail), detail.strip("()"), issues)
 
 
-_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend}
+_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend,
+                   "bubblewrap": _check_bubblewrap_backend}
 
 
 @doctor_check()

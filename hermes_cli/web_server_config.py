@@ -76,7 +76,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.backend": _select(
         "Terminal execution backend",
-        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
+        "local", "bubblewrap", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
+    ),
+    "terminal.bubblewrap_profile": _select(
+        "Bubblewrap profile: what the sandbox may write and reach", "restricted", "workspace", "network",
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),

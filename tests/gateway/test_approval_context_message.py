@@ -100,9 +100,25 @@ def _sync_schedule(fn, loop, *, logger=None, log_message=""):
     """Run the coroutine *fn* to completion synchronously and return a
     ``_SyncFuture`` wrapping its result — used to monkeypatch
     ``safe_schedule_threadsafe`` in tests so the production delivery
-    helper can be called without a running event loop."""
-    loop = asyncio.get_event_loop()
-    return _SyncFuture(loop.run_until_complete(fn))
+    helper can be called without a running event loop.
+
+    Uses a private loop per call: ``asyncio.get_event_loop()`` with no
+    running loop is deprecated (and raises on newer Pythons), and a
+    shared module-level loop leaks state between tests."""
+    private_loop = asyncio.new_event_loop()
+    try:
+        return _SyncFuture(private_loop.run_until_complete(fn))
+    finally:
+        private_loop.close()
+
+
+def _closing_none_schedule(fn, loop, **kw):
+    """Schedule stand-in that reports failure (returns None) and, like the
+    real ``safe_schedule_threadsafe``, closes the never-scheduled coroutine
+    so tests don't emit "never awaited" warnings."""
+    if asyncio.iscoroutine(fn):
+        fn.close()
+    return None
 
 
 def _make_deliver_kwargs(adapter, monkeypatch):
@@ -117,7 +133,8 @@ def _make_deliver_kwargs(adapter, monkeypatch):
         "description": _ENHANCED_DESC,
         "session_key": "test-session",
         "metadata": None,
-        "loop": asyncio.get_event_loop(),
+        # Unused: safe_schedule_threadsafe is patched above and ignores it.
+        "loop": None,
         "logger": getLogger("test"),
     }
 
@@ -171,6 +188,28 @@ class TestButtonPath:
         assert len(adapter.approval_calls) == 1  # tried button
         assert len(adapter.sent_messages) == 1, (
             "button failure must fall through to a single text send()"
+        )
+
+    def test_button_exception_falls_through_to_text(self, monkeypatch):
+        """An exception raised before the button coroutine is scheduled
+        (e.g. adapter signature mismatch) means the card definitively did
+        not post — the text fallback must still deliver the prompt so the
+        user can approve, instead of hard-failing with DeliveryError."""
+        from gateway.run import _deliver_approval_message
+
+        adapter = FakeButtonAdapter()
+
+        def _raising_send_exec_approval(**kwargs):
+            raise TypeError("unexpected keyword argument 'smart_denied'")
+
+        adapter.send_exec_approval = _raising_send_exec_approval
+        # Class attr lookup still sees a send_exec_approval, mirroring a
+        # real adapter class whose method signature is out of date.
+        kwargs = _make_deliver_kwargs(adapter, monkeypatch)
+        _deliver_approval_message(**kwargs)
+
+        assert len(adapter.sent_messages) == 1, (
+            "button-path exception must fall back to a single text send()"
         )
 
 
@@ -313,22 +352,48 @@ class TestFailClosed:
 class TestDeliveryError:
     """Delivery failure must raise ``DeliveryError``, not silently return."""
 
-    def test_button_future_none_raises(self, monkeypatch):
-        """When ``safe_schedule_threadsafe`` returns None for the button
-        call, ``_deliver_approval_message`` must raise DeliveryError
-        (delivery status is unknown)."""
+    def test_loop_unavailable_for_both_paths_raises(self, monkeypatch):
+        """When ``safe_schedule_threadsafe`` returns None (loop gone), the
+        button path falls through to text, the text path cannot schedule
+        either, and DeliveryError propagates — the caller must treat the
+        approval as notify-failed rather than wait for a reply that can
+        never come."""
         from gateway.run import _deliver_approval_message, DeliveryError
         import gateway.run as gw_run
 
         adapter = FakeButtonAdapter()
         kwargs = _make_deliver_kwargs(adapter, monkeypatch)
-        # Force the first safe_schedule_threadsafe call to return None.
+        # Force every safe_schedule_threadsafe call to report failure.
         monkeypatch.setattr(gw_run, "safe_schedule_threadsafe",
-                            lambda fn, loop, **kw: None)
+                            _closing_none_schedule)
         with pytest.raises(DeliveryError, match="loop unavailable"):
             _deliver_approval_message(**kwargs)
         assert len(adapter.approval_calls) == 0
         assert len(adapter.sent_messages) == 0
+
+    def test_text_send_timeout_is_ambiguous_not_error(self, monkeypatch):
+        """A text-send result() timeout is ambiguous (the message may have
+        posted with a late ack) — the helper must return without raising so
+        the prompt registration stays armed for a late reply."""
+        import concurrent.futures
+        from gateway.run import _deliver_approval_message
+        import gateway.run as gw_run
+
+        class _TimeoutFuture:
+            def result(self, timeout=None):
+                raise concurrent.futures.TimeoutError()
+
+        def _timeout_schedule(fn, loop, **kw):
+            if asyncio.iscoroutine(fn):
+                fn.close()
+            return _TimeoutFuture()
+
+        adapter = FakeTextAdapter()
+        kwargs = _make_deliver_kwargs(adapter, monkeypatch)
+        monkeypatch.setattr(gw_run, "safe_schedule_threadsafe",
+                            _timeout_schedule)
+        # Must not raise: ambiguous delivery keeps the prompt armed.
+        _deliver_approval_message(**kwargs)
 
     def test_text_send_failure_raises(self, monkeypatch):
         """When the text send raises, DeliveryError must propagate."""

@@ -666,6 +666,14 @@ When a session expires:
 | `agent.agent_cache.max_evictions_per_pass` | `int` | `16` | Cap on sessions shed per pressure pass |
 | `agent.agent_cache.protect_recent` | `int` | `8` | MRU sessions the pressure pass never touches |
 
+## State database and FTS recovery
+
+The canonical transcript lives in the `sessions` and `messages` tables. FTS5
+tables and their sync triggers are derived indexes that can be detached and
+rebuilt without deleting canonical messages. See
+[`docs/state-db-recovery.md`](state-db-recovery.md) for the bounded live failure
+mode and the explicit repair procedure.
+
 ### Reset Policy (per-platform/type, in config.yaml)
 
 ```yaml

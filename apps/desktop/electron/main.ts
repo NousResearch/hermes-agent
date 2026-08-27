@@ -123,6 +123,7 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
+import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
@@ -6078,7 +6079,7 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   const safeExt = /^\.[a-z0-9]{1,5}$/.test(normalizedExt) ? normalizedExt : '.png'
   const dir = path.join(app.getPath('userData'), 'composer-images')
   await fs.promises.mkdir(dir, { recursive: true })
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+  const stamp = composerImageTimestamp()
   const random = crypto.randomBytes(3).toString('hex')
 
   const baseName = String(name || '')

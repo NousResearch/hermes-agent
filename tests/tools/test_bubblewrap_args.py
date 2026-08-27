@@ -512,6 +512,56 @@ class TestResolvedHiddenSet:
         assert str(home / ".ssh") not in argv
 
 
+class TestResolvedBindDest:
+    """An operator bind lands at the real path of its dest, so the pins are
+    computed in the real tree of the bind."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        real = tmp_path / "real" / "home"
+        (real / ".config" / "gcloud").mkdir(parents=True)
+        return real
+
+    @staticmethod
+    def _link(tmp_path, tree, target):
+        link = tmp_path / "home-link"
+        link.symlink_to(os.path.relpath(tree, tmp_path) if target == "relative" else tree)
+        return link
+
+    @pytest.mark.parametrize("target", ["relative", "absolute"])
+    def test_symlinked_dest_binds_and_pins_at_the_real_path(self, paths, tree, tmp_path, target):
+        link = self._link(tmp_path, tree, target)
+        hidden = (str(tree / ".config" / "gcloud"),)
+        bind = BindMount(src=str(link), dest=str(link), readonly=False)
+        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden)
+        pins = triples(argv, "--bind")
+        assert (str(link), str(tree)) in pins
+        assert (str(link / ".config"), str(tree / ".config")) in pins
+        dests = [dest for _, dest in pins + triples(argv, "--ro-bind")]
+        assert not any(dest == str(link) or dest.startswith(str(link) + os.sep) for dest in dests)
+
+    def test_relative_and_absolute_symlink_dests_produce_the_same_argv(self, paths, tree, tmp_path):
+        hidden = (str(tree / ".config" / "gcloud"),)
+        argvs = []
+        for target in ("relative", "absolute"):
+            link = self._link(tmp_path, tree, target)
+            bind = BindMount(src=str(link), dest=str(link), readonly=False)
+            argvs.append(build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden))
+            link.unlink()
+        assert argvs[0] == argvs[1]
+
+    def test_symlinked_component_in_the_dest_resolves_too(self, paths, tree, tmp_path):
+        (tmp_path / "via").symlink_to("real")
+        dest = tmp_path / "via" / "home"
+        bind = BindMount(src=str(tree), dest=str(dest), readonly=False)
+        hidden = (str(tree / ".config" / "gcloud"),)
+        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden)
+        pins = triples(argv, "--bind")
+        assert (str(tree), str(tree)) in pins
+        assert (str(tree / ".config"), str(tree / ".config")) in pins
+        assert str(dest) not in argv
+
+
 class TestPinTargetInsideTheBind:
     """A pin lands only on a directory inside the real tree of its bind, so
     it never widens the writable set. These call

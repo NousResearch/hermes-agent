@@ -297,6 +297,75 @@ class TestEnsureTccAnchor:
         assert venv_py.is_symlink()
         assert not (venv_py.parent / ".tcc-anchor-source").exists()
 
+    def test_alias_failure_leaves_anchor_unmarked(self, tmp_path, monkeypatch, caplog):
+        # If an alias copy fails (e.g. ENOSPC), the marker must NOT be
+        # written: a symlink alias to the anchored copy is the #95541 crash
+        # shape, and a marker would make doctor report "active" over it.
+        # The next ensure retries the whole install.
+        _darwin(monkeypatch)
+        store_bin = _build_store(tmp_path)
+        root = _build_checkout(tmp_path, store_bin=store_bin)
+        venv_py = venv_python_path(root / ".venv")
+        monkeypatch.setattr(tcc, "_copy_alias", lambda *a, **k: False)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=tcc.__name__):
+            tcc.ensure_tcc_anchor(root)
+
+        assert not (venv_py.parent / ".tcc-anchor-source").exists()
+        status, _ = tcc.tcc_anchor_state(root)
+        assert status != "active"
+        assert any("alias" in r.message for r in caplog.records)
+
+        # Recovery: with alias copies working again the retry completes.
+        monkeypatch.undo()
+        monkeypatch.setattr(tcc.platform, "system", lambda: "Darwin")
+        assert tcc.ensure_tcc_anchor(root) is not None
+        assert tcc.tcc_anchor_state(root)[0] == "active"
+
+    def test_copy_alias_failure_warns_and_cleans_staging(self, tmp_path, monkeypatch, caplog):
+        # _copy_alias must log the failure (silent skips hid the #95541
+        # shape) and never leave a staging file behind.
+        anchor = tmp_path / "anchor"
+        anchor.write_bytes(b"#!anchor")
+        anchor.chmod(0o755)
+
+        def boom(src, dst, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(tcc.shutil, "copy2", boom)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=tcc.__name__):
+            assert tcc._copy_alias(tmp_path, "python3", anchor) is False
+
+        assert any("python3" in r.message for r in caplog.records)
+        assert not list(tmp_path.glob(".python3.tcc-*"))
+
+    def test_marker_written_atomically(self, tmp_path):
+        # Marker goes through write-then-rename; no torn intermediate name
+        # survives and the content matches the resolved source path.
+        source = tmp_path / "store" / "python3.11"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"#!store")
+        venv_bin = tmp_path / "bin"
+        venv_bin.mkdir()
+
+        tcc._write_marker(venv_bin, source)
+
+        marker = venv_bin / ".tcc-anchor-source"
+        assert marker.read_text(encoding="utf-8") == tcc._marker_value(source)
+        assert not list(venv_bin.glob(".tcc-anchor-source.*"))
+
+    def test_store_root_marker_tracks_managed_uv_constant(self):
+        # The repair-generation store marker must stay derived from
+        # managed_uv's directory constant, not drift as a hardcoded string.
+        from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
+
+        assert f"/{_RUNTIME_DIR_NAME}/python/" in tcc._STORE_ROOT_MARKERS
+
 
 class TestBootGate:
     """Direct branch coverage for _passes_boot_gate.

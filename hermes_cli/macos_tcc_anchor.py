@@ -29,8 +29,9 @@ stays on the stable venv path) and closes both holes:
    points at ``@executable_path/../lib`` — no rewrite.
 3. A pre-install boot gate actually launches the staged copy and demands
    ``import encodings`` plus ``sys.prefix == <venv>``.  Failure rolls the
-   staging file back and leaves the live venv untouched, so a bad anchor
-   can never brick update/doctor again.
+   staging file back and leaves the live interpreter untouched (a surplus
+   provisioned dylib in ``venv/lib/`` may remain — harmless), so a bad
+   anchor can never brick update/doctor again.
 
 All functions are no-ops on non-macOS and for interpreters that are not
 uv-managed.  Best-effort: never raises to callers.
@@ -49,13 +50,16 @@ import tempfile
 from pathlib import Path
 
 from hermes_constants import venv_python_path
+from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
 
 logger = logging.getLogger(__name__)
 
 _MARKER_NAME = ".tcc-anchor-source"
 
 _STORE_COMMON_MARKERS = ("cpython-", "-macos-")
-_STORE_ROOT_MARKERS = ("/uv/python/", "/.hermes-runtime/python/")
+# The runtime-store marker is derived from managed_uv so a rename of the
+# repair-generation directory cannot silently stop the anchor from matching.
+_STORE_ROOT_MARKERS = ("/uv/python/", f"/{_RUNTIME_DIR_NAME}/python/")
 
 
 class _BootGateFailed(Exception):
@@ -159,6 +163,26 @@ def _anchor_marker(venv_bin: Path) -> Path:
     return venv_bin / _MARKER_NAME
 
 
+def _write_marker(venv_bin: Path, source_file: Path) -> None:
+    """Write the anchor marker atomically (write-then-rename).
+
+    A concurrent ensure (update + doctor --fix) must never observe a
+    partially-written marker: a torn read would compare unequal and trigger
+    a spurious reinstall, and ``write_text`` alone is not atomic.
+    """
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{_MARKER_NAME}.", dir=str(venv_bin))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_marker_value(source_file))
+        os.replace(tmp_name, _anchor_marker(venv_bin))
+    except OSError:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _store_root(source_file: Path) -> Path:
     # .../cpython-<ver>-macos-*/bin/python3.N → store root
     return source_file.resolve(strict=False).parent.parent
@@ -200,24 +224,41 @@ def _provision_libpython(
         logger.debug("libpython provision skipped", exc_info=True)
 
 
-def _copy_alias(venv_bin: Path, name: str, anchor: Path) -> None:
-    """Materialize *name* as a real-file copy of *anchor* (atomic rename)."""
-    tmp = venv_bin / f".{name}.tcc-tmp"
+def _copy_alias(venv_bin: Path, name: str, anchor: Path) -> bool:
+    """Materialize *name* as a real-file copy of *anchor* (atomic rename).
+
+    Returns False (and warns) on failure: a leftover alias *symlink* to the
+    anchor is the exact #95541 crash shape, so callers must know when the
+    alias set is incomplete.  The staging name is unique (mkstemp) so a
+    concurrent ensure (update + doctor --fix) cannot promote a truncated
+    interim copy.
+    """
+    tmp_path: Path | None = None
     try:
-        shutil.copy2(anchor, tmp)
-        os.chmod(tmp, anchor.stat().st_mode | 0o111)
-        os.replace(tmp, venv_bin / name)
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{name}.tcc-", dir=str(venv_bin))
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        shutil.copy2(anchor, tmp_path)
+        os.chmod(tmp_path, anchor.stat().st_mode | 0o111)
+        os.replace(tmp_path, venv_bin / name)
+        return True
+    except OSError as exc:
+        logger.warning("TCC anchor alias %s not materialized: %s", name, exc)
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False
 
 
 def _materialize_aliases(
     venv_bin: Path, anchor: Path, *, refresh: bool = False
-) -> None:
-    """Materialize uv alias names as real-file copies of the anchor."""
+) -> bool:
+    """Materialize uv alias names as real-file copies of the anchor.
+
+    Returns True only when every alias that needed materializing succeeded.
+    """
     names = set(_sibling_names())
     try:
         names.update(
@@ -227,13 +268,16 @@ def _materialize_aliases(
         )
     except OSError:
         pass
+    ok = True
     for name in sorted(names):
         alias = venv_bin / name
         try:
             if refresh or alias.is_symlink() or not alias.exists():
-                _copy_alias(venv_bin, name, anchor)
+                ok = _copy_alias(venv_bin, name, anchor) and ok
         except OSError:
+            ok = False
             continue
+    return ok
 
 
 def _passes_boot_gate(staged: Path, venv_dir: Path) -> bool:
@@ -305,8 +349,19 @@ def _install_anchor(venv_dir: Path, source_file: Path) -> None:
                 f"staged copy at {tmp_path} failed encodings/prefix probe"
             )
         os.replace(tmp_path, venv_py)
-        _anchor_marker(venv_bin).write_text(_marker_value(source_file), encoding="utf-8")
-        _materialize_aliases(venv_bin, venv_py, refresh=True)
+        aliases_ok = _materialize_aliases(venv_bin, venv_py, refresh=True)
+        if aliases_ok:
+            # Marker last, atomically: it asserts the WHOLE layout (anchor +
+            # aliases) is complete.  A partially-materialized alias set (the
+            # #95541 crash shape when an alias stays a symlink) must not read
+            # "active" in doctor — leaving the marker absent makes the next
+            # ensure retry the install.
+            _write_marker(venv_bin, source_file)
+        else:
+            logger.warning(
+                "TCC anchor installed but alias materialization was "
+                "incomplete; leaving anchor unmarked so the next run retries"
+            )
     except Exception:
         try:
             tmp_path.unlink(missing_ok=True)

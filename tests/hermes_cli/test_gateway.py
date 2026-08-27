@@ -1015,15 +1015,16 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
 
     class FakeService:
-        def __init__(self, name, pid):
+        def __init__(self, name, pid, status="running"):
             self.name = name
             self.pid = pid
+            self.status = status
 
         def as_dict(self):
             return {
                 "name": self.name,
                 "pid": self.pid,
-                "status": "running",
+                "status": self.status,
             }
 
     class FakeProcess:
@@ -1044,7 +1045,7 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     fake_psutil = SimpleNamespace(
         win_service_iter=lambda: [
             FakeService("HermesGateway", 100),
-            FakeService("UnrelatedService", 900),
+            FakeService("UnrelatedService", 900, "stop_pending"),
         ],
         Process=FakeProcess,
     )
@@ -1066,6 +1067,37 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
             gateway_create_time=300.0,
         )
     ]
+
+
+def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch):
+    """A transitional service in the gateway ancestry remains fail-closed."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def as_dict(self):
+            return {"name": "HermesGateway", "pid": 100, "status": "stop_pending"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService()],
+        Process=FakeProcess,
+    )
+
+    with pytest.raises(RuntimeError, match="indeterminate status: stop_pending"):
+        gateway.find_windows_gateway_services(
+            psutil_module=fake_psutil,
+            profile_processes=[profile],
+        )
 
 
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):

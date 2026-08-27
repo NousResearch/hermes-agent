@@ -5886,6 +5886,14 @@ class GatewaySlashCommandsMixin:
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
         confirmation_text = t(f"gateway.approve.{choice}_{plural}", count=count)
+        # Native-streaming adapters (WeCom msgtype:"stream") need the
+        # confirmation sent directly with control-lane metadata so it lands
+        # via a reliable proactive send instead of the (already-finalized)
+        # reply stream. Every other platform keeps the normal contract:
+        # else: return the text and let the gateway deliver it.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
         if _adapter:
             try:
                 await _adapter.send(
@@ -5971,6 +5979,12 @@ class GatewaySlashCommandsMixin:
         else:
             confirmation_text = t("gateway.deny.denied_singular")
 
+        # Same native-streaming carve-out as /approve above: only WeCom-style
+        # native-stream adapters take the direct control-lane send; everyone
+        # else returns the text for normal gateway delivery.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
         if _adapter:
             try:
                 await _adapter.send(

@@ -1,10 +1,13 @@
 /**
- * Workspace scoping for contributions.
- *
- * Pure presentation-ownership helpers: which workspace surface (sessions vs
- * bots) a contribution belongs to, and — within the bots surface — which exact
- * bot it belongs to. Owner keys are opaque exact strings supplied by callers;
+ * Which workspace surface the window is looking at — sessions, or one exact
+ * bot inside Bot Mode. Owner keys are opaque exact strings supplied by callers;
  * this module never parses profile names or infers connections.
+ *
+ * This is a SIGNAL, not a filter: consumers adapt to it — the `+` routes a new
+ * session at the selected bot's profile — but nothing here decides whether a
+ * pane renders. Scoping panes by workspace is how the main zone came to vanish
+ * when Bot Mode's last chat closed; bot chats are ordinary tabs in the main
+ * strip, beside session tabs.
  *
  * No persistence here by design: the remembered active-pane map is window-local
  * memory so a switch away and back can restore where the user was, without any
@@ -33,12 +36,14 @@ export interface WorkspaceSessionRoute {
   targetProfile?: string
 }
 
-/** What the shared `+` / session.newTab command means in this workspace. */
+/** Where the shared `+` / session.newTab command should aim in this workspace.
+ *  `blocked` states why this owner has no route of its own (a group chat, an
+ *  orphaned roster row) — it never disables the `+`, which falls back to an
+ *  ordinary session: bot chats and session tabs share the one main strip. */
 export type WorkspaceNewSessionTarget =
   { kind: 'blocked'; message: string } | { kind: 'route'; route: WorkspaceSessionRoute }
 
-/** Sessions uses its established ambient behavior (`null`). Bots publishes an
- *  exact route or a concise reason that a generic session is unavailable. */
+/** Sessions uses its established ambient behavior (`null`). */
 export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
 
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
@@ -71,9 +76,9 @@ function sameNewSessionTarget(a: WorkspaceNewSessionTarget | null, b: WorkspaceN
   return false
 }
 
-/** Publish one coherent presentation and creation scope without an
- *  intermediate mixed frame. Sessions always retains its existing ambient
- *  new-session behavior; alternate workspaces must state their intent. */
+/** Publish one coherent surface and creation scope without an intermediate
+ *  mixed frame. Sessions always retains its existing ambient new-session
+ *  behavior; alternate workspaces must state their intent. */
 export function setWorkspaceScope(
   mode: WorkspaceMode,
   ownerKey: string | null = null,
@@ -97,78 +102,6 @@ export function setWorkspaceScope(
   })
 
   return true
-}
-
-/**
- * The slice of {@link Contribution} metadata that scopes it to a workspace.
- * A contribution with neither field set is global: it participates in every
- * workspace, preserving pre-existing behavior.
- */
-export interface WorkspaceScope {
-  /** Surface this contribution belongs to. Omit for global visibility. */
-  workspaceMode?: WorkspaceMode
-  /** Exact opaque owner key within the `'bots'` surface. Ignored otherwise. */
-  workspaceOwnerKey?: string
-}
-
-/**
- * Whether a contribution participates in the given workspace.
- *
- * - Unscoped/global (no `workspaceMode`) => always participates.
- * - Scoped with a mode mismatch => does not participate.
- * - Sessions match => participates.
- * - Bots match => participates only when the owner key is non-empty and equals
- *   the current owner key (exact string equality).
- *
- * Defaults reflect the un-switched window state when omitted.
- */
-export function contributesToWorkspace(
-  scope: WorkspaceScope | undefined,
-  mode: WorkspaceMode = $workspaceMode.get(),
-  ownerKey: string | null = $workspaceOwnerKey.get()
-): boolean {
-  const { workspaceMode, workspaceOwnerKey } = scope ?? {}
-
-  if (workspaceMode == null) {
-    return true
-  }
-
-  if (workspaceMode !== mode) {
-    return false
-  }
-
-  if (workspaceMode === 'sessions') {
-    return true
-  }
-
-  return Boolean(workspaceOwnerKey) && workspaceOwnerKey === ownerKey
-}
-
-/**
- * Filter contributions down to those participating in the given workspace,
- * preserving input order.
- *
- * Preserves reference identity on a no-op (every contribution participates),
- * so callers can hand the result straight to React without a wasted re-render.
- */
-export function filterContributionsForWorkspace<T extends WorkspaceScope>(
-  contributions: readonly T[],
-  mode: WorkspaceMode,
-  ownerKey: string | null
-): readonly T[] {
-  let filtered: T[] | null = null
-
-  for (let i = 0; i < contributions.length; i += 1) {
-    if (contributesToWorkspace(contributions[i], mode, ownerKey)) {
-      filtered?.push(contributions[i])
-
-      continue
-    }
-
-    filtered ??= contributions.slice(0, i)
-  }
-
-  return filtered ?? contributions
 }
 
 /**

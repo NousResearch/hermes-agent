@@ -177,7 +177,6 @@ registry.registerMany([
   {
     id: 'workspace',
     area: 'panes',
-    workspaceMode: 'sessions',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
     title: NEW_SESSION_TITLE,
     data: {
@@ -488,7 +487,6 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
-    workspaceMode: 'sessions',
     // The placeholder, not the draft's live name — `tabTitle` below renders
     // that. Keeping it here would re-register the pane on every keystroke.
     title: stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,

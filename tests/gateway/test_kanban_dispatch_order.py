@@ -172,6 +172,40 @@ def test_auto_decompose_skips_actual_decomposition_without_spending_budget(
     assert f"Task id: {fresh}" in requests[0]["messages"][1]["content"]
 
 
+def test_auto_decompose_repromotes_existing_spec_without_auxiliary_model(
+    decomposition_tick, monkeypatch,
+):
+    """A re-triaged concrete spec must not re-enter model-dependent triage."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_decompose as decomp
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="board-record receipt",
+            body="Read the named Kanban records and emit a bounded no-op receipt.",
+            triage=True,
+        )
+        assert kb.specify_triage_task(
+            conn,
+            tid,
+            title="board-record receipt",
+            body="Read the named Kanban records and emit a bounded no-op receipt.",
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (tid,))
+
+    monkeypatch.setattr(decomp, "list_triage_ids", lambda: [tid])
+    run_tick, requests = decomposition_tick
+    run_tick()
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+        assert len([ev for ev in kb.list_events(conn, tid) if ev.kind == "specified"]) == 2
+        assert not any(ev.kind == "decomposed" for ev in kb.list_events(conn, tid))
+    assert requests == []
+
+
 def test_auto_decompose_fails_closed_when_history_cannot_be_read(decomposition_tick, monkeypatch):
     """An unreadable guard must never authorize a new auxiliary request."""
     import sqlite3

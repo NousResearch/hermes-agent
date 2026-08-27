@@ -41,7 +41,6 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 })
 
 const { createPluginContext } = await import('@/contrib/plugin')
-// @ts-expect-error The bundled Bot Mode entry intentionally remains plain ESM JavaScript for older runtime loaders.
 const { default: plugin } = await import('../plugin.js')
 
 const flushSweep = async () => {

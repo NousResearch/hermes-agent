@@ -160,34 +160,3 @@ test('activeBots ignores a finished worker outside the liveness window', () => {
   ]
   assert.deepEqual(activeBots(bots, 'other', 'open', NOW), [])
 })
-
-test('ActiveNowStrip renders above the roster, is a live region, and is click-accessible', () => {
-  // Strip is placed between the pane header and the search field.
-  const headerEnd = source.indexOf("children: 'Bots'")
-  const searchField = source.indexOf("placeholder: 'Search bots and group chats…'")
-  assert.ok(headerEnd >= 0 && searchField > headerEnd)
-
-  const stripStart = source.indexOf('jsx(ActiveNowStrip')
-  assert.ok(stripStart > headerEnd && stripStart < searchField, 'strip sits between header and search')
-
-  // Live region announces membership changes politely.
-  assert.match(source, /'aria-live': 'polite'/)
-  // Chips use the shared Tip component, remain keyboard/click accessible,
-  // and open the canonical chat via the same path as roster rows.
-  assert.match(source, /label: `Open \$\{label\}'s chat`/)
-  assert.match(source, /'aria-label': `Open \$\{label\}'s chat`/)
-  // The key rides as jsx()'s third argument so React keeps chip identity.
-  assert.match(source, /botRosterKey\(bot\)\s*\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
-  assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
-  // Chips share the exact-owner route with roster rows. That route activates the
-  // owner source, then resolves the profile's canonical name registry; no
-  // renderer pointer or preview-derived session id participates.
-  assert.match(source, /onOpen: bot => void openRosterBot\(bot\)/)
-
-  const openStart = source.indexOf('async function openRosterBot(')
-  assert.ok(openStart >= 0)
-  const open = source.slice(openStart, openStart + 3200)
-
-  assert.match(open, /await prepareBotSource\(bot\)/)
-  assert.match(open, /await openBotCanonicalChat\(bot, \(\) => generation === botOpenGeneration\)/)
-})

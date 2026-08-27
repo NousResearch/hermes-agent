@@ -13,7 +13,7 @@ import test from 'node:test'
 //    through the contribution disposer, driven by the feature-detected
 //    host.paneVisibility SDK export, with the always-registered fallback kept
 //    for older desktops. Cronjobs are bot-scoped, so the tile must not sit
-//    beside the ownerless Bots home or a group chat.
+//    beside a group chat.
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 

@@ -4,7 +4,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 // The Cronjobs pane read the shared roster with a bare `$lastRoster.get()`
-// while rendering. BotsHomeView owns the roster fetch, so whenever this pane
+// while rendering. BotsPane owns the roster fetch, so whenever this pane
 // mounted before the roster hydrated (fresh boot ordering, renderer reload
 // resetting the atoms) it captured an empty snapshot forever: the pane stayed
 // pinned on "Cronjobs are unavailable until this agent appears in the
@@ -220,7 +220,7 @@ test('regression: the pane follows the roster hydrating after mount', () => {
     jobs: [{ job_id: 'j-1', name: 'Report', schedule: 'every 1h', state: 'scheduled', enabled: true }]
   })
 
-  // Mount order: pane first, roster fetch lands afterwards (BotsHomeView owns
+  // Mount order: pane first, roster fetch lands afterwards (BotsPane owns
   // the fetch). First paint must be the fail-closed placeholder...
   const before = collectStrings(render()).join(' ')
   assert.ok(before.includes(UNAVAILABLE))

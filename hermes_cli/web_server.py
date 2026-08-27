@@ -19825,6 +19825,19 @@ def start_server(
                 except Exception as exc:
                     _log.debug("orphan desktop-local serve reap skipped: %s", exc)
 
+            # Same sweep for stdio MCP helper children (#61514): ledger-
+            # identified helpers whose recorded spawner is provably dead are
+            # corpses from a prior unclean exit — reap them before this
+            # backend stacks a fresh MCP tree on top. Positive identity only
+            # (spawn ledger + spawner_is_dead); a helper whose spawner is
+            # alive or unprovable is never touched.
+            try:
+                from hermes_cli.process_identity import reap_orphaned_mcp_helpers
+
+                reap_orphaned_mcp_helpers()
+            except Exception as exc:
+                _log.debug("orphan MCP helper reap skipped: %s", exc)
+
             # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
             _start_parent_death_watchdog()

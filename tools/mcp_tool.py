@@ -3314,6 +3314,23 @@ class MCPServerTask:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                    # Positive identity for the machine spawn ledger (#61514):
+                    # record each helper child as (pid, create_time,
+                    # 'mcp-helper', spawner=this process) so startup sweeps
+                    # can reap orphans left after an unclean parent exit.
+                    # Best-effort — never let ledger I/O break MCP startup.
+                    for _pid in new_pids:
+                        try:
+                            from hermes_cli.process_identity import register_child
+
+                            register_child(_pid, "mcp-helper")
+                        except Exception:
+                            logger.debug(
+                                "spawn-ledger register_child failed for MCP "
+                                "helper pid %s",
+                                _pid,
+                                exc_info=True,
+                            )
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).

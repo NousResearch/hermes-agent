@@ -181,6 +181,143 @@ def test_runtime_denies_unsafe_text_before_provider_callback(tmp_path, text):
     assert calls == []
 
 
+def test_codex_generated_context_is_redacted_without_using_untrusted_budget(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    context = (
+        "Hermes generated instructions.\n" * 3000
+        + "Workspace: /Users/private/project/file.py\n"
+        + "Protocol sample: c2VjcmV0LXBheWxvYWQ=\n"
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [{"role": "system", "content": context}],
+            "tools": [{"type": "function", "description": context}],
+        },
+    )
+
+    wire = json.loads(receipt.payload_bytes)
+    rendered = json.dumps(wire)
+    assert receipt.allowed
+    assert "<private-path>" in rendered
+    assert "<redacted-base64>" in rendered
+    assert "/Users/private/project/file.py" not in rendered
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert len(receipt.payload_bytes) > 32_768
+
+
+def test_codex_generated_context_redaction_honors_mapping_routes(tmp_path):
+    agent = _agent(tmp_path)
+    route = {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-terra",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_mode": "codex_responses",
+    }
+    generated = "Workspace: /Users/private/project/file.py\n" + (
+        "Protocol sample: c2VjcmV0LXBheWxvYWQ=\n"
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "instructions": generated,
+            "tools": [{
+                "type": "function",
+                "description": generated,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "c2VjcmV0LXBheWxvYWQ=": {"type": "string"},
+                    },
+                },
+            }],
+        },
+        route=route,
+    )
+
+    rendered = json.dumps(json.loads(receipt.payload_bytes))
+    assert receipt.allowed
+    assert authorized["instructions"] != generated
+    assert authorized["instructions"] == (
+        "Workspace: <private-path>\n"
+        "Protocol sample: <redacted-base64>\n"
+    )
+    assert "<private-path>" in rendered
+    assert "<redacted-base64>" in rendered
+    assert "/Users/private/project/file.py" not in rendered
+    assert rendered.count("c2VjcmV0LXBheWxvYWQ=") == 1
+
+
+def test_codex_generated_tool_schema_preserves_encoded_property_names(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    property_name = "c2VjcmV0LXBheWxvYWQ="
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "tools": [{
+                "type": "function",
+                "parameters": {
+                    "type": "object",
+                    "properties": {property_name: {"type": "string"}},
+                },
+            }],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["tools"][0]["parameters"]["properties"] == {
+        property_name: {"type": "string"}
+    }
+
+
+def test_codex_generated_context_still_hard_blocks_secrets(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "gpt-5.6-terra",
+                "input": [{"role": "system", "content": "token=super-secret-value"}],
+            },
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+def test_codex_user_content_private_path_is_not_silently_redacted(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "gpt-5.6-terra",
+                "input": [{"role": "user", "content": "Read /Users/private/file.py"}],
+            },
+        )
+
+    assert "private_absolute_path" in exc_info.value.decision.reason_codes
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):

@@ -72,6 +72,20 @@ class SanitizedSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneratedContextSegment:
+    """Hermes-generated remote context after unsafe-text redaction."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedContextKey:
+    """Application-owned JSON key for generated provider tool schemas."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class UntrustedProvenanceSegment:
     """Content-free marker for tool bytes with no trusted origin proof."""
 
@@ -109,6 +123,7 @@ class OutboundText:
     segments: tuple[
         LiteralSegment
         | SanitizedSegment
+        | GeneratedContextSegment
         | ValidatedToolSyntaxSegment
         | SourceBoundSegment
         | SourcePresentationSegment
@@ -690,6 +705,66 @@ def _contains_private_absolute_path(value: Any, *, seen: set[int] | None = None)
     return False
 
 
+def redact_remote_unsafe_text(text: str) -> str:
+    """Redact non-secret unsafe text in Hermes-generated remote context.
+
+    Secrets intentionally remain a hard firewall denial. Private paths and
+    canonical base64-shaped protocol text can be replaced while preserving
+    the surrounding system/tool instructions needed by remote models.
+    """
+
+    if not isinstance(text, str):
+        raise TypeError("remote context must be text")
+
+    def replace_path(match: re.Match[str]) -> str:
+        value = match.group(0)
+        prefix_match = re.match(r"^[\s\"'`(]*", value)
+        prefix = prefix_match.group(0) if prefix_match else ""
+        return prefix + "<private-path>"
+
+    redacted = _PRIVATE_ABSOLUTE_PATH.sub(replace_path, text)
+    if redacted.startswith(("product=hermes-agent", "client=hermes-client-")):
+        return redacted
+
+    def replace_base64(match: re.Match[str]) -> str:
+        candidate = match.group(1)
+        if re.fullmatch(
+            r"[0-9a-f]{7,12}|[0-9a-f]{40}|[0-9a-f]{64}", candidate.lower()
+        ):
+            return match.group(0)
+        if candidate.isdigit():
+            before = redacted[: match.start(1)].rstrip()[-1:]
+            after = redacted[match.end(1) :].lstrip()[:1]
+            if before in {":", ",", "["} and after in {",", "]", "}"}:
+                return match.group(0)
+        if candidate in _PROTOCOL_GRAMMAR_ATOMS or _HERMES_TASK_ID.fullmatch(candidate):
+            return match.group(0)
+        if re.fullmatch(r"(?:call|fc)_[A-Za-z0-9_-]{8,128}", candidate):
+            return match.group(0)
+        if candidate in {
+            "HERMES_CONTROL_HOME",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            "HERMES_PROFILE_HOME",
+        }:
+            return match.group(0)
+        if _PROMPT_CACHE_KEY.fullmatch(candidate) or _canonical_base64_candidate(candidate):
+            return "<redacted-base64>"
+        return match.group(0)
+
+    redacted = _BASE64_CANDIDATE.sub(replace_base64, redacted)
+    chunked = re.compile(
+        r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
+        r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
+    )
+    return chunked.sub(
+        lambda match: "<redacted-base64>"
+        if _canonical_base64_candidate(re.sub(r"\s+", "", match.group(0)))
+        else match.group(0),
+        redacted,
+    )
+
+
 def content_free_violation_locations(value: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Return structural indexes and reasons without returning request text."""
 
@@ -811,6 +886,10 @@ def _is_strict_sanitized_only_payload(
 
     if isinstance(value, SanitizedSegment):
         return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
+    if isinstance(value, GeneratedContextSegment):
+        return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
+    if isinstance(value, GeneratedContextKey):
+        return isinstance(value.text, str), 0
     if isinstance(value, UntrustedProvenanceSegment):
         return False, 0
     if isinstance(value, ValidatedToolSyntaxSegment):
@@ -850,7 +929,7 @@ def _is_strict_sanitized_only_payload(
         seen.add(identity)
         count = 0
         for key, item in value.items():
-            if not isinstance(key, str):
+            if not isinstance(key, (str, GeneratedContextKey)):
                 return False, 0
             allowed, item_count = _is_strict_sanitized_only_payload(item, seen=seen)
             if not allowed:
@@ -1244,13 +1323,14 @@ class LLMEgressFirewall:
             frozenset(),
         )
 
-        def require_static_literal(text: str) -> None:
+        def require_static_literal(text: str, *, scan_base64: bool = True) -> None:
             # Provenance authorization and content safety are independent.
             # Every rendered text atom is scanned again immediately before
             # authorization, including exact policy-bound static literals and
             # structural keys/scalars.
             scan_values.append(text)
-            base64_scan_values.append(text)
+            if scan_base64:
+                base64_scan_values.append(text)
             if static_literal_sha256(text) not in allowed_static_hashes:
                 reasons.append("static_literal_not_allowed")
 
@@ -1258,6 +1338,7 @@ class LLMEgressFirewall:
             segment: (
                 LiteralSegment
                 | SanitizedSegment
+                | GeneratedContextSegment
                 | ValidatedToolSyntaxSegment
                 | SourceBoundSegment
                 | SourcePresentationSegment
@@ -1294,6 +1375,17 @@ class LLMEgressFirewall:
                     return segment.text
                 reasons.append("invalid_literal_segment")
                 return ""
+            if isinstance(segment, GeneratedContextSegment):
+                if not isinstance(segment.text, str):
+                    reasons.append("invalid_generated_context_segment")
+                    return ""
+                # The constructor redacts path/base64-shaped text. Keep the
+                # final scans, especially secret detection, as defense in
+                # depth, but do not charge generated context to the smaller
+                # untrusted-text budget.
+                scan_values.append(segment.text)
+                base64_scan_values.append(segment.text)
+                return segment.text
             if isinstance(segment, ValidatedToolSyntaxSegment):
                 try:
                     text = validate_tool_syntax(segment.text, segment.syntax_kind)
@@ -1364,6 +1456,7 @@ class LLMEgressFirewall:
                 (
                     LiteralSegment,
                     SanitizedSegment,
+                    GeneratedContextSegment,
                     ValidatedToolSyntaxSegment,
                     SourceBoundSegment,
                     SourcePresentationSegment,
@@ -1404,7 +1497,12 @@ class LLMEgressFirewall:
                         flush_adjacent_sanitized()
                     if isinstance(
                         segment,
-                        (LiteralSegment, SanitizedSegment, ValidatedToolSyntaxSegment),
+                        (
+                            LiteralSegment,
+                            SanitizedSegment,
+                            GeneratedContextSegment,
+                            ValidatedToolSyntaxSegment,
+                        ),
                     ):
                         adjacent_non_source.append(rendered)
                     else:
@@ -1415,11 +1513,19 @@ class LLMEgressFirewall:
             if isinstance(value, Mapping):
                 rendered: dict[str, Any] = {}
                 for key, item in value.items():
-                    if not isinstance(key, str):
+                    if isinstance(key, GeneratedContextKey):
+                        rendered_key = key.text
+                        if not isinstance(rendered_key, str):
+                            reasons.append("invalid_generated_context_key")
+                            continue
+                        require_static_literal(rendered_key, scan_base64=False)
+                    elif isinstance(key, str):
+                        rendered_key = key
+                        require_static_literal(rendered_key)
+                    else:
                         reasons.append("invalid_request_key")
                         continue
-                    require_static_literal(key)
-                    rendered[key] = render(item)
+                    rendered[rendered_key] = render(item)
                 return rendered
             if isinstance(value, (list, tuple)):
                 return [render(item) for item in value]
@@ -1549,6 +1655,8 @@ __all__ = [
     "DestinationClass",
     "EgressBlocked",
     "EgressDecision",
+    "GeneratedContextKey",
+    "GeneratedContextSegment",
     "LLMEgressFirewall",
     "LiteralSegment",
     "OutboundText",
@@ -1560,6 +1668,7 @@ __all__ = [
     "UntrustedProvenanceSegment",
     "ValidatedToolSyntaxSegment",
     "classify_destination",
+    "redact_remote_unsafe_text",
     "source_grant_digest",
     "static_literal_sha256",
     "validate_tool_syntax",

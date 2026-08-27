@@ -27,11 +27,14 @@ from agent.llm_egress_firewall import (
     UntrustedProvenanceSegment,
     ValidatedToolSyntaxSegment,
     DestinationClass,
+    GeneratedContextKey,
+    GeneratedContextSegment,
     classify_destination,
     source_grant_digest,
     static_literal_sha256,
     validate_sanitized_text,
     content_free_violation_locations,
+    redact_remote_unsafe_text,
     validate_tool_syntax,
 )
 from agent.source_provenance import DEFAULT_POLICY_DIGEST, SourceProvenanceRegistry
@@ -513,6 +516,8 @@ def _typed_payload(
     syntax_tool_call_ids: frozenset[str] = frozenset(),
     protected_tool_content: bool = False,
     protected_kanban_context: bool = False,
+    generated_context: bool = False,
+    redact_generated_context: bool = False,
     registry: SourceProvenanceRegistry | None = None,
     request_identity: tuple[str, str, str, str] = ("", "", "", ""),
 ) -> Any:
@@ -526,6 +531,8 @@ def _typed_payload(
                 used_grants,
                 sanitized_cap=sanitized_cap,
             )
+        if generated_context and redact_generated_context:
+            return GeneratedContextSegment(redact_remote_unsafe_text(value))
         if protected_kanban_context:
             return _segment_protected_context(
                 value,
@@ -557,7 +564,8 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
-        typed: dict[str, Any] = {}
+        typed: dict[Any, Any] = {}
+        context_mapping = value.get("role") in {"system", "developer"}
         for key, item in value.items():
             if key == "_source_provenance":
                 continue
@@ -574,7 +582,12 @@ def _typed_payload(
                     policy_digest=request_identity[3],
                 )
                 continue
-            typed[key] = _typed_payload(
+            typed_key = (
+                GeneratedContextKey(key)
+                if generated_context and redact_generated_context
+                else key
+            )
+            typed[typed_key] = _typed_payload(
                 item,
                 grant_texts,
                 used_grants,
@@ -585,6 +598,15 @@ def _typed_payload(
                     is_recognized_tool_result and key in {"content", "output"}
                 ),
                 protected_kanban_context=protected_kanban_context,
+                generated_context=(
+                    redact_generated_context
+                    and (
+                        generated_context
+                        or context_mapping
+                        or key in {"instructions", "system_prompt", "tools"}
+                    )
+                ),
+                redact_generated_context=redact_generated_context,
                 registry=registry,
                 request_identity=request_identity,
             )
@@ -600,6 +622,8 @@ def _typed_payload(
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 protected_tool_content=protected_tool_content,
                 protected_kanban_context=protected_kanban_context,
+                generated_context=generated_context,
+                redact_generated_context=redact_generated_context,
                 registry=registry,
                 request_identity=request_identity,
             )
@@ -654,6 +678,14 @@ def _route_for_agent(agent: Any, route: Any | None) -> Any:
         base_url=base_url,
         api_mode=api_mode,
     )
+
+
+def _route_field(route: Any, name: str, default: Any = None) -> Any:
+    """Read route fields from both provider objects and serialized mappings."""
+
+    if isinstance(route, Mapping):
+        return route.get(name, default)
+    return getattr(route, name, default)
 
 
 def _restore_source_provenance_sidecar(
@@ -713,6 +745,7 @@ def authorize_agent_sdk_kwargs(
     sdk_control_keys: Sequence[str] = _SDK_CONTROL_KEYS,
 ) -> tuple[dict[str, Any], AuthorizedEgress]:
     controls = {key: kwargs[key] for key in sdk_control_keys if key in kwargs}
+    resolved_route = _route_for_agent(agent, route)
     sidecar = kwargs.get("_hermes_source_provenance")
     body = {
         key: value
@@ -755,6 +788,10 @@ def authorize_agent_sdk_kwargs(
         ),
         protected_kanban_context=(
             os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+        ),
+        redact_generated_context=(
+            str(_route_field(resolved_route, "provider", "") or "").strip().lower()
+            == "openai-codex"
         ),
         registry=registry if isinstance(registry, SourceProvenanceRegistry) else None,
         request_identity=(session_id, turn_id, request_id, policy_digest),
@@ -805,7 +842,7 @@ def authorize_agent_sdk_kwargs(
     try:
         authorization = firewall.authorize(
             request,
-            _route_for_agent(agent, route),
+            resolved_route,
             grants=tuple(used_grants.values()),
         )
     except EgressBlocked:
@@ -832,9 +869,9 @@ def dispatch_authorized_agent_request(
 ) -> Any:
     resolved_route = _route_for_agent(agent, route)
     destination = classify_destination(
-        str(getattr(resolved_route, "provider", "") or ""),
-        getattr(resolved_route, "base_url", None),
-        getattr(resolved_route, "api_mode", None),
+        str(_route_field(resolved_route, "provider", "") or ""),
+        _route_field(resolved_route, "base_url"),
+        _route_field(resolved_route, "api_mode"),
     )
     if destination in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
         return callback(dict(kwargs))

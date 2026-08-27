@@ -35,6 +35,7 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
+    "@assistant-ui/tap": "0.9.8",
     "@eslint/js": "9.39.5",
     "typescript-eslint": "8.64.0",
     "eslint-plugin-perfectionist": "5.10.0",
@@ -43,6 +44,7 @@
     "globals": "17.7.0"
   },
   "overrides": {
+    "@assistant-ui/tap": "0.9.8",
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",

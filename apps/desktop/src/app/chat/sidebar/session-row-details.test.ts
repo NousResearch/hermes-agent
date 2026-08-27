@@ -29,17 +29,18 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 describe('session row details', () => {
   it('provides density-aware virtual row estimates', () => {
     // Two 13px leading-none title lines + 4px body padding, then the explicit
-    // comfortable/detailed shell floors (min-h-[2.75rem]/[3.875rem]).
+    // comfortable/detailed estimates (45px/63px) preserve room for their
+    // rendered content above the nominal shell floors.
     expect(sessionRowEstimate('compact')).toBe(30)
-    expect(sessionRowEstimate('comfortable')).toBe(44)
-    expect(sessionRowEstimate('detailed')).toBe(62)
+    expect(sessionRowEstimate('comfortable')).toBe(45)
+    expect(sessionRowEstimate('detailed')).toBe(63)
   })
 
   it('keeps the detailed estimate even when preview is omitted as a title duplicate', () => {
     const details = sessionRowDetails(session({ title: null }), en)
 
     expect(details.preview).toBeNull()
-    expect(sessionRowEstimate('detailed')).toBe(62)
+    expect(sessionRowEstimate('detailed')).toBe(63)
   })
 
   it('formats deterministic metadata without ambiguous call wording', () => {

@@ -3096,6 +3096,19 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
+            # Both the curated list and the Portal's recommendations are
+            # unauthenticated, so neither knows what the org may reach. Narrow
+            # to the policy outside the try, so a failed recommendation fetch
+            # still yields a filtered curated list.
+            try:
+                from hermes_cli.models import (
+                    nous_policy_allowed_ids as _nous_policy,
+                    restrict_to_nous_policy as _nous_restrict,
+                )
+
+                model_ids = _nous_restrict(model_ids, _nous_policy())
+            except Exception:
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)

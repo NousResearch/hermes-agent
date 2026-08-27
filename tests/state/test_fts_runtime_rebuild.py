@@ -275,13 +275,33 @@ class TestRuntimeFtsRebuild:
         # Cleanup
         os.chmod(proc_root / "222" / "fd", 0o755)
 
-    def test_corruption_error_classification_covers_both_sqlite_messages(self):
-        """SQLite's message for a corrupt FTS index varies by version: older
-        builds raise the generic malformed-image error, newer builds raise an
-        FTS5-specific one. Both must trigger the self-heal."""
-        assert SessionDB._is_fts_write_corruption_error(
-            sqlite3.DatabaseError("database disk image is malformed")
+    def test_corruption_error_classification_requires_fts_evidence(self):
+        """Generic structural corruption must not enter live FTS repair.
+
+        Older SQLite builds may use the generic malformed-image text for an FTS
+        virtual-table failure, but still expose SQLITE_CORRUPT_VTAB.  Preserve
+        that route while failing closed for unscoped SQLITE_CORRUPT errors.
+        """
+        generic = sqlite3.DatabaseError("database disk image is malformed")
+        assert not SessionDB._is_fts_write_corruption_error(generic)
+
+        structural = sqlite3.DatabaseError("database disk image is malformed")
+        structural.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+        structural.sqlite_errorname = "SQLITE_CORRUPT"
+        assert not SessionDB._is_fts_write_corruption_error(structural)
+
+        fts_virtual_table = sqlite3.DatabaseError("database disk image is malformed")
+        fts_virtual_table.sqlite_errorcode = sqlite3.SQLITE_CORRUPT_VTAB
+        fts_virtual_table.sqlite_errorname = "SQLITE_CORRUPT_VTAB"
+        assert SessionDB._is_fts_write_corruption_error(fts_virtual_table)
+
+        contradictory = sqlite3.IntegrityError(
+            'fts5: corrupt structure record for table "messages_fts"'
         )
+        contradictory.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_TRIGGER
+        contradictory.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+        assert not SessionDB._is_fts_write_corruption_error(contradictory)
+
         assert SessionDB._is_fts_write_corruption_error(
             sqlite3.DatabaseError(
                 'fts5: corrupt structure record for table "messages_fts"'
@@ -290,6 +310,62 @@ class TestRuntimeFtsRebuild:
         assert not SessionDB._is_fts_write_corruption_error(
             sqlite3.DatabaseError("no such table: nothing_fts_related")
         )
+
+    def test_structural_corruption_propagates_without_live_fts_mutation(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+
+        rebuild_called = False
+
+        def _unexpected_rebuild():
+            nonlocal rebuild_called
+            rebuild_called = True
+            raise AssertionError("structural corruption must not rebuild FTS")
+
+        monkeypatch.setattr(db, "rebuild_fts", _unexpected_rebuild)
+        structural = sqlite3.DatabaseError("database disk image is malformed")
+        structural.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+        structural.sqlite_errorname = "SQLITE_CORRUPT"
+
+        with pytest.raises(sqlite3.DatabaseError) as caught:
+            db._execute_write(lambda _conn: (_ for _ in ()).throw(structural))
+
+        assert caught.value is structural
+        assert rebuild_called is False
+        assert db._fts_stale is False
+        assert _meta_value(tmp_path / "state.db", FTS_STALE_KEY) is None
+        assert _base_fts_triggers(tmp_path / "state.db") == set(_FTS_TRIGGERS)
+
+    def test_fts_looking_constraint_error_does_not_mutate_fts(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+
+        rebuild_called = False
+
+        def _unexpected_rebuild():
+            nonlocal rebuild_called
+            rebuild_called = True
+            raise AssertionError("contradictory error code must fail closed")
+
+        monkeypatch.setattr(db, "rebuild_fts", _unexpected_rebuild)
+        contradictory = sqlite3.IntegrityError(
+            'fts5: corrupt structure record for table "messages_fts"'
+        )
+        contradictory.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_TRIGGER
+        contradictory.sqlite_errorname = "SQLITE_CONSTRAINT_TRIGGER"
+
+        with pytest.raises(sqlite3.IntegrityError) as caught:
+            db._execute_write(lambda _conn: (_ for _ in ()).throw(contradictory))
+
+        assert caught.value is contradictory
+        assert rebuild_called is False
+        assert db._fts_stale is False
+        assert _meta_value(tmp_path / "state.db", FTS_STALE_KEY) is None
+        assert _base_fts_triggers(tmp_path / "state.db") == set(_FTS_TRIGGERS)
 
     def test_append_self_heals_after_fts_corruption(self, db, tmp_path):
         if not db._fts_enabled:

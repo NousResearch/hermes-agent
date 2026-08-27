@@ -5842,22 +5842,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
-        """True for the error class a corrupt FTS index raises on writes.
+        """Return true only when SQLite identifies corruption as FTS-scoped.
 
-        SQLite's message for a corrupt FTS index varies by version: older
-        builds raise the generic ``database disk image is malformed`` (covered
-        by :func:`is_malformed_db_error`); newer builds raise the FTS5-specific
-        ``fts5: corrupt structure record for table "messages_fts"``. Both mean
-        the same thing for the write path: the canonical rows are fine, the
-        FTS shadow tables are not.  The FTS-only rebuild and fail-open
-        detach are safe here because they only touch derived indexes; if the
-        damage is actually in a canonical B-tree, the rebuild itself fails and
-        the write propagates.
+        Newer SQLite builds include ``fts5`` in the error text.  Older builds
+        may emit only ``database disk image is malformed`` while exposing the
+        extended ``SQLITE_CORRUPT_VTAB`` result code.  A bare
+        ``SQLITE_CORRUPT``/malformed-image error is structural and must not
+        trigger live FTS maintenance: it does not prove that canonical B-trees
+        are intact.
         """
-        if is_malformed_db_error(exc):
-            return True
+        corrupt_vtab = getattr(sqlite3, "SQLITE_CORRUPT_VTAB", 267)
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if error_code is not None:
+            return error_code == corrupt_vtab
         msg = str(exc).lower()
-        return "fts5" in msg and "corrupt" in msg
+        return msg.startswith("fts5:") and "corrupt structure" in msg
 
     def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
         """Return foreign processes holding this DB or its WAL sidecars.

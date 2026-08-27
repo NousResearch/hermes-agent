@@ -8,7 +8,8 @@ import {
   type DirectTtsConfig,
   fetchVoiceClientConfig,
   synthesizeSpeechClientDirect,
-  transcribeAudioClientDirect
+  transcribeAudioClientDirect,
+  transcriptFromOpenAiMultipartBody
 } from './voice-client-direct'
 
 const directStt = {
@@ -115,6 +116,35 @@ describe('transcribeAudioClientDirect', () => {
     expect(form.get('model')).toBe('whisper-large-v3-turbo')
     expect(form.get('language')).toBe('en')
     expect(form.get('response_format')).toBe('text')
+  })
+
+  it('unwraps Mistral Voxtral JSON instead of dumping it into the composer', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        provider: 'mistral',
+        base_url: 'https://api.mistral.ai/v1',
+        model: 'voxtral-mini-latest',
+        language: null
+      },
+      tts: relay
+    })
+
+    const voxtral = {
+      model: 'voxtral-mini-latest',
+      text: 'Hallo, bist du da?',
+      language: null,
+      segments: [],
+      usage: { prompt_audio_seconds: 4, total_tokens: 388 },
+      finish_reason: null
+    }
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(voxtral), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))).toBe(
+      'Hallo, bist du da?'
+    )
   })
 
   it('returns null (relay) when the provider is not client-callable', async () => {
@@ -243,6 +273,36 @@ describe('synthesizeSpeechClientDirect', () => {
     )
 
     await expect(synthesizeSpeechClientDirect(openaiTts, 'Hi.')).rejects.toThrow(/openai TTS error.*429/)
+  })
+})
+
+describe('transcriptFromOpenAiMultipartBody', () => {
+  it('keeps Groq/OpenAI plain-text bodies', () => {
+    expect(transcriptFromOpenAiMultipartBody('  hello world  ')).toBe('hello world')
+  })
+
+  it('extracts .text from a Voxtral JSON envelope', () => {
+    expect(
+      transcriptFromOpenAiMultipartBody(
+        JSON.stringify({
+          model: 'voxtral-mini-latest',
+          text: 'Hallo, bist du da?',
+          language: null,
+          segments: [],
+          usage: { prompt_audio_seconds: 4 }
+        })
+      )
+    ).toBe('Hallo, bist du da?')
+  })
+
+  it('treats a JSON envelope with empty text as silence', () => {
+    expect(transcriptFromOpenAiMultipartBody(JSON.stringify({ text: '  ', model: 'voxtral-mini-latest' }))).toBe(
+      ''
+    )
+  })
+
+  it('leaves a non-envelope JSON object intact', () => {
+    expect(transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toBe('{"error":"nope"}')
   })
 })
 

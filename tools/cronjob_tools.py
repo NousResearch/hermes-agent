@@ -809,6 +809,89 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _relay_fronted_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names for this job that the relay connector fronts."""
+    try:
+        from gateway.relay import relay_fronted_platforms
+    except Exception:
+        return set()
+    fronted = relay_fronted_platforms()
+    if not fronted:
+        return set()
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        targets = _resolve_delivery_targets(job) or []
+    except Exception:
+        return set()
+    theirs = {t.get("platform") for t in targets if t.get("platform")}
+    return theirs & fronted
+
+
+def _forward_relay_fronted_run(job: Dict[str, Any]) -> Optional[str]:
+    """Forward a manual run to the gateway when it targets a relay-fronted
+    platform and this process has no live relay adapter.
+
+    Relay-fronted delivery has no standalone sender: the connector owns the
+    credential and the gateway's live relay adapter is the only path. The
+    gateway api_server's ``POST /api/jobs/{id}/run`` marks the job due for its
+    own ticker, which fires it with the live adapter. Returns a JSON result
+    string when forwarding engages (dispatch or the accurate error), else
+    None to fall through to the normal in-process run.
+    """
+    if not _relay_fronted_delivery_platforms(job):
+        return None
+    job_id = job["id"]
+    import os
+
+    port_raw = os.getenv("API_SERVER_PORT", "").strip()
+    try:
+        port = int(port_raw) if port_raw else 8642
+    except ValueError:
+        port = 8642
+    url = f"http://127.0.0.1:{port}/api/jobs/{job_id}/run"
+
+    from agent.secret_scope import get_secret
+
+    key = get_secret("API_SERVER_KEY", "") or ""
+
+    resp = None
+    try:
+        import httpx
+
+        resp = httpx.post(
+            url, headers={"Authorization": f"Bearer {key}"}, timeout=10.0
+        )
+    except Exception:
+        resp = None
+
+    if resp is not None and resp.status_code < 300:
+        return json.dumps(
+            {
+                "success": True,
+                "forwarded_to_gateway": True,
+                "note": (
+                    "This job targets a relay-fronted platform; it was dispatched "
+                    "to the running gateway, whose live relay adapter owns that "
+                    "delivery."
+                ),
+            },
+            indent=2,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                "This job targets a relay-fronted platform, which has no "
+                "standalone sender. Start the gateway (it owns the live relay "
+                "adapter) or use `hermes cron trigger` so the gateway ticker "
+                "delivers it."
+            ),
+        },
+        indent=2,
+    )
+
+
 def _execute_job_now(
     job: Dict[str, Any], extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1641,10 +1724,16 @@ def cronjob(
             # bg carries a terminal result (claim lost, or inline fallback
             # after pool rejection); None means background delivery is
             # unsupported here — run synchronously as before.
-            exec_result = (
-                bg if bg is not None
-                else _execute_job_now(job, extra_prompt=extra_prompt)
-            )
+            if bg is not None:
+                exec_result = bg
+            else:
+                # Relay-fronted manual run: a standalone process has no live
+                # relay adapter and no standalone sender, so forward to the
+                # running gateway (its live adapter owns that delivery).
+                forwarded = _forward_relay_fronted_run(job)
+                if forwarded is not None:
+                    return forwarded
+                exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
             # A claimed direct run advances next_run_at and may race the
             # external one-shot for the same occurrence. If Chronos loses that
             # claim, its consumed fire cannot re-arm itself; reconcile from the

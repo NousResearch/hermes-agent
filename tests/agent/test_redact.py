@@ -100,6 +100,37 @@ class TestEnvAssignments:
         result = redact_sensitive_text(text)
         assert result == text
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'IDENTITY_TOKEN="bailu"',
+            "--override-tensor per_layer_token_embd.weight=CPU",
+            'runtime.token="local"',
+            '{"token": "CPU"}',
+            "token: CPU",
+        ],
+    )
+    def test_ambiguous_key_preserves_obviously_noncredential_value(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
+        "text, cleartext",
+        [
+            ("PASSWORD=hunter2", "hunter2"),
+            ("SECRET_TOKEN=bailu", "bailu"),
+            ("id_token=local", "local"),
+            ("CUSTOM_TOKEN=opaqueValue123456789", "opaqueValue123456789"),
+            ('{"token": "opaqueValue123456789"}', "opaqueValue123456789"),
+            ('{"key_material": "CPU"}', "CPU"),
+            ('{"bearer": "local"}', "local"),
+            ("TOKEN=" + "sk-" + "a" * 30, "a" * 20),
+        ],
+    )
+    def test_strong_key_or_credential_shaped_value_still_redacts(
+        self, text, cleartext
+    ):
+        assert cleartext not in redact_sensitive_text(text, force=True)
+
 
 
 

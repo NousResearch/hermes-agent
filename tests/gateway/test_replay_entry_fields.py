@@ -6,11 +6,12 @@ pure-text assistant turn (no ``tool_calls``) is replayed, the simple-text
 branch in ``run_sync`` used to whitelist only three reasoning fields:
 ``reasoning``, ``reasoning_details``, ``codex_reasoning_items``.
 
-That whitelist predated three fields the DB now persists:
-``reasoning_content``, ``codex_message_items``, and ``finish_reason``.  The
-unrecovered drop of ``codex_message_items`` in particular kills prefix-cache
-hits for OpenAI Codex Responses API users — OpenAI's docs require the
-``phase`` field be replayed on every assistant message.
+That whitelist predated provider replay metadata added to the DB later, including
+``reasoning_content``, ``codex_message_items``, ``finish_reason``, and the
+internal ``_reasoning_route`` provenance fingerprint.  The unrecovered drop of
+``codex_message_items`` in particular kills prefix-cache hits for OpenAI Codex
+Responses API users — OpenAI's docs require the ``phase`` field be replayed on
+every assistant message.
 
 These tests pin the expanded whitelist so it doesn't regress.
 """
@@ -58,7 +59,7 @@ class TestBuildReplayEntry:
         assert entry == {"role": "assistant", "content": "answer"}
 
 
-    def test_assistant_preserves_all_six_fields_together(self):
+    def test_assistant_preserves_all_replay_fields_together(self):
         details = [{"type": "reasoning.summary", "summary": "s"}]
         codex_items = [{"type": "reasoning", "encrypted_content": "b"}]
         msg_items = [
@@ -78,6 +79,7 @@ class TestBuildReplayEntry:
             "codex_reasoning_items": codex_items,
             "codex_message_items": msg_items,
             "finish_reason": "stop",
+            "_reasoning_route": "a" * 64,
         }
         entry = _build_replay_entry("assistant", "answer", msg)
         assert entry["reasoning"] == "thinking"
@@ -86,6 +88,7 @@ class TestBuildReplayEntry:
         assert entry["codex_reasoning_items"] == codex_items
         assert entry["codex_message_items"] == msg_items
         assert entry["finish_reason"] == "stop"
+        assert entry["_reasoning_route"] == "a" * 64
 
 
     def test_replay_fields_constant_is_stable(self):
@@ -97,6 +100,7 @@ class TestBuildReplayEntry:
             "codex_reasoning_items",
             "codex_message_items",
             "finish_reason",
+            "_reasoning_route",
         )
 
     def test_unrelated_keys_are_ignored(self):

@@ -34,6 +34,8 @@ def _make_agent_openrouter():
         "api_key": "or-key-original",
         "base_url": "https://openrouter.ai/api/v1",
     }
+    agent._reasoning_replay_field = "reasoning"
+    agent._read_reasoning_replay_field_from_config = lambda: None
     agent.context_compressor = None
     agent._anthropic_api_key = ""
     agent._anthropic_base_url = None
@@ -85,6 +87,7 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
 
     original_client = agent.client
     original_kwargs = dict(agent._client_kwargs)
+    agent.context_compressor = MagicMock(replay_historical_reasoning=True)
 
     # _create_openai_client raises mid-swap (simulates bad key / network error)
     def boom(*_a, **_kw):
@@ -111,6 +114,8 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
     assert agent.runtime_capabilities == {"native_compaction": False}
+    assert agent._reasoning_replay_field == "reasoning"
+    assert agent.context_compressor.replay_historical_reasoning is True
 
 
 def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
@@ -205,3 +210,40 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+    assert agent._reasoning_replay_field is None
+    assert agent._primary_runtime["reasoning_replay_field"] is None
+
+
+def test_successful_switch_applies_named_custom_provider_replay_field():
+    agent = _make_agent_openrouter()
+    agent._create_openai_client = lambda *_a, **_kw: MagicMock(name="NewClient")
+    agent._read_reasoning_replay_field_from_config = lambda: None
+    agent.context_compressor = MagicMock(replay_historical_reasoning=False)
+    agent._custom_providers = [
+        {
+            "provider_key": "qwen-vllm",
+            "name": "Qwen vLLM",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "models": {"Qwen/Qwen3.8-27B": {}},
+            "reasoning_replay_field": "reasoning",
+        }
+    ]
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch(
+            "hermes_cli.config.get_compatible_custom_providers",
+            return_value=agent._custom_providers,
+        ),
+    ):
+        agent.switch_model(
+            new_model="Qwen/Qwen3.8-27B",
+            new_provider="custom:qwen-vllm",
+            api_key="test-key",
+            base_url="http://127.0.0.1:8000/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent._reasoning_replay_field == "reasoning"
+    assert agent._primary_runtime["reasoning_replay_field"] == "reasoning"
+    assert agent.context_compressor.replay_historical_reasoning is True

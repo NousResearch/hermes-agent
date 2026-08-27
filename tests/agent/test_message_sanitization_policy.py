@@ -255,6 +255,43 @@ class TestApplyReasoningContentPolicy:
             {"role": "assistant", "content": "x", "reasoning_content": None}, api, False)
         assert "reasoning_content" not in api
 
+    def test_configured_reasoning_field_replays_qwen_history_without_pad(self):
+        source = {
+            "role": "assistant",
+            "content": "visible",
+            "reasoning": "SYNTHETIC_REASONING_MARKER",
+            "reasoning_content": "stale-alias",
+        }
+        api = dict(source)
+
+        apply_reasoning_content_policy(
+            source,
+            api,
+            needs_thinking_pad=False,
+            reasoning_replay_field="reasoning",
+        )
+
+        assert api["reasoning"] == "SYNTHETIC_REASONING_MARKER"
+        assert "reasoning_content" not in api
+
+    def test_configured_reasoning_content_field_replays_without_pad(self):
+        source = {
+            "role": "assistant",
+            "content": "visible",
+            "reasoning": "SYNTHETIC_REASONING_MARKER",
+        }
+        api = {"role": "assistant", "content": "visible"}
+
+        apply_reasoning_content_policy(
+            source,
+            api,
+            needs_thinking_pad=False,
+            reasoning_replay_field="reasoning_content",
+        )
+
+        assert api["reasoning_content"] == "SYNTHETIC_REASONING_MARKER"
+        assert "reasoning" not in api
+
 
 # ---------------------------------------------------------------------------
 # reapply_reasoning_echo
@@ -282,6 +319,14 @@ class TestReapplyReasoningEcho:
         assert reapply_reasoning_echo(msgs, False) == 1
         assert all("reasoning_content" not in m for m in msgs)
 
+    def test_strict_side_strips_reasoning_field(self):
+        msgs = [
+            {"role": "assistant", "content": "a", "reasoning": "private trace"}
+        ]
+
+        assert reapply_reasoning_echo(msgs, False) == 1
+        assert "reasoning" not in msgs[0]
+
     def test_idempotent(self):
         import copy
         msgs = copy.deepcopy(self.MSGS)
@@ -289,6 +334,67 @@ class TestReapplyReasoningEcho:
         assert reapply_reasoning_echo(msgs, True) == 0
         reapply_reasoning_echo(msgs, False)
         assert reapply_reasoning_echo(msgs, False) == 0
+
+    def test_custom_replay_does_not_fabricate_missing_reasoning(self):
+        api_messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+
+        changed = reapply_reasoning_echo(
+            api_messages,
+            False,
+            reasoning_replay_field="reasoning",
+        )
+
+        assert changed == 0
+        assert "reasoning" not in api_messages[2]
+
+    def test_custom_replay_does_not_fabricate_missing_reasoning_content(self):
+        api_messages = [{"role": "assistant", "content": "a"}]
+
+        changed = reapply_reasoning_echo(
+            api_messages,
+            False,
+            reasoning_replay_field="reasoning_content",
+        )
+
+        assert changed == 0
+        assert "reasoning_content" not in api_messages[0]
+
+    @pytest.mark.parametrize(
+        "primary_field,fallback_field",
+        [
+            ("reasoning", "reasoning_content"),
+            ("reasoning_content", "reasoning"),
+        ],
+    )
+    def test_provider_boundary_drops_foreign_trace_between_replay_routes(
+        self, primary_field, fallback_field
+    ):
+        api_messages = [
+            {
+                "role": "assistant",
+                "content": "visible",
+                primary_field: "PRIMARY_PRIVATE_TRACE",
+                "reasoning_details": [
+                    {"type": "reasoning.summary", "summary": "PRIVATE"}
+                ],
+            }
+        ]
+
+        changed = reapply_reasoning_echo(
+            api_messages,
+            False,
+            reasoning_replay_field=fallback_field,
+            provider_boundary=True,
+        )
+
+        assert changed == 1
+        assert "reasoning" not in api_messages[0]
+        assert "reasoning_content" not in api_messages[0]
+        assert "reasoning_details" not in api_messages[0]
 
 
 # ---------------------------------------------------------------------------
@@ -412,12 +518,127 @@ class TestPerProviderReasoningEcho:
         assert changed == 1
         assert api_msgs[1].get("reasoning_content") == " "
 
+    def test_replay_enabled_fallback_drops_primary_hidden_trace(self):
+        """Changing replay carriers must not translate a primary's trace."""
+        agent = self._make_agent(reasoning_echo_flag=False)
+        agent._fallback_activated = True
+        agent._reasoning_replay_field = "reasoning_content"
+        api_msgs = [
+            {
+                "role": "assistant",
+                "content": "visible",
+                "reasoning": "PRIMARY_PRIVATE_TRACE",
+            }
+        ]
+
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
+        assert "reasoning" not in api_msgs[0]
+        assert "reasoning_content" not in api_msgs[0]
+
+    def test_fallback_keeps_reasoning_generated_after_route_boundary(self):
+        agent = self._make_agent(reasoning_echo_flag=False)
+        agent._fallback_activated = False
+        agent._reasoning_replay_field = "reasoning"
+        api_msgs = [
+            {"role": "assistant", "content": "primary", "reasoning": "PRIMARY_TRACE"}
+        ]
+
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        # Establish the route that shaped the existing request messages.
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 0
+
+        agent.provider = "custom:fallback"
+        agent.model = "fallback-model"
+        agent.base_url = "https://fallback.example/v1"
+        agent._reasoning_replay_field = "reasoning_content"
+        agent._fallback_activated = True
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
+        assert "reasoning" not in api_msgs[0]
+
+        # A tool-call turn generated by the fallback belongs to the current
+        # route and must survive the next iteration under that same route.
+        api_msgs.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "FALLBACK_TRACE",
+                "tool_calls": [{"id": "c", "type": "function"}],
+            }
+        )
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 0
+        assert api_msgs[1]["reasoning_content"] == "FALLBACK_TRACE"
+
+    def test_case_sensitive_gateway_paths_are_distinct_routes(self):
+        agent = self._make_agent(base_url="https://gateway.example/TenantA/v1")
+        agent._reasoning_replay_field = "reasoning"
+        agent._fallback_activated = False
+        api_msgs = [
+            {"role": "assistant", "content": "a", "reasoning": "TENANT_A_TRACE"}
+        ]
+
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 0
+        agent.base_url = "https://gateway.example/tenanta/v1"
+        agent._fallback_activated = True
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
+        assert "reasoning" not in api_msgs[0]
+
+    def test_fallback_rebuild_uses_message_provenance(self):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom:fallback",
+            model="fallback-model",
+            base_url="https://fallback.example/v1",
+        )
+        agent._fallback_activated = True
+        agent._reasoning_replay_field = "reasoning_content"
+
+        primary_source = {
+            "role": "assistant",
+            "content": "primary answer",
+            "reasoning": "PRIMARY_PRIVATE_TRACE",
+            "reasoning_content": "PRIMARY_PRIVATE_TRACE",
+            "reasoning_details": [
+                {"type": "reasoning.summary", "summary": "PRIMARY_PRIVATE"}
+            ],
+            "_reasoning_route": reasoning_route_fingerprint(
+                "custom:primary", "primary-model", "https://primary.example/v1"
+            ),
+        }
+        primary_api = dict(primary_source)
+        agent._copy_reasoning_content_for_api(primary_source, primary_api)
+
+        assert "reasoning" not in primary_api
+        assert "reasoning_content" not in primary_api
+        assert "reasoning_details" not in primary_api
+        assert "_reasoning_route" not in primary_api
+
+        fallback_source = {
+            "role": "assistant",
+            "content": "fallback answer",
+            "reasoning": "FALLBACK_PRIVATE_TRACE",
+            "_reasoning_route": reasoning_route_fingerprint(
+                "custom:fallback", "fallback-model", "https://fallback.example/v1"
+            ),
+        }
+        fallback_api = dict(fallback_source)
+        agent._copy_reasoning_content_for_api(fallback_source, fallback_api)
+
+        assert fallback_api["reasoning_content"] == "FALLBACK_PRIVATE_TRACE"
+        assert "_reasoning_route" not in fallback_api
+
     def test_restore_primary_reverts_flag(self):
         """After fallback, restore_primary_runtime reverts the flag
         from the snapshot saved by switch_model."""
         from run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent._reasoning_echo_flag = True  # primary had opt-in
+        agent._reasoning_replay_field = None
         agent._fallback_activated = True
         agent._rate_limited_until = 0
         agent._primary_runtime = {
@@ -431,6 +652,7 @@ class TestPerProviderReasoningEcho:
             "use_prompt_caching": True,
             "use_native_cache_layout": False,
             "reasoning_echo_flag": True,  # snapshot saved by switch_model
+            "reasoning_replay_field": "reasoning",
         }
         agent._transport_cache = {}
         agent.client = None
@@ -443,7 +665,10 @@ class TestPerProviderReasoningEcho:
         agent.provider = "fallback-provider"
         agent.requested_provider = "fallback-provider"
         agent.base_url = "https://fallback.com/v1"
-        agent.context_compressor = None
+        agent.context_compressor = SimpleNamespace(
+            replay_historical_reasoning=False,
+            update_model=lambda *args, **kwargs: None,
+        )
         agent._config_context_length = None
 
         # Simulate: fallback set the flag to False
@@ -452,8 +677,10 @@ class TestPerProviderReasoningEcho:
         from agent.agent_runtime_helpers import restore_primary_runtime
         restore_primary_runtime(agent)
 
-        # Flag should be restored from snapshot
+        # Per-provider replay policy should be restored from snapshot.
         assert agent._reasoning_echo_flag is True
+        assert agent._reasoning_replay_field == "reasoning"
+        assert agent.context_compressor.replay_historical_reasoning is True
         assert agent.model == "glm-5.2"
 
     def test_apply_policy_preserves_with_opt_in(self):

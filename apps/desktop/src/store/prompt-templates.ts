@@ -346,8 +346,9 @@ export type DropPlacement = 'after' | 'before' | 'inside'
  *
  * - `before` / `after`: become a sibling of `overId` (same parent), inserted
  *   before it or after it **and its remaining subtree**.
- * - `inside`: only valid when `overId` is a folder; become its last child and
- *   expand the folder so the move is visible.
+ * - `inside`: only valid when `overId` is a folder.
+ *   - Collapsed folder → first child; folder stays collapsed (no auto-expand).
+ *   - Expanded folder → last child; leave expand state alone.
  *
  * Moves the active node **and its descendants** as one block. Returns false
  * when the drop is illegal (unknown ids, drop into own subtree, inside a
@@ -397,9 +398,8 @@ export function placeNode(activeId: string, overId: string, placement: DropPlace
   const block = list
     .filter(s => blockIds.has(s.id))
     .map(s => (s.id === activeId ? { ...s, parentId: newParentId } : s))
-  const rest = list
-    .filter(s => !blockIds.has(s.id))
-    .map(s => (placement === 'inside' && s.id === overId ? { ...s, collapsed: false } : s))
+  // Never auto-expand on drop — collapsed folders stay closed (insert at top).
+  const rest = list.filter(s => !blockIds.has(s.id))
 
   const overIndex = rest.findIndex(s => s.id === overId)
 
@@ -411,8 +411,11 @@ export function placeNode(activeId: string, overId: string, placement: DropPlace
 
   if (placement === 'before') {
     insertAt = overIndex
+  } else if (placement === 'inside' && over.collapsed) {
+    // First child in flat order = immediately after the folder row.
+    insertAt = overIndex + 1
   } else {
-    // after | inside → after over and whatever descendants remain under it
+    // after | inside (expanded) → after over and whatever descendants remain under it
     const overDesc = collectDescendantIds(overId, rest)
 
     insertAt = overIndex + 1

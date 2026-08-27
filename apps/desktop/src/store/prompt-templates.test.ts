@@ -376,10 +376,29 @@ describe('prompt-templates store', () => {
       expect($promptTemplates.get().map(s => s.id)).toEqual([a.id, b.id, c.id])
     })
 
-    it('nests inside a folder and expands it', () => {
+    it('nests into a collapsed folder at the top without expanding', () => {
       $promptTemplates.set([])
       const folder = addFolder('Group')
       updateTemplate(folder.id, { collapsed: true })
+      const existing = addTemplate('Existing', '', 'e', folder.id)
+      const tpl = addTemplate('Nested', '', 'x')
+
+      expect(placeNode(tpl.id, folder.id, 'inside')).toBe(true)
+
+      const list = $promptTemplates.get()
+      expect(list.find(s => s.id === tpl.id)?.parentId).toBe(folder.id)
+      expect(list.find(s => s.id === folder.id)?.collapsed).toBe(true)
+      // First among children in flat order (right after the folder row).
+      const ids = list.map(s => s.id)
+      expect(ids.indexOf(tpl.id)).toBe(ids.indexOf(folder.id) + 1)
+      expect(ids.indexOf(existing.id)).toBeGreaterThan(ids.indexOf(tpl.id))
+    })
+
+    it('nests into an expanded folder as last child and leaves it open', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Group')
+      updateTemplate(folder.id, { collapsed: false })
+      const existing = addTemplate('Existing', '', 'e', folder.id)
       const tpl = addTemplate('Nested', '', 'x')
 
       expect(placeNode(tpl.id, folder.id, 'inside')).toBe(true)
@@ -387,6 +406,8 @@ describe('prompt-templates store', () => {
       const list = $promptTemplates.get()
       expect(list.find(s => s.id === tpl.id)?.parentId).toBe(folder.id)
       expect(list.find(s => s.id === folder.id)?.collapsed).toBe(false)
+      const ids = list.map(s => s.id)
+      expect(ids.indexOf(tpl.id)).toBeGreaterThan(ids.indexOf(existing.id))
     })
 
     it('rejects drop into own subtree (snap-back case)', () => {

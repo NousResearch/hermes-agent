@@ -257,9 +257,13 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     const ratio = (clientY - rect.top) / Math.max(rect.height, 1)
 
     if (overNode.kind === 'folder') {
-      // Prefer nest-into-folder: only a thin top edge is "before" as a sibling.
-      // Bottom edge used to be "after" (root sibling past the whole subtree), which
-      // made it feel impossible to drop a template *back* into an empty/open folder.
+      // Collapsed folder: the whole row is a nest target — reorder-before must not
+      // win over "put into this pack" (children are hidden, so nest is the intent).
+      if (overNode.collapsed) {
+        return 'inside'
+      }
+
+      // Expanded: thin top edge = sibling before; rest of row = nest inside.
       if (ratio < 0.15) {
         return 'before'
       }

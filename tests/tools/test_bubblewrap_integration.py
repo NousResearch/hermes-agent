@@ -1,6 +1,7 @@
 """Tests for the bubblewrap backend wired into the terminal tool: the
 environment factory, the unknown-backend error string, the
-host-path defaults, and file access through the host path.
+host-path defaults, file access through the host path, and execute_code
+dispatch (the script runs inside the sandbox, never on the host).
 
 Unit tests never spawn bwrap. Integration tests are skipped as a module
 when bwrap is missing or its runtime probe fails, so CI without bwrap
@@ -11,7 +12,8 @@ import json
 import os
 import shutil
 import subprocess
-from unittest.mock import patch
+import textwrap
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -140,3 +142,54 @@ class TestToolIntegration:
         assert r["exit_code"] == -1
         assert "background" in r["error"]
         assert "session_id" not in r
+
+
+class TestExecuteCodeDispatch:
+    def test_execute_code_dispatches_bubblewrap_to_the_env_backed_path(self, isolated_tool):
+        """Pins the dispatch: under bubblewrap execute_code must take
+        the env.execute() file-RPC path, which runs the script under the bwrap
+        prefix. The host UDS path would spawn the script unsandboxed, so
+        routing bubblewrap beside local fails this test."""
+        import tools.code_execution_tool as cet
+
+        sentinel = json.dumps({"status": "success", "output": "via-env"})
+        remote = MagicMock(return_value=sentinel)
+        local_tmp = MagicMock()
+        local_tmp.mkdtemp.side_effect = AssertionError("host UDS path must not run under bubblewrap")
+
+        with patch.object(cet, "_execute_remote", remote), \
+             patch.object(cet, "tempfile", local_tmp), \
+             patch("tools.process_registry._is_supervised_gateway_process", return_value=False), \
+             patch("tools.approval.check_execute_code_guard", return_value={"approved": True}):
+            assert isolated_tool._get_env_config()["env_type"] == "bubblewrap"
+            result = cet.execute_code("print(1)", task_id="dispatch", enabled_tools=["terminal"])
+
+        assert result == sentinel
+        remote.assert_called_once_with("print(1)", "dispatch", ["terminal"], reset=False)
+        local_tmp.mkdtemp.assert_not_called()
+
+
+@needs_bwrap
+class TestExecuteCodeIntegration:
+    def test_execute_code_runs_inside_the_sandbox_under_the_default_rlimits(self, isolated_tool):
+        from tools.code_execution_tool import execute_code
+
+        task_id = "execute-code"
+        code = textwrap.dedent("""
+            import os
+            print("PIDS", len([n for n in os.listdir("/proc") if n.isdigit()]))
+            try:
+                bytearray(400 * 1024 * 1024)
+                print("ALLOC ok")
+            except MemoryError:
+                print("ALLOC MemoryError")
+        """)
+        r = json.loads(execute_code(code, task_id=task_id, enabled_tools=["terminal"]))
+        assert r["status"] == "success", r
+        lines = r["output"].strip().splitlines()
+        pids = int(next(l for l in lines if l.startswith("PIDS ")).split()[1])
+        # A pid namespace with a handful of processes: the script ran sandboxed.
+        assert pids < 10, r["output"]
+        # RLIMIT_AS from the default memory_mb applies to the script too.
+        assert "ALLOC MemoryError" in lines, r["output"]
+        assert isinstance(isolated_tool.get_active_env(task_id), BubblewrapEnvironment)

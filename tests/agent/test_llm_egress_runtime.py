@@ -216,6 +216,25 @@ def test_protected_kanban_splits_large_line_bounded_context_without_changing_wir
     assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
 
 
+def test_protected_kanban_splits_single_oversized_line_without_relaxing_cap(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent._llm_egress_max_sanitized_bytes = 128_000
+    text = "ordinary bounded repair context " * 2_000
+    assert "\n" not in text
+    assert len(text.encode("utf-8")) > 32_768
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {"model": "test-model", "messages": [{"role": "system", "content": text}]},
+    )
+
+    assert authorized["messages"][0]["content"] == text
+    assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
+
+
 @pytest.mark.parametrize(
     "identifier",
     [

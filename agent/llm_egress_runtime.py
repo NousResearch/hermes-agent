@@ -204,6 +204,27 @@ def _approved_sanitized(text: str, *, cap: int) -> SanitizedSegment:
     return SanitizedSegment(text)
 
 
+def _split_utf8_chunks(text: str, cap: int) -> list[str]:
+    """Split text into UTF-8-safe chunks no larger than ``cap`` bytes."""
+
+    chunks: list[str] = []
+    pending: list[str] = []
+    pending_bytes = 0
+    for character in text:
+        character_bytes = len(character.encode("utf-8"))
+        if character_bytes > cap:
+            raise ValueError("sanitized segment exceeds byte cap")
+        if pending and pending_bytes + character_bytes > cap:
+            chunks.append("".join(pending))
+            pending = []
+            pending_bytes = 0
+        pending.append(character)
+        pending_bytes += character_bytes
+    if pending:
+        chunks.append("".join(pending))
+    return chunks
+
+
 def _approved_sanitized_segments(
     text: str,
     *,
@@ -214,9 +235,10 @@ def _approved_sanitized_segments(
 
     Normal callers may provide multiple bounded messages or exact-grant-separated
     segments. Protected Kanban context has an additional deterministic source
-    boundary: complete lines from the locally projected task payload. Those
-    lines may be packed into independently bounded segments without changing
-    the provider-visible text. A single oversized line is never split.
+    boundary: complete lines from the locally projected task payload are packed
+    into independently bounded segments without changing provider-visible text.
+    Oversized individual lines are split only at UTF-8 character boundaries;
+    the firewall re-scans adjacent chunks as one logical span.
     """
 
     if not allow_line_split or len(text.encode("utf-8")) <= cap:
@@ -228,7 +250,15 @@ def _approved_sanitized_segments(
     for line in text.splitlines(keepends=True):
         line_bytes = len(line.encode("utf-8"))
         if line_bytes > cap:
-            raise ValueError("sanitized segment exceeds byte cap")
+            if pending:
+                segments.append(_approved_sanitized(pending, cap=cap))
+                pending = ""
+                pending_bytes = 0
+            segments.extend(
+                _approved_sanitized(chunk, cap=cap)
+                for chunk in _split_utf8_chunks(line, cap)
+            )
+            continue
         if pending and pending_bytes + line_bytes > cap:
             segments.append(_approved_sanitized(pending, cap=cap))
             pending = ""

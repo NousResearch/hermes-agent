@@ -1093,6 +1093,128 @@ class TestBindsFrozenAtConstruction:
             env.cleanup()
 
 
+class TestBindSourceGuard:
+    """bwrap resolves a bind source on the host at every spawn, so a
+    read-write source a sandbox can rename (a plain directory inside the
+    writable set) with a dest elsewhere lets a command choose the next
+    spawn's mount; at its own path the source is a mount point inside and
+    cannot be moved."""
+
+    @staticmethod
+    def _config(profile="network", binds=(), **kw):
+        return BubblewrapConfig(profile=profile, binds=tuple(binds), **kw)
+
+    @staticmethod
+    def _refused(work_dir, config, sandbox_root):
+        with _no_session(), pytest.raises(ValueError, match="terminal.bubblewrap_binds") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        assert "dest equal to src" in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    @staticmethod
+    def _constructs(work_dir, config):
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        env.cleanup()
+
+    @pytest.mark.parametrize("profile", ["network", "workspace"])
+    def test_rw_bind_from_inside_a_writable_cwd_to_another_dest_is_refused(self, sandbox_root, work_dir, profile):
+        cache = work_dir / "cache"
+        cache.mkdir()
+        config = self._config(profile, [BindMount(src=str(cache), dest="/mnt/cache", readonly=False)])
+        self._refused(work_dir, config, sandbox_root)
+
+    def test_the_same_bind_constructs_under_restricted(self, sandbox_root, work_dir):
+        cache = work_dir / "cache"
+        cache.mkdir()
+        self._constructs(work_dir, self._config("restricted", [BindMount(src=str(cache), dest="/mnt/cache", readonly=False)]))
+
+    def test_rw_bind_from_inside_another_rw_bind_source_to_another_dest_is_refused(self, sandbox_root, work_dir, tmp_path):
+        shared = tmp_path / "shared"
+        (shared / "models").mkdir(parents=True)
+        config = self._config(binds=[
+            BindMount(src=str(shared), dest=str(shared), readonly=False),
+            BindMount(src=str(shared / "models"), dest="/mnt", readonly=False),
+        ])
+        self._refused(work_dir, config, sandbox_root)
+
+    @pytest.mark.parametrize("mode, constructs", [("profile", False), ("auto", True)])
+    def test_rw_bind_from_inside_the_profile_home_follows_home_mode(self, sandbox_root, work_dir, tmp_path, monkeypatch, mode, constructs):
+        # A source under the plain HERMES_HOME/home is under the hidden
+        # HERMES_HOME and filter_binds drops it; the shape that reaches
+        # the sandbox is a profile home linked to a clean directory outside.
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        target = tmp_path / "elsewhere" / "home"
+        data = target / "data"
+        data.mkdir(parents=True)
+        (hermes_home / "home").symlink_to(target)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        config = self._config(binds=[BindMount(src=str(data), dest="/mnt/data", readonly=False)], home_mode=mode)
+        if constructs:
+            self._constructs(work_dir, config)
+        else:
+            self._refused(work_dir, config, sandbox_root)
+
+    def test_rw_bind_at_its_own_path_and_the_ro_form_construct(self, sandbox_root, work_dir):
+        cache = work_dir / "cache"
+        cache.mkdir()
+        self._constructs(work_dir, self._config(binds=[BindMount(src=str(cache), dest=str(cache), readonly=False)]))
+        self._constructs(work_dir, self._config(binds=[BindMount(src=str(cache), dest="/mnt/cache", readonly=True)]))
+
+    def test_rw_bind_of_the_cwd_itself_elsewhere_constructs(self, sandbox_root, work_dir):
+        # The cwd is bound at its own path first, so it is a mount point inside.
+        self._constructs(work_dir, self._config(binds=[BindMount(src=str(work_dir), dest="/proj", readonly=False)]))
+
+    def test_self_bound_rw_source_two_levels_below_the_cwd_is_refused(self, sandbox_root, work_dir):
+        # Only the mount point itself gets EBUSY: a command renames cwd/a,
+        # recreates it and plants a relative symlink at cwd/a/cache, and
+        # the next spawn mounts the link target read-write.
+        cache = work_dir / "a" / "cache"
+        cache.mkdir(parents=True)
+        self._refused(work_dir, self._config(binds=[BindMount(src=str(cache), dest=str(cache), readonly=False)]), sandbox_root)
+
+    def test_self_bound_rw_source_directly_under_a_self_bound_rw_source_constructs(self, sandbox_root, work_dir):
+        # cwd/a is a mount point inside, so cwd/a/cache has an unrenamable parent.
+        cache = work_dir / "a" / "cache"
+        cache.mkdir(parents=True)
+        self._constructs(work_dir, self._config(binds=[
+            BindMount(src=str(work_dir / "a"), dest=str(work_dir / "a"), readonly=False),
+            BindMount(src=str(cache), dest=str(cache), readonly=False),
+        ]))
+
+    @pytest.mark.parametrize("rel", ["link", "link/sub"])
+    def test_rw_source_through_a_symlink_inside_the_cwd_is_refused(self, sandbox_root, work_dir, tmp_path, rel):
+        # The link sits in the writable cwd, so a command can repoint it
+        # whatever its target; self-bound or not.
+        target = tmp_path / "data"
+        (target / "sub").mkdir(parents=True)
+        (work_dir / "link").symlink_to(target)
+        src = work_dir / rel
+        self._refused(work_dir, self._config(binds=[BindMount(src=str(src), dest=str(src), readonly=False)]), sandbox_root)
+        self._refused(work_dir, self._config(binds=[BindMount(src=str(src), dest="/mnt/data", readonly=False)]), sandbox_root)
+        self._constructs(work_dir, self._config(binds=[BindMount(src=str(src), dest="/mnt/data", readonly=True)]))
+
+    @needs_bwrap
+    def test_a_source_bound_at_its_own_path_cannot_be_renamed_inside(self, sandbox_root, work_dir):
+        cache = work_dir / "cache"
+        cache.mkdir()
+        (cache / "seed").write_text("host")
+        env = BubblewrapEnvironment(
+            cwd=str(work_dir), timeout=30,
+            config=self._config("workspace", [BindMount(src=str(cache), dest=str(cache), readonly=False)]),
+        )
+        try:
+            result = env.execute(f"mv {cache} {cache}.bak")
+            assert result["returncode"] != 0
+            assert "busy" in result["output"].lower(), result["output"]
+            assert cache.is_dir() and not (work_dir / "cache.bak").exists()
+            assert env.execute(f"cat {cache}/seed")["output"].strip() == "host"
+            assert (str(cache), str(cache)) in [m[1:] for m in _mounts(env._wrap_popen_args(["bash"])) if m[0] == "--bind"]
+        finally:
+            env.cleanup()
+
+
 @needs_bwrap
 class TestDeletedCwdRecovery:
     def test_deleted_cwd_recovers_to_the_parent_and_rebinds_when_recreated(self, sandbox_root, host_dir):

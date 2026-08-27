@@ -393,6 +393,15 @@ async def handle_ws(
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+        # Cross-backend liveness (#94895): register a heartbeat row so
+        # the startup orphan sweep can distinguish "row owned by a live
+        # but idle backend" from "row truly orphaned". The stdio TUI's
+        # entry.main() does the same; idempotent + once-per-process so a
+        # stdio TUI that already started the refresher is a no-op here.
+        try:
+            server._start_backend_heartbeat_refresher()
+        except Exception:
+            _log.warning("backend heartbeat refresher start failed", exc_info=True)
         # Same once-per-process startup pass for session rows orphaned by a
         # previous gateway process (#65194): the desktop app and web dashboard
         # reach the agent through this WS sidecar, not entry.main(). Idempotent

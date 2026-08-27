@@ -494,6 +494,23 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     failure_streak INTEGER NOT NULL DEFAULT 0
 );
 
+-- Per-backend liveness heartbeat (#94895). Each serve / tui_gateway process
+-- registers a row at startup and refreshes ``last_heartbeat`` periodically.
+-- The startup orphan sweep (sessions.startup_orphan_reap) consults this
+-- table to avoid reaping rows whose owning backend is still alive but
+-- just idle (multi-backend state.db shared by isolated serve processes).
+-- A backend whose ``last_heartbeat`` is older than the heartbeat staleness
+-- window is treated as dead; rows without ANY matching heartbeat fall back
+-- to the original staleness predicate so legacy deployments keep working.
+CREATE TABLE IF NOT EXISTS gateway_heartbeats (
+    backend_id TEXT PRIMARY KEY,
+    pid INTEGER NOT NULL,
+    started_at REAL NOT NULL,
+    last_heartbeat REAL NOT NULL,
+    profile TEXT NOT NULL DEFAULT '',
+    host TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,

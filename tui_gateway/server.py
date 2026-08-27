@@ -1881,6 +1881,13 @@ def _sweep_orphaned_session_rows() -> list[str]:
     process still holds in memory (e.g. a ``session.resume`` during the
     startup grace window) are excluded so the sweep never races a
     mid-reconnect client.
+
+    Cross-backend liveness (#94895): when one ``state.db`` is shared by
+    N serve / gateway processes, each registered a heartbeat row in
+    ``gateway_heartbeats``. The sweep refuses to close a row that any
+    live backend (heartbeat refreshed within ``2 * TTL``) could
+    plausibly own — see ``SessionDB.sweep_orphaned_sessions`` for the
+    exact predicate.
     """
     db = _get_db()
     if db is None:
@@ -1901,6 +1908,138 @@ def _sweep_orphaned_session_rows() -> list[str]:
             ", ".join(swept),
         )
     return swept
+
+
+# ── Cross-backend heartbeat (#94895) ───────────────────────────────────
+# Each serve / gateway process registers a heartbeat row in
+# ``gateway_heartbeats`` so the startup orphan sweep can tell "row owned
+# by a live but idle backend" from "row truly orphaned".  Without this,
+# the first process to restart in a multi-backend topology reaped every
+# inactive row — including those held by the other N−1 still-running
+# processes (the #94895 reporter saw 473 sessions disappear in one shot).
+#
+# Refresh cadence: every HEARTBEAT_REFRESH_S (default 60s — much shorter
+# than the default 6h session TTL so a refresh always lands inside the
+# staleness window).  The heartbeat is removed at process exit so a
+# graceful shutdown doesn't leave a stale row behind.  A crashed process
+# leaves its row until the heartbeat ages out of the staleness window,
+# at which point the sweep treats it as dead.
+
+_HEARTBEAT_REFRESH_S = float(
+    os.environ.get("HERMES_GATEWAY_HEARTBEAT_REFRESH_S") or 60.0
+)
+_HEARTBEAT_REFRESH_S = max(0.0, _HEARTBEAT_REFRESH_S)
+
+_heartbeat_refresher_started = False
+_heartbeat_refresher_lock = threading.Lock()
+
+
+def _backend_id_for_this_process() -> str:
+    """Stable identity for this process's heartbeat row (#94895).
+
+    Includes pid AND a startup-time nonce so a PID-reuse respawn cannot
+    inherit the dead predecessor's heartbeat and protect truly orphaned
+    sessions.  The pid is kept for human readability in diagnostics.
+    """
+    nonce = getattr(_backend_id_for_this_process, "_nonce", None)
+    if nonce is None:
+        import secrets as _secrets
+
+        nonce = _secrets.token_hex(4)
+        try:
+            setattr(_backend_id_for_this_process, "_nonce", nonce)
+        except AttributeError:  # pragma: no cover - defensive
+            pass
+    return f"{_current_profile_name()}@{os.uname().nodename if hasattr(os, 'uname') else 'host'}:{os.getpid()}:{nonce}"
+
+
+def _refresh_backend_heartbeat() -> None:
+    """Refresh this backend's heartbeat row (#94895). No-op when DB unavailable."""
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        db.register_backend_heartbeat(
+            backend_id=_backend_id_for_this_process(),
+            pid=os.getpid(),
+            started_at=_gateway_started_at(),
+            profile=_current_profile_name(),
+            host=(os.uname().nodename if hasattr(os, "uname") else "host"),
+        )
+    except Exception:
+        logger.debug("backend heartbeat refresh failed", exc_info=True)
+
+
+def _gateway_started_at() -> float:
+    """Wall-clock time when this process started. Module-import time is
+    a good-enough proxy: the heartbeat refresher runs after the gateway
+    is fully wired up.
+    """
+    started = getattr(_gateway_started_at, "_t", None)
+    if started is None:
+        started = time.time()
+        try:
+            setattr(_gateway_started_at, "_t", started)
+        except AttributeError:  # pragma: no cover
+            pass
+    return started
+
+
+def _heartbeat_refresher_loop(stop_event: threading.Event) -> None:
+    """Background loop that refreshes the heartbeat on a fixed cadence."""
+    while not stop_event.is_set():
+        try:
+            _refresh_backend_heartbeat()
+        except Exception:
+            logger.debug("heartbeat refresh loop iteration failed", exc_info=True)
+        stop_event.wait(_HEARTBEAT_REFRESH_S)
+
+
+def _start_backend_heartbeat_refresher() -> None:
+    """Register this backend and start the refresher thread (#94895).
+
+    Called once per process from both gateway entry points.  The first
+    refresh writes the row immediately so even a very fast crash leaves
+    a fresh-enough row that other backends can see.  Repeat calls are
+    no-ops.  The refresher thread is only spawned when
+    ``_HEARTBEAT_REFRESH_S > 0`` — a refresh interval of zero means
+    "register the row once, never refresh" (the row ages out naturally
+    after the heartbeat staleness window).
+    """
+    global _heartbeat_refresher_started
+    with _heartbeat_refresher_lock:
+        if _heartbeat_refresher_started:
+            return
+        _heartbeat_refresher_started = True
+    # Write a row synchronously so the sweep run later in this same
+    # process can see ourselves in the heartbeat table too.  Without
+    # this, exclude_ids would have to cover every local session — a
+    # regression in the strict-ownership case the heartbeat exists to fix.
+    try:
+        _refresh_backend_heartbeat()
+    except Exception:
+        logger.debug("initial backend heartbeat write failed", exc_info=True)
+    if _HEARTBEAT_REFRESH_S <= 0:
+        return
+    stop_event = threading.Event()
+
+    def _atexit_clear():
+        stop_event.set()
+        try:
+            db = _get_db()
+            if db is not None:
+                db.clear_backend_heartbeat(_backend_id_for_this_process())
+        except Exception:
+            pass
+
+    atexit.register(_atexit_clear)
+    thread = threading.Thread(
+        target=_heartbeat_refresher_loop,
+        args=(stop_event,),
+        name="hermes-gateway-heartbeat",
+        daemon=True,
+    )
+    thread.start()
 
 
 def _schedule_startup_orphan_sweep() -> None:

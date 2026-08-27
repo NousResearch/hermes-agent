@@ -9187,8 +9187,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         max_idle_seconds: float,
         sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
         exclude_ids: Tuple[str, ...] = (),
+        heartbeat_staleness_seconds: Optional[float] = None,
+        heartbeat_ownership_grace_seconds: Optional[float] = None,
     ) -> List[str]:
-        """Close session rows orphaned by a dead gateway process (#65194).
+        """Close session rows orphaned by a dead gateway process (#65194, #94895).
 
         The TUI/desktop gateway reaps disconnected websocket sessions with an
         in-process ``threading.Timer`` grace timer; a gateway restart destroys
@@ -9211,6 +9213,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         window).  Non-destructive: messages are preserved and the row remains
         resumable.  First-reason-wins is preserved via ``ended_at IS NULL``.
 
+        Cross-backend liveness (#94895): when one ``state.db`` is shared by
+        N serve / gateway processes (isolated backends, fixed-port launchd
+        ``hermes serve``, desktop WS sidecar), each backend registers a row
+        in ``gateway_heartbeats`` refreshed every few seconds.  A row is
+        only reaped when ``started_at``/message staleness hold AND no live
+        backend (heartbeat refreshed within ``heartbeat_staleness_seconds``,
+        default ``2 * max_idle_seconds``) could plausibly own it.
+
+        Ownership inference: a live backend B ``owns`` a session S if
+        ``B.started_at <= S.started_at + heartbeat_ownership_grace_seconds``
+        (default ``heartbeat_staleness_seconds``).  The grace window
+        accommodates the deploy-time migration case where a backend just
+        wrote its first heartbeat row while its existing open sessions
+        predate the schema.  The grace is bounded by the staleness window
+        so a fresh PID-reuse respawn cannot indefinitely protect sessions
+        inherited from a dead predecessor.
+
+        When NO backend has ever written a heartbeat (legacy deployment
+        mid-upgrade before any process has registered) the predicate falls
+        back to the original behavior so we never silently strand a row
+        that pre-dates the schema.
+
         The SELECT + UPDATE run in one ``BEGIN IMMEDIATE`` write, so a sibling
         process cannot sneak a new message or end-reason between the
         staleness check and the close.  Returns the swept session ids.
@@ -9218,7 +9242,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         srcs = tuple(s for s in sources if s)
         if max_idle_seconds <= 0 or not srcs:
             return []
+        hb_staleness = (
+            heartbeat_staleness_seconds
+            if heartbeat_staleness_seconds and heartbeat_staleness_seconds > 0
+            else max_idle_seconds * 2
+        )
+        hb_grace = (
+            heartbeat_ownership_grace_seconds
+            if heartbeat_ownership_grace_seconds and heartbeat_ownership_grace_seconds >= 0
+            else hb_staleness
+        )
         cutoff = time.time() - max_idle_seconds
+        hb_cutoff = time.time() - hb_staleness
         placeholders = ",".join("?" for _ in srcs)
         staleness = (
             "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
@@ -9226,10 +9261,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
 
         def _do(conn):
+            # Cross-process liveness gate (#94895). A session is "owned by
+            # a live backend" if any row in gateway_heartbeats is fresh
+            # (last_heartbeat >= hb_cutoff) AND was alive no later than
+            # ``sessions.started_at + hb_grace`` (heartbeats.started_at <=
+            # sessions.started_at + hb_grace). If at least one live backend
+            # matches, the row is not orphaned.
+            #
+            # ``hb_cutoff`` and ``hb_grace`` are computed above so all
+            # backends running concurrent sweep queries agree on the same
+            # boundaries. We do NOT clear heartbeats here — that's each
+            # backend's atexit responsibility via ``clear_backend_heartbeat``.
+            orphan_predicate = (
+                f"{staleness} AND NOT EXISTS ("
+                "SELECT 1 FROM gateway_heartbeats h"
+                " WHERE h.last_heartbeat >= ?"
+                f" AND h.started_at <= sessions.started_at + ?"
+                ")"
+            )
             rows = conn.execute(
                 f"SELECT id FROM sessions WHERE ended_at IS NULL"
-                f" AND source IN ({placeholders}) AND {staleness}",
-                (*srcs, cutoff, cutoff),
+                f" AND source IN ({placeholders}) AND {orphan_predicate}",
+                (*srcs, cutoff, cutoff, hb_cutoff, hb_grace),
             ).fetchall()
             excluded = {str(x) for x in exclude_ids if x}
             victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
@@ -9237,16 +9290,120 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return []
             now = time.time()
             marks = ",".join("?" for _ in victims)
-            # Re-apply the same staleness predicate under the write lock so a
-            # row that raced to activity between SELECT and UPDATE is spared.
+            # Re-apply the same predicates under the write lock so a
+            # row that raced to activity between SELECT and UPDATE is
+            # spared (and so a freshly registered heartbeat from a sibling
+            # that started during this transaction can still save the row).
             conn.execute(
                 f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
-                f" WHERE id IN ({marks}) AND ended_at IS NULL AND {staleness}",
-                (now, *victims, cutoff, cutoff),
+                f" WHERE id IN ({marks}) AND ended_at IS NULL"
+                f" AND {orphan_predicate}",
+                (now, *victims, cutoff, cutoff, hb_cutoff, hb_grace),
             )
             return victims
 
         return self._execute_write(_do) or []
+
+    # ── Cross-backend heartbeat API (#94895) ───────────────────────────
+    # Each serve / tui_gateway process registers a heartbeat row at startup
+    # and refreshes ``last_heartbeat`` periodically. The startup orphan
+    # sweep reads these rows to avoid reaping sessions owned by another
+    # still-live backend that just happens to be idle. Backends remove
+    # their own row on graceful shutdown; a row that survives a crash is
+    # reclaimed by the staleness sweep once ``last_heartbeat`` ages out.
+
+    def register_backend_heartbeat(
+        self,
+        *,
+        backend_id: str,
+        pid: int,
+        started_at: float,
+        last_heartbeat: Optional[float] = None,
+        profile: str = "",
+        host: str = "",
+    ) -> None:
+        """Upsert this backend's liveness row (#94895).
+
+        ``backend_id`` MUST be stable for the lifetime of the process
+        (e.g. ``f"{profile}@{host}:{pid}"``) so a respawn cannot accidentally
+        inherit the dead predecessor's heartbeat and protect stale rows.
+        ``started_at`` records when THIS process started (not the wall clock
+        at first refresh) so a long-lived backend whose previous run died
+        cannot be confused with a freshly-spawned sibling.
+        """
+        if not backend_id:
+            return
+        ts = time.time() if last_heartbeat is None else float(last_heartbeat)
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO gateway_heartbeats"
+                " (backend_id, pid, started_at, last_heartbeat, profile, host)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(backend_id) DO UPDATE SET"
+                " pid = excluded.pid,"
+                " started_at = excluded.started_at,"
+                " last_heartbeat = excluded.last_heartbeat,"
+                " profile = excluded.profile,"
+                " host = excluded.host",
+                (str(backend_id), int(pid), float(started_at), ts,
+                 str(profile), str(host)),
+            )
+        self._execute_write(_do)
+
+    def clear_backend_heartbeat(self, backend_id: str) -> bool:
+        """Remove this backend's heartbeat row (#94895).
+
+        Called from ``atexit`` so a graceful shutdown doesn't leave a stale
+        row behind. A crashed backend's row is reclaimed later by
+        ``prune_stale_heartbeats``. Returns True if a row was removed.
+        """
+        if not backend_id:
+            return False
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM gateway_heartbeats WHERE backend_id = ?",
+                (str(backend_id),),
+            )
+            return cur.rowcount > 0
+        return bool(self._execute_write(_do))
+
+    def prune_stale_heartbeats(self, *, max_age_seconds: float) -> List[str]:
+        """Drop heartbeat rows whose ``last_heartbeat`` is older than the
+        staleness window. Returns the removed backend ids. Safe to call
+        from any process; only stale rows are touched.
+        """
+        if max_age_seconds <= 0:
+            return []
+        cutoff = time.time() - max_age_seconds
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM gateway_heartbeats WHERE last_heartbeat < ?"
+                " RETURNING backend_id",
+                (cutoff,),
+            )
+            return [str(r[0]) for r in cur.fetchall()]
+        return list(self._execute_write(_do) or [])
+
+    def list_backend_heartbeats(self) -> List[Dict[str, Any]]:
+        """Snapshot of every registered backend's heartbeat (for diagnostics
+        and tests). The fields mirror ``gateway_heartbeats`` exactly.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT backend_id, pid, started_at, last_heartbeat,"
+                " profile, host FROM gateway_heartbeats"
+                " ORDER BY last_heartbeat DESC"
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            if isinstance(r, sqlite3.Row):
+                out.append({k: r[k] for k in r.keys()})
+            else:
+                out.append({
+                    "backend_id": r[0], "pid": r[1], "started_at": r[2],
+                    "last_heartbeat": r[3], "profile": r[4], "host": r[5],
+                })
+        return out
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""

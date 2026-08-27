@@ -370,6 +370,40 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
+/** Strip chat markdown / @url: wrappers before handing a path to the OS (#95713). */
+function stripPathOpenAnnotations(value: string): string {
+  let raw = String(value || '').trim()
+  if (!raw) {
+    return raw
+  }
+
+  if (/^@url:/i.test(raw)) {
+    raw = raw.slice(raw.indexOf(':') + 1).trim()
+    if (raw.startsWith('`') && raw.endsWith('`') && raw.length >= 2) {
+      raw = raw.slice(1, -1).trim()
+    }
+  }
+
+  for (;;) {
+    let next = raw
+    if (next.startsWith('**') && next.endsWith('**') && next.length > 4) {
+      next = next.slice(2, -2).trim()
+    } else if (next.startsWith('__') && next.endsWith('__') && next.length > 4) {
+      next = next.slice(2, -2).trim()
+    } else if (next.endsWith('**') && next.length > 2) {
+      next = next.slice(0, -2).trim()
+    } else if (next.endsWith('__') && next.length > 2) {
+      next = next.slice(0, -2).trim()
+    }
+    if (next === raw) {
+      break
+    }
+    raw = next
+  }
+
+  return raw
+}
+
 /**
  * Stat a resolved path before handing an `open` to the OS. The OS gives the
  * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
@@ -400,7 +434,7 @@ function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') 
 
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
-  let raw = rejectUnsafePathSyntax(filePath, purpose)
+  let raw = rejectUnsafePathSyntax(stripPathOpenAnnotations(filePath), purpose)
 
   // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
   // arrive as `~/...`. Node's fs has no shell — without expansion the path
@@ -647,6 +681,7 @@ export {
   resolveReadableFileForIpc,
   resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
+  stripPathOpenAnnotations,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,

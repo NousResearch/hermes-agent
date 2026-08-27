@@ -1429,6 +1429,8 @@ providers:
 
 `reasoning_replay_field` accepts only `reasoning` or `reasoning_content`. Use the field documented by your endpoint: vLLM's Qwen template consumes `reasoning`, while some OpenAI-compatible gateways consume `reasoning_content`. The opt-in is intentionally not inferred from `preserve_thinking`, because strict providers reject unsupported message fields. The same key may be set on a `fallback_providers:` entry so failover applies the destination provider's policy.
 
+Hermes replays a stored hidden trace only when its persisted route provenance matches the active provider, model, and endpoint. Legacy messages saved without route provenance fail closed: their visible content is retained, but their hidden reasoning is not forwarded. Newly generated same-route messages are tagged automatically and replay normally.
+
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

@@ -3038,37 +3038,54 @@ def reasoning_route_fingerprint(provider: Any, model: Any, base_url: Any) -> str
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
+def copy_reasoning_content_for_api(
+    agent,
+    source_msg: dict,
+    api_msg: dict,
+    *,
+    retain_route_provenance: bool = False,
+) -> None:
     """Copy provider-facing reasoning fields onto an API replay message.
 
     Forwarder — the strip-vs-repad POLICY is owned by
     ``agent.message_sanitization.apply_reasoning_content_policy`` (audit F4);
-    this only supplies the agent's cached provider-direction flag.
+    this only supplies the agent's cached provider-direction flag. The route
+    marker is stripped by default, or may be retained temporarily until an
+    optional context-selection hook has finished replacing request messages.
     """
     from agent.message_sanitization import apply_reasoning_content_policy
 
     provenance = source_msg.get("_reasoning_route")
-    api_msg.pop("_reasoning_route", None)
     has_provenance = isinstance(provenance, str) and bool(provenance)
     current_fingerprint = reasoning_route_fingerprint(
         getattr(agent, "provider", ""),
         getattr(agent, "model", ""),
         getattr(agent, "base_url", ""),
     )
-    foreign_provenance = has_provenance and provenance != current_fingerprint
-    unprovenanced_fallback = not has_provenance and bool(
-        getattr(agent, "_fallback_activated", False)
+    unknown_or_foreign_provenance = (
+        not has_provenance or provenance != current_fingerprint
     )
-    if foreign_provenance or unprovenanced_fallback:
+    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+    if unknown_or_foreign_provenance:
+        api_msg.pop("_reasoning_route", None)
         api_msg.pop("reasoning", None)
         api_msg.pop("reasoning_content", None)
         api_msg.pop("reasoning_details", None)
+        if needs_thinking_pad:
+            # Preserve the destination provider's structural requirement
+            # without forwarding any unknown-origin hidden trace.
+            apply_reasoning_content_policy(api_msg, api_msg, True)
         return
+
+    if retain_route_provenance:
+        api_msg["_reasoning_route"] = provenance
+    else:
+        api_msg.pop("_reasoning_route", None)
 
     apply_reasoning_content_policy(
         source_msg,
         api_msg,
-        agent._needs_thinking_reasoning_pad(),
+        needs_thinking_pad,
         reasoning_replay_field=reasoning_replay_field_for_api(agent),
     )
 

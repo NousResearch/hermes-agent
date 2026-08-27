@@ -1090,8 +1090,13 @@ def build_api_messages(
             api_msg["content"] = _api_content
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
-        # reasoning context is preserved.
-        agent._copy_reasoning_content_for_api(msg, api_msg)
+        # reasoning context is preserved. Keep the internal provenance marker
+        # until after the optional context-selection hook, which may replace
+        # this request with raw canonical messages. The final pass validates
+        # and strips it.
+        agent._copy_reasoning_content_for_api(
+            msg, api_msg, retain_route_provenance=True
+        )
         # ``reasoning`` is normally trajectory-only. An explicitly
         # configured replay provider may consume it as a wire field.
         if agent._reasoning_replay_field_for_api() != "reasoning":

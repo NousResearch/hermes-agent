@@ -2858,6 +2858,8 @@ class TestHandleMaxIterations:
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
     def test_summary_preserves_configured_reasoning_replay_field(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
         agent.provider = "custom"
         agent.model = "Qwen/Qwen3.8-27B"
         agent.base_url = "http://127.0.0.1:18080/v1"
@@ -2870,6 +2872,9 @@ class TestHandleMaxIterations:
                 "role": "assistant",
                 "content": "Visible result.",
                 "reasoning": "SYNTHETIC_REASONING_MARKER",
+                "_reasoning_route": reasoning_route_fingerprint(
+                    agent.provider, agent.model, agent.base_url
+                ),
             },
         ]
 
@@ -6959,6 +6964,8 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
         self._setup_agent(agent)
         # Precedence (explicit reasoning_content wins over the 'reasoning'
         # field) only matters on a provider that echoes reasoning_content
@@ -6979,6 +6986,9 @@ class TestReasoningReplayForStrictProviders:
             ],
             "reasoning": "summary reasoning",
             "reasoning_content": "provider-native scratchpad",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
         }
         tool_result = {"role": "tool", "tool_call_id": "c1", "content": "ok"}
         final_resp = _mock_response(content="done", finish_reason="stop")
@@ -6999,7 +7009,98 @@ class TestReasoningReplayForStrictProviders:
         replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
         assert replayed_assistant["reasoning_content"] == "provider-native scratchpad"
 
+    def test_context_selection_cannot_reintroduce_unprovenanced_reasoning(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.context_compressor.select_context = MagicMock(
+            return_value=[
+                {"role": "system", "content": "system"},
+                {
+                    "role": "assistant",
+                    "content": "visible answer",
+                    "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+                    "reasoning_content": "UNKNOWN_ORIGIN_ALIAS",
+                    "reasoning_details": [{"text": "UNKNOWN_ORIGIN_DETAILS"}],
+                },
+                {
+                    "role": "user",
+                    "content": "continue",
+                    "_reasoning_route": "ATTACKER_CONTROLLED",
+                    "reasoning": "USER_PRIVATE_TRACE",
+                    "reasoning_content": "USER_PRIVATE_ALIAS",
+                    "reasoning_details": [{"text": "USER_PRIVATE_DETAILS"}],
+                },
+            ]
+        )
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = _capture_create
+
+        agent.run_conversation([{"role": "user", "content": "continue"}])
+
+        selected_assistant = next(
+            message for message in captured["messages"] if message["role"] == "assistant"
+        )
+        assert "reasoning" not in selected_assistant
+        assert "reasoning_content" not in selected_assistant
+        assert "reasoning_details" not in selected_assistant
+        assert "_reasoning_route" not in selected_assistant
+        assert all("_reasoning_route" not in message for message in captured["messages"])
+        selected_user = next(
+            message for message in captured["messages"] if message["role"] == "user"
+        )
+        assert "reasoning" not in selected_user
+        assert "reasoning_content" not in selected_user
+        assert "reasoning_details" not in selected_user
+
+    def test_context_selection_preserves_matching_reasoning_and_strips_marker(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent._reasoning_replay_field = "reasoning"
+        agent.context_compressor.select_context = MagicMock(
+            return_value=[
+                {"role": "system", "content": "system"},
+                {
+                    "role": "assistant",
+                    "content": "visible answer",
+                    "reasoning": "CURRENT_ROUTE_TRACE",
+                    "_reasoning_route": reasoning_route_fingerprint(
+                        agent.provider, agent.model, agent.base_url
+                    ),
+                },
+                {"role": "user", "content": "continue"},
+            ]
+        )
+        captured = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = _capture_create
+
+        agent.run_conversation([{"role": "user", "content": "continue"}])
+
+        selected_assistant = next(
+            message for message in captured["messages"] if message["role"] == "assistant"
+        )
+        assert selected_assistant["reasoning"] == "CURRENT_ROUTE_TRACE"
+        assert "_reasoning_route" not in selected_assistant
+
     def test_custom_provider_replays_configured_reasoning_field(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
         self._setup_agent(agent)
         agent.provider = "custom"
         agent.model = "Qwen/Qwen3.8-27B"
@@ -7009,6 +7110,9 @@ class TestReasoningReplayForStrictProviders:
             "role": "assistant",
             "content": "The visible answer.",
             "reasoning": "SYNTHETIC_REASONING_MARKER",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
         }
         agent.client.chat.completions.create.return_value = _mock_response(
             content="done", finish_reason="stop", reasoning="CURRENT_ROUTE_TRACE"
@@ -7032,7 +7136,6 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["reasoning"] == "SYNTHETIC_REASONING_MARKER"
         assert "reasoning_content" not in replayed_assistant
         final_assistant = result["messages"][-1]
-        from agent.agent_runtime_helpers import reasoning_route_fingerprint
 
         assert final_assistant["_reasoning_route"] == reasoning_route_fingerprint(
             "custom", "Qwen/Qwen3.8-27B", "http://127.0.0.1:18080/v1"

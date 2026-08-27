@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments.base import get_sandbox_dir
+from tools.environments import bubblewrap
 from tools.environments.bubblewrap import (
     BindMount,
     BubblewrapConfig,
@@ -24,6 +25,12 @@ from tools.environments.bubblewrap import (
     build_bwrap_args,
 )
 from tools.environments.local import LocalEnvironment
+
+
+@pytest.fixture(autouse=True)
+def _bwrap_probe_passed(monkeypatch):
+    """Unit constructions never spawn: count the process-wide bwrap probe as passed."""
+    monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
 
 
 def _bwrap_usable() -> bool:

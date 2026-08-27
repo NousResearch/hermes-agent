@@ -3984,6 +3984,40 @@ def _get_media_send_timeout() -> int:
     return _DEFAULT_MEDIA_SEND_TIMEOUT
 
 
+def _get_session_db_timeout() -> float:
+    """Resolve the bound on run_job's SessionDB init from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_SESSION_DB_TIMEOUT env var wins, then
+    ``cron.session_db_timeout_seconds`` in config.yaml (present in
+    DEFAULT_CONFIG, so ``load_config()``'s deep-merge supplies it), then
+    10s. Unlike the sibling timeouts, 0 is meaningful (unlimited — legacy
+    behavior, opt-in for debugging), so values are passed through untouched.
+    """
+    env_value = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            return float(env_value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("session_db_timeout_seconds")
+        if configured is not None:
+            return float(configured)
+    except Exception as exc:
+        logger.debug(
+            "Failed to load cron.session_db_timeout_seconds from config: %s", exc
+        )
+
+    return 10.0
+
+
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     cfg_path = venv_dir / "pyvenv.cfg"
     try:
@@ -6305,48 +6339,13 @@ def run_job(
         # which only watches the agent's run_conversation below):
         # SessionDB.__init__ opens/migrates state.db synchronously and has no
         # timeout of its own against a wedged sqlite3.connect (e.g. a stale
-        # flock left by a crashed sibling process). An unbounded hang here is
-        # invisible to every other cron safeguard, because it happens BEFORE
-        # _submit_with_guard's future exists — the finally block that releases
-        # the job from _running_job_ids never runs, so the job stays wedged
-        # "running" until the whole gateway process is restarted, silently
-        # skipping every scheduled fire in between with
-        # "already running — skipping".
-        _session_db_timeout: float | None = None
+        # flock left by a crashed sibling process). An unbounded hang here
+        # would wedge the job's worker thread, so the init is bounded and a
+        # timeout proceeds without a session store instead of blocking the
+        # run forever.
+        _session_db_timeout = _get_session_db_timeout()
         try:
             from hermes_state import SessionDB
-
-            # Resolve timeout: env override → config.yaml → default 10s.
-            # Mirrors the script_timeout_seconds resolution pattern.
-            _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
-            if _raw_env_timeout:
-                try:
-                    _session_db_timeout = float(_raw_env_timeout)
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
-                        _raw_env_timeout,
-                    )
-            if _session_db_timeout is None:
-                try:
-                    # _cfg was already loaded above for model/toolset routing.
-                    _cron_cfg_for_db = (
-                        _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                    )
-                    _configured = (
-                        _cron_cfg_for_db.get("session_db_timeout_seconds")
-                        if isinstance(_cron_cfg_for_db, dict)
-                        else None
-                    )
-                    if _configured is not None:
-                        _session_db_timeout = float(_configured)
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to load cron.session_db_timeout_seconds from config: %s",
-                        exc,
-                    )
-            if _session_db_timeout is None:
-                _session_db_timeout = 10.0
 
             if _session_db_timeout > 0:
                 _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

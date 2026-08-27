@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   absorbSpokenReplyRewrite,
+  adoptSpokenReplySession,
   assistantReplyOrdinal,
   clearSpokenRepliesForTests,
   isLiveTailReplyId,
@@ -88,5 +89,22 @@ describe('resolveSpokenReply', () => {
     expect(spoken?.id).toBe('durable-1')
     expect(assistantReplyOrdinal(nextTurn, 'assistant-stream-2')).toBe(1)
     expect(spoken?.ordinal).toBe(0)
+  })
+})
+
+describe('adoptSpokenReplySession', () => {
+  it('moves the null-session anchor onto the created session id', () => {
+    markAssistantIdSpoken(null, [assistant('a1')], 'a1')
+    adoptSpokenReplySession(null, 'session-created')
+
+    expect(spokenReplyOf('session-created')?.id).toBe('a1')
+  })
+
+  it('does not leak a spoken anchor from one real session into another', () => {
+    markAssistantIdSpoken('session-a', [assistant('a1')], 'a1')
+    adoptSpokenReplySession('session-a', 'session-b')
+
+    expect(spokenReplyOf('session-b')).toBeNull()
+    expect(spokenReplyOf('session-a')?.id).toBe('a1')
   })
 })

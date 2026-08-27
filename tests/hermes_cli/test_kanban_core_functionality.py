@@ -362,6 +362,49 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         _kb._pid_alive = original_alive
 
 
+def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home):
+    """A running task without an explicit cap still receives the dispatch cap."""
+    killed = []
+
+    def _signal_fn(pid, sig):
+        killed.append((pid, sig))
+
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False
+
+    try:
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="uncapped job", assignee="worker")
+            kb.claim_task(conn, tid)
+            kb._set_worker_pid(conn, tid, os.getpid())
+            old_started = int(time.time()) - 30
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET started_at = ? WHERE id = ?",
+                    (old_started, tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? "
+                    "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (old_started, tid),
+                )
+
+            timed_out = kb.enforce_max_runtime(
+                conn, default_max_runtime_seconds=1, signal_fn=_signal_fn
+            )
+
+            assert tid in timed_out
+            assert killed and killed[0][0] == os.getpid()
+            event = next(e for e in kb.list_events(conn, tid) if e.kind == "timed_out")
+            assert event.payload["limit_seconds"] == 1
+        finally:
+            conn.close()
+    finally:
+        _kb._pid_alive = original_alive
+
+
 
 
 
@@ -1458,4 +1501,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-

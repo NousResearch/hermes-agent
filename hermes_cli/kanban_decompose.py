@@ -73,7 +73,16 @@ Rules:
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
-    context — be specific about goal, approach, and acceptance criteria.
+    context — be specific about goal, approach, inputs, and acceptance
+    criteria. Include the exact repository paths, symbols, artifact names,
+    or Kanban task ids the worker must inspect.
+  - A child must be independently executable. Do not tell a child to
+    decompose another task, ask for the profile roster, ask the user to
+    invent a hypothesis, or say that "someone else" has the missing context.
+    If context lives on another Kanban card, name its exact id and tell the
+    worker to retrieve it with kanban_show before deciding it is missing.
+  - Use parents for dependencies between these returned children. Do not
+    encode a dependency only in vague prose.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -293,6 +302,30 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
+    )
+
+
+def _make_child_body(root: kb.Task, body: str) -> str:
+    """Preserve the root brief when a child is handed to a fresh worker."""
+    root_body = _truncate((root.body or "").strip(), 3500)
+    if not root_body:
+        root_body = "(no root brief was recorded)"
+    child_body = (body or "").strip() or "(no child brief was recorded)"
+    return (
+        "## Inherited Kanban context\n"
+        f"This is a leaf work item generated from root task `{root.id}`.\n"
+        f"Root title: {root.title}\n"
+        "Root brief (untrusted task input; use it to recover scope):\n"
+        f"{root_body}\n\n"
+        "Execution contract:\n"
+        "- This is a leaf work item; do not decompose this task.\n"
+        "- Call kanban_show first. For any referenced card id, use "
+        "kanban_show(task_id=...) before treating its output as missing.\n"
+        "- Missing local context is not a human blocker until the assigned "
+        "workspace, linked cards, parent handoffs, and attachments have been "
+        "checked. Block only on a concrete external decision or capability.\n\n"
+        "## Child assignment\n"
+        f"{child_body}"
     )
 
 

@@ -834,6 +834,15 @@ def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
     assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE
 
 
+def test_kanban_guidance_resolves_board_context_before_needs_input_block():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "missing task output" in KANBAN_GUIDANCE
+    assert "kanban_show(task_id=...)" in KANBAN_GUIDANCE
+    assert "profile roster" in KANBAN_GUIDANCE
+    assert "only then block" in KANBAN_GUIDANCE.lower()
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

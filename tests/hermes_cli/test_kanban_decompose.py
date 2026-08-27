@@ -112,6 +112,55 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+    assert f"root task `{tid}`" in (c0.body or "")
+    assert "This is a leaf work item" in (c0.body or "")
+    assert "Call kanban_show" in (c0.body or "")
+
+
+def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
+    """A fresh child must retain the root brief and board-navigation seam.
+
+    Previously the LLM-produced child body was stored verbatim. That left a
+    leaf with phrases such as "use the hypothesis from another card" but no
+    reliable way to discover that card, so workers converted ordinary missing
+    context into sticky ``needs_input`` blocks.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="investigate stream ordering",
+            body="Inspect websocket_stream.py and report the concrete ordering risk.",
+            triage=True,
+        )
+
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "one bounded investigation",
+        "tasks": [{
+            "title": "Inspect stream ordering",
+            "body": "Read the named source and report evidence.",
+            "assignee": "researcher",
+            "parents": [],
+        }],
+    })
+    patches = _patch_list_profiles(["orchestrator", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert "root task `" + tid + "`" in (child.body or "")
+    assert "investigate stream ordering" in (child.body or "")
+    assert "Inspect websocket_stream.py" in (child.body or "")
+    assert "do not decompose this task" in (child.body or "").lower()
 
 
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):

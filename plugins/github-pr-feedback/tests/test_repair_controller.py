@@ -238,6 +238,19 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert second.created == 0
     task = kanban.tasks[0]
     assert task.assignee == "pr-repair-steward"
+    assert 'Before the first push' in task.instructions
+    assert task.instructions.index("Before the first push") < task.instructions.index(
+        "After your own verified normal push"
+    )
+    assert "immediately before every GitHub write" not in task.instructions
+    assert "require both base and head identity to remain exact" not in task.instructions
+    assert "merge remains gated" in task.instructions
+    assert 'After your own verified normal push' in task.instructions
+    assert 'unchanged base SHA, base branch, head repository, and head branch' in task.instructions
+    assert 'billing or spending-limit' in task.instructions
+    assert 'exact command, cwd, exit code' in task.instructions
+    assert 'does not resolve actions_not_green' in task.instructions
+    assert 'Do not call kanban_complete while acknowledgement is missing' in task.instructions
     assert task.initial_status == "running"
     assert task.max_runtime_seconds == 1200
     assert "normal merge" in task.instructions

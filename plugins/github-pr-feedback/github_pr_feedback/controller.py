@@ -1611,9 +1611,9 @@ def _task(
         "literal repository-owned command or stop with its exact blocker. Validate the reported issue "
         "against the exact receipt worktree before editing. If confirmed, make only the bounded fix, "
         "run focused verification, commit and push to the verified PR head branch, and post a factual "
-        "PR reply with the commit and test evidence. Before any GitHub write, re-read the canonical PR "
-        "and require that its head still equals the expected receipt SHA; otherwise stop fail-closed. "
-        "Do not merge; merge remains controlled by deterministic safety gates. After the verified "
+        "PR reply with the commit and test evidence. "
+        + _worker_write_contract()
+        + "Do not merge; merge remains controlled by deterministic safety gates. After the verified "
         "push and factual reply, acknowledge this exact feedback with `"
         f"{_governed_command_prefix(control_home)} complete-feedback "
         f"--repository {shlex.quote(receipt.repository)} --pr-number "

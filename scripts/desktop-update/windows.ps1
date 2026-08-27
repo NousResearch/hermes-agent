@@ -713,7 +713,7 @@ if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
 # cancellation trigger, never evidence that the process tree is safe to overlap:
 # every step is assigned to a private, non-breakaway Windows job and a timed-out
 # step is retryable only after that job reports zero active processes.
-$script:StepIdleTimeoutSeconds = 300
+$script:StepIdleTimeoutSeconds = 600
 if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     $parsedIdle = 0
     if ([int]::TryParse($env:HERMES_UPDATE_STEP_IDLE_SECONDS, [ref]$parsedIdle) -and $parsedIdle -gt 0) {

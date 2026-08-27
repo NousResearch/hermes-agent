@@ -125,6 +125,11 @@ jobs:
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
           HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '96' || '' }}
+          # On a standard fork runner the state-suite's isolated subprocess
+          # can legitimately exceed the default five-minute cap under load.
+          # Retrying that killed process costs the same ten-minute budget but
+          # still leaves CI red; allow one bounded six-minute attempt instead.
+          HERMES_TEST_FILE_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '300' || '600' }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

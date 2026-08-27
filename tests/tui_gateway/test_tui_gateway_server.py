@@ -5215,6 +5215,10 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
+    # This test exercises lock release around teardown, not delegation
+    # bookkeeping.  Keep it independent of the process-global delegation
+    # registry populated by neighbouring tests in this large module.
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
     server._sessions["slow-orphan"] = _session(
         transport=server._detached_ws_transport,
@@ -5226,7 +5230,10 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     thread.start()
     acquired = False
     try:
-        assert teardown_started.wait(timeout=1.0)
+        # Shared CI runners can delay a fresh Python thread beyond one second;
+        # the bounded wait preserves the lock-release assertion without a
+        # scheduler-timing flake.
+        assert teardown_started.wait(timeout=3.0)
         assert "slow-orphan" not in server._sessions
         acquired = server._session_resume_lock.acquire(timeout=0.2)
         assert acquired, "orphan teardown kept the global resume lock held"

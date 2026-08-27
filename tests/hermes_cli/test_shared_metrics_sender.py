@@ -686,15 +686,40 @@ class TestClaimingAndBounds:
         assert row["send_state"] == "pending"
 
     def test_renewal_extends_the_lease_across_the_post(self, store):
-        """A healthy in-lease claimant renews and its POST is covered."""
+        """A healthy in-lease claimant renews and its POST is covered.
+
+        Round-8 review: the original assertion was `>=` under a frozen
+        clock, which a renewal that matches the row but never extends the
+        lease also satisfies — the exact mutant that double-POSTs (the
+        un-extended lease expires mid-POST and a second process reclaims).
+        The renewal must move the deadline STRICTLY forward to now + lease,
+        so renew from a later clock and require the exact new deadline.
+        """
         _add_package(store, "pkg-1", "2026-08-26")
-        sender = _sender(store, FakeTransport(FakeResponse(202)))
+        clock = {"t": NOW}
+        sender = SharedMetricsSender(
+            store,
+            ENDPOINT,
+            post=lambda e, p, *, timeout: FakeResponse(202),
+            sleep=lambda _s: None,
+            now=lambda: clock["t"],
+        )
         claimed = sender._claim_next(NOW, set())
         assert claimed is not None
         lease_before = _row(store, "pkg-1")["next_attempt_at"]
 
+        # 100s into the (300s) lease: still healthy, renews mid-flight.
+        clock["t"] = NOW + timedelta(seconds=100)
         assert sender._renew_claim("pkg-1", claimed["claim_token"]) is True
-        assert _row(store, "pkg-1")["next_attempt_at"] >= lease_before
+        lease_after = _row(store, "pkg-1")["next_attempt_at"]
+        assert lease_after > lease_before, (
+            "renewal granted authority without extending the lease"
+        )
+        # And not just 'later': the full fresh lease from the renewal clock.
+        expected = (NOW + timedelta(seconds=100 + 300)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        assert lease_after == expected
 
     def test_a_lapsed_claimant_resuming_after_reclaim_cannot_double_post(
         self, store

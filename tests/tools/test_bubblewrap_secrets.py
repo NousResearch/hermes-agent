@@ -430,6 +430,38 @@ class TestSymlinkedEntryIntegration:
 
 
 @needs_bwrap
+class TestSymlinkedBindDestIntegration:
+    """A read-write operator bind whose dest is a symlink into the home tree
+    gets the same pins as the real path, so the parent of a hidden path
+    cannot be renamed through it."""
+
+    @pytest.mark.parametrize("cwd", ["home", "work"])
+    @pytest.mark.parametrize("target", ["relative", "absolute"])
+    def test_parent_of_a_hidden_dir_cannot_be_renamed_through_the_link(self, sandbox_root, host_dir, work_dir, monkeypatch, target, cwd):
+        real = host_dir / "tree" / "home"
+        real.mkdir(parents=True)
+        populate_home(real)
+        link = host_dir / "home-link"
+        link.symlink_to(os.path.relpath(real, host_dir) if target == "relative" else real)
+        monkeypatch.setenv("HOME", str(real))
+        config = BubblewrapConfig(binds=(BindMount(src=str(link), dest=str(link), readonly=False),))
+        env = BubblewrapEnvironment(cwd=str(real if cwd == "home" else work_dir), timeout=30, config=config)
+        try:
+            assert env.execute("echo ok")["output"].strip() == "ok"
+            result = env.execute(f"mv {link}/.config {link}/.config2")
+            assert result["returncode"] != 0, result["output"]
+            out = env.execute(
+                f"cat {real}/.config2/gcloud/secret {link}/.config2/gcloud/secret 2>/dev/null; "
+                f"ls -A {real}/.config/gcloud {link}/.config/gcloud 2>/dev/null"
+            )["output"]
+            assert MARKER not in out
+            assert "secret" not in out.split()
+        finally:
+            env.cleanup()
+        assert (real / ".config" / "gcloud" / "secret").read_text().startswith(MARKER)
+
+
+@needs_bwrap
 class TestHermesHomeIntegration:
     def test_hidden_and_lists_only_the_state_dir(self, work_dir, hermes_home):
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)

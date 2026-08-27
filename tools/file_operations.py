@@ -3692,6 +3692,21 @@ class ShellFileOperations(FileOperations):
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
 
+        # Giant-single-line containment (ported from cline/cline#13525): a
+        # match inside a serialized dump (multi-MB single-line JSON/minified
+        # bundle) makes rg emit the ENTIRE line into stdout. `head -n` counts
+        # lines, so a 40MB match line sails through untruncated, gets buffered
+        # whole into Python, and only THEN hits the per-match [:500] clamp —
+        # measured 42MB across the transport / ~180MB peak alloc for one
+        # match on main. --max-columns bounds each printed line at the rg
+        # layer; --max-columns-preview keeps a truncated prefix (instead of
+        # omitting the match) so the model still sees the hit. 2000 cols
+        # comfortably exceeds the 500-char content clamp below, so no
+        # previously-visible content is lost. Both flags predate rg 11; the
+        # engine floor here is already rg 13 (--sortr).
+        if output_mode not in ("files_only", "count"):
+            cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
+
         # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
         # cannot match in rg's default line-oriented mode — it used to hard
         # error ("the literal \"\\n\" is not allowed") and burn a turn. When
@@ -3896,6 +3911,12 @@ class ShellFileOperations(FileOperations):
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
+        # grep has no --max-columns: bound giant single-line matches (see the
+        # rg branch's containment comment) at the pipe layer instead. Safe for
+        # the file:line:content parser — truncation only ever drops content
+        # tail. Skipped for files_only/count where lines are paths/counts.
+        if output_mode not in ("files_only", "count"):
+            cmd_parts.extend(["|", "cut", "-c1-2000"])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`
         # (without it the pipeline reports head's 0, masking grep's error 2).
@@ -3944,9 +3965,12 @@ class ShellFileOperations(FileOperations):
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+"])
         fetch_limit = limit + offset + (200 if context > 0 else 0)
+        # Same giant-single-line bound as the plain grep path (grep lacks
+        # --max-columns); see the rg branch's containment comment.
+        line_cap = " | cut -c1-2000" if output_mode not in ("files_only", "count") else ""
         cmd = (
             "set -o pipefail; " + " ".join(find_parts)
-            + f" 2>/dev/null | head -n {fetch_limit}"
+            + f" 2>/dev/null | head -n {fetch_limit}{line_cap}"
         )
         result = self._exec(cmd, timeout=60)
         return self._parse_grep_search_output(result, output_mode, limit, offset, context)

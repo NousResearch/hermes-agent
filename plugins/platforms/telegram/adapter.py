@@ -4120,9 +4120,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return [
             {
                 "vendor": vendor,
-                # Claude is the useful model-family label; Anthropic is
-                # redundant inside a Bedrock provider picker.
-                "label": "Claude" if vendor == "anthropic" else self._VENDOR_LABELS[vendor],
+                "label": self._VENDOR_LABELS[vendor],
                 "indices": indices,
             }
             for vendor, indices in sorted(groups.items())

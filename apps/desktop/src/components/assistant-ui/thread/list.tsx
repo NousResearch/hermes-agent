@@ -853,7 +853,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           // anchorBeforePrepend skips while unsettled, so the parked offset
           // can't be overwritten by a mid-load anchor measurement. The restore
           // effect flips settled once it consumes the parked value.
-          restoreFromBottomRef.current = target.fromBottom
+          restoreFromBottomRef.current = target.fromBottom + node.clientHeight
         } else {
           loadSettledRef.current = true
         }
@@ -896,9 +896,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useLayoutEffect(() => {
     const el = scrollRef.current
+    const restoreFromBottom = restoreFromBottomRef.current
 
-    if (el && restoreFromBottomRef.current != null) {
-      el.scrollTop = el.scrollHeight - restoreFromBottomRef.current
+    if (el && restoreFromBottom != null && el.scrollHeight >= restoreFromBottom) {
+      el.scrollTop = el.scrollHeight - restoreFromBottom
       restoreFromBottomRef.current = null
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.

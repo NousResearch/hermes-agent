@@ -13869,6 +13869,7 @@ def dispatch_once(
                 board=board,
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
+                max_spawn_per_tick=max_spawn_per_tick,
                 reconcile_orphans=reconcile_orphans,
             )
             # Still under the dispatch lock: run the periodic PASSIVE WAL

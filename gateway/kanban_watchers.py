@@ -1335,6 +1335,37 @@ class GatewayKanbanWatchersMixin:
         if max_spawn is not None:
             logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
+        # Read kanban.max_spawn_per_tick — per-tick start budget (distinct
+        # from max_spawn / max_in_progress). Reject bool / non-positive /
+        # non-int values exactly like the CLI config path and direct
+        # dispatch do, so a YAML `true`/`false`/`0`/`-1` never becomes a
+        # cap of 1 or 0. Non-positive/non-int coerce to None (no per-tick
+        # budget), preserving legacy behaviour.
+        raw_max_spawn_per_tick = kanban_cfg.get("max_spawn_per_tick", None)
+        max_spawn_per_tick = None
+        if raw_max_spawn_per_tick is not None and not isinstance(
+            raw_max_spawn_per_tick, bool
+        ):
+            try:
+                max_spawn_per_tick = int(raw_max_spawn_per_tick)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_spawn_per_tick=%r; ignoring",
+                    raw_max_spawn_per_tick,
+                )
+                max_spawn_per_tick = None
+            else:
+                if max_spawn_per_tick < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_spawn_per_tick=%r is below 1; ignoring",
+                        raw_max_spawn_per_tick,
+                    )
+                    max_spawn_per_tick = None
+                else:
+                    logger.info(
+                        "kanban dispatcher: max_spawn_per_tick=%d", max_spawn_per_tick,
+                    )
+
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time
         # out. When set, the dispatcher skips spawning when the board
@@ -1546,6 +1577,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    max_spawn_per_tick=max_spawn_per_tick,
                     reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:

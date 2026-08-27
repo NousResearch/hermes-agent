@@ -745,6 +745,7 @@ class TestReviewRound3:
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
         called = {"copytree": 0}
         import shutil as _sh
         orig_ct = _sh.copytree
@@ -754,7 +755,75 @@ class TestReviewRound3:
         assert dst is None
         assert err and ("locked" in err.lower() or "running" in err.lower())
         assert "quit" in err.lower()
+        assert "real_profile_autoclose" in err  # offers the consented option
         assert called["copytree"] == 0  # bailed before any copy
+
+    def test_autoclose_closes_then_snapshots(self, tmp_path, monkeypatch):
+        """With autoclose consent on, a locked profile is closed and the
+        snapshot then proceeds (lock released)."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        # Locked on first probe; closer "releases" it; subsequent copy runs.
+        lock_state = {"locked": True}
+        monkeypatch.setattr(bc, "_profile_is_locked",
+                            lambda s, p: lock_state["locked"])
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: True)
+
+        def fake_close(src_, timeout=15.0):
+            lock_state["locked"] = False
+            return True, "closed the browser and the profile lock released."
+
+        monkeypatch.setattr(bc, "close_browser_holding_profile", fake_close)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
+
+    def test_autoclose_failure_reports_clearly(self, tmp_path, monkeypatch):
+        """If autoclose can't release the lock (relaunch/tray), fail with a
+        clear message and no copy."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: True)
+        monkeypatch.setattr(bc, "close_browser_holding_profile",
+                            lambda s, timeout=15.0: (False, "still locked — relaunched."))
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert dst is None
+        assert err and "tried to close it" in err
+
+    def test_processes_holding_profile_identity_binding(self, tmp_path, monkeypatch):
+        """The process matcher requires BOTH a browser binary AND this exact
+        user-data-dir in the cmdline — never a same-name process on another dir."""
+        import hermes_cli.browser_connect as bc
+
+        class FakeProc:
+            def __init__(self, name, cmdline):
+                self.info = {"name": name, "cmdline": cmdline}
+
+        ud = str(tmp_path / "ud")
+        procs = [
+            FakeProc("chrome.exe", ["chrome.exe", f"--user-data-dir={ud}"]),      # match
+            FakeProc("chrome.exe", ["chrome.exe", "--user-data-dir=C:\\Other"]),  # wrong dir
+            FakeProc("python.exe", ["python.exe", f"--user-data-dir={ud}"]),      # not a browser
+        ]
+
+        class FakePsutil:
+            NoSuchProcess = psutil_exc = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        matched = list(bc._processes_holding_profile(ud))
+        assert len(matched) == 1
+        assert matched[0].info["name"] == "chrome.exe"
+        assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         import tools.browser_tool as bt

@@ -662,6 +662,118 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
         return False
 
 
+def _real_profile_autoclose() -> bool:
+    """Whether browser.real_profile_autoclose consent is on (config read).
+
+    When true, snapshot_real_profile may terminate a running browser that locks
+    the profile. Destructive → default False; the agent gates it on user OK.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return bool(browser_cfg.get("real_profile_autoclose", False))
+    except Exception as e:
+        logger.debug("could not read real_profile_autoclose: %s", e)
+    return False
+
+
+def _processes_holding_profile(src: str):
+    """Yield (psutil.Process) instances holding the user-data-dir ``src`` open.
+
+    Identity discipline mirrors the daemon reaper: a process qualifies only when
+    it's a Chromium-family binary AND its command line references THIS
+    user-data-dir — so we never terminate an unrelated same-PID process. Any
+    ambiguity (unreadable cmdline) is skipped, fail-closed.
+    """
+    try:
+        import psutil
+    except ImportError:  # hard dep; defensive
+        return
+    norm = os.path.normcase(os.path.normpath(src))
+    browser_bins = (
+        "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
+        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome",
+    )
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            cmd = proc.info.get("cmdline") or []
+            joined = " ".join(cmd)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+        if not any(b in name for b in browser_bins):
+            # Some platforms report a generic name; also accept when the binary
+            # in argv[0] looks like a browser.
+            argv0 = (cmd[0].lower() if cmd else "")
+            if not any(b in argv0 for b in browser_bins):
+                continue
+        # Binding: the exact user-data-dir must appear in the cmdline
+        # (--user-data-dir=<src>), normalized for case/separators.
+        if norm not in os.path.normcase(os.path.normpath(joined)) and \
+           f"--user-data-dir={src}".lower() not in joined.lower():
+            continue
+        yield proc
+
+
+def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool, str]:
+    """Terminate the browser process tree holding ``src`` and wait for release.
+
+    CONSENTED, DESTRUCTIVE. Only call after the user has agreed to close their
+    browser — it terminates every Chromium-family process bound to this exact
+    user-data-dir (graceful terminate, then kill), so unsaved tab/form state in
+    that browser is lost. Returns ``(True, msg)`` once the profile lock actually
+    releases, ``(False, msg)`` if processes couldn't be found/killed or the lock
+    never released within ``timeout``.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return False, "psutil unavailable — cannot close the browser automatically."
+
+    procs = list(_processes_holding_profile(src))
+    if not procs:
+        # Nothing we can see holds it. Either already closed, or the holder is
+        # a different user / unreadable — caller re-probes the lock.
+        return False, "no matching browser process found holding the profile."
+
+    # Include child processes (renderers, GPU, crashpad) for a full tree kill.
+    targets = []
+    for p in procs:
+        targets.append(p)
+        try:
+            targets.extend(p.children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    # Graceful terminate first.
+    for p in targets:
+        try:
+            p.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    gone, alive = psutil.wait_procs(targets, timeout=min(timeout, 8.0))
+    for p in alive:
+        try:
+            p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    psutil.wait_procs(alive, timeout=3.0)
+
+    # The lock releases slightly after the process exits on Windows; poll.
+    source_profile = _last_used_profile(src)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _profile_is_locked(src, source_profile):
+            return True, f"closed the browser and the profile lock released."
+        time.sleep(0.5)
+    return False, (
+        "closed the browser processes but the profile is still locked — "
+        "another instance may have relaunched (background/tray mode)."
+    )
+
+
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir.
 
@@ -691,15 +803,32 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     source_profile = _last_used_profile(src)
     # Fast lock probe BEFORE any copy: a running browser holds the cookie DB
     # deny-all (Windows), and a blocking file op on it can hang the launch for
-    # minutes. Bail immediately with an actionable message instead. On POSIX
-    # this never trips (no mandatory locking) so copy-while-running still works.
+    # minutes. On POSIX this never trips (no mandatory locking) so
+    # copy-while-running still works.
     if _profile_is_locked(src, source_profile):
-        return None, (
-            f"{browser} is running and has its profile locked, so its login "
-            "data can't be copied. Fully quit the browser (including any "
-            "background/tray instance) and retry, or turn "
-            "browser.use_real_profile off."
-        )
+        # Consented auto-close: only when browser.real_profile_autoclose is on
+        # (the agent must have the user's OK — it's destructive). Terminate the
+        # browser tree bound to this profile, wait for the lock to release, then
+        # continue the snapshot. Off by default → fail fast with guidance.
+        if _real_profile_autoclose():
+            closed, msg = close_browser_holding_profile(src)
+            if not closed:
+                return None, (
+                    f"{browser} is running and locks its login data; Hermes "
+                    f"tried to close it but {msg} Fully quit {browser} "
+                    "(including any background/tray instance) and retry."
+                )
+            logger.info("real-profile: %s", msg)
+            # fall through — lock released, snapshot proceeds
+        else:
+            return None, (
+                f"{browser} is running and has its profile locked, so its login "
+                "data can't be copied. Fully quit the browser (including any "
+                "background/tray instance) and retry, turn "
+                "browser.use_real_profile off, or enable "
+                "browser.real_profile_autoclose to let Hermes close it for you "
+                "(closes the browser, losing unsaved tabs)."
+            )
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated. A half-written
     # tree (no marker) is treated as absent and rebuilt — otherwise a torn first

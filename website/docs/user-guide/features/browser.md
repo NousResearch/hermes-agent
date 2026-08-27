@@ -195,6 +195,12 @@ therefore requires the browser **fully quit**, including any background/tray
 instance (Chrome's "continue running background apps when closed" keeps a
 `chrome.exe` alive after you close the window). macOS and Linux can copy the
 profile while the browser is running.
+
+Set `browser.real_profile_autoclose: true` to let Hermes **close the browser
+for you** when it's holding the profile — it terminates the browser process
+tree bound to that profile, waits for the lock to release, then continues. This
+is destructive (you lose unsaved tabs/form state in that browser), so it is
+**off by default** and the agent asks before doing it.
 :::
 
 - **Supported browsers:** Chrome, Edge, Brave, Chromium (whichever is your OS

@@ -592,6 +592,15 @@ DEFAULT_CONFIG = {
         # real-profile local session even under a cloud browser backend. Toggle
         # in the desktop Settings → Browser section.
         "use_real_profile": False,
+        # When real-profile browsing needs the browser closed (Windows: a
+        # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
+        # fully quit before its profile can be copied), allow Hermes to close
+        # the browser automatically instead of just failing. DESTRUCTIVE: it
+        # terminates the browser process tree bound to that profile, losing any
+        # unsaved tabs/form state — so it is OFF by default and the agent must
+        # get the user's OK before triggering it. No effect on macOS/Linux,
+        # where the profile can be copied while the browser runs.
+        "real_profile_autoclose": False,
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.

@@ -121,6 +121,24 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
+def test_claim_preserves_durable_enqueue_order_not_uuid_order(root, monkeypatch):
+    target = _rows()[1]
+    uuids = iter(("f" * 32, "0" * 32))
+    monkeypatch.setattr(bot_relay.uuid, "uuid4", lambda: type("U", (), {"hex": next(uuids)})())
+
+    first = bot_relay.enqueue_envelope(
+        root, target=target, message="first", sender_profile="work", sender_handle="work"
+    )
+    second = bot_relay.enqueue_envelope(
+        root, target=target, message="second", sender_profile="work", sender_handle="work"
+    )
+
+    assert second["id"] < first["id"], "fixture deliberately reverses UUID lexical order"
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [envelope["message"] for envelope in claimed] == ["first", "second"]
+    assert [envelope["sequence"] for envelope in claimed] == [1, 2]
+
+
 def test_write_reply_validates_envelope_id(root):
     with pytest.raises(ValueError):
         bot_relay.write_reply(root, "../../etc/passwd", reply="x")
@@ -375,16 +393,18 @@ def test_cleanup_bot_relay_artifacts_sweeps_stale_plaintext(tmp_path, monkeypatc
     )
     base = bot_relay.relay_root(tmp_path)
     stale_reply = bot_relay.write_reply(tmp_path, stale_env["id"], reply="done")
+    stale_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{stale_env['id']}.json"))
+    fresh_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{fresh_env['id']}.json"))
     old = _time.time() - bot_relay.STALE_AFTER_SECONDS - 1
-    _os.utime(base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json", (old, old))
+    _os.utime(stale_path, (old, old))
     _os.utime(stale_reply, (old, old))
 
     removed = bot_relay.cleanup_bot_relay_artifacts()
 
     assert removed == 2
-    assert not (base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json").exists()
+    assert not stale_path.exists()
     assert not stale_reply.exists()
-    assert (base / bot_relay.OUTBOX_DIR / f"{fresh_env['id']}.json").exists()
+    assert fresh_path.exists()
 
 
 def test_cleanup_bot_relay_artifacts_missing_dir_is_zero(tmp_path, monkeypatch):
@@ -438,7 +458,8 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
         root, target=_target(), message="hi",
         sender_profile="default", sender_handle="hermes",
     )
-    assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json").exists()
+    outbox = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR
+    assert next(outbox.glob(f"*-{env['id']}.json"), None) is not None
     # 2. stale roster missing the target → unknown → enqueue
     bot_relay.write_remote_roster(root, _rows())
     roster_path = bot_relay.relay_root(root) / bot_relay.ROSTER_FILE
@@ -448,7 +469,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
         root, target=_target(), message="hi again",
         sender_profile="default", sender_handle="hermes",
     )
-    assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env2['id']}.json").exists()
+    assert next(outbox.glob(f"*-{env2['id']}.json"), None) is not None
     # 3. fresh roster listing the target without an online flag → enqueue
     bot_relay.write_remote_roster(root, _rows())
     target = bot_relay.read_remote_roster(root)[1]  # researcher@ssh-vps
@@ -456,7 +477,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
         root, target=target, message="hello",
         sender_profile="default", sender_handle="hermes",
     )
-    assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env3['id']}.json").exists()
+    assert next(outbox.glob(f"*-{env3['id']}.json"), None) is not None
 
 
 def test_drain_expires_old_envelope_with_queued_expired_reply(root):
@@ -465,7 +486,7 @@ def test_drain_expires_old_envelope_with_queued_expired_reply(root):
         sender_profile="default", sender_handle="hermes",
     )
     base = bot_relay.relay_root(root)
-    out_path = base / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    out_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{env['id']}.json"))
     # backdate the envelope beyond the TTL
     env["created_at"] = int(_time2.time()) - bot_relay.DEFAULT_ENVELOPE_TTL_SECONDS - 10
     out_path.write_text(json.dumps(env), encoding="utf-8")
@@ -501,7 +522,7 @@ def test_drain_ttl_zero_disables_expiry(root, monkeypatch):
         sender_profile="default", sender_handle="hermes",
     )
     base = bot_relay.relay_root(root)
-    out_path = base / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
+    out_path = next((base / bot_relay.OUTBOX_DIR).glob(f"*-{env['id']}.json"))
     env["created_at"] = int(_time2.time()) - 10 * 3600
     out_path.write_text(json.dumps(env), encoding="utf-8")
     claimed = bot_relay.claim_pending_envelopes(root)

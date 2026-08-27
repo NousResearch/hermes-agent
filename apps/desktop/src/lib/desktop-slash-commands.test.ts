@@ -77,6 +77,16 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
   })
 
+  it('surfaces /llm-pipeline with argument handling in desktop slash execution', () => {
+    expect(isDesktopSlashSuggestion('/llm-pipeline')).toBe(true)
+    expect(resolveDesktopCommand('/llm-pipeline')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/llm-pipeline')?.argumentMode).toBe('mixed')
+    expect(desktopSlashUnavailableMessage('/llm-pipeline')).toBeNull()
+    expect(isDesktopSlashSuggestion('/llm_pipeline')).toBe(false)
+    expect(isDesktopSlashCommand('/llm_pipeline')).toBe(true)
+    expect(resolveDesktopCommand('/llm_pipeline')?.surface).toEqual({ kind: 'exec' })
+  })
+
   it('routes /pet through the desktop action handler and drops /pets', () => {
     expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
     expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')

@@ -67,6 +67,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/config` | 显示当前配置 |
 | `/model [model-name]` | 显示或更改当前模型。支持：`/model claude-sonnet-4`、`/model provider:model`（切换提供商）、`/model custom:model`（自定义端点）、`/model custom:name:model`（命名自定义提供商）、`/model custom`（从端点自动检测），以及用户自定义别名（`/model fav`、`/model grok`——见[自定义模型别名](#custom-model-aliases)）。使用 `--global` 将更改持久化到 config.yaml。**注意：** `/model` 只能在已配置的提供商之间切换。如需添加新提供商，请退出会话后在终端运行 `hermes model`。 |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | 切换 OpenAI/Codex 模型的可选 [Codex app-server runtime](../user-guide/features/codex-app-server-runtime)。`auto`（默认）使用 Hermes 标准 chat completions；`codex_app_server` 将轮次交给 `codex app-server` 子进程，支持原生 shell、apply_patch、ChatGPT 订阅认证和迁移的 Codex 插件。下次会话生效。 |
+| `/llm-pipeline [status\|on\|off\|providers ...]` | 切换 Rust 后端 RI 传输，用于非流式 Chat Completions 调用。`providers ...` 可设置可选的提供商白名单，例如 `/llm-pipeline providers ollama-launch openrouter`。下次会话生效。 |
 | `/personality` | 设置预定义的 personality（人格） |
 | `/verbose` | 循环切换工具进度显示：off → new → all → verbose。可通过配置[为消息平台启用](#notes)。 |
 | `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。选项：`normal`、`fast`、`status`。 |
@@ -205,6 +206,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/stop` | 终止所有正在运行的后台进程并中断运行中的 agent。 |
 | `/model [provider:model]` | 显示或更改模型。支持提供商切换（`/model zai:glm-5`）、自定义端点（`/model custom:model`）、命名自定义提供商（`/model custom:local:qwen`）、自动检测（`/model custom`），以及用户自定义别名（`/model fav`、`/model grok`——见[自定义模型别名](#custom-model-aliases)）。使用 `--global` 将更改持久化到 config.yaml。**注意：** `/model` 只能在已配置的提供商之间切换。如需添加新提供商或设置 API 密钥，请在终端（聊天会话外）运行 `hermes model`。 |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | 切换可选的 [Codex app-server runtime](../user-guide/features/codex-app-server-runtime)。持久化到 config.yaml 中的 `model.openai_runtime` 并驱逐缓存的 agent，使下一条消息使用新 runtime。下次会话生效。 |
+| `/llm-pipeline [status\|on\|off\|providers ...]` | 切换 Rust 后端 RI 传输。`status` 显示当前传输与提供商状态；`on/off` 启用或禁用该传输；`providers ...` 设置可选的提供商白名单。 |
 | `/personality [name]` | 为会话设置 personality 覆盖层。 |
 | `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。 |
 | `/retry` | 重试最后一条消息。 |

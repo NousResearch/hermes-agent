@@ -52,7 +52,10 @@ def _platform_gate_env(name: str, default: str = "") -> str:
                 return default
             return str(val).strip()
     except Exception:
-        pass
+        # Authorization scope machinery is itself part of the trust
+        # boundary. If it is unavailable, do not borrow another profile's
+        # process-global value.
+        return default
     return (os.getenv(name) or default).strip()
 
 

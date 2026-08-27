@@ -292,7 +292,7 @@ def _config_default_interface_early() -> str:
         if home:
             cfg_path = os.path.join(home, "config.yaml")
         else:
-            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
+            cfg_path = os.path.join(os.path.expanduser("~"), ".ares", "config.yaml")
         if os.path.exists(cfg_path):
             import yaml as _yaml_iface
 
@@ -1976,7 +1976,7 @@ def _print_tui_exit_summary(
 
     print()
     print("Resume this session with:")
-    print(f"  hermes --tui --resume {target}")
+    print(f"  ares --tui --resume {target}")
     if title:
         print(f'  hermes --tui -c "{title}"')
     print()
@@ -2004,6 +2004,7 @@ _NPM_LOCK_RUNTIME_KEYS = frozenset(
         # exclusion because when present in *both* lockfiles they may still
         # differ (e.g. dev: true → stripped in hidden).
         "dev",
+        "devOptional",
         "extraneous",
         "hasInstallScript",
         "optional",
@@ -2015,17 +2016,11 @@ _NPM_LOCK_RUNTIME_KEYS = frozenset(
 (per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
 on dev-dependencies that are *also* declared as peers — the canonical
 ``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
-
-``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
-annotations that npm populates differently in the hidden lock (npm >= 10/11
-writes ``extraneous`` into the hidden lock only, and ``dev: true`` from the
-root lock may be absent or ``false`` in the hidden actualized tree).
-They never indicate a changed dependency — the authoritative check is the
-``resolved``/``integrity`` pair, which the intersection comparison always
-catches.
+them. npm also drops or reclassifies ``dev`` / ``devOptional`` in the hidden
+lock depending on the installed workspace set. None of these keys represents a
+real skew between what was declared and what was installed, so we exclude them
+from the comparison in :func:`_tui_need_npm_install` to avoid false-positive
+reinstalls that would dirty an immutable Ares release on TUI launch.
 """
 
 
@@ -5090,7 +5085,6 @@ _LAZY_COMMAND_EXPORTS = {
         "_gateway_restart_recovery_profiles",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",
-        "_purge_stale_hermes_modules",
         "_format_venv_python_holders_message",
         "_gateway_prompt",
         "_get_origin_url",
@@ -8220,17 +8214,9 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
     elif isinstance(raw_flags, (list, tuple)):
         flags = [str(f) for f in raw_flags if str(f).strip()]
 
-    raw_gpu = desktop_cfg.get("disable_gpu", "auto")
-    if isinstance(raw_gpu, bool):
-        disable_gpu = "1" if raw_gpu else "0"
-    elif isinstance(raw_gpu, str):
-        low = raw_gpu.strip().lower()
-        if low in ("1", "true", "yes", "on"):
-            disable_gpu = "1"
-        elif low in ("0", "false", "no", "off"):
-            disable_gpu = "0"
-        else:
-            disable_gpu = "auto"
+    from hermes_cli.desktop_launch_options import normalize_desktop_disable_gpu
+
+    disable_gpu = normalize_desktop_disable_gpu(desktop_cfg.get("disable_gpu", "auto"))
 
     raw_store = desktop_cfg.get("password_store", "auto")
     if isinstance(raw_store, str):
@@ -8282,6 +8268,18 @@ def cmd_gui(args: argparse.Namespace):
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
+    # The Python process that launched the Desktop CLI is the only interpreter
+    # we have already proven can import this Hermes installation.  Source-root
+    # mode otherwise makes Electron probe ``<root>/.venv`` / ``<root>/venv``
+    # and finally PATH, which can select an unrelated system Python that sees
+    # the source via PYTHONPATH but lacks runtime extras such as WebSockets.
+    # An explicit source root makes this CLI's interpreter the authoritative
+    # runtime.  Do not retain an inherited Desktop pointer from a previous
+    # installed runtime in that case.
+    if getattr(args, "hermes_root", None):
+        env["HERMES_DESKTOP_PYTHON"] = str(Path(sys.executable).resolve())
+    else:
+        env.setdefault("HERMES_DESKTOP_PYTHON", str(Path(sys.executable).resolve()))
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):

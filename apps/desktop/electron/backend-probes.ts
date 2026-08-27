@@ -6,7 +6,7 @@
  * candidates -- bootstrap marker, `hermes` on PATH, system Python with
  * hermes_cli installed -- and historically returned the first candidate
  * whose binary existed on disk. That assumption breaks when a user has
- * a pre-installed Python 3.11-3.13 (so findSystemPython() returns a
+ * a pre-installed Python 3.11-3.14 (so findSystemPython() returns a
  * path) but no hermes_cli in its site-packages: the resolver hands back
  * a backend the spawn step can't actually run, and the user gets a
  * dead-on-arrival "ModuleNotFoundError: No module named 'hermes_cli'"
@@ -127,7 +127,7 @@ function hermesRuntimeImportProbe() {
  * Return true iff the Hermes runtime import probe exits 0.
  *
  * Used to gate the "fallback to system Python with hermes_cli installed"
- * rung of resolveHermesBackend. Without this, a system Python 3.11-3.13
+ * rung of resolveHermesBackend. Without this, a system Python 3.11-3.14
  * registered in PEP 514 makes findSystemPython() succeed regardless of
  * whether hermes_cli has actually been pip-installed into its
  * site-packages -- and the resolver returns a backend that immediately

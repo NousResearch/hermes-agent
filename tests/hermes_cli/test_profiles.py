@@ -132,6 +132,16 @@ class TestCreateProfile:
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
+    def test_managed_runtime_does_not_seed_default_soul_md(self, profile_env, monkeypatch):
+        monkeypatch.setenv("ARES_MANAGED_RUNTIME", "1")
+        profile_dir = create_profile("managed", no_alias=True)
+        assert not (profile_dir / "SOUL.md").exists()
+
+    def test_normal_runtime_seeds_default_soul_md(self, profile_env, monkeypatch):
+        monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)
+        profile_dir = create_profile("normal", no_alias=True)
+        assert (profile_dir / "SOUL.md").is_file()
+
 
 
 

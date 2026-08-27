@@ -250,11 +250,11 @@ export function themeToneHex(tone: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'Hermes Agent',
-  icon: '⚕',
+  name: 'Ares',
+  icon: 'A',
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
-  goodbye: 'Goodbye! ⚕',
+  goodbye: 'Goodbye! Ares',
   tool: '┊',
   helpHeader: '(^_^)? Commands'
 }

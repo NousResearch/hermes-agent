@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title">
+  <title id="title">Ares</title>
+  <defs>
+    <linearGradient id="a" x1="10" y1="10" x2="86" y2="86" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffcf70"/>
+      <stop offset=".48" stop-color="#e9603d"/>
+      <stop offset="1" stop-color="#7b1f4d"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="24" fill="#120d1a"/>
+  <path d="M48 10 87 82H70l-8-16H34l-8 16H9L48 10Zm0 27-8 17h16l-8-17Z" fill="url(#a)"/>
+  <circle cx="48" cy="25" r="5" fill="#fff2cc"/>
+</svg>

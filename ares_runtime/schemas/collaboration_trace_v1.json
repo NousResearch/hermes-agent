@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/collaboration_trace_v1.json",
+  "title": "CollaborationTraceV1",
+  "description": "Rebuildable trace index for evaluation/process mining; not mission or evidence truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Derived trace projection over Kanban, graph, model, tool and evidence receipts",
+  "x-storage-rule": "Derived analytics artifact. Delete/rebuild without changing task, claim, evidence, permit or effect state.",
+  "required": [
+    "schema_version",
+    "trace_id",
+    "mission_ref",
+    "policy_version",
+    "events",
+    "recorded_at",
+    "trace_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "event_kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "canonical_ref": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          },
+          "role_ref": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Resolvable owner-qualified reference; never proof by itself.",
+                "pattern": "^[A-Za-z0-9._:/@#-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_profile_ref": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Resolvable owner-qualified reference; never proof by itself.",
+                "pattern": "^[A-Za-z0-9._:/@#-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "sequence",
+          "event_kind",
+          "canonical_ref",
+          "recorded_at"
+        ]
+      },
+      "minItems": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

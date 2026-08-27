@@ -21,9 +21,7 @@ def describe_compression_lock_skip(lock_signal: Any) -> str:
     misdirects the user when the real problem is a broken lock subsystem.
     """
     holder = (
-        lock_signal
-        if isinstance(lock_signal, str) and lock_signal.strip()
-        else None
+        lock_signal if isinstance(lock_signal, str) and lock_signal.strip() else None
     )
     if holder:
         return (
@@ -78,9 +76,7 @@ def summarize_manual_compression(
     elif aborted:
         headline = f"Compression aborted: {before_count} messages preserved"
     elif fallback_used:
-        headline = (
-            f"Compressed with fallback: {before_count} → {after_count} messages"
-        )
+        headline = f"Compressed with fallback: {before_count} → {after_count} messages"
     elif noop:
         headline = f"No changes from compression: {before_count} messages"
     else:
@@ -92,8 +88,7 @@ def summarize_manual_compression(
         token_line = f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
     else:
         token_line = (
-            f"Approx request size: ~{before_tokens:,} → "
-            f"~{after_tokens:,} tokens"
+            f"Approx request size: ~{before_tokens:,} → ~{after_tokens:,} tokens"
         )
 
     note = None
@@ -105,14 +100,13 @@ def summarize_manual_compression(
     elif aborted:
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
-        dropped_count = getattr(
-            compression_state, "_last_summary_dropped_count", None
-        )
+        dropped_count = getattr(compression_state, "_last_summary_dropped_count", None)
         if not isinstance(dropped_count, int) or isinstance(dropped_count, bool):
             dropped_count = max(before_count - after_count, 0)
         note = (
-            "Summary generation failed; Hermes used limited fallback context "
-            f"and removed {dropped_count} message(s)."
+            "The secondary summary was unavailable; Hermes retained the "
+            "receipt-backed deterministic compression and removed "
+            f"{dropped_count} message(s)."
         )
     elif not noop and after_count < before_count and after_tokens > before_tokens:
         note = (

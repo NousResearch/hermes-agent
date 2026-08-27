@@ -198,6 +198,22 @@ def test_stored_prompt_staleness(tmp_path):
     assert not bot_mode_probe.stored_prompt_capability_stale("", home)
 
 
+def test_stale_epoch_refreshes_cached_protocol_before_rebuild(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    cached = bot_mode_probe.get_bot_mode_protocol_section(home)
+    stamped = cached + "\n\n" + bot_mode_probe.epoch_line(home)
+    assert "@coder" not in cached
+
+    _make_bot_profile(home, "coder", managed=True)
+
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+    refreshed = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "@coder" in refreshed
+    assert refreshed == bot_mode_probe.get_bot_mode_protocol_section(home)
+
+
 def test_legacy_bot_chat_upgrade(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -14,7 +14,7 @@ import uvicorn
 from hermes_cli import web_server
 
 
-def _stub_uvicorn(monkeypatch):
+def _stub_uvicorn(monkeypatch, *, websocket_available=True):
     """Replace uvicorn.Config/Server with fakes so start_server returns
     immediately.  Returns a dict with captured Config kwargs."""
     captured: dict = {}
@@ -24,6 +24,7 @@ def _stub_uvicorn(monkeypatch):
         host = "127.0.0.1"
         port = 8000
         _loop_factory = None
+        ws_protocol_class = object() if websocket_available else None
 
         def __init__(self, *args, **kwargs):
             captured.update(kwargs)
@@ -69,6 +70,24 @@ def _stub_uvicorn(monkeypatch):
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
+
+
+def test_start_server_refuses_http_only_backend(monkeypatch):
+    """A ready sentinel must certify the WebSocket transport Desktop uses."""
+    _stub_uvicorn(monkeypatch, websocket_available=False)
+
+    ran_event_loop = {"value": False}
+
+    def _unexpected_run(coro):
+        ran_event_loop["value"] = True
+        coro.close()
+
+    monkeypatch.setattr(asyncio, "run", _unexpected_run)
+
+    with pytest.raises(RuntimeError, match="requires WebSocket transport"):
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert ran_event_loop["value"] is False
 
 
 def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):

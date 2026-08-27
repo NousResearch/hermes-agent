@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/tool_permit_projection_v1.json",
+  "title": "ToolPermitProjectionV1",
+  "description": "Ares-side reference/projection of a canonical recursive-agent execution permit. It is not a minting or policy contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "recursive-agent-policy + Libraries/llm-tool-runtime/authority-delegation",
+  "x-storage-rule": "Projection/reference only. Canonical permit issue/consume/revoke state remains in the authority owner.",
+  "required": [
+    "schema_version",
+    "canonical_permit_ref",
+    "permit_binding_digest",
+    "actor_ref",
+    "mission_ref",
+    "task_ref",
+    "tool_id",
+    "args_digest",
+    "effect_scope_digest",
+    "policy_version",
+    "role_contract_ref",
+    "model_route_ref",
+    "tool_schema_digest",
+    "target_scope_digest",
+    "effect_class",
+    "budget_digest",
+    "issued_at",
+    "not_before",
+    "state",
+    "expires_at",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "canonical_permit_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "permit_binding_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "actor_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "task_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "tool_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "args_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "effect_scope_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "issued",
+        "consumed",
+        "revoked",
+        "expired",
+        "denied"
+      ]
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "permit_evidence_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "role_contract_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "model_route_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "tool_schema_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "target_scope_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "effect_class": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "reversible_local",
+        "durable_local",
+        "external_reversible",
+        "external_irreversible",
+        "authority_changing"
+      ]
+    },
+    "budget_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "not_before": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "parent_permit_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approval_evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "revocation_evidence_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

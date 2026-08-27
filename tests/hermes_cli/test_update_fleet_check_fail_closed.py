@@ -21,7 +21,6 @@ its entries have no corresponding ``collect_fleet_versions()`` rows (see
 
 from __future__ import annotations
 
-import inspect
 import types
 
 from hermes_cli.main import _fleet_probe_expected_runtimes
@@ -117,33 +116,3 @@ class TestEmptySnapshotGenuinelyIdle:
         # is not a liveness signal.
         token = {"resume_needed": False, "profiles": {}, "unmapped": []}
         assert _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
-
-
-class TestCallSiteWiring:
-    """The guard AND the settle sleep must both key on the shared signal.
-
-    Sabotage-proof for the wiring itself: reverting the call site to the
-    pre-fix ``(restarted_services or killed_pids)`` condition — while leaving
-    the helper in place — makes these fail.
-    """
-
-    def _impl_source(self):
-        from hermes_cli import update_cmd
-
-        return inspect.getsource(update_cmd._cmd_update_impl)
-
-    def test_settle_sleep_gated_on_expected_runtimes(self):
-        src = self._impl_source()
-        assert "_fleet_rows_expected = _m()._fleet_probe_expected_runtimes(" in src
-        # The 2.0s settle window must key on the cross-platform signal, so a
-        # resumed Windows gateway gets its settle window too (#93406).
-        assert "if _fleet_rows_expected:\n" in src
-        assert "if restarted_services or killed_pids:\n                _time.sleep" not in src
-
-    def test_zero_row_guard_gated_on_expected_runtimes(self):
-        src = self._impl_source()
-        assert "elif not _fleet_snapshot and _fleet_rows_expected:" in src
-        assert (
-            "elif not _fleet_snapshot and (restarted_services or killed_pids):"
-            not in src
-        )

@@ -2430,6 +2430,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Bot Mode (desktop-managed multi-agent) settings.
+    # Section defined here for the per-profile turn lock (#93091); other
+    # Bot Mode knobs may merge into this section from parallel work.
+    "bot_mode": {
+        # How long a second delivery into an already-busy target profile
+        # queues behind the current turn before failing with a structured
+        # 'target_busy' error. Deliveries are serialized per profile with a
+        # cross-process file lock so two turns never race one Bot Chat.
+        "turn_wait_seconds": 120,
+    },
+
     # Mattermost platform settings (gateway mode)
     "mattermost": {
         "require_mention": True,       # Require @mention to respond in channels
@@ -3034,6 +3045,15 @@ DEFAULT_CONFIG = {
                 "service.name": "hermes-gateway",
                 "deployment.environment.name": "production",
             },
+        },
+        # Local metadata-only bridge to the RecursiveIntell stack-monitor
+        # collector. The producer is inert when its private Unix socket is
+        # absent, and all socket I/O is off the agent hot path. This is local
+        # observability, not OTLP or outbound telemetry.
+        "stack_observation": {
+            "enabled": True,
+            "socket_path": "",
+            "capacity": 2048,
         },
         # OTLP destination. headers_env maps header names to ENVIRONMENT
         # VARIABLE NAMES (never secret values); values are read from the

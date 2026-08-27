@@ -520,6 +520,53 @@ def _runtime_request(info: SQLiteRuntimeInfo) -> str:
     return ".".join(str(part) for part in info.python_version[:2])
 
 
+def _supported_future_python_minors(
+    project_root: Path, current: SQLiteRuntimeInfo
+) -> list[int]:
+    """Return future Python minor lines admitted by the project contract.
+
+    The fallback must not carry a second hard-coded upper bound: the
+    project's ``requires-python`` in ``pyproject.toml`` is the canonical
+    admission owner. A missing or malformed contract fails closed, because
+    provisioning an interpreter outside the declared lock is worse than
+    leaving the existing runtime in place for the next repair attempt.
+    """
+    try:
+        import tomllib
+
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        project_file = Path(project_root) / "pyproject.toml"
+        with project_file.open("rb") as handle:
+            project = tomllib.load(handle)
+        requires_python = project["project"]["requires-python"]
+        specifier = SpecifierSet(str(requires_python))
+    except (ImportError, KeyError, OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "cannot determine supported Python minors from %s: %s",
+            Path(project_root) / "pyproject.toml",
+            exc,
+        )
+        return []
+
+    major, current_minor = current.python_version[:2]
+    supported: list[int] = []
+    # The repair only moves forward within the current major line. The bound
+    # is deliberately finite so a malformed/open-ended spec cannot create an
+    # unbounded install loop.
+    for minor in range(current_minor + 1, current_minor + 20):
+        # Probe both ends of the minor line: this handles lower bounds such as
+        # >=3.14.5 and upper bounds that cut through a minor while still
+        # proving whether at least one patch in that line is admitted.
+        if any(
+            Version(f"{major}.{minor}.{patch}") in specifier
+            for patch in (0, 99, 999)
+        ):
+            supported.append(minor)
+    return supported
+
+
 # Cap on how many newer patches we'll try, newest-first, before giving up.
 # Bounded because each attempt is a real download+install+probe+delete cycle;
 # in practice the fix is almost always in the very next patch or two.
@@ -777,14 +824,11 @@ def _install_safe_python_generation(
             return result
 
     # All patches on the current minor line are vulnerable or rejected.
-    # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
-    # user isn't stuck on every `hermes update` with no path to a fixed
-    # runtime (issue #76106).  The requires-python constraint
-    # (>=3.11,<3.14) and the downstream import smoke-test gate
-    # compatibility; we only need to stay inside that window.
+    # The project's requires-python constraint and downstream import
+    # smoke-test gate determine which future minor lines are admissible.
     cur_major, cur_minor = current.python_version[:2]
     fb_tried: set[tuple[int, int, int]] = set(tried_versions)
-    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+    for next_minor in _supported_future_python_minors(project_root, current):
         next_request = f"{cur_major}.{next_minor}"
         print(
             f"  → No fixed {cur_major}.{cur_minor} build available; "

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/witness_v1.json",
+  "title": "WitnessV1",
+  "description": "Independent verification result committed before peer reveal where required.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Independent Witness role plus deterministic test harness",
+  "x-storage-rule": "Immutable artifact. Witness cannot mutate source, mission status, permit policy or its own required evidence.",
+  "required": [
+    "schema_version",
+    "witness_id",
+    "mission_ref",
+    "test_request_ref",
+    "role_contract_ref",
+    "independence",
+    "verdict",
+    "evidence_refs",
+    "coverage",
+    "limitations",
+    "recorded_at",
+    "witness_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "witness_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "test_request_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "role_contract_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "independence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executor_output_withheld_until_commit": {
+          "type": "boolean"
+        },
+        "context_digest": {
+          "type": "string",
+          "description": "Canonical digest including algorithm prefix.",
+          "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+        },
+        "commitment": {
+          "type": "string",
+          "description": "Commitment receipt created before the witness reveal.",
+          "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+        },
+        "executor_route_ref": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        "witness_route_ref": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        "shared_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "executor_output_withheld_until_commit",
+        "context_digest",
+        "commitment",
+        "executor_route_ref",
+        "witness_route_ref",
+        "shared_evidence_refs"
+      ]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "inconclusive",
+        "not_applicable"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "witness_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

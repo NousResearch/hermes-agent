@@ -10739,12 +10739,28 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import get_process_hermes_home
+    from tools.environments.local import build_subprocess_env
 
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    try:
+        target_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError as exc:
+        # Never defer profile resolution to child startup: doing so would leave
+        # the parent environment unsanitized and could pass the launch profile's
+        # credentials into a worker whose target scope was never established.
+        raise RuntimeError(
+            f"refusing to spawn Kanban worker for unresolved profile {profile_arg!r}"
+        ) from exc
+    env = build_subprocess_env(
+        base=os.environ,
+        profile_home=target_home,
+        source_profile_home=get_process_hermes_home(),
+        enforce_profile_boundary=target_home is not None,
+    )
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.
@@ -10752,24 +10768,9 @@ def _default_spawn(
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
-    # (fallback_providers, toolsets, agent settings, etc.) instead of the root
-    # config.  Without this, `env = dict(os.environ)` copies only the parent's
-    # env, and when the child process starts `hermes -p <name>` the
-    # _apply_profile_override() runs *before* hermes_constants is imported.
-    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
-    # profile-specific config entirely.  Fixes profile-scoped fallback_providers
-    # being invisible to kanban workers.
-    from hermes_cli.profiles import resolve_profile_env
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # Profile dir doesn't exist — defer resolution to the CLI's
-        # _apply_profile_override() via HERMES_PROFILE (set below).
-        # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
-        pass
+    # build_subprocess_env installs the target HERMES_HOME before applying the
+    # subprocess HOME policy, so both identities already point at the assignee
+    # profile here.
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

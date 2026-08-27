@@ -722,7 +722,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             from hermes_constants import get_hermes_home as _get_hermes_home
             _hermes_home = _get_hermes_home()
         except (ModuleNotFoundError, ImportError):
-            _hermes_home = _Path.home() / ".hermes"
+            _hermes_home = _Path.home() / ".ares"
         self._thread_count_store = _ThreadCountStore(
             _hermes_home / "google_chat_thread_counts.json"
         )
@@ -916,7 +916,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Location where the resolved bot user_id is cached across restarts."""
-        base = os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
+        base = os.getenv("HERMES_HOME", str(_Path.home() / ".ares"))
         return _Path(base) / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:

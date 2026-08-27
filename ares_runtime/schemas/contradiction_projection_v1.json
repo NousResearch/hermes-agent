@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/contradiction_projection_v1.json",
+  "title": "ContradictionProjectionV1",
+  "description": "Projection of a contradiction candidate/resolution without redefining ClaimLedger states.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "ClaimLedger contradiction lifecycle",
+  "x-storage-rule": "Projection only; resolution must be performed and receipted by ClaimLedger.",
+  "required": [
+    "schema_version",
+    "canonical_contradiction_ref",
+    "claim_refs",
+    "evidence_refs",
+    "state",
+    "resolution_required",
+    "recorded_at",
+    "evidence_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "canonical_contradiction_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "claim_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 2,
+      "uniqueItems": true
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "under_review",
+        "resolved_supports_left",
+        "resolved_supports_right",
+        "resolved_both_scoped",
+        "resolved_neither",
+        "superseded"
+      ]
+    },
+    "resolution_required": {
+      "type": "boolean"
+    },
+    "resolution_receipt_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidence_state": {
+      "type": "string",
+      "description": "Evidence state of this projection or assertion.",
+      "enum": [
+        "LIVE_VERIFIED",
+        "OBSERVED_SOURCE",
+        "SOURCE_REPORTED",
+        "DATED_SNAPSHOT",
+        "PROPOSED",
+        "BLOCKED",
+        "UNKNOWN"
+      ]
+    }
+  }
+}

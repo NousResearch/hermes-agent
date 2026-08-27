@@ -171,16 +171,19 @@ def test_failing_gate_short_circuits_judge():
     assert "quality gate" in decision["continuation_prompt"].lower()
 
 
-def test_passing_gates_fall_through_to_judge():
+def test_passing_gates_fall_through_to_judge_once():
     mgr = _mgr_with_goal("gate-pass-sid")
     mgr.add_gate("true")
     with patch(
         "hermes_cli.goals.judge_goal",
         return_value=("done", "all good", False, None, False),
-    ) as mock_judge:
+    ) as mock_judge, patch(
+        "hermes_cli.goals.run_gate", return_value=(True, 0, "green")
+    ) as mock_run:
         decision = mgr.evaluate_after_turn("finished")
+    mock_run.assert_called_once()
     mock_judge.assert_called_once()
-    assert decision["verdict"] == "done"
+    assert decision["verdict"] == "waiting_for_authority"
     # Passing run resets attempt bookkeeping.
     assert mgr.state.gates[0].attempts == 0
     assert mgr.state.gates[0].last_exit_code == 0

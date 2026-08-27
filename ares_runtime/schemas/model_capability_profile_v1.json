@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/model_capability_profile_v1.json",
+  "title": "ModelCapabilityProfileV1",
+  "description": "Measured route capability, conformance, cost, latency, error and negative-capability profile for a resolved provider/model/version.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares evaluation registry as versioned artifact; dispatch remains existing Ares route fields",
+  "x-storage-rule": "Immutable measurement artifact per route/version/corpus. Router references it; it never grants authority.",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "route_identity",
+    "valid_from",
+    "recorded_at",
+    "measurement_corpus_ref",
+    "capabilities",
+    "tool_conformance",
+    "cost_latency",
+    "failure_taxonomy",
+    "negative_capabilities",
+    "profile_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "profile_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "route_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_url_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_release_or_snapshot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasoning_efforts_tested": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "base_url_identity",
+        "model_release_or_snapshot",
+        "reasoning_efforts_tested"
+      ]
+    },
+    "valid_from": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_to": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "measurement_corpus_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "structured_output": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source_grounding": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "code_execution_reasoning": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "long_context_reliability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "abstention": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "structured_output",
+        "source_grounding",
+        "code_execution_reasoning",
+        "long_context_reliability",
+        "abstention"
+      ]
+    },
+    "tool_conformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strict_schema_pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "denial_respect_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "mcp_profiles_tested": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "unsafe_repair_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "strict_schema_pass_rate",
+        "denial_respect_rate",
+        "mcp_profiles_tested",
+        "unsafe_repair_rate"
+      ]
+    },
+    "cost_latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "enum": [
+            "USD"
+          ]
+        },
+        "input_cost_per_million": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "output_cost_per_million": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p50_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95_latency_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "currency",
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "p50_latency_ms",
+        "p95_latency_ms"
+      ]
+    },
+    "failure_taxonomy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "failure_class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "denominator": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "failure_class",
+          "task_class",
+          "count",
+          "denominator"
+        ]
+      }
+    },
+    "negative_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "data_policy_classes_allowed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "profile_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

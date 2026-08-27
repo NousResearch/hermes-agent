@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/context_packet_v1.json",
+  "title": "ContextPacketV1",
+  "description": "Frozen per-role context identity. It is a rebuildable projection and cannot replace source artifacts.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares deterministic Context Compiler",
+  "x-storage-rule": "Derived immutable packet; byte-stable for a committed first pass and rebuildable from refs.",
+  "required": [
+    "schema_version",
+    "context_packet_id",
+    "mission_ref",
+    "role_contract_ref",
+    "included_refs",
+    "omitted_classes",
+    "withheld_until_commit",
+    "compiler_version",
+    "compiled_at",
+    "context_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "context_packet_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "role_contract_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "included_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          },
+          "digest": {
+            "type": "string",
+            "description": "Canonical digest including algorithm prefix.",
+            "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "ref",
+          "digest",
+          "purpose"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "omitted_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "withheld_until_commit": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "compiler_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compiled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "context_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "parent_context_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

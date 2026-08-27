@@ -29,6 +29,7 @@ from hermes_cli import kanban_db as kb
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "profiles" / "elias").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()

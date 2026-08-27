@@ -55,8 +55,8 @@ def _get_platform_default_hermes_home() -> Path:
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
-    return Path.home() / ".hermes"
+        return base / "ares"
+    return Path.home() / ".ares"
 
 
 def _hermes_home_from_env() -> Path:
@@ -225,6 +225,16 @@ def get_default_hermes_root() -> Path:
                 result = env_path
     _default_hermes_root_memo = (str(native_home), env_home, result)
     return result
+
+
+def get_ares_state_root() -> Path:
+    """Return the installation-scoped Ares state root.
+
+    Ares candidate custody deliberately lives outside a selected profile. A
+    profile may change ``get_hermes_home()``, while a sealed candidate must be
+    discoverable by the installer/updater regardless of that runtime profile.
+    """
+    return get_default_hermes_root() / "ares"
 
 
 def get_optional_skills_dir(default: Path | None = None) -> Path:

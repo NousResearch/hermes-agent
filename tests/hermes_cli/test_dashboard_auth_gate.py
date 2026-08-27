@@ -95,6 +95,7 @@ def _stub_uvicorn_run(monkeypatch):
 
     class _FakeConfig:
         loaded = True
+        ws_protocol_class = object()
         host = "127.0.0.1"
         port = 8000
 

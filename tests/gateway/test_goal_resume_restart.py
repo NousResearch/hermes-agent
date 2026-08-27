@@ -102,7 +102,7 @@ class TestCliResumeRestartsWork:
 
         state = goals.GoalManager(sid).state
         assert state.status == "active"
-        assert state.turns_used == 0
+        assert state.turns_used == 1, "resume preserves the cumulative goal budget"
 
     def test_resume_without_goal_queues_nothing(self, hermes_home):
         sid = f"sid-cli-noresume-{uuid.uuid4().hex}"
@@ -190,7 +190,7 @@ class TestGatewayResumeRestartsWork:
 
         state = goals.GoalManager(_GW_SID).state
         assert state.status == "active"
-        assert state.turns_used == 0
+        assert state.turns_used == 1, "resume preserves the cumulative goal budget"
 
     @pytest.mark.asyncio
     async def test_resume_without_goal_enqueues_nothing(self, hermes_home):

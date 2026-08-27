@@ -11,7 +11,13 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectPoolEvictions } from './pool-eviction'
+import {
+  canAdmitLocalBackend,
+  POOL_CAPACITY_EXCEEDED,
+  PoolCapacityError,
+  type PoolEvictionEntry,
+  selectPoolEvictions
+} from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
@@ -85,6 +91,7 @@ test('descriptor-only pools never evict', () => {
   assert.deepEqual(selectPoolEvictions(entries, 2, NOW, FRESH_MS), [])
 })
 
+
 // ── #95189 — Keepalive-fresh window must tolerate transient missed pings ──
 // Symptom: gateway restarts every ~2 minutes on WSL2. Root cause: the renderer
 // pings every 60s; the LRU cap declared a backend "stale" if `lastActiveAt`
@@ -150,4 +157,45 @@ test('#95189: a backend genuinely idle for minutes IS evicted (#95189 long-windo
 
   // keep=1, idle is over the cap AND past the fresh window → evicted.
   assert.deepEqual(selectPoolEvictions(entries, 1, NOW, FRESH_MS), ['idle'])
+})
+
+test('hard admission counts fresh local reservations but not descriptors', () => {
+  const entries: [string, PoolEvictionEntry][] = [
+    ['a', { process: null, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['b', { process: { pid: 2 }, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['remote', { process: null, lastActiveAt: NOW }]
+  ]
+
+  assert.equal(canAdmitLocalBackend(entries, 3), true)
+  assert.equal(canAdmitLocalBackend(entries, 2), false)
+})
+
+test('hard admission fails closed for an existing fresh over-capacity pool', () => {
+  const entries: [string, PoolEvictionEntry][] = [
+    ['a', { process: { pid: 1 }, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['b', { process: { pid: 2 }, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['c', { process: { pid: 3 }, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['d', { process: { pid: 4 }, countsTowardPoolCap: true, lastActiveAt: NOW }]
+  ]
+
+  assert.equal(canAdmitLocalBackend(entries, 3), false)
+  assert.deepEqual(selectPoolEvictions(entries, 3, NOW, FRESH_MS), [])
+})
+
+test('released local entries free admission capacity', () => {
+  const entries: [string, PoolEvictionEntry][] = [
+    ['a', { process: { pid: 1 }, countsTowardPoolCap: true, lastActiveAt: NOW }],
+    ['b', { process: { pid: 2 }, countsTowardPoolCap: true, lastActiveAt: NOW }]
+  ]
+
+  assert.equal(canAdmitLocalBackend(entries, 2), false)
+  entries.shift()
+  assert.equal(canAdmitLocalBackend(entries, 2), true)
+})
+
+test('capacity rejection exposes a stable typed code', () => {
+  const error = new PoolCapacityError(3)
+
+  assert.equal(error.code, POOL_CAPACITY_EXCEEDED)
+  assert.match(error.message, /3/)
 })

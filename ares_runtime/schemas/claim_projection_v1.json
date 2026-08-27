@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/claim_projection_v1.json",
+  "title": "ClaimProjectionV1",
+  "description": "Read-only collaboration projection of a ClaimLedger claim. It cannot mint or alter ClaimLedger support semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "ClaimLedger owner",
+  "x-storage-rule": "Projection/reference only. Claim truth/support/contradiction lifecycle remains in ClaimLedger.",
+  "required": [
+    "schema_version",
+    "canonical_claim_ref",
+    "projection_recorded_at",
+    "claim_digest",
+    "support_state",
+    "evidence_refs",
+    "contradiction_refs",
+    "evidence_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "canonical_claim_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "projection_recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "claim_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "assertion_preview": {
+      "type": "string"
+    },
+    "support_state": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "unknown",
+        "unsupported_by_bundle",
+        "partially_supported",
+        "supported",
+        "contested",
+        "retracted",
+        "superseded"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "contradiction_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "valid_from": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_to": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_state": {
+      "type": "string",
+      "description": "Evidence state of this projection or assertion.",
+      "enum": [
+        "LIVE_VERIFIED",
+        "OBSERVED_SOURCE",
+        "SOURCE_REPORTED",
+        "DATED_SNAPSHOT",
+        "PROPOSED",
+        "BLOCKED",
+        "UNKNOWN"
+      ]
+    },
+    "claimledger_bundle_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    }
+  }
+}

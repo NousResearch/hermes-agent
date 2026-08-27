@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/handoff_packet_v1.json",
+  "title": "HandoffPacketV1",
+  "description": "Minimal role-specific packet with owned question, evidence refs, withheld classes, permits and stop conditions.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Context Compiler projection over canonical artifacts",
+  "x-storage-rule": "Immutable handoff artifact referenced in Kanban run metadata; source evidence stays in canonical owners.",
+  "required": [
+    "schema_version",
+    "handoff_id",
+    "mission_ref",
+    "from_role_ref",
+    "to_role_ref",
+    "owned_question",
+    "context_packet_ref",
+    "evidence_refs",
+    "unresolved_claim_refs",
+    "withheld_classes",
+    "permit_refs",
+    "required_output_schema_ref",
+    "stop_conditions",
+    "recorded_at",
+    "handoff_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "handoff_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "from_role_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "to_role_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "owned_question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "context_packet_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "unresolved_claim_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "withheld_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "permit_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "required_output_schema_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "handoff_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

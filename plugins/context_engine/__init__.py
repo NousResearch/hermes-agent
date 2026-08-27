@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
 
+class ContextEngineActivationError(RuntimeError):
+    """A specifically configured engine could not become the active engine.
+
+    Discovery remains best-effort for UI listing, but selection must be strict:
+    silently substituting the built-in compressor changes provenance semantics.
+    """
+
+
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
     """Scan plugins/context_engine/ for available engines.
 
@@ -54,6 +62,7 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
         if yaml_file.exists():
             try:
                 import yaml
+
                 with open(yaml_file, encoding="utf-8-sig") as f:
                     meta = yaml.safe_load(f) or {}
                 desc = meta.get("description", "")
@@ -83,9 +92,10 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
     """
     engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
     if not engine_dir.is_dir():
-        logger.debug("Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR)
+        logger.debug(
+            "Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR
+        )
         return None
-
     try:
         engine = _load_engine_from_dir(engine_dir)
         if engine:
@@ -95,6 +105,36 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
     except Exception as e:
         logger.warning("Failed to load context engine '%s': %s", name, e)
         return None
+
+
+def load_context_engine_strict(name: str) -> "ContextEngine":
+    """Load, instantiate, and capability-probe an explicitly configured engine.
+
+    This intentionally differs from :func:`load_context_engine`, which is
+    retained for non-authoritative discovery screens. Call this only when
+    `context.engine` names a non-built-in engine.
+    """
+    engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    if not engine_dir.is_dir():
+        raise ContextEngineActivationError(
+            f"configured context engine '{name}' was not discovered"
+        )
+    engine = _load_engine_from_dir(engine_dir)
+    if engine is None:
+        raise ContextEngineActivationError(
+            f"configured context engine '{name}' could not be instantiated"
+        )
+    try:
+        probe = getattr(engine, "probe_activation", None)
+        if callable(probe):
+            probe()
+        elif hasattr(engine, "is_available") and not engine.is_available():
+            raise RuntimeError("availability check returned false")
+    except Exception as exc:
+        raise ContextEngineActivationError(
+            f"configured context engine '{name}' failed its activation probe: {exc}"
+        ) from exc
+    return engine
 
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
@@ -125,8 +165,9 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
                 parent_init = parent_path / "__init__.py"
                 if parent_init.exists():
                     spec = importlib.util.spec_from_file_location(
-                        parent, str(parent_init),
-                        submodule_search_locations=[str(parent_path)]
+                        parent,
+                        str(parent_init),
+                        submodule_search_locations=[str(parent_path)],
                     )
                     if spec:
                         parent_mod = importlib.util.module_from_spec(spec)
@@ -138,8 +179,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
         # Now load the engine module
         spec = importlib.util.spec_from_file_location(
-            module_name, str(init_file),
-            submodule_search_locations=[str(engine_dir)]
+            module_name, str(init_file), submodule_search_locations=[str(engine_dir)]
         )
         if not spec:
             return None
@@ -163,7 +203,9 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
                     try:
                         sub_spec.loader.exec_module(sub_mod)
                     except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
+                        logger.debug(
+                            "Failed to load submodule %s: %s", full_sub_name, e
+                        )
 
         try:
             spec.loader.exec_module(mod)
@@ -184,10 +226,14 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
     # Fallback: find a ContextEngine subclass and instantiate it
     from agent.context_engine import ContextEngine
+
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
-        if (isinstance(attr, type) and issubclass(attr, ContextEngine)
-                and attr is not ContextEngine):
+        if (
+            isinstance(attr, type)
+            and issubclass(attr, ContextEngine)
+            and attr is not ContextEngine
+        ):
             try:
                 return attr()
             except Exception:
@@ -232,11 +278,13 @@ class _EngineCollector:
         # Reject conflicts with built-in commands.
         try:
             from hermes_cli.commands import resolve_command
+
             if resolve_command(clean) is not None:
                 logger.warning(
                     "Context engine '%s' tried to register command '/%s' which conflicts "
                     "with a built-in command. Skipping.",
-                    self._engine_name, clean,
+                    self._engine_name,
+                    clean,
                 )
                 return
         except Exception:
@@ -244,6 +292,7 @@ class _EngineCollector:
 
         try:
             from hermes_cli.plugins import get_plugin_manager
+
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
                 # Don't clobber a regular plugin's command — same conflict
@@ -251,7 +300,8 @@ class _EngineCollector:
                 logger.warning(
                     "Context engine '%s' tried to register command '/%s' which "
                     "is already registered by a plugin. Skipping.",
-                    self._engine_name, clean,
+                    self._engine_name,
+                    clean,
                 )
                 return
             manager._plugin_commands[clean] = {
@@ -263,12 +313,15 @@ class _EngineCollector:
             self._registered_commands.append(clean)
             logger.debug(
                 "Context engine '%s' registered command: /%s",
-                self._engine_name, clean,
+                self._engine_name,
+                clean,
             )
         except Exception as exc:
             logger.debug(
                 "Context engine '%s' could not register /%s: %s",
-                self._engine_name, clean, exc,
+                self._engine_name,
+                clean,
+                exc,
             )
 
     # No-op for other registration methods

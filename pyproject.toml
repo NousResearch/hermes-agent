@@ -5,14 +5,12 @@ name = "hermes-agent"
 version = "0.20.6"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# Upper bound is load-bearing, not cosmetic. uv resolves the project's
-# Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# The SQLite WAL-reset remediation needs a fixed interpreter. A real isolated
+# cp314 admission probe installed pydantic==2.13.4 / pydantic-core==2.46.4
+# from wheels and imported them successfully, so the former <3.14 safety cap
+# is stale. Keep a finite ceiling: every future minor still needs the same
+# locked-sync and import-smoke admission before it can become an Ares runtime.
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -124,7 +122,7 @@ dependencies = [
   # without an explicit dependency here (and in the `web` extra below).
   "python-multipart>=0.0.9,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
-  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  "pywinpty>=3.0.5,<4; sys_platform == 'win32'",
   # Desktop SSH's Windows remote runtime (hermes_cli/windows_ssh_runtime.py)
   # imports win32security/win32file/etc. directly — declare pywin32 rather than
   # relying on the concurrent-log-handler → portalocker transitive chain.
@@ -447,7 +445,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "ares_runtime", "ares_runtime.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json"]

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Ares evidence-native workbench architecture</title>
+  <desc id="desc">Ares provides a Hermes-compatible interaction layer and sends bounded actions through an evidence boundary to optional governed services. Recursive Agent returns verified receipt facts over private local IPC.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#080d1a"/><stop offset="1" stop-color="#15112a"/></linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#27344c" stroke-width=".55" opacity=".65"/></pattern>
+    <filter id="glow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" fill="#89a9d6"/></marker>
+  </defs>
+  <rect width="1200" height="460" fill="url(#bg)"/><rect width="1200" height="460" fill="url(#grid)"/>
+  <text x="58" y="72" fill="#edf4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">ARES / EVIDENCE-NATIVE WORKBENCH</text>
+  <text x="60" y="102" fill="#96a9c6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">Hermes-compatible interaction · explicit services · bounded evidence paths</text>
+  <g fill="none" stroke="#89a9d6" stroke-width="2" marker-end="url(#arrow)"><path d="M300 238H425"/><path d="M700 190H815"/><path d="M700 288H815"/></g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="60" y="160" width="240" height="160" rx="14" fill="#0a2536" stroke="#38bdf8" stroke-width="2"/>
+    <text x="88" y="211" fill="#8fe4ff" font-size="19" font-weight="700">ARES</text>
+    <text x="88" y="241" fill="#d7e9f7" font-size="14">Hermes-compatible CLI</text>
+    <text x="88" y="267" fill="#d7e9f7" font-size="14">plugins · skills · tools</text>
+    <text x="88" y="294" fill="#88abc0" font-size="12">separate ~/.ares home</text>
+    <rect x="425" y="144" width="275" height="196" rx="14" fill="#25133d" stroke="#b68cff" stroke-width="2"/>
+    <text x="454" y="190" fill="#d9c5ff" font-size="19" font-weight="700">EVIDENCE BOUNDARY</text>
+    <text x="454" y="222" fill="#eee5ff" font-size="14">canonical envelopes</text>
+    <text x="454" y="248" fill="#eee5ff" font-size="14">explicit authority</text>
+    <text x="454" y="274" fill="#eee5ff" font-size="14">verification before claims</text>
+    <text x="454" y="309" fill="#af9dc9" font-size="12">no hidden fallback or shadow truth</text>
+    <rect x="815" y="122" width="325" height="136" rx="14" fill="#123223" stroke="#44d38a" stroke-width="2"/>
+    <text x="845" y="166" fill="#9af4c5" font-size="19" font-weight="700">RECURSIVE AGENT</text>
+    <text x="845" y="197" fill="#d6f7e5" font-size="14">private local IPC</text>
+    <text x="845" y="223" fill="#d6f7e5" font-size="14">run receipts + verification facts</text>
+    <rect x="815" y="282" width="325" height="116" rx="14" fill="#2b1e0c" stroke="#f2b94b" stroke-width="2"/>
+    <text x="845" y="326" fill="#ffda8a" font-size="18" font-weight="700">OPTIONAL SERVICES</text>
+    <text x="845" y="355" fill="#fae5b6" font-size="13">memory · graph · ledger · CEA</text>
+    <text x="845" y="378" fill="#d0b47d" font-size="12">separate lifecycle and configuration</text>
+  </g>
+  <circle cx="60" cy="407" r="5" fill="#44d38a" filter="url(#glow)"/><text x="76" y="412" fill="#93a9c9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">The diagram describes boundaries, not a production or security certification.</text>
+</svg>

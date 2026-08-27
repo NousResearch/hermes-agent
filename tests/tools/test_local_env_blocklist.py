@@ -310,6 +310,61 @@ class TestForceEnvOptIn:
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
 
+    def test_force_prefix_cannot_override_tier1_secret(self):
+        result_env = _run_with_env(self_env={
+            f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}GH_TOKEN": "fake-explicit-github",
+        })
+
+        assert "GH_TOKEN" not in result_env
+
+    def test_force_prefix_cannot_override_plugin_tier1_secret(self):
+        with patch(
+            "tools.environments.local._plugin_terminal_env_strip_keys",
+            return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+        ):
+            result_env = _run_with_env(self_env={
+                f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}PLUGIN_AUTH_TOKEN": "fake-plugin",
+            })
+
+        assert "PLUGIN_AUTH_TOKEN" not in result_env
+
+    def test_container_wrapper_cannot_tunnel_plugin_tier1_secret(self):
+        with patch(
+            "tools.environments.local._plugin_terminal_env_strip_keys",
+            return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+        ):
+            result_env = _run_with_env(extra_os_env={
+                "APPTAINERENV_PLUGIN_AUTH_TOKEN": "fake-plugin-wrapper",
+            })
+
+        assert "APPTAINERENV_PLUGIN_AUTH_TOKEN" not in result_env
+
+    def test_nonterminal_plugin_and_nested_wrapper_secrets_are_denied(self):
+        from tools.environments.local import hermes_subprocess_env
+
+        planted = {
+            "PLUGIN_AUTH_TOKEN": "direct-plugin",
+            "plugin_auth_token": "mixed-plugin",
+            "APPTAINERENV_PLUGIN_AUTH_TOKEN": "wrapped-plugin",
+            "SINGULARITYENV_APPTAINERENV_PLUGIN_AUTH_TOKEN": "nested-plugin",
+            "APPTAINERENV_SINGULARITYENV_GH_TOKEN": "nested-tier1",
+            "PATH": "/usr/bin",
+        }
+        with (
+            patch.dict(os.environ, planted, clear=True),
+            patch(
+                "tools.environments.local._plugin_terminal_env_strip_keys",
+                return_value=frozenset({"PLUGIN_AUTH_TOKEN"}),
+            ),
+        ):
+            for inherit_credentials in (False, True):
+                result_env = hermes_subprocess_env(
+                    inherit_credentials=inherit_credentials
+                )
+                for key in planted:
+                    if key != "PATH":
+                        assert key not in result_env
+
 
 class TestActiveVenvMarkerStripping:
     """Active-virtualenv markers must not leak into terminal subprocesses (#23473).

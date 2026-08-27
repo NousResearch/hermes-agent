@@ -36,6 +36,39 @@ export interface BackendClaim extends BackendIdentity {
   parentStartMarker?: string
 }
 
+/**
+ * Coalesce concurrent orphan sweeps, but release the single-flight after each
+ * settled run so a later lifecycle boundary can observe parents/backends that
+ * exited after startup. A permanently memoized sweep leaves stale ownership
+ * rows when the old Electron parent is still alive during the new instance's
+ * first probe and its watchdog reaps the child moments later.
+ */
+export function createBackendOrphanReaper(
+  reap: () => Promise<number[]>,
+  onReaped: (pids: number[]) => void = () => {}
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null
+
+  return () => {
+    if (!inFlight) {
+      const sweep = Promise.resolve()
+        .then(reap)
+        .then(pids => {
+          onReaped(pids)
+        })
+      const tracked = sweep.finally(() => {
+        if (inFlight === tracked) {
+          inFlight = null
+        }
+      })
+
+      inFlight = tracked
+    }
+
+    return inFlight
+  }
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }

@@ -732,6 +732,37 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
     )
 
 
+def test_tui_lock_check_ignores_npm_dev_classification_churn(
+    tmp_path: Path, main_mod
+) -> None:
+    root = tmp_path / "workspace"
+    tui_dir = root / "ui-tui"
+    tui_dir.mkdir(parents=True)
+    (tui_dir / "package.json").write_text("{}", encoding="utf-8")
+    _touch_ink(root)
+    marker = root / "node_modules" / ".package-lock.json"
+    root_lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {},
+            "node_modules/dev-only": {"version": "1.0.0", "dev": True},
+            "node_modules/dev-optional": {"version": "1.0.0", "devOptional": True},
+        },
+    }
+    installed_lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {},
+            "node_modules/dev-only": {"version": "1.0.0"},
+            "node_modules/dev-optional": {"version": "1.0.0"},
+        },
+    }
+    (root / "package-lock.json").write_text(json.dumps(root_lock), encoding="utf-8")
+    marker.write_text(json.dumps(installed_lock), encoding="utf-8")
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
 def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:

@@ -5,6 +5,7 @@ import { test, vi } from 'vitest'
 import {
   backendCommandMatches,
   type BackendIdentity,
+  createBackendOrphanReaper,
   createBackendOwnership,
   createBackendShutdownCoordinator,
   parseBackendOwnership
@@ -283,6 +284,47 @@ test('shutdown coordinator returns one promise and awaits teardown exactly once'
   await second
   assert.equal(finished, true)
   assert.equal(coordinator.run(), first)
+})
+
+test('orphan reaper coalesces only the active sweep and reruns after settlement', async () => {
+  const first = deferred()
+  const reap = vi.fn(async () => {
+    if (reap.mock.calls.length === 1) {
+      await first.promise
+    }
+
+    return [reap.mock.calls.length]
+  })
+  const observed: number[][] = []
+  const run = createBackendOrphanReaper(reap, pids => observed.push(pids))
+
+  const one = run()
+  const concurrent = run()
+
+  assert.equal(one, concurrent)
+  await Promise.resolve()
+  assert.equal(reap.mock.calls.length, 1)
+
+  first.resolve()
+  await one
+  assert.deepEqual(observed, [[1]])
+
+  await run()
+  assert.equal(reap.mock.calls.length, 2)
+  assert.deepEqual(observed, [[1], [2]])
+})
+
+test('orphan reaper permits a later retry after failure', async () => {
+  const reap = vi
+    .fn<() => Promise<number[]>>()
+    .mockRejectedValueOnce(new Error('process table unavailable'))
+    .mockResolvedValueOnce([])
+  const run = createBackendOrphanReaper(reap)
+
+  await assert.rejects(run(), /process table unavailable/)
+  await run()
+
+  assert.equal(reap.mock.calls.length, 2)
 })
 
 // #89298: a corrupt ownership file must never be silently rewritten as [] —

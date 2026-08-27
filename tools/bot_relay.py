@@ -33,6 +33,7 @@ the sender fails fast instead of queueing a DM nobody will drain (#93091).
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
 LOCKS_DIR = "locks"
+OUTBOX_SEQUENCE_FILE = "outbox-sequence"
 
 # Fallback wait budget for a queued delivery turn when config is unreadable.
 # The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
@@ -100,7 +102,7 @@ def relay_root(root: Path | str) -> Path:
 
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
-    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
+    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR, LOCKS_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -245,6 +247,51 @@ def remote_target_forms(roster: list[dict]) -> list[str]:
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
+def _next_outbox_sequence(base: Path) -> int:
+    """Allocate one durable, per-sender outbox sequence under an OS lock.
+
+    Desktop instances may drain different sender roots in arbitrary order, so
+    this intentionally promises FIFO only within one sender outbox.  A global
+    cross-gateway order would need a shared authority and is not invented here.
+    """
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - Windows has no supported relay lock yet
+        raise RuntimeError("cross-process relay ordering requires fcntl") from exc
+
+    lock_path = base / LOCKS_DIR / f"{OUTBOX_SEQUENCE_FILE}.lock"
+    counter_path = base / OUTBOX_SEQUENCE_FILE
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            try:
+                current = int(counter_path.read_text(encoding="utf-8").strip() or "0")
+            except FileNotFoundError:
+                current = 0
+            except ValueError as exc:
+                raise RuntimeError("invalid relay outbox sequence state") from exc
+            sequence = current + 1
+            tmp_fd, tmp = tempfile.mkstemp(dir=str(base), prefix=".outbox-sequence-", suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(f"{sequence}\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, counter_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            return sequence
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _envelope_ttl_seconds() -> int:
     """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), lazily read.
 
@@ -331,9 +378,11 @@ def enqueue_envelope(
             "Try again once that machine reconnects to the Desktop.",
         )
     base = _ensure_dirs(root)
+    sequence = _next_outbox_sequence(base)
     envelope = {
         "id": uuid.uuid4().hex,
         "created_at": int(time.time()),
+        "sequence": sequence,
         "from_profile": sender_profile,
         "from_handle": sender_handle,
         "target_connection": target["connection_id"],
@@ -341,7 +390,9 @@ def enqueue_envelope(
         "target_handle": target["handle"],
         "message": message,
     }
-    path = base / OUTBOX_DIR / f"{envelope['id']}.json"
+    # Lexical filename order matches the durable sequence so claiming does not
+    # need a non-atomic read-before-rename sort. UUID keeps collision safety.
+    path = base / OUTBOX_DIR / f"{sequence:020d}-{envelope['id']}.json"
     fd, tmp = tempfile.mkstemp(dir=str(base / OUTBOX_DIR), prefix=".env-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(envelope, f, ensure_ascii=False)
@@ -660,7 +711,9 @@ def acquire_turn_lock(
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
                 now = time.monotonic()
                 if now >= deadline:
                     raise TurnBusyError(profile, now - start)

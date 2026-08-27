@@ -1,0 +1,14 @@
+gate_id,claim_or_invariant,command_or_witness,required,status,evidence_ref,notes
+G-000,canonical newer kit integrity,sha256sum -c MANIFEST.sha256,true,PASS,/tmp/ares-soul-kit-inspect-20260822/core/Ares_SOUL_Kit_2026-08-21,Manifest passed before installation
+G-001,kit deterministic validation,validate_kit.py plus router unit tests,true,PASS,/tmp/ares-soul-kit-inspect-20260822/core/Ares_SOUL_Kit_2026-08-21,Static kit checks passed
+G-002,root Explorer Public bytes match canonical kit,sha256sum plus active-runtime load readback,true,PASS,/home/sikmindz/.ares,Three SOULs and operating-mode skill match; runtime loader read back each own home
+G-003,managed fallback selector,Ares focused identity tests,true,PASS,tests/agent/test_ares_managed_identity.py,Managed Ares selects ARES_DEFAULT_AGENT_IDENTITY only after SOUL load fails
+G-004,upstream compatibility fallback,normal-marker-absent focused tests,true,PASS,tests/agent/test_ares_managed_identity.py,Normal Hermes retains DEFAULT_AGENT_IDENTITY and normal seeding
+G-005,Codex fallback consumers,focused adapter and transport suite,true,PASS,tests/agent/test_ares_managed_identity.py plus 135-test focused run,Responses preflight and transport use shared selector
+G-006,fresh managed root/profile seed suppression,14 focused tests,true,PASS,hermes_cli/test_config.py and hermes_cli/test_profiles.py,No upstream SOUL seed; custom/legacy/clone behavior preserved
+G-007,source formatting and lint,compileall plus ruff plus git diff --check,true,PASS,/home/sikmindz/Coding/Ares,All scoped checks passed
+G-008,broader Ares config/profile suite,pytest tests/hermes_cli/test_config.py tests/hermes_cli/test_profiles.py tests/agent/test_ares_managed_identity.py,true,FAIL,/home/sikmindz/Coding/Ares,135 passed 2 skipped 1 failed; inherited default-home expectation requires Ares/upstream test partitioning
+G-009,active runtime contains source repair,active pointer and deployed symbol readback,true,BLOCKED,/home/sikmindz/.ares/runtime/current,Active release 48a88d... differs from dirty source e2a870...; no activation authorized
+G-010,live behavioral SOUL benefit/routing evaluation,held-out task evaluation,true,NOT_RUN,/tmp/ares-soul-kit-inspect-20260822/core/Ares_SOUL_Kit_2026-08-21/evaluation,Behavioral quality, routing, reliability, and promotion claims remain unverified
+G-011,optional deterministic router,plugin state,true,NOT_APPLICABLE,/home/sikmindz/.ares/plugins/ares-soul-router,Router intentionally remains uninstalled
+G-012,security archive remediation,credential rotation and archive sanitization,true,BLOCKED,/tmp/ares-soul-kit-inspect-20260822/core/Ares_SOUL_Kit_2026-08-21/04_SECURITY_FINDINGS.md,Credential-sensitive external actions require separate explicit authority

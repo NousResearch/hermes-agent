@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/closure_state_v1.json",
+  "title": "ClosureStateV1",
+  "description": "Derived mission closure projection. Kanban done, a model verdict or prose cannot independently set CLOSED.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares ClosureProjector over Kanban, ClaimLedger, recursive-agent and runtime receipts",
+  "x-storage-rule": "Derived rebuildable projection. No closure database and no direct model mutation.",
+  "required": [
+    "schema_version",
+    "mission_ref",
+    "closure_profile",
+    "state",
+    "satisfied_gate_ids",
+    "unsatisfied_gate_ids",
+    "blocking_refs",
+    "source_event_refs",
+    "projected_at",
+    "projection_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "closure_profile": {
+      "type": "string",
+      "enum": [
+        "engineering",
+        "research",
+        "public_artifact",
+        "effectful_operation",
+        "ordinary_response",
+        "mixed"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "open",
+        "scoped",
+        "executing",
+        "candidate_ready",
+        "evidence_pending",
+        "verified",
+        "delivery_pending",
+        "effect_pending",
+        "effect_ambiguous",
+        "delivered",
+        "closed",
+        "blocked",
+        "degraded",
+        "quarantined",
+        "rolled_back",
+        "cancelled",
+        "superseded"
+      ]
+    },
+    "satisfied_gate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "unsatisfied_gate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "blocking_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "source_event_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "projected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "projection_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "divergence_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "KANBAN_DONE_WITHOUT_CLOSURE",
+          "GOAL_DONE_WITHOUT_CLOSURE",
+          "NARRATIVE_AHEAD_OF_LEDGER",
+          "LEDGER_AHEAD_OF_UI",
+          "STALE_SOURCE_FREEZE",
+          "AMBIGUOUS_EFFECT",
+          "MISSING_WITNESS",
+          "RUNTIME_CANDIDATE_NOT_ACTIVE",
+          "UI_TASK_COUNT_MISMATCH"
+        ]
+      },
+      "uniqueItems": true
+    }
+  }
+}

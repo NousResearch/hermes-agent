@@ -85,7 +85,7 @@ except (ModuleNotFoundError, ImportError):
     # _hermes_home.py shim).
     def get_hermes_home() -> Path:
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else Path.home() / ".ares"
 
     def display_hermes_home() -> str:
         home = get_hermes_home()

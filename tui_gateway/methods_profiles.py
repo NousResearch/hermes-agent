@@ -249,7 +249,7 @@ def _(rid, params: dict) -> dict:
                     break
             return human, worker
         except Exception:
-            return None, None
+            return None, None, None
 
     try:
         from hermes_cli.profiles import list_profiles

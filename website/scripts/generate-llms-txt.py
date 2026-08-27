@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate llms.txt and llms-full.txt for the Hermes docs site.
+"""Generate llms.txt and llms-full.txt for the Ares docs site.
 
 Outputs:
   website/static/llms.txt        — index of the docs, one link per page, grouped by
@@ -39,7 +39,7 @@ WEBSITE = SCRIPT_DIR.parent
 DOCS = WEBSITE / "docs"
 STATIC = WEBSITE / "static"
 
-SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
+SITE_BASE = "https://recursiveintell.github.io/hermes-agent/docs"
 
 # The product story: which pages lead, and in what order. Everything not named
 # here is still indexed — ABSORB decides where it lands — so this list is safe
@@ -47,6 +47,9 @@ SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
 # Each entry: (docs-relative path without extension, display title, optional
 # short desc). `None` desc → pulled from frontmatter `description:` field.
 SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
+    ("Ares", [
+        ("ares", "Ares Distribution", "Downstream identity, compatibility, and optional-service boundaries."),
+    ]),
     ("Getting Started", [
         ("getting-started/installation", "Installation", None),
         ("getting-started/quickstart", "Quickstart", None),
@@ -293,25 +296,20 @@ def emit_llms_index() -> str:
             absorbed.setdefault(section_for(slug), []).append(slug)
 
     lines: list[str] = []
-    lines.append("# Hermes Agent")
+    lines.append("# Ares")
     lines.append("")
     lines.append(
-        "> The self-improving AI agent built by Nous Research. A terminal-native "
-        "autonomous coding and task agent with persistent memory, agent-created skills, "
-        "and a messaging gateway that lives on 21+ messaging platforms — 19 native to "
-        "the gateway plus IRC and Microsoft Teams via plugins (Telegram, Discord, Slack, "
-        "SMS, Matrix, ...). Runs on local, Docker, SSH, Daytona, Modal, or Singularity "
-        "backends. Works with Nous Portal, OpenRouter, OpenAI, Anthropic, Google, or any "
-        "OpenAI-compatible endpoint."
+        "> Ares is RecursiveIntell's evidence-native downstream distribution of Hermes Agent. "
+        "It retains the Hermes-compatible runtime while making optional governed services and "
+        "their verification boundaries explicit. It is not an official Nous Research product."
     )
     lines.append("")
     lines.append(
-        "Install: `curl -fsSL https://raw.githubusercontent.com/NousResearch/"
-        "hermes-agent/main/scripts/install.sh | bash`  "
-        "(Linux, macOS, WSL2, Termux)"
+        "Install: clone `https://github.com/RecursiveIntell/hermes-agent` and review/run "
+        "`bash install.sh` from the checkout (Unix-like shells)."
     )
     lines.append("")
-    lines.append("Repo: https://github.com/NousResearch/hermes-agent")
+    lines.append("Repo: https://github.com/RecursiveIntell/hermes-agent")
     lines.append("")
 
     for section, items in SECTIONS:
@@ -338,15 +336,14 @@ def emit_llms_full() -> str:
     """Concatenate every doc under website/docs/ into a single markdown file."""
     seen: set[Path] = set()
     chunks: list[str] = [
-        "# Hermes Agent — Full Documentation\n",
+        "# Ares — Hermes-Compatible Documentation\n",
         (
-            "This file is the entire Hermes Agent documentation concatenated for LLM "
-            "context ingestion. Section order reflects docs-site navigation: Getting "
-            "Started, Using Hermes, Features, Messaging, Integrations, Guides, "
-            "Developer Guide, Reference, then everything else.\n"
+            "This file is the Ares documentation plus its Hermes-compatible reference material "
+            "concatenated for LLM context ingestion. Ares-specific boundaries appear first; "
+            "remaining pages retain their upstream-compatible reference role.\n"
         ),
-        "Canonical site: https://hermes-agent.nousresearch.com/docs\n",
-        "Short index: https://hermes-agent.nousresearch.com/docs/llms.txt\n",
+        "Canonical repository: https://github.com/RecursiveIntell/hermes-agent\n",
+        "When published: https://recursiveintell.github.io/hermes-agent/docs/llms.txt\n",
         "\n---\n\n",
     ]
 

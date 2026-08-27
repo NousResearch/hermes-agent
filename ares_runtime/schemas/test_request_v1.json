@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/test_request_v1.json",
+  "title": "TestRequestV1",
+  "description": "Specific falsifier, reproduction or postcondition request selected to close an evidence gap.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Mission owner requests; Witness/test harness owns outcome evidence",
+  "x-storage-rule": "Attach to existing mission/task. Execution produces EvidenceItem and Witness artifacts.",
+  "required": [
+    "schema_version",
+    "test_request_id",
+    "mission_ref",
+    "question",
+    "oracle_class",
+    "procedure",
+    "expected_discriminators",
+    "required_environment",
+    "authority_requirements",
+    "stop_conditions",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "test_request_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "oracle_class": {
+      "type": "string",
+      "enum": [
+        "unit",
+        "integration",
+        "property",
+        "mutation",
+        "static_analysis",
+        "model_check",
+        "runtime_postcondition",
+        "source_reproduction",
+        "human_review"
+      ]
+    },
+    "procedure": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "expected_discriminators": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "required_environment": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "authority_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "input_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

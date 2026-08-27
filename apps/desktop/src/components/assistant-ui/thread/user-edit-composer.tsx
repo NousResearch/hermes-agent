@@ -109,6 +109,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  const submitCooldownRef = useRef<number | null>(null)
+  const blurTimerRef = useRef<number | null>(null)
   // True while OS-drop files are being staged/uploaded into the session. Blocks
   // submit and shows a spinner so confirming the edit can't race the async
   // upload and drop the gateway-side ref before it lands in the draft.
@@ -148,6 +150,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // and a sibling unmount-only effect would only be a second place to forget.
   useEffect(
     () => () => {
+      if (submitCooldownRef.current !== null) {
+        clearTimeout(submitCooldownRef.current)
+      }
+
+      if (blurTimerRef.current !== null) {
+        clearTimeout(blurTimerRef.current)
+      }
+
       notifyThreadEditClose()
       releaseActiveComposer('edit')
 

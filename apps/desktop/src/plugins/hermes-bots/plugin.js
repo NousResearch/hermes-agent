@@ -1520,11 +1520,96 @@ const RELAY_DRAIN_INTERVAL_MS = 30_000
 // to ONE drain. The interval poll above stays as the backstop for older
 // backends (and connections whose events don't reach the tap).
 const RELAY_PUSH_DEBOUNCE_MS = 250
+const RELAY_DELIVERY_CONCURRENCY = 3
 let relayDisposed = false
 let relayRosterTimer = null
 let relayDrainTimer = null
 let relayRosterBusy = false
 let relayDrainBusy = false
+let relayDeliveryScheduler = null
+
+/**
+ * Bounded keyed scheduler for relay turns. A Bot Chat is stateful, so sends
+ * for the same target retain the outbox claim order; independent target chats
+ * should not wait behind a cold model turn elsewhere in the fleet.
+ *
+ * The plugin object exposes this as a behavior seam for the bundled test lane.
+ * Runtime loading continues to consume this single plain-ESM file unchanged.
+ */
+function createRelayDeliveryScheduler({ concurrency = RELAY_DELIVERY_CONCURRENCY } = {}) {
+  const lanes = new Map()
+  const limit = Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : RELAY_DELIVERY_CONCURRENCY)
+  let active = 0
+  let closed = null
+
+  const pump = () => {
+    while (!closed && active < limit) {
+      const lane = [...lanes.values()].find(candidate => !candidate.running && candidate.queue.length > 0)
+
+      if (!lane) {
+        return
+      }
+
+      const job = lane.queue.shift()
+      lane.running = true
+      active += 1
+
+      void Promise.resolve()
+        .then(job.run)
+        .then(job.resolve, job.reject)
+        .finally(() => {
+          active -= 1
+          lane.running = false
+
+          if (lane.queue.length === 0) {
+            lanes.delete(lane.key)
+          }
+
+          pump()
+        })
+    }
+  }
+
+  return {
+    enqueue(key, run) {
+      if (closed) {
+        return Promise.reject(closed)
+      }
+
+      return new Promise((resolve, reject) => {
+        const laneKey = String(key || '')
+        let lane = lanes.get(laneKey)
+
+        if (!lane) {
+          lane = { key: laneKey, queue: [], running: false }
+          lanes.set(laneKey, lane)
+        }
+
+        lane.queue.push({ run, resolve, reject })
+        pump()
+      })
+    },
+
+    close(message = 'Bot relay stopped before delivery') {
+      if (closed) {
+        return
+      }
+
+      closed = new Error(message)
+
+      for (const lane of lanes.values()) {
+        for (const job of lane.queue.splice(0)) {
+          job.reject(closed)
+        }
+
+        if (!lane.running) {
+          lanes.delete(lane.key)
+        }
+      }
+    }
+  }
+}
+
 let relayPushUnsub = null
 let relayPushDebounceTimer = null
 // A push landing while a drain is ALREADY running would be lost forever —
@@ -1725,6 +1810,8 @@ async function drainRelayOutboxes() {
   relayDrainBusy = true
 
   try {
+    const scheduler = relayDeliveryScheduler || createRelayDeliveryScheduler()
+    relayDeliveryScheduler = scheduler
     const connections = await relayConnections()
 
     // Retention follows the relay-eligible set: with fewer than two
@@ -1736,6 +1823,7 @@ async function drainRelayOutboxes() {
     }
 
     const byId = new Map(connections.map(connection => [connection.id, connection]))
+    const deliveries = []
 
     for (const sender of connections) {
       let envelopes = []
@@ -1748,10 +1836,6 @@ async function drainRelayOutboxes() {
       }
 
       for (const envelope of envelopes) {
-        if (relayDisposed) {
-          return
-        }
-
         const envelopeId = String(envelope?.id || '')
         const target = byId.get(String(envelope?.target_connection || ''))
         const postReply = async payload => {
@@ -1771,32 +1855,34 @@ async function drainRelayOutboxes() {
           continue
         }
 
-        // Needs-attention hook (#93091 item 3): a delivered background DM is
-        // this bot's "good turn"; a classified delivery failure badges it.
-        const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
-
-        try {
-          const res = await host.requestProfile(target.route, 'bot_relay.deliver', {
-            profile: String(envelope?.target_profile || ''),
-            message: String(envelope?.message || '')
-          })
-          clearBotAttention(attentionKey)
-          await postReply({ reply: String(res?.reply || '') })
-        } catch (error) {
-          // #93091: bot_relay.deliver classifies the failed turn and ships the
-          // typed code in the JSON-RPC error's `data.reason`; forward it into
-          // the sender-side reply file so the waiter (and the sending agent)
-          // get the machine-readable cause, and prefer it for the badge —
-          // classified codes beat free-text re-parsing.
-          const reason = String(error?.data?.reason || '').trim()
-          noteBotAttention(attentionKey, reason || error?.message || error)
-          await postReply({
-            error: String(error?.message || error || 'delivery failed'),
-            ...(reason ? { reason } : {})
-          })
-        }
+        const targetProfile = String(envelope?.target_profile || '')
+        const targetKey = `${target.id}\u0000${targetProfile}`
+        const attentionKey = `${target.id}::${targetProfile}`
+        deliveries.push(
+          scheduler
+            .enqueue(targetKey, () =>
+              host.requestProfile(target.route, 'bot_relay.deliver', {
+                profile: targetProfile,
+                message: String(envelope?.message || '')
+              })
+            )
+            .then(async res => {
+              clearBotAttention(attentionKey)
+              await postReply({ reply: String(res?.reply || '') })
+            })
+            .catch(async error => {
+              const reason = String(error?.data?.reason || '').trim()
+              noteBotAttention(attentionKey, reason || error?.message || error)
+              await postReply({
+                error: String(error?.message || error || 'delivery failed'),
+                ...(reason ? { reason } : {})
+              })
+            })
+        )
       }
     }
+
+    await Promise.all(deliveries)
   } finally {
     relayDrainBusy = false
 
@@ -1828,6 +1914,7 @@ function scheduleRelayPushDrain() {
 
 function startBotRelay() {
   relayDisposed = false
+  relayDeliveryScheduler = createRelayDeliveryScheduler()
 
   // Source-shape test harnesses evaluate plugin.js without DOM timers —
   // the relay only runs where a real event loop exists.
@@ -1855,6 +1942,8 @@ function startBotRelay() {
 
 function stopBotRelay() {
   relayDisposed = true
+  relayDeliveryScheduler?.close()
+  relayDeliveryScheduler = null
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relayDrainRerun = false
@@ -15605,6 +15694,8 @@ export default {
   id: ID,
   name: 'Bots',
   description: 'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
+  createRelayDeliveryScheduler,
+  drainRelayOutboxes,
   register(ctx) {
     pluginCtx = ctx
     groupChatSyncDisposed = false

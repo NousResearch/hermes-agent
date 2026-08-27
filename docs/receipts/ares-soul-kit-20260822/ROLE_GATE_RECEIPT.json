@@ -1,0 +1,24 @@
+{
+  "schema": "SemanticRoleGateReceiptV1",
+  "registry": "docs/role-contracts/role-contracts.json",
+  "validator": "scripts/validate_role_contracts.py",
+  "authority_gate": "scripts/role_authority_gate.py",
+  "focused_tests": {"command": "python -m pytest -q tests/role_contracts", "passed": 32, "failed": 0},
+  "registry_validation": "PASS",
+  "ruff_compile_diff": "PASS",
+  "covered": [
+    "public publication_ready blocks claim/evidence gaps",
+    "Explorer dissent preservation",
+    "Data/Evidence promotion lane",
+    "F→I→V completeness and verification states",
+    "canonical registry binding",
+    "runtime authority is not granted"
+  ],
+  "not_established": [
+    "runtime/publication consumer wiring",
+    "automatic agent dispatch enforcement",
+    "behavioral discriminant validity of roles",
+    "production authority enforcement"
+  ],
+  "complete": false
+}

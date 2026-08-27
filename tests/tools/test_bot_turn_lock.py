@@ -10,6 +10,7 @@ process, so threads exercise the true kernel-lock semantics.
 from __future__ import annotations
 
 import fcntl
+import errno
 import json
 import os
 import re
@@ -117,6 +118,17 @@ def test_reentry_after_clean_release(root):
         pass
     with acquire_turn_lock(root, "ops", timeout_seconds=1):
         pass
+
+
+def test_lock_infrastructure_error_is_not_misreported_as_target_busy(root, monkeypatch):
+    def _broken_flock(*_args):
+        raise OSError(errno.EIO, "broken lock device")
+
+    monkeypatch.setattr(fcntl, "flock", _broken_flock)
+
+    with pytest.raises(OSError, match="broken lock device"):
+        with acquire_turn_lock(root, "ops", timeout_seconds=0.1):
+            pass
 
 
 def test_lock_path_is_short_and_sanitized(root):

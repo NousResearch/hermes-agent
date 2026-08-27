@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/effect_envelope_v1.json",
+  "title": "EffectEnvelopeV1",
+  "description": "Idempotent effect intent and outcome journal entry with explicit ambiguous state and compensation.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Libraries/effect-runtime + recursive-agent operation/ledger owner",
+  "x-storage-rule": "Projection/reference only; external outcome ambiguity and compensation remain canonical effect events.",
+  "required": [
+    "schema_version",
+    "effect_intent_id",
+    "mission_ref",
+    "operation_id",
+    "effect_class",
+    "target_ref",
+    "arguments_digest",
+    "permit_ref",
+    "idempotency_key",
+    "state",
+    "retry_policy",
+    "postconditions",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "effect_intent_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "operation_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "effect_class": {
+      "type": "string",
+      "enum": [
+        "reversible_local",
+        "durable_local",
+        "external_reversible",
+        "external_irreversible",
+        "authority_changing"
+      ]
+    },
+    "target_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "arguments_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "permit_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "precondition_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "prepared",
+        "authorized",
+        "submitted",
+        "externally_confirmed",
+        "externally_rejected",
+        "outcome_ambiguous",
+        "reconciled",
+        "compensated",
+        "quarantined"
+      ]
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "automatic": {
+          "type": "boolean"
+        },
+        "maximum_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_same_idempotency_key": {
+          "type": "boolean",
+          "const": true
+        },
+        "ambiguous_is_terminal": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "automatic",
+        "maximum_attempts",
+        "requires_same_idempotency_key",
+        "ambiguous_is_terminal"
+      ]
+    },
+    "postconditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "postcondition_evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "compensation_plan_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -49,7 +49,6 @@ import {
   releaseSubmitInFlight,
   SessionRecoveryAborted,
   type SubmitTextOptions,
-  withSessionBusyRetry,
   withSessionNotFoundResume
 } from './utils'
 
@@ -785,10 +784,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
-            liveId =>
-              withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              ),
+            liveId => requestGateway('prompt.submit', submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
             {
               requestGateway,
               driftReason: sessionDriftReason,

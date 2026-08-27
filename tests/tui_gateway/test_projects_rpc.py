@@ -13,6 +13,24 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 import tui_gateway.server as server
 
 
+@pytest.fixture(autouse=True)
+def _isolated_project_state(tmp_path, monkeypatch):
+    """Keep project RPC tests out of the process-global TUI SessionDB/cache."""
+    from hermes_state import SessionDB
+    from tui_gateway import git_probe
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    db = SessionDB(db_path=home / "state.db")
+    previous_db, previous_error = server._db, server._db_error
+    server._db, server._db_error = db, None
+    git_probe.invalidate()
+    yield
+    git_probe.invalidate()
+    db.close()
+    server._db, server._db_error = previous_db, previous_error
+
+
 def _call(method, params=None):
     handler = server._methods[method]
     resp = handler(1, params or {})

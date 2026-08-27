@@ -221,7 +221,7 @@ def test_goal_resume_after_budget_exhaustion_dispatches_continuation(
 
     state = GoalManager(session_key).state
     assert state.status == "active"
-    assert state.turns_used == 0, "resume must reset the turn budget"
+    assert state.turns_used == 1, "resume must preserve the cumulative turn budget"
 
 
 def test_goal_resume_without_goal_stays_exec(server, session):

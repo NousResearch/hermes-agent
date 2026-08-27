@@ -45,6 +45,7 @@ from agent.message_sanitization import (
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.transports.ri_llm import _should_use_ri_pipeline, ri_pipeline_chat_completion
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -995,6 +996,18 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
+    if (
+        agent.api_mode == "chat_completions"
+        and api_kwargs.get("stream") is not True
+        and _should_use_ri_pipeline(agent)
+    ):
+        logger.debug(
+            "Using llm-pipeline transport for non-streaming chat completion call "
+            "(provider=%s model=%s).",
+            agent.provider or "unknown",
+            api_kwargs.get("model", ""),
+        )
+        return ri_pipeline_chat_completion(agent, api_kwargs)
     request_client = make_client("chat_completion_request")
     return request_client.chat.completions.create(**api_kwargs)
 
@@ -2814,13 +2827,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-            agent.context_compressor.update_model(
+            # Forward the per-model resolved threshold (Codex gpt-5.x
+            # autoraise included) to engines that accept threshold_percent;
+            # the built-in compressor re-resolves internally and is skipped
+            # by the signature guard.
+            from agent.auxiliary_client import (
+                _effective_compression_threshold_percent,
+                _update_compressor_model,
+            )
+
+            _update_compressor_model(
+                agent.context_compressor,
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
                 api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
                 api_mode=agent.api_mode,
+                threshold_percent=_effective_compression_threshold_percent(
+                    agent.model, agent.provider
+                ),
             )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).
@@ -3387,6 +3413,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # branch below — routing through the _interruptible_api_call method keeps the
     # outer loop's per-request retry/refresh seam intact.
     if should_use_direct_api_call(agent):
+        if agent.api_mode == "chat_completions" and _should_use_ri_pipeline(agent):
+            _nonstreaming_args = dict(api_kwargs)
+            _nonstreaming_args["stream"] = False
+            return agent._interruptible_api_call(_nonstreaming_args)
         return agent._interruptible_api_call(api_kwargs)
 
     if agent.api_mode == "codex_responses":
@@ -3405,6 +3435,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             raise
         finally:
             agent._codex_on_first_delta = None
+
+    # RI’s llm-pipeline transport is non-streaming today; skip the OpenAI
+    # stream path and route to the non-streaming entry point for this session.
+    # Keep the request kwargs stream-off to prevent accidental fallback to
+    # any provider-side stream behavior.
+    if (
+        agent.api_mode == "chat_completions"
+        and _should_use_ri_pipeline(agent)
+    ):
+        _streaming_disabled_kwargs = dict(api_kwargs)
+        _streaming_disabled_kwargs["stream"] = False
+        return agent._interruptible_api_call(_streaming_disabled_kwargs)
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.

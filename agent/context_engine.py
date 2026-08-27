@@ -89,6 +89,11 @@ def automatic_compaction_status_message(
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
+    # Receipt-backed engines may require the committed transcript to retain
+    # their exact projection as a prefix. Generic head/tail partial
+    # compression is compatible by default; stricter engines can turn it off.
+    supports_partial_compression = True
+
     # -- Identity ----------------------------------------------------------
 
     @property
@@ -408,6 +413,38 @@ class ContextEngine(ABC):
         self.last_total_tokens = 0
         self.compression_count = 0
 
+    def commit_pending_compression(
+        self,
+        committed_messages: List[Dict[str, Any]],
+        **kwargs,
+    ) -> bool:
+        """Activate engine-owned state after the host commits a boundary.
+
+        Receipt-backed engines may prepare durable-but-inactive state inside
+        :meth:`compress`, then publish it immediately after the host's durable
+        transcript commit. Later observer/UI work cannot revoke that commit. The default has
+        no staged state and therefore reports success.  ``kwargs`` may include
+        ``new_session_id``, ``old_session_id``, ``session_db``, and ``durable``.
+        """
+        return True
+
+    def validate_pending_compression(
+        self,
+        committed_messages: List[Dict[str, Any]],
+        **kwargs,
+    ) -> bool:
+        """Validate staged state before the host mutates durable transcript state."""
+        return True
+
+    def discard_pending_compression(self, **kwargs) -> bool:
+        """Discard engine-owned state for a host-rejected boundary.
+
+        Called for cancellation, anti-growth rejection, or a transcript
+        transaction failure before durability. Observer deferral is separate. The
+        default has no staged state and therefore reports success.
+        """
+        return True
+
     # -- Optional: tools ---------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -428,6 +465,7 @@ class ContextEngine(ABC):
           messages: the current in-memory message list (for live ingestion)
         """
         import json
+
         return json.dumps({"error": f"Unknown context engine tool: {name}"})
 
     # -- Optional: status / display ----------------------------------------
@@ -442,15 +480,50 @@ class ContextEngine(ABC):
         # raw -1 or a negative usage_percent on the transitional turn. Mirrors
         # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
         last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
-        return {
+        status = {
             "last_prompt_tokens": last_prompt,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
                 min(100, last_prompt / self.context_length * 100)
-                if self.context_length else 0
+                if self.context_length
+                else 0
             ),
             "compression_count": self.compression_count,
+        }
+        activation = getattr(self, "_activation_status", None)
+        if isinstance(activation, dict):
+            status["activation"] = dict(activation)
+        return status
+
+    def set_activation_status(
+        self,
+        *,
+        configured_engine: str,
+        discovered: bool,
+        version_compatible: bool,
+        capability_compatible: bool,
+        instantiated: bool,
+        observed_live_engine: str | None = None,
+        state: str = "ready",
+        detail: str = "",
+    ) -> None:
+        """Record host-generic engine activation evidence.
+
+        The host owns configuration and selection; an engine may update only
+        `observed_live_engine` after it has handled a compaction. This keeps
+        status a projection of the actual selection lifecycle rather than a
+        plugin-specific assertion.
+        """
+        self._activation_status = {
+            "configured_engine": configured_engine,
+            "discovered": bool(discovered),
+            "version_compatible": bool(version_compatible),
+            "capability_compatible": bool(capability_compatible),
+            "instantiated": bool(instantiated),
+            "observed_live_engine": observed_live_engine,
+            "state": state,
+            "detail": detail,
         }
 
     # -- Optional: model switch support ------------------------------------

@@ -153,12 +153,14 @@ def _codex_agent_kwargs():
     )
 
 
-def test_codex_gpt55_autoraise_suppressed_for_plugin_engine():
-    """Codex gpt-5.5 autoraise must not fire when an external engine is active.
+def test_codex_gpt55_autoraise_notice_armed_for_plugin_engine():
+    """Codex gpt-5.5 autoraise notice stays armed when an external engine is active.
 
-    Regression test for #44439 — the host compression threshold (including
-    the 0.85 autoraise) never reaches a plugin context engine, so the notice
-    announced a change that did not apply.
+    The host forwards the resolved compression threshold (config value or
+    Codex gpt-5.x autoraise) to engines whose update_model accepts
+    threshold_percent, so the notice is accurate for plugin engines instead of
+    announcing a change that did not apply (#44439). Engines that do not
+    accept the kwarg keep their own resolved policy.
     """
     engine = _StubEngine()
     cfg = {
@@ -180,9 +182,18 @@ def test_codex_gpt55_autoraise_suppressed_for_plugin_engine():
         agent = AIAgent(**_codex_agent_kwargs())
 
     assert agent.context_compressor is engine
-    assert agent._compression_threshold_autoraised is None
-    assert agent._compression_warning is None
-    # The engine's own policy is untouched by the host threshold.
+    # The autoraise notice re-arms for plugin engines: the resolved host
+    # threshold (0.75 config → 0.85 Codex gpt-5.5 autoraise) is forwarded to
+    # engines that accept threshold_percent, so the announced change applies.
+    assert agent._compression_threshold_autoraised == {
+        "model": "gpt-5.5",
+        "from": 0.75,
+        "to": 0.85,
+    }
+    assert agent._compression_warning is not None
+    assert "85%" in agent._compression_warning
+    # The stub's update_model does not accept threshold_percent, so the engine
+    # keeps its own resolved policy (config 0.75, not the autoraised 0.85).
     assert engine.threshold_percent == 0.75
 
 

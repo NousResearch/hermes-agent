@@ -15924,6 +15924,13 @@ export default {
         if (botChatOwnsWorkspace()) {
           unregisterRoutines ??= registerRoutinesPane()
         } else if (unregisterRoutines) {
+          // Clicking the Cronjobs tile moves focus onto the tile itself, which
+          // drops bot-chat workspace ownership for a beat. While Bot Mode is
+          // still on screen and the tile is the one holding focus, keep it —
+          // a pane must never unregister itself out from under its own click.
+          // Leaving Bot Mode ($botsPaneVisible false) still unregisters.
+          const $self = host.paneVisibility(`${ID}:routines`)
+          if ($botsPaneVisible.get() && $self && typeof $self.get === 'function' && $self.get()) return
           unregisterRoutines()
           unregisterRoutines = null
         }

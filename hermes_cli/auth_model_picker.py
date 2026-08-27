@@ -184,6 +184,19 @@ def _prompt_model_selection(
             return None
         return _confirmed_selection(custom) if custom else None
 
+    # Reorder the catalog from the configured primary/fallback chain first.
+    # The current-model pin below remains the final interaction affordance.
+    if confirm_provider:
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.inventory import configured_model_order, order_models_for_provider
+
+            model_ids = order_models_for_provider(
+                list(model_ids), confirm_provider, configured_model_order(load_config()),
+            )
+        except Exception as exc:
+            logger.debug("Could not apply configured model order for %s: %s", confirm_provider, exc)
+
     # Reorder: current model first, then the rest (deduplicated)
     ordered = list(dict.fromkeys(
         ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)

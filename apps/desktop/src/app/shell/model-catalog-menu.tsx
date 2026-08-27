@@ -305,6 +305,11 @@ export function ModelCatalogMenu({
 
   const providers = modelOptions.data?.providers
 
+  const preferredModels = useMemo(
+    () => modelOptions.data?.preferred_models ?? [],
+    [modelOptions.data?.preferred_models]
+  )
+
   // The catalog carries MoA presets as a virtual `moa` provider row. Keep it
   // out of the main groups so presets never show up twice.
   const moaPresets = useMemo(
@@ -375,9 +380,10 @@ export function ModelCatalogMenu({
         search,
         { model: current.model, provider: current.provider },
         shownKeys,
-        q ? null : favoriteSet
+        q ? null : favoriteSet,
+        preferredModels
       ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet, preferredModels]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -1321,10 +1327,28 @@ function groupModels(
   current: { model: string; provider: string },
   visible: Set<string> | null,
   /** Favorites to leave out (they paint in their own section); null lists every row. */
-  favorites: ReadonlySet<string> | null
+  favorites: ReadonlySet<string> | null,
+  preferredModels: NonNullable<ModelOptionsResult['preferred_models']> = []
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
+
+  const preferredRanks = new Map(
+    preferredModels.map((entry, index) => [
+      modelVisibilityKey(normalize(entry.provider), normalize(entry.model)),
+      index
+    ])
+  )
+
+  const providerRanks = new Map<string, number>()
+
+  preferredModels.forEach((entry, index) => {
+    const provider = normalize(entry.provider)
+
+    if (!providerRanks.has(provider)) {
+      providerRanks.set(provider, index)
+    }
+  })
 
   for (const provider of providers) {
     let allFamilies = collapseModelFamilies(provider.models ?? [])
@@ -1381,14 +1405,50 @@ function groupModels(
         (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
     )
 
+    families.sort((a, b) => {
+      const aRank = preferredRanks.get(modelVisibilityKey(normalize(provider.slug), normalize(a.id)))
+      const bRank = preferredRanks.get(modelVisibilityKey(normalize(provider.slug), normalize(b.id)))
+
+      if (aRank === undefined && bRank === undefined) {
+        return 0
+      }
+
+      if (aRank === undefined) {
+        return 1
+      }
+
+      if (bRank === undefined) {
+        return -1
+      }
+
+      return aRank - bRank
+    })
+
     if (families.length > 0) {
       groups.push({ families, provider })
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Configured primary/fallback order is stable across session switches. Older
+  // backends omit it, so keep the historical alphabetical order as fallback.
+  groups.sort((a, b) => {
+    const aRank = providerRanks.get(normalize(a.provider.slug))
+    const bRank = providerRanks.get(normalize(b.provider.slug))
+
+    if (aRank === undefined && bRank === undefined) {
+      return a.provider.name.localeCompare(b.provider.name)
+    }
+
+    if (aRank === undefined) {
+      return 1
+    }
+
+    if (bRank === undefined) {
+      return -1
+    }
+
+    return aRank - bRank
+  })
 
   return groups
 }

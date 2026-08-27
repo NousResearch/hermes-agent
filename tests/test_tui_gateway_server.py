@@ -3887,7 +3887,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     assert "launch_update" not in captured
 
 
-def test_stored_session_runtime_overrides_skips_bare_billing_provider():
+def test_stored_session_runtime_overrides_skips_bare_billing_provider(monkeypatch):
     """A bare billing bucket ("custom"/"auto") must not be restored as the provider
     identity on resume. A custom endpoint that never used `/model` persists only
     `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
@@ -3909,7 +3909,23 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["provider_override"] == "anthropic"
     assert ov["model_override"]["provider"] == "anthropic"
 
-    # An explicit routable provider in model_config wins over the bare billing bucket.
+    # An explicit ROUTABLE provider in model_config wins over the bare billing
+    # bucket. It must actually resolve in the registry — a stale/renamed
+    # provider is dropped (see TestStaleProviderNameFallsBack).
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "myendpoint",
+                "base_url": "https://myendpoint.invalid/v1",
+                "api_key": "sk-test",
+                "model": "m",
+            }
+        ]
+    }
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
     ov = server._stored_session_runtime_overrides(
         {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
     )

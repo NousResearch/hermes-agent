@@ -3225,7 +3225,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     kw["session_id"] = resume_sid
                 kw["platform_override"] = _session_source(current)
                 resume_overrides = current.get("resume_runtime_overrides")
-                if isinstance(resume_overrides, dict) and resume_overrides:
+                if (
+                    isinstance(resume_overrides, dict)
+                    and resume_overrides
+                    and _overrides_have_routable_provider(resume_overrides)
+                ):
                     # Cold deferred resume: restore the full persisted runtime
                     # identity (model/provider/base_url/api_mode/reasoning/tier)
                     # exactly as the eager resume path's _stored_session_runtime_
@@ -3233,9 +3237,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     # provider and fail with "No LLM provider configured".
                     kw.update(resume_overrides)
                 else:
-                    # Model/effort/fast the desktop picked for a brand-new chat
-                    # ride in as per-session overrides so the first build uses
-                    # them directly (no global config, no build-then-switch).
+                    # No stored runtime, or the stored provider no longer
+                    # resolves (renamed/removed since the row was written) —
+                    # never let that sink agent init with "Unknown provider".
+                    # Fall back to the model/effort/fast the desktop picked
+                    # for THIS session, else the configured default.
                     if override := current.get("model_override"):
                         kw["model_override"] = override
                     if (reasoning := current.get("create_reasoning_override")) is not None:
@@ -5202,6 +5208,30 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 from hermes_state import _BARE_BILLING_PROVIDERS
 
 
+def _overrides_have_routable_provider(overrides: dict) -> bool:
+    """Whether persisted runtime overrides still name a routable provider.
+
+    A session row written under a provider that has since been renamed or
+    removed would otherwise fail agent init with "Unknown provider".
+    Empty provider counts as NOT routable here, so the caller falls back
+    to the model the user picked for this session / the configured
+    default instead of restoring a provider-less snapshot override.
+    """
+    provider = str(overrides.get("provider_override") or "").strip()
+    if not provider:
+        provider = str(
+            (overrides.get("model_override") or {}).get("provider") or ""
+        ).strip()
+    if not provider:
+        return False
+    try:
+        from hermes_cli.runtime_provider import is_routable_provider
+
+        return is_routable_provider(provider)
+    except Exception:
+        return False
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Return runtime fields persisted with a stored session.
 
@@ -5245,30 +5275,46 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
-    # Heal a bare ``"custom"`` provider stored by an older build (or any leak
-    # site that bypassed _runtime_model_config's normalization). Bare custom is
-    # the resolved billing class, not a routable identity — restoring it as the
-    # session's provider override routes the resume to the OpenRouter default
-    # URL with no api_key, surfacing as "No LLM provider configured". Recover
-    # the durable ``custom:<name>`` menu key from the stored base_url, then
-    # from the entry that serves the stored model, falling back to the
-    # configured provider when the row has neither (the recurring Desktop/TUI
-    # regression vector). If none names a real entry,
-    # drop the bare provider entirely so resume falls back to the configured
-    # default rather than the broken OpenRouter route.
-    if provider.strip().lower() == "custom":
-        healed = None
+    # Heal a stale/expired provider name persisted by an older build — not
+    # just the bare ``"custom"`` billing class. A renamed or removed custom
+    # provider (e.g. ``oldone`` -> ``newone``) stored in the session row
+    # would otherwise fail agent init with "Unknown provider '<name>'".
+    # Recover the durable ``custom:<name>`` menu key from the stored
+    # base_url, then from the entry that serves the stored model, falling
+    # back to the configured provider when the row has neither. When
+    # nothing names a real entry, drop the provider entirely so resume
+    # falls back to the configured default rather than the broken route.
+    if provider:
+        routable = False
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
+            from hermes_cli.runtime_provider import is_routable_provider
 
-            healed = canonical_custom_identity(
-                base_url=base_url or None, model=model or None
-            )
+            routable = is_routable_provider(provider)
         except Exception:
-            logger.debug(
-                "custom provider identity recovery failed", exc_info=True
-            )
-        provider = healed or ("" if not base_url else provider)
+            routable = False
+        if not routable:
+            healed = None
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                healed = canonical_custom_identity(
+                    base_url=base_url or None, model=model or None
+                )
+            except Exception:
+                logger.debug(
+                    "custom provider identity recovery failed", exc_info=True
+                )
+            if healed:
+                logger.info(
+                    "healed stale session provider %r to %r", provider, healed
+                )
+                provider = healed
+                # The healed identity owns a registered endpoint; drop the
+                # snapshot's base_url so it can't override the registry URL
+                # (e.g. a stale direct endpoint behind a renamed proxy).
+                base_url = ""
+            else:
+                provider = ""
 
     if model:
         # Use the same dict-shaped override that live /model switches use so a

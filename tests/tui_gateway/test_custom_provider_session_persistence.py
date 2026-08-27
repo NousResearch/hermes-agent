@@ -343,3 +343,129 @@ class TestModelNameRecoversEntryIdentity:
         )
 
 
+class TestStaleProviderNameFallsBack:
+    """A session row stored under a provider that was renamed or removed must
+    not sink agent init with "Unknown provider '<name>'": heal to the entry
+    that still serves the stored model/base_url, else drop the provider so
+    resume falls back to the configured default (or the user's pick)."""
+
+    def test_stale_bare_name_heals_via_model(self, monkeypatch):
+        """Registry serves mimo-v2.5-pro; the row still names the OLD slug —
+        the exact shape of the renamed-provider report (oldone -> newone)."""
+        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
+
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "mimo-v2.5-pro",
+            "model_config": json.dumps(
+                {"model": "mimo-v2.5-pro", "provider": "stale-provider"}
+            ),
+            "billing_provider": "custom",
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["provider_override"] == "custom:mimo-v2.5-pro"
+        assert overrides["model_override"]["provider"] == "custom:mimo-v2.5-pro"
+
+    def test_stale_prefixed_name_heals_and_drops_stale_base_url(self, monkeypatch):
+        """Healing must also drop the snapshot's base_url so the registry URL
+        (the renamed provider's current endpoint) is not overridden."""
+        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
+
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "mimo-v2.5-pro",
+            "model_config": json.dumps(
+                {
+                    "model": "mimo-v2.5-pro",
+                    "provider": "custom:stale-provider",
+                    "base_url": "https://old.invalid/v1",
+                    "api_mode": "chat_completions",
+                }
+            ),
+            "billing_provider": "custom:stale-provider",
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["provider_override"] == "custom:mimo-v2.5-pro"
+        assert overrides["model_override"]["base_url"] is None
+
+    def test_unrecoverable_provider_drops_to_default(self, monkeypatch):
+        """No entry serves the stored model AND no configured default names a
+        real entry → the provider is dropped; resume falls back to the
+        configured default instead of failing the build."""
+        config = {"custom_providers": NAMED_CONFIG["custom_providers"]}
+        monkeypatch.setattr(rp, "load_config", lambda: config)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "no-such-model",
+            "model_config": json.dumps(
+                {"model": "no-such-model", "provider": "dead-provider"}
+            ),
+            "billing_provider": "custom",
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert "provider_override" not in overrides
+        assert overrides["model_override"]["provider"] is None
+
+    def test_valid_provider_is_untouched(self, monkeypatch):
+        """A live provider must round-trip unchanged — no healing, no drops."""
+        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
+
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "mimo-v2.5-pro",
+            "model_config": json.dumps(
+                {
+                    "model": "mimo-v2.5-pro",
+                    "provider": "custom:mimo-v2.5-pro",
+                    "base_url": MIMO_URL,
+                    "api_mode": "chat_completions",
+                }
+            ),
+            "billing_provider": "custom:mimo-v2.5-pro",
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["provider_override"] == "custom:mimo-v2.5-pro"
+        assert overrides["model_override"]["base_url"] == MIMO_URL
+
+
+class TestOverridesHaveRoutableProvider:
+    def test_gate_detects_stale_provider(self, monkeypatch):
+        monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
+        monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
+
+        from tui_gateway.server import _overrides_have_routable_provider
+
+        assert (
+            _overrides_have_routable_provider(
+                {"provider_override": "custom:mimo-v2.5-pro"}
+            )
+            is True
+        )
+        assert (
+            _overrides_have_routable_provider(
+                {"provider_override": "custom:stale-provider"}
+            )
+            is False
+        )
+        assert (
+            _overrides_have_routable_provider(
+                {"model_override": {"provider": None}}
+            )
+            is False
+        )
+        assert _overrides_have_routable_provider({}) is False
+
+

@@ -562,7 +562,7 @@ async def loop_heartbeat_forever(
                         _stale.unlink(missing_ok=True)
                         continue
                     try:
-                        os.kill(_stale_pid, 0)
+                        os.kill(_stale_pid, 0)  # windows-footgun: ok — inside os.name == "posix" gate
                     except OSError:
                         _stale.unlink(missing_ok=True)
             except Exception:

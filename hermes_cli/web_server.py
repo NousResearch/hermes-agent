@@ -19888,7 +19888,18 @@ def start_server(
             # plain backend, not a dashboard, so it announces a neutral token;
             # `dashboard` keeps the legacy one. The desktop matches either.
             ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
+            # tui_gateway.server (imported above for the flush-on-SIGTERM
+            # handlers, #94724) redirects sys.stdout→sys.stderr at import time
+            # to keep stray prints off the JSON-RPC protocol stream. fd 1 is
+            # still the real stdout — and the Desktop spawn watches
+            # child.stdout for this sentinel — so write to the fd, not to the
+            # (redirected) sys.stdout, or the desktop times out after 90s
+            # against a perfectly healthy backend.
+            _ready_line = f"{ready_token} port={actual_port}\n"
+            try:
+                os.write(1, _ready_line.encode())
+            except OSError:
+                print(_ready_line, end="", flush=True)
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

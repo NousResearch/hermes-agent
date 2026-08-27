@@ -4061,12 +4061,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
         labels: list = []
         for (geo, vendor, short) in parsed:
-            label = short
+            # The Claude name is already established by the Anthropic vendor
+            # page: drop its repeated ID prefix before calculating collisions.
+            display_short = short.removeprefix("claude-") if vendor == "anthropic" else short
+            label = display_short
             if vendor and counts.get(short, 0) > 1:
                 # A bare ID takes the short geography of the configured
                 # Bedrock endpoint (us/eu/ap/...), while an inference profile
-                # already carries its own routing scope (global/us/eu/...).
-                label = f"{geo or self._bedrock_region_scope()}: {short}"
+                # already carries its own routing scope. ``G`` preserves the
+                # useful global distinction without consuming a whole button.
+                scope = geo or self._bedrock_region_scope()
+                label = f"{'G' if scope == 'global' else scope}: {display_short}"
             if len(label) > 38:
                 label = label[:35] + "..."
             labels.append(label)
@@ -4115,7 +4120,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return [
             {
                 "vendor": vendor,
-                "label": self._VENDOR_LABELS[vendor],
+                # Claude is the useful model-family label; Anthropic is
+                # redundant inside a Bedrock provider picker.
+                "label": "Claude" if vendor == "anthropic" else self._VENDOR_LABELS[vendor],
                 "indices": indices,
             }
             for vendor, indices in sorted(groups.items())

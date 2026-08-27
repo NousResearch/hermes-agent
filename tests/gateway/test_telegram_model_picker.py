@@ -28,7 +28,10 @@ def _make_adapter():
 
 
 class TestTelegramModelPicker:
-    def test_bedrock_model_buttons_show_distinguishing_suffix_and_keep_index_callback(self, monkeypatch):
+    def test_anthropic_vendor_is_presented_as_claude_and_omits_redundant_prefix(self, monkeypatch):
+        """Once the user selected Claude, neither ``Anthropic`` nor
+        ``claude-`` belongs in every button. A global profile uses compact
+        ``G:`` so version/family stay visible in Telegram's two columns."""
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
         adapter = _make_adapter()
@@ -36,17 +39,31 @@ class TestTelegramModelPicker:
 
         keyboard, _ = adapter._build_model_keyboard([model_id], page=0)
         button = keyboard.inline_keyboard[0][0]
+        vendors = adapter._group_models_by_vendor([model_id])
 
-        assert button.text == "claude-sonnet-4-6"
+        assert button.text == "sonnet-4-6"
         assert button.callback_data == "mm:0"
+        assert vendors == [{"vendor": "anthropic", "label": "Claude", "indices": [0]}]
+
+    def test_anthropic_global_collision_uses_compact_g_prefix(self):
+        adapter = _make_adapter()
+        models = [
+            "global.anthropic.claude-opus-4-5-20251101-v1:0",
+            "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        ]
+
+        assert adapter._model_button_labels(models) == [
+            "G: opus-4-5-20251101-v1:0",
+            "us: opus-4-5-20251101-v1:0",
+        ]
 
     @pytest.mark.parametrize("model_id,expected", [
-        # Regional Bedrock routing namespaces carry the same redundancy as
-        # ``global.`` (review feedback on PR #94990).
-        ("us.anthropic.claude-opus-4-1-20250805-v1:0", "claude-opus-4-1-20250805-v1:0"),
-        ("eu.anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        # Claude is already selected in the vendor menu, so its repeated
+        # prefix is removed; other vendors retain their short model ID.
+        ("us.anthropic.claude-opus-4-1-20250805-v1:0", "opus-4-1-20250805-v1:0"),
+        ("eu.anthropic.claude-sonnet-4-6", "sonnet-4-6"),
         ("apac.amazon.nova-2-lite-v1:0", "nova-2-lite-v1:0"),
-        ("us-gov.anthropic.claude-haiku-4-5", "claude-haiku-4-5"),
+        ("us-gov.anthropic.claude-haiku-4-5", "haiku-4-5"),
         # Non-Bedrock IDs must pass through untouched.
         ("gpt-4o-mini", "gpt-4o-mini"),
         ("mistral-large-latest", "mistral-large-latest"),
@@ -95,7 +112,7 @@ class TestTelegramModelPicker:
         flat = [b for row in keyboard.inline_keyboard for b in row]
         labels = [b.text for b in flat[:3]]
 
-        assert labels == ["us: grok-4.6", "global: grok-4.6", "claude-sonnet-4-6"]
+        assert labels == ["us: grok-4.6", "G: grok-4.6", "sonnet-4-6"]
         # All labels on the page must be pairwise distinct.
         assert len(set(labels)) == len(labels)
         assert [b.callback_data for b in flat[:3]] == ["mm:0", "mm:1", "mm:2"]
@@ -112,7 +129,7 @@ class TestTelegramModelPicker:
         vendors = adapter._group_models_by_vendor(models)
 
         assert [v["vendor"] for v in vendors] == ["amazon", "anthropic", "xai"]
-        assert [v["label"] for v in vendors] == ["Amazon", "Anthropic", "xAI"]
+        assert [v["label"] for v in vendors] == ["Amazon", "Claude", "xAI"]
         assert [len(v["indices"]) for v in vendors] == [1, 2, 1]
         # Indices must point back into the original list, unmodified.
         anthropic = next(v for v in vendors if v["vendor"] == "anthropic")
@@ -141,7 +158,7 @@ class TestTelegramModelPicker:
         monkeypatch.setattr(adapter, "_bedrock_region_scope", lambda: "us")
         models = ["openai.gpt-5.6-terra", "global.openai.gpt-5.6-terra"]
         labels = adapter._model_button_labels(models)
-        assert labels == ["us: gpt-5.6-terra", "global: gpt-5.6-terra"]
+        assert labels == ["us: gpt-5.6-terra", "G: gpt-5.6-terra"]
         assert all("direct" not in label and "us-east-1" not in label for label in labels)
 
     @pytest.mark.parametrize(
@@ -251,7 +268,7 @@ class TestTelegramModelPicker:
         labels = [b.text for b in flat]
 
         assert "Amazon (1)" in labels
-        assert "Anthropic (2)" in labels
+        assert "Claude (2)" in labels
         assert any(b.callback_data == "mvd:anthropic" for b in flat)
         # Back/Cancel must stay reachable.
         assert any(b.callback_data == "mb" for b in flat)
@@ -275,9 +292,9 @@ class TestTelegramModelPicker:
         labels = [b.text for b in flat[:3]]
 
         assert labels == [
-            "global: claude-opus-5",
-            "us: claude-opus-5",
-            "claude-fable-5",
+            "G: opus-5",
+            "us: opus-5",
+            "fable-5",
         ]
         assert [b.callback_data for b in flat[:3]] == ["mm:0", "mm:1", "mm:2"]
 

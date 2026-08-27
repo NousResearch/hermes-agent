@@ -1,0 +1,8 @@
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  node-pty: true
+  unicode-animations: true
+overrides:
+  "@assistant-ui/tap": 0.9.8

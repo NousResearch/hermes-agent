@@ -1881,6 +1881,16 @@ class GatewayStreamConsumer:
                     if _stream_is_msg_c and self._use_draft_streaming:
                         await self._send_commentary(commentary_text)
                         self._last_edit_time = time.monotonic()
+                    elif self._use_native_streaming:
+                        # Native streaming (WeCom): commentary is sent as an
+                        # independent message via adapter.send(), but we must
+                        # NOT reset _accumulated — the native stream is
+                        # cumulative and a reset would lose all pre-commentary
+                        # text. Subsequent frames must still carry the full
+                        # accumulated content. Same rationale as segment-break
+                        # no-op for native streaming.
+                        await self._send_commentary(commentary_text)
+                        self._last_edit_time = time.monotonic()
                     else:
                         self._reset_segment_state()
                         await self._send_commentary(commentary_text)

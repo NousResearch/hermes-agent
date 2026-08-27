@@ -1075,3 +1075,61 @@ class TestClarifyEagerReseed:
 
         consumer.finish()
         await task
+
+
+class TestNativeCommentaryPreservesAccumulated:
+    """Regression lock for root cause #1 of the "Cla"/"ude" split-bubble bug.
+
+    In native streaming mode a mid-turn commentary (e.g. a Hindsight
+    "recalled N memories" notice) must be delivered as its own message via
+    ``send()`` WITHOUT calling ``_reset_segment_state()``.  The native stream
+    is cumulative: resetting ``_accumulated`` mid-turn dropped all
+    pre-commentary text, so the following delta (and the finalize frame)
+    carried only the few characters accumulated *after* the reset — producing
+    a mini-bubble like ``Cla`` and a body missing its first characters.
+
+    Drives the exact ``on_delta -> on_commentary -> on_delta`` sequence on a
+    real BasePlatformAdapter subclass so the
+    ``isinstance(BasePlatformAdapter)`` + ``_use_native_streaming`` gate is
+    satisfied and the new ``elif self._use_native_streaming`` branch runs.
+    """
+
+    async def _wait_until(self, predicate, timeout: float = 1.0) -> bool:
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.01)
+        return predicate()
+
+    @pytest.mark.asyncio
+    async def test_commentary_does_not_reset_accumulated_in_native(self):
+        adapter = _make_native_streaming_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_cla",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Claude Code ")
+        await self._wait_until(lambda: consumer._native_stream_opened)
+        # Mid-turn commentary (Hindsight recall) — MUST NOT reset _accumulated.
+        consumer.on_commentary("🔮 recalled 10 memories")
+        await self._wait_until(lambda: adapter.send.await_count >= 1)
+        consumer.on_delta("finished (exit 0).")
+        consumer.finish()
+        await task
+
+        # 1) Commentary went out as its own proactive message (not a frame).
+        assert adapter.send.await_count == 1
+
+        # 2) The finalize frame carries the FULL cumulative body — no
+        #    first-character loss ("Claude Code finished", never "ude ...").
+        finalize_frames = [f for f in adapter.frames if f["finalize"]]
+        assert finalize_frames, "expected a finalize frame"
+        final_text = finalize_frames[-1]["text"]
+        assert final_text.startswith("Claude Code "), (
+            f"pre-commentary prefix lost (the bug): {final_text!r}"
+        )
+        assert "finished (exit 0)." in final_text

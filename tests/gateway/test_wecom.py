@@ -957,15 +957,14 @@ class TestSendStreamFrame:
 
     @pytest.mark.asyncio
     async def test_first_call_seeds_thinking_frame_then_returns_true(self):
-        """First frame for a chat sends <think></think> seed.
+        """First frame for a chat sends <think></think> seed, then the
+        content frame.
 
-        Bypasses ack tracking so both seed and content are sent in same call.
-        Uses a payload above ``BLOCK_STREAM_MIN_CHARS`` ending on a sentence
-        boundary so the block chunker emits immediately (otherwise the
-        chunker buffers waiting for either ``min_chars`` + a safe break or
-        the 250ms idle flush).
+        Fire-and-forget: intermediate frames are pushed immediately (pure
+        identity-dedup), so any non-empty payload produces a content frame
+        right after the seed — no min_chars / sentence-boundary gating.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_MIN_CHARS
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -973,9 +972,7 @@ class TestSendStreamFrame:
         # Mock _send_reply_queued to bypass ack tracking
         self._mock_send_json_with_immediate_ack(adapter)
 
-        # Build a sentence-terminated payload above min_chars.
-        payload = ("hello world. " * 12).strip()
-        assert len(payload) >= BLOCK_STREAM_MIN_CHARS
+        payload = "hello world"
         ok = await adapter.send_stream_frame(payload, chat_id="chat-1")
 
         assert ok is True
@@ -994,11 +991,11 @@ class TestSendStreamFrame:
     async def test_first_and_second_call_share_stream_id(self):
         """Successive frames use the same stream_id.
 
-        Both frames carry sentence-terminated payloads above min_chars so the
-        block chunker emits each one — the test is about stream_id continuity
-        across frames, not about chunker thresholds.
+        Fire-and-forget pushes each distinct cumulative payload immediately,
+        so this exercises stream_id continuity across frames, not chunker
+        thresholds.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_MIN_CHARS
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1006,10 +1003,8 @@ class TestSendStreamFrame:
         # Immediate ack so all frames are sent (no pending-skip)
         self._mock_send_json_with_immediate_ack(adapter)
 
-        first = ("alpha sentence. " * 10).strip()
-        second = first + " " + ("beta sentence. " * 10).strip()
-        assert len(first) >= BLOCK_STREAM_MIN_CHARS
-        assert len(second) - len(first) >= BLOCK_STREAM_MIN_CHARS
+        first = "alpha"
+        second = "alpha beta"  # cumulative growth — differs from `first`
         await adapter.send_stream_frame(first, chat_id="chat-1")
         await adapter.send_stream_frame(second, chat_id="chat-1")
 
@@ -1212,17 +1207,20 @@ class TestSendStreamFrameFailures:
         assert "chat-1" not in adapter._stream_expired_chats
 
     @pytest.mark.asyncio
-    async def test_generic_transport_error_resets_state(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+    async def test_generic_transport_error_on_intermediate_is_fire_and_forget(self):
+        """A generic transport error on an INTERMEDIATE frame is fire-and-forget.
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._send_reply_request = AsyncMock(
-            side_effect=RuntimeError("ws disconnected"),
-        )
+        The seed frame here fails with a generic RuntimeError.  An intermediate
+        frame failing is transient and self-healing — a later cumulative frame
+        (or the finalize frame) re-carries the full text — so the turn must stay
+        live (keep-alive keeps refreshing it) and the call returns True.  It
+        must NOT retire the turn or trip the consumer's send() fallback, which
+        would re-deliver content the stream will overwrite (duplicate bubble).
 
-    @pytest.mark.asyncio
-    async def test_generic_transport_error_resets_state(self):
+        Contrast with the finalize-frame failure paths, which still return False
+        and retire so the consumer can fall back (see the double_send /
+        stream_dup_fix suites).
+        """
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1234,10 +1232,10 @@ class TestSendStreamFrameFailures:
         turn_id = "test-turn-3"
         ok = await adapter.send_stream_frame("hi", chat_id="chat-1", turn_id=turn_id)
 
-        assert ok is False
-        # Generic error cleans up this specific turn but does NOT mark chat as expired
+        assert ok is True
+        # Intermediate failure keeps the turn alive and leaves the chat usable.
         turn_key = "chat-1:test-turn-3"
-        assert turn_key not in adapter._stream_turns
+        assert turn_key in adapter._stream_turns
         assert "chat-1" not in adapter._stream_expired_chats
 
 # === SEND_TYPING TESTS PLACEHOLDER ===
@@ -1383,100 +1381,11 @@ class TestSendClosesActiveStream:
 
 
 
-class TestBlockChunker:
-    """Unit tests for the sentence-aligned block chunker.
-
-    The chunker buffers cumulative text and only emits when a sentence
-    boundary lands above ``min_chars``, or when a hard ``max_chars`` cap is
-    reached, or when the caller forces a drain (finalize / idle flush).
-    """
-
-    def test_emits_nothing_below_min_chars(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=120, max_chars=360)
-        chunker.update("Hello world.")
-        assert chunker.drain(force=False) is None
-        # State is preserved across drain attempts.
-        assert chunker.has_pending() is True
-
-    def test_emits_on_sentence_boundary_above_min_chars(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=20, max_chars=360)
-        chunker.update("This is sentence one. This is two.")
-        out = chunker.drain(force=False)
-        assert out is not None
-        # Cumulative — full content up to the break point.
-        assert out.endswith(".")
-        # Nothing pending after a clean emit.
-        assert chunker.has_pending() is False
-
-    def test_emits_on_paragraph_boundary(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=20, max_chars=360)
-        text = "Part one of the answer text here\n\nPart two of the answer"
-        chunker.update(text)
-        out = chunker.drain(force=False)
-        assert out is not None
-        assert out.endswith("\n\n")
-        assert chunker.has_pending() is True  # part two still buffered
-
-    def test_hard_cap_forces_break_mid_sentence(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=20, max_chars=50)
-        # Single run-on sentence with no terminators in the first 50 chars.
-        text = "a" * 80
-        chunker.update(text)
-        out = chunker.drain(force=False)
-        assert out is not None
-        # Hard cap fires — entire cumulative is emitted (the chunker doesn't
-        # split mid-buffer; it leaves the next slice to the next update).
-        assert out == text
-
-    def test_force_emits_remaining_buffer(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=120, max_chars=360)
-        chunker.update("Tiny tail")
-        out = chunker.drain(force=True)
-        assert out == "Tiny tail"
-        assert chunker.has_pending() is False
-
-    def test_no_pending_after_complete_drain(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=10, max_chars=360)
-        chunker.update("hello there world.")
-        assert chunker.drain(force=False) == "hello there world."
-        assert chunker.drain(force=True) is None  # nothing to emit
-
-    def test_does_not_break_on_decimal_or_ip_address(self):
-        """Sentence break requires whitespace after terminator — '1.2' must not split."""
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker(min_chars=10, max_chars=360)
-        chunker.update("version 1.2.3 is out and not yet released")
-        # No safe sentence terminator → wait.
-        assert chunker.drain(force=False) is None
-
-    def test_cumulative_update_does_not_shrink(self):
-        from plugins.platforms.wecom.adapter import _BlockChunker
-
-        chunker = _BlockChunker()
-        chunker.update("long initial cumulative content " * 5)
-        before = chunker._cumulative
-        chunker.update("short")  # caller bug — must not shrink high-water mark
-        assert chunker._cumulative == before
-
-
-class TestBlockStreamingFrameFlow:
-    """Integration: send_stream_frame uses the chunker to gate intermediate frames."""
+class TestFireAndForgetFrameFlow:
+    """Integration: send_stream_frame pushes each distinct cumulative payload
+    immediately (pure identity-dedup), with no sentence/min-chars buffering."""
 
     def _mock_send_json_with_immediate_ack(self, adapter):
-        from plugins.platforms.wecom.adapter import APP_CMD_RESPONSE
         sent_frames = []
 
         async def mock_send(reply_req_id, body, **kwargs):
@@ -1492,8 +1401,9 @@ class TestBlockStreamingFrameFlow:
         adapter._sent_frames = sent_frames
 
     @pytest.mark.asyncio
-    async def test_short_text_buffered_no_frame_sent(self):
-        """A few tokens below min_chars do not produce an intermediate frame."""
+    async def test_short_text_sent_immediately(self):
+        """Fire-and-forget: even a short body ships right after the seed —
+        there is no min_chars buffering anymore."""
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1503,13 +1413,18 @@ class TestBlockStreamingFrameFlow:
 
         ok = await adapter.send_stream_frame("Hello.", chat_id="chat-1")
         assert ok is True
-        # Only the seed frame was sent — the 6-char body is below min_chars.
-        assert len(adapter._sent_frames) == 1
+        # seed + content = 2 frames (the 6-char body is NOT buffered).
+        assert len(adapter._sent_frames) == 2
         assert adapter._sent_frames[0]["body"]["stream"]["content"] == "<think></think>"
+        assert adapter._sent_frames[1]["body"]["stream"]["content"] == "Hello."
+        assert adapter._sent_frames[1]["body"]["stream"]["finish"] is False
 
     @pytest.mark.asyncio
-    async def test_finalize_force_drains_buffered_tail(self):
-        """Finalize emits whatever the chunker has, even sub-min_chars."""
+    async def test_finalize_sends_accumulated_tail(self):
+        """Finalize emits the accumulated text with finish=true.
+
+        With no chunker, finalize uses the caller's cumulative text directly.
+        """
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1517,42 +1432,26 @@ class TestBlockStreamingFrameFlow:
         adapter._ws = MagicMock(closed=False)
         self._mock_send_json_with_immediate_ack(adapter)
 
-        # 1: buffer small text (no intermediate frame sent — only seed).
+        # 1: intermediate frame (seed + content).
         await adapter.send_stream_frame("Short.", chat_id="chat-1")
-        # 2: finalize with the same tiny tail — force-drains the chunker.
+        # 2: finalize with the same text. Content equals last_sent_content, so
+        # the adapter appends a zero-width space to force a distinct final frame.
         ok = await adapter.send_stream_frame(
             "Short.", chat_id="chat-1", finalize=True,
         )
         assert ok is True
-        # seed + finalize = 2 frames.
-        assert len(adapter._sent_frames) == 2
+        # seed + content + finalize = 3 frames.
+        assert len(adapter._sent_frames) == 3
         final_frame = adapter._sent_frames[-1]
         assert final_frame["body"]["stream"]["finish"] is True
-        # Content survives the force-drain.
+        # Content survives the finalize (zero-width space appended when it
+        # matched the previous frame verbatim).
         assert final_frame["body"]["stream"]["content"].startswith("Short.")
 
     @pytest.mark.asyncio
-    async def test_idle_flush_emits_partial_buffer(self):
-        """A buffered sub-min tail still ships after the idle-flush timer fires."""
-        from plugins.platforms.wecom.adapter import WeComAdapter, BLOCK_STREAM_IDLE_FLUSH
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._last_chat_req_ids["chat-1"] = "req-1"
-        adapter._ws = MagicMock(closed=False)
-        self._mock_send_json_with_immediate_ack(adapter)
-
-        await adapter.send_stream_frame("Half a thought", chat_id="chat-1")
-        # Wait past the idle window so the timer fires and drains.
-        await asyncio.sleep(BLOCK_STREAM_IDLE_FLUSH + 0.1)
-        # seed + idle-flushed partial = 2 frames.
-        assert len(adapter._sent_frames) == 2
-        flushed = adapter._sent_frames[-1]
-        assert flushed["body"]["stream"]["content"] == "Half a thought"
-        assert flushed["body"]["stream"]["finish"] is False
-
-    @pytest.mark.asyncio
-    async def test_block_emits_on_sentence_boundary(self):
-        """Cumulative text crossing a sentence boundary triggers an immediate frame."""
+    async def test_duplicate_intermediate_content_is_deduped(self):
+        """Identical cumulative content skips the send (pure identity-dedup),
+        but still returns success."""
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -1560,17 +1459,12 @@ class TestBlockStreamingFrameFlow:
         adapter._ws = MagicMock(closed=False)
         self._mock_send_json_with_immediate_ack(adapter)
 
-        # Build cumulative text that ends on a sentence boundary above min_chars.
-        text = "This is a complete first sentence with enough text. " * 4
-        await adapter.send_stream_frame(text, chat_id="chat-1")
-        # seed + sentence block = 2 frames.
+        await adapter.send_stream_frame("same text", chat_id="chat-1")
+        ok = await adapter.send_stream_frame("same text", chat_id="chat-1")
+        assert ok is True
+        # seed + first content only; the identical repeat was deduped.
         assert len(adapter._sent_frames) == 2
-        block = adapter._sent_frames[-1]
-        # The chunker breaks immediately after the rightmost safe sentence
-        # terminator — i.e., right after the last ".", stripping the trailing
-        # space that the caller's cumulative blob included.
-        assert block["body"]["stream"]["content"] == text.rstrip()
-        assert block["body"]["stream"]["finish"] is False
+        assert adapter._sent_frames[-1]["body"]["stream"]["content"] == "same text"
 
 
 class TestFinalFrameAckTimeoutSemantics:

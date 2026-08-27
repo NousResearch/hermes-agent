@@ -677,6 +677,80 @@ def test_worktree_bootstrap_refuses_environment_symlink_outside_project(
     assert not linked_environment.is_symlink()
 
 
+@pytest.mark.macos_only
+@pytest.mark.parametrize("environment_name", (".venv", "venv"))
+@pytest.mark.parametrize("existing_checkout", (False, True))
+def test_worktree_bootstrap_accepts_canonical_same_repository_environment(
+    kanban_home, tmp_path, environment_name, existing_checkout, caplog,
+):
+    """A board anchored in a linked checkout can use the main checkout's env."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    environment = repo / environment_name
+    (environment / "bin").mkdir(parents=True)
+    (environment / "bin" / "marker.txt").write_text("shared runtime\n")
+    anchor = tmp_path / "board-anchor"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "board", str(anchor)],
+        check=True, capture_output=True, text=True,
+    )
+    (anchor / environment_name).symlink_to(environment, target_is_directory=True)
+    target = anchor / ".worktrees" / "task"
+    if existing_checkout:
+        # Simulate a child created before bootstrap knew about the shared env.
+        subprocess.run(
+            ["git", "-C", str(anchor), "worktree", "add", "-b", "wt/task", str(target)],
+            check=True, capture_output=True, text=True,
+        )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="use shared runtime", workspace_kind="worktree",
+            workspace_path=str(target), branch_name="wt/task",
+        )
+        workspace = kb.resolve_workspace(kb.get_task(conn, tid))
+
+    assert workspace == target
+    assert (workspace / environment_name).is_symlink()
+    assert (workspace / environment_name).resolve() == environment.resolve()
+    assert (workspace / environment_name / "bin" / "marker.txt").read_text() == "shared runtime\n"
+    assert "refused unsafe" not in caplog.text
+
+
+@pytest.mark.macos_only
+@pytest.mark.parametrize("external_kind", (
+    "unrelated_repository", "main_checkout_escape", "nested_unrelated_repository",
+))
+def test_worktree_bootstrap_shared_repository_does_not_authorize_external_environment(
+    kanban_home, tmp_path, external_kind,
+):
+    """Neither another git repo nor an escaping main-checkout env is trusted."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    outside = (repo if external_kind == "nested_unrelated_repository" else tmp_path) / "unrelated"
+    _init_git_repo(outside)
+    environment = outside / ".venv"
+    environment.mkdir()
+    anchor = tmp_path / "board-anchor"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "board", str(anchor)],
+        check=True, capture_output=True, text=True,
+    )
+    source = environment
+    if external_kind == "main_checkout_escape":
+        source = repo / ".venv"
+        source.symlink_to(environment, target_is_directory=True)
+    (anchor / ".venv").symlink_to(source, target_is_directory=True)
+    target = anchor / ".worktrees" / "task"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="refuse external runtime", workspace_kind="worktree",
+            workspace_path=str(target), branch_name="wt/task",
+        )
+        workspace = kb.resolve_workspace(kb.get_task(conn, tid))
+    assert not (workspace / ".venv").exists()
+    assert not (workspace / ".venv").is_symlink()
+
+
 def test_worktree_bootstrap_preserves_preexisting_environment_destination(tmp_path):
     """Retrying a child task never replaces its existing environment path."""
     repo = tmp_path / "repo"

@@ -20,18 +20,27 @@ vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
 
+  type LineageRow = { _lineage_root_id?: null | string; id: string }
+
   return {
     $activeSessionId: atom(null),
     $connection: atom(null),
+    $cronSessions: atom([]),
     $currentCwd: atom(''),
     $currentModel: atom(''),
     $gatewayState: atom('open'),
     $messages: atom([]),
+    $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),
     $sessions: atom([]),
+    $unreadFinishedSessionIds: atom([]),
+    lineageAliases: (storedId: string) => [storedId],
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
     requestSessionResume: vi.fn(),
+    sessionMatchesStoredId: (session: LineageRow, storedSessionId: string) =>
+      session.id === storedSessionId || session._lineage_root_id === storedSessionId,
+    sessionPinId: (session: LineageRow) => session._lineage_root_id ?? session.id,
     setSessionOwnerHint: vi.fn(),
     setResumeExhaustedSessionId: vi.fn()
   }
@@ -40,11 +49,15 @@ vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $attentionSessionIds: atom([]),
+    $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
     $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
-    $sessionStates: atom({})
+    $sessionStates: atom({}),
+    $stalledSessionIds: atom([]),
+    $workingSessionIds: atom([])
   }
 })
 vi.mock('@/store/profile', async () => {
@@ -67,6 +80,7 @@ vi.mock('@/store/profile', async () => {
     $gatewaySwapTarget: atom(null),
     $hydrationSyncProfile: atom(null),
     $profiles: profiles,
+    $showAllProfiles: atom(false),
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
     newSessionInAgent: vi.fn(),
@@ -83,6 +97,7 @@ vi.mock('@/store/gateway', async () => {
 
   return {
     $gateway: atom(null),
+    activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),

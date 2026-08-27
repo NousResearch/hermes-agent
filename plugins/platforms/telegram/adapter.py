@@ -3987,38 +3987,93 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _MODEL_PAGE_SIZE = 8
 
-    # Bedrock inference-profile IDs are ``<geo>.<vendor>.<model>``. Vendor
-    # segments get a display label so the drill-down step reads naturally;
-    # unknown vendors fall back to a capitalized segment.
+    # Bedrock inference-profile IDs are ``<geo>.<vendor>.<model>``, but the
+    # same listing also advertises plain ``<vendor>.<model>`` IDs. Vendor
+    # segments are matched against this map rather than guessed from the
+    # ID shape, because model names contain dots too
+    # (``openai.gpt-5.6-terra``, ``zai.glm-4.7``) and a positional guess
+    # reads the version as a vendor. Values are display labels.
     _VENDOR_LABELS = {
         "ai21": "AI21",
         "amazon": "Amazon",
         "anthropic": "Anthropic",
         "cohere": "Cohere",
         "deepseek": "DeepSeek",
+        "google": "Google",
         "meta": "Meta",
+        "minimax": "MiniMax",
         "mistral": "Mistral",
+        "moonshot": "Moonshot AI",
+        "moonshotai": "Moonshot AI",
+        "nvidia": "NVIDIA",
         "openai": "OpenAI",
         "qwen": "Qwen",
         "stability": "Stability",
         "twelvelabs": "TwelveLabs",
         "writer": "Writer",
         "xai": "xAI",
+        "zai": "Z.ai",
     }
 
-    @staticmethod
-    def _split_bedrock_id(model_id: str) -> tuple:
-        """Split a Bedrock inference-profile ID into (geo, vendor, model).
+    # Distinct vendor segments that denote the same vendor. Folded before
+    # grouping so the drill-down never shows the same label twice.
+    _VENDOR_ALIASES = {"moonshot": "moonshotai"}
 
-        Returns ``("", "", short)`` for anything that is not a
-        ``<geo>.<vendor>.<model>`` triple, so non-Bedrock providers keep
-        their IDs untouched. The routing segment is matched loosely (short
-        alphabetic segment, hyphens allowed) to cover ``global.``, ``us.``,
-        ``eu.``, ``apac.`` and ``us-gov.`` without pinning a fixed list.
+    @classmethod
+    def _canonical_vendor(cls, vendor: str) -> str:
+        return cls._VENDOR_ALIASES.get(vendor, vendor)
+
+    def _model_button_labels(self, models: list) -> list:
+        """Render display labels for *models*, one per entry.
+
+        Bedrock repeats a routing namespace and a vendor prefix in every ID
+        (``global.anthropic.claude-opus-5``); both are dropped so the model
+        family/version stays readable. The routing namespace is added back
+        as a ``geo:`` prefix only where it disambiguates — the same model is
+        commonly advertised both directly and behind one or more namespaces,
+        and those are distinct profiles the user must be able to tell apart.
+        Counting happens over the whole list so labels stay stable across
+        pagination. Model IDs themselves are never rewritten.
+        """
+        parsed = [self._split_bedrock_id(m) for m in models]
+        counts: dict = {}
+        for _geo, _vendor, short in parsed:
+            counts[short] = counts.get(short, 0) + 1
+
+        labels: list = []
+        for (geo, vendor, short) in parsed:
+            label = short
+            if vendor and counts.get(short, 0) > 1:
+                # ``direct`` marks an ID carrying no routing namespace, which
+                # would otherwise be a bare name next to its routed twins.
+                label = f"{geo or 'direct'}: {short}"
+            if len(label) > 38:
+                label = label[:35] + "..."
+            labels.append(label)
+        return labels
+
+    @classmethod
+    def _split_bedrock_id(cls, model_id: str) -> tuple:
+        """Split a Bedrock model ID into (geo, vendor, model).
+
+        Handles both shapes a real listing returns:
+        ``<geo>.<vendor>.<model>`` (``us.openai.gpt-5.6-terra``) and plain
+        ``<vendor>.<model>`` (``openai.gpt-5.6-terra``). The vendor segment
+        is recognized from :attr:`_VENDOR_LABELS`, never from its position,
+        because model names contain dots of their own — a positional guess
+        turns ``openai.gpt-5.6-terra`` into vendor ``gpt-5``.
+
+        Returns ``("", "", short)`` when no known vendor segment is present,
+        so non-Bedrock providers keep their IDs untouched and never gain a
+        vendor drill-down step.
         """
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         parts = short.split(".")
-        if len(parts) >= 3 and parts[0].replace("-", "").isalpha() and len(parts[0]) <= 7:
+        # Vendor first (no geo), then geo + vendor. Only these two positions
+        # are valid, so a dotted model name can't be read as a vendor.
+        if parts and parts[0] in cls._VENDOR_LABELS:
+            return "", parts[0], ".".join(parts[1:])
+        if len(parts) >= 3 and parts[1] in cls._VENDOR_LABELS:
             return parts[0], parts[1], ".".join(parts[2:])
         return "", "", short
 
@@ -4036,11 +4091,11 @@ class TelegramAdapter(BasePlatformAdapter):
             _geo, vendor, _short = self._split_bedrock_id(model_id)
             if not vendor:
                 continue
-            groups.setdefault(vendor, []).append(i)
+            groups.setdefault(self._canonical_vendor(vendor), []).append(i)
         return [
             {
                 "vendor": vendor,
-                "label": self._VENDOR_LABELS.get(vendor, vendor.capitalize()),
+                "label": self._VENDOR_LABELS[vendor],
                 "indices": indices,
             }
             for vendor, indices in sorted(groups.items())
@@ -4125,45 +4180,15 @@ class TelegramAdapter(BasePlatformAdapter):
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
-
-        def _split_geo(model_id: str) -> tuple:
-            """Return (stripped_label, geo_segment) for a model ID.
-
-            Bedrock inference-profile IDs repeat a routing namespace and a
-            vendor prefix (``global.anthropic.``, ``us.anthropic.``,
-            ``eu.amazon.``, ``us-gov.anthropic.``, ...) in every button.
-            Remove both segments only from the display label so the model
-            family/version remains visible; ``model_id`` is still retained
-            in picker state and is selected through the index callback
-            below. The length guard keeps degenerate two-segment IDs
-            (e.g. ``global.anthropic``) intact — a blank label would be
-            rejected by Telegram (BUTTON_TEXT_INVALID).
-            """
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            parts = short.split(".")
-            if len(parts) >= 3 and parts[0].replace("-", "").isalpha() and len(parts[0]) <= 7:
-                return ".".join(parts[2:]), parts[0]
-            return short, ""
-
-        # The same model often ships behind several routing namespaces at
-        # once (``us.xai.grok-4.6`` and ``global.xai.grok-4.6`` coexist in
-        # a real Bedrock listing). Stripping the namespace from both would
-        # render identical buttons, so count stripped labels over the FULL
-        # list — not just this page, keeping labels stable across
-        # pagination — and keep the geo segment as a differentiator when a
-        # label collides.
-        stripped_counts: dict = {}
-        for m in models:
-            label, _ = _split_geo(m)
-            stripped_counts[label] = stripped_counts.get(label, 0) + 1
-
-        for i, model_id in enumerate(page_models):
-            short, geo = _split_geo(model_id)
-            if geo and stripped_counts.get(short, 0) > 1:
-                short = f"{geo}: {short}"
-            if len(short) > 38:
-                short = short[:35] + "..."
-            buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
+        # Labels are computed over the FULL list so a model's label does not
+        # change when the user pages; only this page's slice is rendered.
+        all_labels = self._model_button_labels(models)
+        for i, _model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = all_labels[abs_idx]
+            buttons.append(
+                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+            )
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
@@ -4436,7 +4461,7 @@ class TelegramAdapter(BasePlatformAdapter):
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
+            (("mp:", "mpg:", "mpv:", "mvd:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None

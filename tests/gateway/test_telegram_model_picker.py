@@ -121,10 +121,101 @@ class TestTelegramModelPicker:
             "us.anthropic.claude-opus-5",
         ]
 
+    def test_vendor_aliases_fold_into_a_single_group(self):
+        """``moonshot.`` and ``moonshotai.`` are the same vendor and must not
+        produce two identically-labelled buttons."""
+        adapter = _make_adapter()
+        vendors = adapter._group_models_by_vendor([
+            "moonshot.kimi-k2-thinking",
+            "moonshotai.kimi-k2.5",
+        ])
+        assert len(vendors) == 1
+        assert vendors[0]["label"] == "Moonshot AI"
+        assert len(vendors[0]["indices"]) == 2
+
+    def test_geoless_id_is_labelled_when_colliding_with_a_routed_twin(self):
+        """``openai.gpt-5.6-terra`` and ``global.openai.gpt-5.6-terra`` are
+        distinct profiles: the geoless one must not render as a bare name
+        indistinguishable from its routed twin."""
+        adapter = _make_adapter()
+        models = ["openai.gpt-5.6-terra", "global.openai.gpt-5.6-terra"]
+        labels = adapter._model_button_labels(models)
+        assert labels == ["direct: gpt-5.6-terra", "global: gpt-5.6-terra"]
+        assert len(set(labels)) == 2
+
     def test_group_models_by_vendor_returns_empty_for_non_bedrock(self):
         """Plain provider model lists must not gain a vendor step."""
         adapter = _make_adapter()
         assert adapter._group_models_by_vendor(["gpt-4o-mini", "o3"]) == []
+
+    def test_vendor_grouping_handles_ids_without_geo_segment(self):
+        """A real Bedrock listing mixes ``<geo>.<vendor>.<model>`` with plain
+        ``<vendor>.<model>`` IDs. The version dot in ``openai.gpt-5.6-terra``
+        must not be mistaken for a vendor boundary ("Gpt-5"), and such IDs
+        must land under their real vendor."""
+        adapter = _make_adapter()
+        models = [
+            "openai.gpt-5.6-terra",
+            "us.openai.gpt-5.6-terra",
+            "zai.glm-4.7",
+            "xai.grok-4.6",
+            "deepseek.v3.2",
+        ]
+
+        vendors = {v["vendor"]: v for v in adapter._group_models_by_vendor(models)}
+
+        assert set(vendors) == {"openai", "zai", "xai", "deepseek"}
+        assert [models[i] for i in vendors["openai"]["indices"]] == [
+            "openai.gpt-5.6-terra",
+            "us.openai.gpt-5.6-terra",
+        ]
+        assert [models[i] for i in vendors["zai"]["indices"]] == ["zai.glm-4.7"]
+        assert [models[i] for i in vendors["deepseek"]["indices"]] == ["deepseek.v3.2"]
+
+    def test_geoless_ids_keep_full_model_name_in_label(self, monkeypatch):
+        """``openai.gpt-5.6-terra`` has no geo: it renders as a bare model
+        name when unique, and gets the ``direct:`` marker when a routed twin
+        exists (both are real, distinct profiles)."""
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+        models = [
+            "openai.gpt-5.6-terra",
+            "us.openai.gpt-5.6-terra",
+            "openai.gpt-5.5",
+        ]
+
+        keyboard, _ = adapter._build_model_keyboard(models, page=0)
+        flat = [b for row in keyboard.inline_keyboard for b in row]
+
+        assert [b.text for b in flat[:3]] == [
+            "direct: gpt-5.6-terra",
+            "us: gpt-5.6-terra",
+            "gpt-5.5",
+        ]
+
+    def test_vendor_label_uses_known_display_names(self):
+        adapter = _make_adapter()
+        vendors = {
+            v["vendor"]: v["label"]
+            for v in adapter._group_models_by_vendor([
+                "zai.glm-4.7", "xai.grok-4.6", "openai.gpt-5.5",
+                "moonshotai.kimi-k2.5", "nvidia.nemotron-nano-9b-v2",
+            ])
+        }
+        assert vendors["zai"] == "Z.ai"
+        assert vendors["xai"] == "xAI"
+        assert vendors["openai"] == "OpenAI"
+        assert vendors["moonshotai"] == "Moonshot AI"
+        assert vendors["nvidia"] == "NVIDIA"
+
+    def test_picker_callback_router_accepts_vendor_prefix(self):
+        """The dispatcher must route ``mvd:`` to the picker handler, otherwise
+        tapping a vendor button does nothing at all."""
+        import inspect
+        adapter = _make_adapter()
+        src = inspect.getsource(type(adapter)._handle_callback_query)
+        assert "mvd:" in src
 
     def test_vendor_keyboard_lists_vendors_with_counts(self, monkeypatch):
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)

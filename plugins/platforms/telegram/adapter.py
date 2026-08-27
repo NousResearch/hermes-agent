@@ -4560,6 +4560,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Bind-mount a host directory and emit the host-visible path in MEDIA: for gateway file delivery.)")
         return error
 
+    @staticmethod
+    def _sniff_raster_format(image_path: str) -> Optional[str]:
+        """Identify convertible raster formats by magic bytes.
+
+        Replacement for stdlib ``imghdr`` (removed in Python 3.13). Returns
+        one of ``png``/``gif``/``webp``/``bmp``/``tiff`` or None.
+        """
+        try:
+            with open(image_path, "rb") as fh:
+                head = fh.read(16)
+        except OSError:
+            return None
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if head.startswith((b"GIF87a", b"GIF89a")):
+            # GIFs are excluded: converting flattens animations to one frame.
+            return None
+        if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+            return "webp"
+        if head.startswith(b"BM"):
+            return "bmp"
+        if head.startswith((b"II*\x00", b"MM\x00*")):
+            return "tiff"
+        return None
+
     def _compress_image_to_jpeg(self, image_path: str) -> Optional[str]:
         """Pre-compress a large image to progressive JPEG before upload.
 
@@ -4572,9 +4597,7 @@ class TelegramAdapter(BasePlatformAdapter):
         used as-is (already small / already JPEG / Pillow not available). The
         caller is responsible for cleaning up the returned temp file.
         """
-        import shutil
         import tempfile
-        import imghdr
 
         try:
             file_size = os.path.getsize(image_path)
@@ -4591,8 +4614,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if file_size < self._IMG_COMPRESS_THRESHOLD_BYTES:
             return None
 
-        # Only convert raster image formats (png, gif, webp, bmp, tiff)
-        if imghdr.what(image_path) not in ("png", "gif", "webp", "bmp", "tiff"):
+        # Only convert raster image formats (png, gif, webp, bmp, tiff).
+        # Magic-byte sniff instead of the stdlib imghdr module, which was
+        # removed in Python 3.13.
+        if self._sniff_raster_format(image_path) is None:
             return None
 
         try:
@@ -4604,16 +4629,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             img = Image.open(image_path)
-            if len(img.getbands()) == 4:
-                img = img.convert("RGB")
-            elif img.mode in ("RGBA", "LA", "P"):
-                # Build white background for alpha-blended images
+            if img.mode in ("RGBA", "LA", "P"):
+                # Alpha-capable modes: composite onto a white background so
+                # transparency doesn't render as black in the JPEG.
                 background = Image.new("RGB", img.size, (255, 255, 255))
                 if img.mode == "P":
                     img = img.convert("RGBA")
-                background.paste(img, mask=img.split()[-1])
+                if img.mode in ("RGBA", "LA"):
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img)
                 img = background
-            elif img.mode not in ("RGB",):
+            elif img.mode != "RGB":
                 img = img.convert("RGB")
 
             max_w, max_h = img.size
@@ -4624,11 +4651,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
             fd, tmp = tempfile.mkstemp(
                 suffix=".jpg",
-                dir=os.path.join(DEFAULT_OUTPUT_DIR, "tmp"),
                 prefix="tg_compress_",
             )
             os.close(fd)
-            os.makedirs(os.path.dirname(tmp), exist_ok=True)
 
             img.save(
                 tmp,

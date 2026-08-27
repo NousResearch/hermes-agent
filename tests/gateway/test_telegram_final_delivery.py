@@ -123,6 +123,33 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_preview_survives_long_flood_fallback_failure(monkeypatch):
+    """A complete ACKed preview must not trigger a duplicate normal final."""
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(
+        success=False,
+        error="flood_control:20.0",
+        retry_after=20.0,
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    sleep.assert_not_awaited()
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True
+
+
+@pytest.mark.asyncio
 async def test_telegram_long_flood_result_keeps_retry_after():
     """The real adapter contract preserves the server delay for consumers."""
     class FloodError(Exception):

@@ -2217,12 +2217,23 @@ class GatewayStreamConsumer:
                 self._already_sent = True
                 self._fallback_prefix = ""
                 self._fallback_preserve_partial_messages = False
-                if delivery == "ambiguous":
+                if delivery in {"ambiguous", "preview"}:
                     # A timeout may mean Telegram accepted the send but the
-                    # client never received the response. Preserve duplicate
-                    # suppression for that one uncertain outcome.
+                    # client never received the response. A flood rejection
+                    # leaves the complete, ACKed preview as the authoritative
+                    # delivery. Preserve duplicate suppression in both cases.
                     self._final_content_delivered = True
-                    self._delivery_ambiguous = True
+                    if delivery == "preview":
+                        # This branch is only reached when the ACKed preview
+                        # already shows the complete final text
+                        # (final_text == _visible_prefix()), so record it as
+                        # the turn-final payload: the gateway's reconciliation
+                        # then confirms delivery instead of re-sending a
+                        # second bubble next to the never-deleted preview
+                        # (#71047 Problem B).
+                        self._record_turn_final_payload(final_text)
+                    else:
+                        self._delivery_ambiguous = True
                 else:
                     # A confirmed failure leaves the gateway free to perform
                     # its normal final send.
@@ -2387,8 +2398,9 @@ class GatewayStreamConsumer:
         """Commit a completed answer after Telegram finalization fails.
 
         Returns ``delivered`` on confirmed success, ``failed`` when the
-        gateway can safely retry, and ``ambiguous`` when a timeout may have
-        reached the platform already.
+        gateway can safely retry, ``ambiguous`` when a timeout may have
+        reached the platform already, and ``preview`` when flood control
+        leaves the complete streamed preview as the authoritative delivery.
         """
         # Tool/segment boundaries intentionally preserve the run-wide preview
         # IDs for normal fresh-final cleanup.  This recovery replaces only the
@@ -2423,6 +2435,8 @@ class GatewayStreamConsumer:
                 )
                 await asyncio.sleep(retry_delay)
                 continue
+            if self._is_flood_error(result):
+                return "preview"
             return (
                 "ambiguous"
                 if self._send_failure_may_have_delivered(result)

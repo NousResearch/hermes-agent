@@ -15,6 +15,7 @@ from tools.environments.bubblewrap import (
     BubblewrapConfig,
     PROFILE_NAMES,
     SENSITIVE_HOME_PATHS,
+    ancestor_pin_args,
     build_bwrap_args,
     empty_file_path,
     load_bubblewrap_config,
@@ -486,3 +487,48 @@ class TestResolvedHiddenSet:
         argv = build(paths=paths, hidden_paths=hidden)
         assert str(home / "elsewhere") not in argv
         assert str(home / ".ssh") not in argv
+
+
+class TestPinTargetInsideTheBind:
+    """A pin lands only on a directory inside the real tree of its bind, so
+    it never widens the writable set. These call
+    ancestor_pin_args with an unresolved hidden set on purpose."""
+
+    def test_symlinked_component_leaving_the_bind_gets_no_pin(self, tmp_path):
+        w = tmp_path / "w"
+        w.mkdir()
+        real_home = tmp_path / "realE" / "home"
+        (real_home / ".config" / "gcloud").mkdir(parents=True)
+        (w / "home").symlink_to("../realE/home")
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        assert argv == []
+
+    def test_symlinked_component_staying_inside_the_bind_gets_no_pin_either(self, tmp_path):
+        # The real ancestor is what a resolved hidden set pins; a pin
+        # through the link would be a second mount of the same dir.
+        w = tmp_path / "w"
+        (w / "other" / "home" / ".config" / "gcloud").mkdir(parents=True)
+        (w / "home").symlink_to("other/home")
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        assert argv == []
+
+    def test_bind_source_with_a_symlinked_prefix_still_pins(self, tmp_path):
+        real = tmp_path / "real"
+        (real / "proj" / "home" / ".config" / "gcloud").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(real)
+        src = str(tmp_path / "link" / "proj")
+        hidden = (os.path.join(src, "home", ".config", "gcloud"),)
+        argv = ancestor_pin_args([(src, src)], [src], hidden)
+        home = os.path.join(src, "home")
+        config = os.path.join(home, ".config")
+        assert argv == ["--bind", home, home, "--bind", config, config]
+
+    def test_real_ancestors_inside_a_real_bind_pin_as_before(self, tmp_path):
+        w = tmp_path / "w"
+        (w / "home" / ".config" / "gcloud").mkdir(parents=True)
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        home, config = str(w / "home"), str(w / "home" / ".config")
+        assert argv == ["--bind", home, home, "--bind", config, config]

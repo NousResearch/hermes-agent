@@ -94,7 +94,13 @@ directory as the working directory every dotfile outside the hidden set
 (`~/.bashrc`, `~/.profile`, `~/.config/autostart`, `~/.local/bin`, ...) is
 writable, which is a path back into your own shells; Hermes logs a warning
 at startup in that case. A working directory of `/` is refused, since it
-would make the whole root writable.
+would make the whole root writable. A working directory at or under
+`HERMES_HOME` (`~/.hermes`) or under a hidden path is refused as well: the
+hidden paths are covered inside every sandbox, so no command could run
+there. Under `terminal.home_mode: profile` a directory under a real
+`HERMES_HOME/home` directory is the exception, since that directory is
+bound back into the sandbox. A checkout under `~/.hermes` (for example
+`~/.hermes/hermes-agent`) has to be launched from elsewhere or moved.
 
 If the working directory is deleted on the host (for example by the
 command's own `rm -rf`), later commands run in the nearest existing parent
@@ -129,6 +135,21 @@ differs from `src`: the hidden paths are covered only at their own
 location, so a copy of the tree elsewhere would show them. Bind such a
 source at its own path instead. Because the root is read-only, a `dest`
 must already exist on the host or sit under a writable mount.
+
+A read-write bind whose source lies inside the working directory, inside
+another read-write bind or inside the profile home is refused unless it
+has dest equal to src and sits directly under that directory, with no
+symlink on the way: bwrap resolves a bind source on the host at every
+command, so a source a command can rename or replace with a symlink would
+let it choose what the next command mounts. Bound at its own path directly
+under a writable directory, the source and its parent are mount points
+inside the sandbox and cannot be moved. Read-only binds are not affected.
+
+The profile home is a bind too. Under `terminal.home_mode: profile`,
+`HERMES_HOME/home` must be a plain directory or a link to a directory
+outside the hidden set: a link into the home tree (for example to `~` or
+`~/.config`) would show the hidden paths again through the bind, and the
+backend refuses to start.
 
 ## Resource limits
 

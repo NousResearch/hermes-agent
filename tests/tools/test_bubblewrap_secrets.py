@@ -29,6 +29,7 @@ from tools.environments.bubblewrap import (
     BubblewrapEnvironment,
     build_bwrap_args,
     empty_file_path,
+    load_bubblewrap_config,
     sensitive_overlay_args,
 )
 from tools.environments.local import LocalEnvironment
@@ -135,23 +136,39 @@ def fake_home(host_dir, monkeypatch):
     return home
 
 
+@pytest.fixture
+def paths(tmp_path):
+    """Builder inputs for the unit tests; home exists, HERMES_HOME does not."""
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    hermes_home = home / ".hermes"
+    return {
+        "initial_cwd": str(work),
+        "state_dir": str(hermes_home / "sandboxes" / "bwrap-abc123"),
+        "home": str(home),
+        "hermes_home": str(hermes_home),
+        "tracked_cwd": str(work),
+    }
+
+
+@pytest.fixture
+def hermes_home(host_dir, monkeypatch):
+    """A fake HERMES_HOME the sandbox can see, holding marker files."""
+    hh = host_dir / "hermes"
+    hh.mkdir()
+    (hh / "config.yaml").write_text(f"# {MARKER}\n")
+    (hh / ".env").write_text(f"HERMES_MARKER={MARKER}\n")
+    monkeypatch.setenv("HERMES_HOME", str(hh))
+    # No TERMINAL_SANDBOX_DIR: the state dir lands in HERMES_HOME/sandboxes,
+    # the one entry allowed to show through the overlay.
+    monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+    return hh
+
+
 class TestOverlayArgs:
     """The builder emits one overlay per sensitive path that exists on the host."""
-
-    @pytest.fixture
-    def paths(self, tmp_path):
-        home = tmp_path / "home"
-        home.mkdir()
-        work = tmp_path / "work"
-        work.mkdir()
-        hermes_home = home / ".hermes"
-        return {
-            "initial_cwd": str(work),
-            "state_dir": str(hermes_home / "sandboxes" / "bwrap-abc123"),
-            "home": str(home),
-            "hermes_home": str(hermes_home),
-            "tracked_cwd": str(work),
-        }
 
     def _overlays(self, paths):
         return _mounts(sensitive_overlay_args(paths["home"], paths["hermes_home"], paths["state_dir"]))
@@ -303,18 +320,6 @@ class TestSensitiveHomePathsIntegration:
 
 @needs_bwrap
 class TestHermesHomeIntegration:
-    @pytest.fixture
-    def hermes_home(self, host_dir, monkeypatch):
-        hh = host_dir / "hermes"
-        hh.mkdir()
-        (hh / "config.yaml").write_text(f"# {MARKER}\n")
-        (hh / ".env").write_text(f"HERMES_MARKER={MARKER}\n")
-        monkeypatch.setenv("HERMES_HOME", str(hh))
-        # No TERMINAL_SANDBOX_DIR: the state dir lands in HERMES_HOME/sandboxes,
-        # the one entry allowed to show through the overlay.
-        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
-        return hh
-
     def test_hidden_and_lists_only_the_state_dir(self, work_dir, hermes_home):
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
@@ -328,3 +333,79 @@ class TestHermesHomeIntegration:
             env.cleanup()
         assert (hermes_home / "config.yaml").read_text() == f"# {MARKER}\n"
         assert (hermes_home / ".env").read_text() == f"HERMES_MARKER={MARKER}\n"
+
+
+class TestHomeModeCarveOut:
+    """HERMES_HOME/home is bound back over the overlay only under home_mode=profile."""
+
+    def test_home_mode_defaults_to_auto_and_reads_terminal_home_mode(self):
+        assert BubblewrapConfig().home_mode == "auto"
+        assert load_bubblewrap_config({}).home_mode == "auto"
+        assert load_bubblewrap_config({"TERMINAL_HOME_MODE": " Profile "}).home_mode == "profile"
+
+    @pytest.mark.parametrize("mode", ["profile", "isolated", "profile_home", "profile-home"])
+    def test_home_mode_profile_binds_profile_home_between_overlay_and_state_dir(self, paths, mode):
+        hermes_home = Path(paths["hermes_home"])
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        (Path(paths["home"]) / ".ssh").mkdir()
+        mounts = _mounts(build_bwrap_args(BubblewrapConfig(home_mode=mode), **paths))
+        i_overlay = mounts.index(("--tmpfs", str(hermes_home)))
+        i_profile = mounts.index(("--bind", str(profile_home), str(profile_home)))
+        i_state = mounts.index(("--bind", paths["state_dir"], paths["state_dir"]))
+        assert i_overlay < i_profile < i_state
+        # The real HOME set stays hidden regardless of the subprocess HOME.
+        assert ("--tmpfs", str(Path(paths["home"]) / ".ssh")) in mounts
+
+    @pytest.mark.parametrize("mode", ["auto", "real"])
+    def test_home_mode_auto_and_real_add_no_profile_home_bind(self, paths, mode):
+        hermes_home = Path(paths["hermes_home"])
+        (hermes_home / "home").mkdir(parents=True)
+        argv = build_bwrap_args(BubblewrapConfig(home_mode=mode), **paths)
+        assert str(hermes_home / "home") not in argv
+        assert ("--tmpfs", str(hermes_home)) in _mounts(argv)
+
+    def test_home_mode_profile_without_the_dir_adds_no_bind(self, paths):
+        hermes_home = Path(paths["hermes_home"])
+        hermes_home.mkdir(parents=True)
+        argv = build_bwrap_args(BubblewrapConfig(home_mode="profile"), **paths)
+        assert str(hermes_home / "home") not in argv
+        assert ("--tmpfs", str(hermes_home)) in _mounts(argv)
+
+
+@needs_bwrap
+class TestHomeModeIntegration:
+    @pytest.fixture
+    def profile_home(self, hermes_home):
+        ph = hermes_home / "home"
+        ph.mkdir()
+        return ph
+
+    def test_home_mode_profile_home_writable_and_rest_of_hermes_home_hidden(self, work_dir, hermes_home, profile_home, monkeypatch):
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            # LocalEnvironment's run env already points HOME at the profile home.
+            assert env.execute("echo $HOME")["output"].strip() == str(profile_home)
+            result = env.execute("touch $HOME/probe")
+            assert result["returncode"] == 0, result["output"]
+            assert (profile_home / "probe").is_file()
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", "sandboxes"}
+            out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null")["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()
+
+    @pytest.mark.parametrize("mode", ["auto", "real"])
+    def test_home_mode_auto_and_real_keep_profile_home_hidden(self, work_dir, hermes_home, profile_home, monkeypatch, mode):
+        monkeypatch.setenv("TERMINAL_HOME_MODE", mode)
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert str(profile_home) not in env._wrap_popen_args(["bash"])
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
+            # The dir is absent inside the HERMES_HOME tmpfs; a write there stays in the tmpfs.
+            assert env.execute(f"test -e {profile_home}")["returncode"] != 0
+            assert env.execute(f"mkdir -p {profile_home} && touch {profile_home}/probe")["returncode"] == 0
+            assert not (profile_home / "probe").exists()
+        finally:
+            env.cleanup()

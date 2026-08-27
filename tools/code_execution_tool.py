@@ -633,6 +633,13 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
         # Session-kernel path: one persistent kernel per owner on the
         # run-to-completion transport. Spawn failure falls OPEN to the per-call
         # path below so a degraded remote host never blocks execution.
+        # bubblewrap never takes it: each of its commands is its own sandbox
+        # that ends with the command, so a detached kernel runner would die
+        # with the spawn that started it. It goes straight to the per-call path.
+        kernel_result = None
+        if env_type == "bubblewrap":
+            return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
+                                        timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
         try:
             # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
             # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
@@ -718,6 +725,12 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+
+    # Only the local backend takes the host session-kernel path: it spawns the
+    # script directly on the host. bubblewrap is a host-path backend for file
+    # access but every command it runs must carry the bwrap prefix, so it takes
+    # the env.execute() file-RPC path on purpose, like the remote backends. The
+    # script then runs inside a sandbox under the same rlimits as terminal().
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
     from tools.interrupt import is_interrupted as _is_interrupted

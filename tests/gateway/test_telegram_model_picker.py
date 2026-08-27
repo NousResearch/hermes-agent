@@ -28,10 +28,10 @@ def _make_adapter():
 
 
 class TestTelegramModelPicker:
-    def test_anthropic_vendor_is_presented_as_claude_and_omits_redundant_prefix(self, monkeypatch):
-        """Once the user selected Claude, neither ``Anthropic`` nor
-        ``claude-`` belongs in every button. A global profile uses compact
-        ``G:`` so version/family stay visible in Telegram's two columns."""
+    def test_anthropic_vendor_keeps_vendor_name_and_omits_redundant_prefix(self, monkeypatch):
+        """The Bedrock vendor picker calls this family Anthropic; inside it,
+        the repeated ``claude-`` model prefix remains unnecessary. A global
+        profile uses compact ``G:`` to preserve the discriminating suffix."""
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
         adapter = _make_adapter()
@@ -43,7 +43,7 @@ class TestTelegramModelPicker:
 
         assert button.text == "sonnet-4-6"
         assert button.callback_data == "mm:0"
-        assert vendors == [{"vendor": "anthropic", "label": "Claude", "indices": [0]}]
+        assert vendors == [{"vendor": "anthropic", "label": "Anthropic", "indices": [0]}]
 
     def test_anthropic_global_collision_uses_compact_g_prefix(self):
         adapter = _make_adapter()
@@ -80,7 +80,7 @@ class TestTelegramModelPicker:
         assert button.callback_data == "mm:0"
 
     def test_degenerate_two_segment_id_never_yields_blank_button(self, monkeypatch):
-        """``global.anthropic`` must not produce an empty label — Telegram
+        """``global.anthropic`` must not produce an empty label -- Telegram
         rejects blank button text (BUTTON_TEXT_INVALID) and the whole picker
         reply would fail (review feedback on PR #94990)."""
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
@@ -129,7 +129,7 @@ class TestTelegramModelPicker:
         vendors = adapter._group_models_by_vendor(models)
 
         assert [v["vendor"] for v in vendors] == ["amazon", "anthropic", "xai"]
-        assert [v["label"] for v in vendors] == ["Amazon", "Claude", "xAI"]
+        assert [v["label"] for v in vendors] == ["Amazon", "Anthropic", "xAI"]
         assert [len(v["indices"]) for v in vendors] == [1, 2, 1]
         # Indices must point back into the original list, unmodified.
         anthropic = next(v for v in vendors if v["vendor"] == "anthropic")
@@ -268,7 +268,7 @@ class TestTelegramModelPicker:
         labels = [b.text for b in flat]
 
         assert "Amazon (1)" in labels
-        assert "Claude (2)" in labels
+        assert "Anthropic (2)" in labels
         assert any(b.callback_data == "mvd:anthropic" for b in flat)
         # Back/Cancel must stay reachable.
         assert any(b.callback_data == "mb" for b in flat)

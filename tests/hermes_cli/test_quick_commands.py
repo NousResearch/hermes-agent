@@ -81,6 +81,7 @@ class TestGatewayQuickCommands:
         event = MagicMock()
         event.get_command.return_value = command
         event.get_command_args.return_value = args
+        event.allow_gateway_control = True
         event.text = f"/{command} {args}".strip()
         event.source = MagicMock()
         event.source.user_id = "test_user"

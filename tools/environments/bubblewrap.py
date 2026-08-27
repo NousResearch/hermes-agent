@@ -17,20 +17,31 @@ Layout of the argv (later mounts overlay earlier ones):
    own ``rm -rf``) skips the bind and the command runs in the recovered
    cwd instead of wedging every later spawn
 4. operator binds from terminal.bubblewrap_binds, minus sensitive sources
-5. the sensitive overlays: a tmpfs over each sensitive directory and an
+5. the pins: each ancestor of a sensitive path or of HERMES_HOME that lies
+   strictly inside a writable bind (the cwd under the workspace and
+   network profiles, a read-write operator bind) is bound over itself, so
+   a command cannot rename the parent of a hidden path out from under its
+   overlay
+6. the sensitive overlays: a tmpfs over each sensitive directory and an
    empty file over each sensitive file that exists on the host, then the
    same for HERMES_HOME
-6. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
+7. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
    that overlay (it is the subprocess HOME then)
-7. the per-environment state dir read-write at the same path
-8. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
+8. the per-environment state dir read-write at the same path
+9. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
 
 The paths in the argv are fixed at construction. What varies per spawn is
 presence only: an overlay is emitted for a sensitive path that exists on
-the host at spawn time, and never for one that does not, so host changes
-(or a sandbox with a writable HOME planting a symlink) can only add hiding
-mounts, never expose anything.
+the host at spawn time and never for one that does not, and a pin for an
+ancestor directory that exists inside a bind that is writable anyway. So
+host changes (or a sandbox with a writable HOME planting a symlink) can
+only add hiding mounts and pins, never expose anything. The pins are what
+keep that true: a hidden entry is a mount point and cannot be renamed
+from inside the sandbox, but without the pins a writable cwd covering its
+parent lets a command rename the parent, and the next spawn then finds
+nothing to hide at the old path while the secret is readable under the
+new one.
 
 Resource limits are applied through Popen's preexec_fn, as the spec asks.
 CPython documents preexec_fn as unsafe in a threaded process; the callable
@@ -49,7 +60,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping, Sequence
 
 from hermes_constants import get_hermes_home, get_real_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
@@ -296,6 +307,59 @@ def filter_binds(binds: tuple[BindMount, ...], home: str, hermes_home: str) -> l
     return kept
 
 
+def _ancestors_within(path: str, root: str) -> list[str]:
+    """Ancestors of *path* (not *path* itself) strictly inside *root*, outermost first."""
+    found: list[str] = []
+    parent = os.path.dirname(path)
+    while parent != root and _is_within(parent, root):
+        found.append(parent)
+        parent = os.path.dirname(parent)
+    found.reverse()
+    return found
+
+
+def ancestor_pin_args(
+    writable_binds: Sequence[tuple[str, str]],
+    mount_points: Iterable[str],
+    home: str,
+    hermes_home: str,
+) -> list[str]:
+    """Bind over itself each ancestor of a hidden path that lies strictly inside a writable bind.
+
+    A hidden entry is a mount point, so a command cannot rename or remove
+    it, but a writable bind covering its parent (the cwd at HOME or above
+    it, a read-write operator bind of the same) lets a command rename the
+    parent. The next spawn then finds nothing at the hidden path, emits no
+    overlay, and the secret is readable under the new name. Binding each
+    such ancestor over itself makes it a mount point too: rename and rmdir
+    fail with EBUSY while it stays writable, so the bind loses nothing.
+
+    *writable_binds* are (src, dest) pairs in argv order; a pin's source is
+    the host path the ancestor maps to through its bind, which is the
+    ancestor itself when src and dest agree. No pin is emitted for an
+    ancestor that is a mount point already (*mount_points*: the cwd and the
+    operator bind destinations), nor for one missing on the host or a
+    symlink there: a mount cannot pin a symlink and would bind its target
+    instead. Presence is the only per-spawn input, and a pin never grants
+    more than the bind around it already did.
+    """
+    normalize = lambda p: os.path.abspath(os.path.expanduser(p))
+    seen: set[str] = {normalize(p) for p in mount_points}
+    hidden = sensitive_paths(home, hermes_home)
+    argv: list[str] = []
+    for src, dest in writable_binds:
+        root = normalize(dest)
+        for path in hidden:
+            for ancestor in _ancestors_within(path, root):
+                if ancestor in seen:
+                    continue
+                seen.add(ancestor)
+                host = os.path.join(normalize(src), os.path.relpath(ancestor, root))
+                if os.path.isdir(host) and not os.path.islink(host):
+                    argv += ["--bind", host, ancestor]
+    return argv
+
+
 def build_bwrap_args(
     config: BubblewrapConfig,
     initial_cwd: str,
@@ -341,12 +405,20 @@ def build_bwrap_args(
     # failing on a missing bind source.
     argv += ["--bind-try" if profile.writable_cwd else "--ro-bind-try", initial_cwd, initial_cwd]
 
-    for bind in filter_binds(config.binds, home, hermes_home):
+    binds = filter_binds(config.binds, home, hermes_home)
+    for bind in binds:
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
 
-    # The overlays come after the cwd and operator binds so a bind of HOME
-    # itself still hides what sits under it, and before the state dir so
-    # that stays reachable under a hidden HERMES_HOME.
+    # Pin the parents of the hidden paths that sit inside a writable bind
+    # (see ancestor_pin_args) after those binds, so the pins land on top of
+    # them, and before the overlays, so the overlays land on the pins.
+    writable = [(initial_cwd, initial_cwd)] if profile.writable_cwd else []
+    writable += [(bind.src, bind.dest) for bind in binds if not bind.readonly]
+    argv += ancestor_pin_args(writable, [initial_cwd, *(bind.dest for bind in binds)], home, hermes_home)
+
+    # The overlays come after the cwd, operator binds and pins so a bind of
+    # HOME itself still hides what sits under it, and before the state dir
+    # so that stays reachable under a hidden HERMES_HOME.
     argv += sensitive_overlay_args(home, hermes_home, state_dir)
 
     # Under home_mode=profile the subprocess HOME is HERMES_HOME/home

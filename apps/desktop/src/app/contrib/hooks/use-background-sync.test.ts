@@ -14,9 +14,11 @@ import {
 } from '@/store/session'
 import {
   $attentionSessionIds,
+  $sessionTiles,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 
@@ -158,6 +160,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  $sessionTiles.set([])
   resetTypingActivityTracking()
 })
 
@@ -228,7 +231,6 @@ describe('active transcript refresh', () => {
 
     const signatureRef = { current: new Map<string, string>() }
     const requestSequenceRef = { current: 0 }
-    const busyRef = { current: false }
 
     vi.mocked(getLatestSessionMessages).mockImplementation(async (storedId: string) => {
       if (storedId === TILE_STORED_ID) {
@@ -250,7 +252,6 @@ describe('active transcript refresh', () => {
     await act(async () => {
       await reconcileTileTranscriptsForTest({
         tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
-        busyRef,
         requestSequenceRef,
         signatureRef,
         updateSessionState
@@ -260,6 +261,90 @@ describe('active transcript refresh', () => {
     // Behavior assertions:
     expect(updaterCallCount).toBeGreaterThan(0)
     expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID)
+  })
+
+  it('reconciles an idle tile while the main pane is busy', async () => {
+    const runtimeId = 'runtime-idle-tile'
+    const storedId = 'stored-idle-tile'
+    const idleState = createClientSessionState(storedId)
+
+    setBusy(true)
+    publishSessionState(runtimeId, idleState)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('idle tile update', storedId) as never)
+
+    const updateSessionState = vi.fn((sessionId: string, updater: (state: typeof idleState) => typeof idleState) => {
+      expect(sessionId).toBe(runtimeId)
+
+      return updater(idleState)
+    })
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId)
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reconcile a busy tile when the main pane is idle', async () => {
+    const runtimeId = 'runtime-busy-tile'
+    const storedId = 'stored-busy-tile'
+    const liveState = createClientSessionState(storedId)
+
+    liveState.busy = true
+    liveState.messages = [
+      {
+        id: 'live-assistant',
+        parts: [{ text: 'streaming answer', type: 'text' }],
+        pending: true,
+        role: 'assistant'
+      }
+    ]
+    publishSessionState(runtimeId, liveState)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: storedId } as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards a tile snapshot when the tile closes during the read', async () => {
+    const runtimeId = 'runtime-closing-tile'
+    const storedId = 'stored-closing-tile'
+    let resolveRead: (value: unknown) => void = () => undefined
+
+    $sessionTiles.set([{ runtimeId, storedSessionId: storedId }])
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveRead = resolve
+      }) as never
+    )
+
+    const updateSessionState = vi.fn()
+
+    const reconcile = reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      updateSessionState
+    })
+
+    $sessionTiles.set([])
+    resolveRead(transcript('stale tile answer', storedId))
+    await reconcile
+
+    expect(updateSessionState).not.toHaveBeenCalled()
   })
 
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {
@@ -287,13 +372,11 @@ describe('active transcript refresh', () => {
     signatureRef.current.set(`tile:${TILE_STORED_ID}`, preSignature)
 
     const updateSessionState = vi.fn()
-    const busyRef = { current: false }
     const requestSequenceRef = { current: 0 }
 
     await act(async () => {
       await reconcileTileTranscriptsForTest({
         tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
-        busyRef,
         requestSequenceRef,
         signatureRef,
         updateSessionState

@@ -66,6 +66,12 @@ export interface ActiveTranscriptRefreshDeps {
   ) => ClientSessionState
 }
 
+function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
+  const state = $sessionStates.get()[runtimeId]
+
+  return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
+}
+
 /**
  * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
  * slice 1). Bot canonical chats live here — never in $sessions /
@@ -84,12 +90,10 @@ export interface ActiveTranscriptRefreshDeps {
  */
 export async function reconcileTileTranscripts({
   requestSequenceRef,
-  busyRef,
   signatureRef,
   updateSessionState,
   tiles: tilesOverride
 }: {
-  busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   signatureRef: MutableRefObject<Map<string, string>>
   tiles?: Array<{ storedSessionId: string; runtimeId?: string }>
@@ -100,6 +104,13 @@ export async function reconcileTileTranscripts({
   ) => ClientSessionState
 }): Promise<void> {
   const tiles = tilesOverride ?? $sessionTiles.get()
+  const openSignatureKeys = new Set(tiles.map(tile => `tile:${tile.storedSessionId}`))
+
+  for (const signatureKey of signatureRef.current.keys()) {
+    if (!openSignatureKeys.has(signatureKey)) {
+      signatureRef.current.delete(signatureKey)
+    }
+  }
 
   for (const tile of tiles) {
     const storedSessionId = tile.storedSessionId
@@ -110,7 +121,7 @@ export async function reconcileTileTranscripts({
       continue
     }
 
-    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+    if (!storedSessionId || !runtimeSessionId || tileRuntimeOwnsLiveState(runtimeSessionId)) {
       continue
     }
 
@@ -123,14 +134,15 @@ export async function reconcileTileTranscripts({
 
     // With a tiles override (test path), the live $sessionTiles check can't
     // see the synthetic tile — treat override tiles as present.
-    const stillPresent = tilesOverride
-      ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
-      : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+    const tileStillPresent = () =>
+      tilesOverride
+        ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+        : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
 
     try {
       const latest = await getLatestSessionMessages(storedSessionId)
 
-      if (requestId !== requestSequenceRef.current || busyRef.current || !stillPresent) {
+      if (requestId !== requestSequenceRef.current || tileRuntimeOwnsLiveState(runtimeSessionId) || !tileStillPresent()) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).
@@ -547,10 +559,8 @@ export function useBackgroundSync({
   // transcript signatures, so no-change ticks and closed tiles cost nothing.
   const tileRequestSequenceRef = useRef(0)
   const tileSignatureRef = useRef(new Map<string, string>())
-  // Read $busy.get() directly inside the reconcile loop instead of mirroring
-  // the atom into a ref (lint: no-restricted-syntax — refs synced from atoms
-  // lag one render). The reconcile runs on tick, not render, so .get() is
-  // always current.
+  // Tile reconciliation reads each runtime's live state directly from
+  // $sessionStates; the primary chat's $busy atom has no authority over tiles.
 
   const requestActiveTranscriptRefresh = useCallback(
     (preservePending: boolean) => {
@@ -697,11 +707,6 @@ export function useBackgroundSync({
       // (#93942 scenario A). Signature-gated per tile, so no-change ticks
       // cost nothing.
       void reconcileTileTranscripts({
-        busyRef: {
-          get current() {
-            return $busy.get()
-          }
-        },
         requestSequenceRef: tileRequestSequenceRef,
         signatureRef: tileSignatureRef,
         updateSessionState

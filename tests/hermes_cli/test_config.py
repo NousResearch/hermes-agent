@@ -1691,3 +1691,50 @@ def test_default_config_has_no_duplicate_top_level_keys():
             if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
                 dupes = {k for k in keys if keys.count(k) > 1}
                 assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"
+
+
+class TestConfigCommandFailClosedSurface:
+    """`hermes config set/unset` must exit cleanly (no traceback) when the
+    fail-closed write guard refuses an unparseable config.yaml."""
+
+    def _args(self, **kw):
+        import argparse
+
+        ns = argparse.Namespace()
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_config_command_set_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
+        from hermes_cli.config import config_command
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit) as excinfo:
+                config_command(
+                    self._args(config_command="set", key="model.default",
+                               value="gpt-4o", force=False)
+                )
+
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "not valid YAML" in err
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
+        from hermes_cli.config import config_command
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit) as excinfo:
+                config_command(self._args(config_command="unset", key="model.default"))
+
+        assert excinfo.value.code == 1
+        assert "not valid YAML" in capsys.readouterr().err
+        assert config_path.read_text(encoding="utf-8") == original

@@ -141,6 +141,12 @@ def _warn_config_parse_failure(
             f"Keeping the previously loaded config for this process — "
             f"edits to config.yaml are being IGNORED until the YAML is fixed."
         )
+    elif fallback == "refuse-write":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"REFUSING to write config.yaml so the existing file is preserved. "
+            f"Fix the YAML (hermes config edit) and retry."
+        )
     else:
         msg = (
             f"Failed to parse {config_path}: {exc}. "
@@ -5897,7 +5903,13 @@ def config_command(args):
             print("  --force: skip the unknown-key notice for unrecognized keys,")
             print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
-        set_config_value(key, value, force=force)
+        try:
+            set_config_value(key, value, force=force)
+        except RuntimeError as exc:
+            # Fail-closed write guard (unparseable / non-mapping / unreadable
+            # config.yaml). Surface a clean CLI error instead of a traceback.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)
@@ -5909,7 +5921,12 @@ def config_command(args):
             print("  hermes config unset terminal.backend")
             print("  hermes config unset OPENROUTER_API_KEY")
             sys.exit(1)
-        unset_config_value(key)
+        try:
+            unset_config_value(key)
+        except RuntimeError as exc:
+            # Same fail-closed guard surface as `config set` above.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
     
     elif subcmd == "path":
         print(get_config_path())

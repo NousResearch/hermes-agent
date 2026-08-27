@@ -5892,7 +5892,16 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
 
-    config_command(args)
+    try:
+        config_command(args)
+    except RuntimeError as exc:
+        # Safety net for the fail-closed config write guard (unparseable /
+        # non-mapping / unreadable config.yaml raises RuntimeError from
+        # require_readable_config_before_write). set/unset already surface
+        # this per-branch; this covers migrate and future write subcommands
+        # so no path ends in a raw traceback.
+        print(f"✗ {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_skin(args):

@@ -1603,10 +1603,14 @@ def _zip_overlay_block_reason(
     result = subprocess.run(
         # -uall: a user-level ``status.showUntrackedFiles = no`` git config
         # would otherwise hide untracked files and silently blind this guard.
-        # --ignored=all: gitignored files are still USER DATA the ZIP overlay
-        # would permanently delete (logs, local venvs, scratch files) — a
-        # .gitignore entry must not blind the guard either (#87392).
-        git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=all"],
+        # --ignored=matching: gitignored files are still USER DATA the ZIP
+        # overlay would permanently delete (logs, scratch files, local data)
+        # — a .gitignore entry must not blind the guard either (#87392).
+        # ``matching`` reports an ignored directory as one ``dir/`` line
+        # instead of enumerating its contents (cheaper, same verdict for the
+        # top-level filter below). NOTE: ``--ignored=all`` is NOT a valid
+        # git mode — it exits 128 and would fail-close every ZIP update.
+        git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -1633,15 +1637,26 @@ def _zip_overlay_block_reason(
 
 
 _ZIP_STAGING_ARTIFACT_SUFFIXES = (".hermes-update-staging", ".hermes-update-old")
-# Keep in sync with the `preserve` set in _update_via_zip's swap loop.
+# Single source of truth for the top-level entries the ZIP swap preserves —
+# consumed by both the dirty-tree filter below and _update_via_zip's swap loop.
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", "node_modules", ".git", ".env"}
 
 
 def _is_zip_preserved_entry_status_line(line: str) -> bool:
     """True when every path on a porcelain status line sits under a top-level
-    entry the ZIP swap preserves (rename lines carry two paths)."""
-    payload = line[3:] if len(line) >= 3 else line
-    paths = payload.split(" -> ")
+    entry the ZIP swap preserves.
+
+    The ``" -> "`` two-path split applies ONLY to rename/copy status codes
+    (R/C): porcelain v1 does not quote a plain filename containing spaces,
+    so an ignored file literally named ``venv -> node_modules`` on an
+    ``!!``/``??`` line must be treated as ONE path — splitting it would
+    filter it as two preserved tops and fail-open into the destructive swap.
+    Requiring EVERY path preserved keeps renames leaving a preserved dir
+    (``R venv/x -> src/x``) blocking, fail-closed.
+    """
+    status, payload = (line[:2], line[3:]) if len(line) >= 3 else ("", line)
+    is_rename = any(code in "RC" for code in status)
+    paths = payload.split(" -> ") if is_rename else [payload]
     for path in paths:
         top_level = (
             path.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
@@ -1892,7 +1907,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                     break
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        preserve = _ZIP_PRESERVED_TOP_LEVEL
         entries = [i for i in os.listdir(extracted) if i not in preserve]
 
         # Two-phase replace (#76104). Phase 1 copies every entry — directories

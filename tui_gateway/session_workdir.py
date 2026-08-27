@@ -185,7 +185,7 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     # process-backend semantics (docker isolation's "process" vs "session" source depends on it).
     named_ssh = bool(profile_home) and _cwd_is_remote(profile_home)
     backend = "ssh" if named_ssh else _effective_terminal_backend()
-    if backend != "local":
+    if backend not in ("local", "bubblewrap"):
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
@@ -252,11 +252,12 @@ def _session_is_local_backend(session: dict | None) -> bool:
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
     (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
     heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
-    if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) != "local":
+    if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) not in (
+        "local", "bubblewrap"):
         return False
     # Otherwise the launch backend, env or config: an in-process gateway (no TERMINAL_ENV bridge) under
     # ``terminal.backend: docker`` holds a container cwd (``/workspace``) that healing would walk up to ``/``.
-    return _effective_terminal_backend() == "local"
+    return _effective_terminal_backend() in ("local", "bubblewrap")
 
 
 def _effective_terminal_backend() -> str:

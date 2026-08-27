@@ -209,21 +209,14 @@ class TestConstructionFailures:
 
 @pytest.fixture
 def isolated_tool(tmp_path, monkeypatch):
-    """terminal_tool with an isolated HERMES_HOME, a clean environment cache and
-    a factory entry for backend=bubblewrap (stood in here)."""
+    """terminal_tool with backend=bubblewrap, an isolated HERMES_HOME and a
+    clean environment cache; the real factory constructs the environment."""
     import tools.terminal_tool as tt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)
     monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
-    real_factory = tt._create_environment
-
-    def factory(env_type, image, cwd, timeout, **kwargs):
-        if env_type == "bubblewrap":
-            return BubblewrapEnvironment(cwd=cwd, timeout=timeout)
-        return real_factory(env_type, image, cwd, timeout, **kwargs)
-
-    monkeypatch.setattr(tt, "_create_environment", factory)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
 
     def _clear():
         with tt._env_lock:

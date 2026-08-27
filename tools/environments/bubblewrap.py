@@ -639,6 +639,15 @@ class BubblewrapEnvironment(LocalEnvironment):
         )
         return prefix + list(args)
 
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        # --unsetenv strips the socket variables from the environment bwrap
+        # receives, but the login bootstrap sources the shell init files
+        # into the snapshot afterwards, and a 1Password or gpg-agent setup
+        # exports SSH_AUTH_SOCK from ~/.bashrc. Unset them in front of the
+        # command: that runs after the snapshot is sourced, and the export
+        # dump that follows the command then omits them too.
+        return super()._wrap_command(f"unset {' '.join(HOST_SOCKET_VARS)}; {command}", cwd)
+
     def _popen_preexec(self):
         # uid_thread_count scans /proc once per spawn, and only when max_procs
         # is non-zero (the one limit that needs it). The count must be fresh:

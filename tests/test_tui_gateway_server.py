@@ -4794,6 +4794,9 @@ def test_ws_orphan_reap_interrupts_isolated_turn_then_reaps(monkeypatch):
         _compute_host_active=True,
         history=[{"role": "assistant", "content": "partial"}],
         queued_prompt={"text": "must not run"},
+        # Pre-expired running-turn deferral deadline: exercise the
+        # post-ceiling interrupt-then-poll chain directly.
+        _client_gone_running_deadline=0.0,
     )
     server._sessions["isolated-sid"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
@@ -4943,6 +4946,7 @@ def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
         transport=server._detached_ws_transport,
         running=True,
         _run_thread=_LiveThread(),
+        _client_gone_running_deadline=0.0,
     )
     server._sessions["delegating-turn"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
@@ -4973,6 +4977,89 @@ def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
         server._sessions.pop("delegating-turn", None)
 
 
+def test_ws_orphan_reap_defers_running_turn_without_interrupt(monkeypatch):
+    """A detached session with a live turn is deferred, never interrupted:
+    the turn finishes on its own and only then does the reap tear down the
+    still-detached session. This is the fix for client disconnects killing
+    in-flight work as "Operation interrupted."."""
+    callbacks = []
+    delays = []
+    interrupted = []
+    torn_down = []
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            delays.append(delay)
+            callbacks.append(callback)
+
+        def start(self):
+            return None
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    def _interrupt():
+        interrupted.append("interrupted")
+
+    session = _session(
+        agent=types.SimpleNamespace(interrupt=_interrupt),
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["deferred-sid"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda claimed, *, end_reason: torn_down.append((claimed, end_reason)) or True,
+    )
+
+    try:
+        server._schedule_ws_orphan_reap("deferred-sid")
+        callbacks.pop(0)()
+
+        # First poll: turn is running — defer at the grace cadence, arm the
+        # running-turn deadline, request no interrupt.
+        assert interrupted == []
+        assert session.get("_client_gone_running_deadline") is not None
+        assert len(callbacks) == 1
+        assert delays[-1] == 20.0
+
+        callbacks.pop(0)()
+
+        # Still running: keep deferring, still no interrupt.
+        assert interrupted == []
+        assert len(callbacks) == 1
+
+        session["running"] = False
+        callbacks.pop(0)()
+
+        # Turn settled while detached: normal reap, no interrupt ever sent.
+        assert interrupted == []
+        assert "deferred-sid" not in server._sessions
+        assert torn_down == [(session, "ws_orphan_reap")]
+    finally:
+        server._sessions.pop("deferred-sid", None)
+
+
+def test_ws_orphan_reap_reattach_clears_running_deadline():
+    session = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+        _client_gone_running_deadline=123.0,
+    )
+    server._sessions["rebind-sid"] = session
+    try:
+        server._cancel_ws_orphan_reap("rebind-sid")
+        assert "_client_gone_running_deadline" not in session
+    finally:
+        server._sessions.pop("rebind-sid", None)
+
+
 def test_ws_orphan_reap_interrupts_in_process_turn(monkeypatch):
     callbacks = []
     interrupted = []
@@ -4997,6 +5084,7 @@ def test_ws_orphan_reap_interrupts_in_process_turn(monkeypatch):
         transport=server._detached_ws_transport,
         running=True,
         _run_thread=_LiveThread(),
+        _client_gone_running_deadline=0.0,
     )
     server._sessions["inline-sid"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)

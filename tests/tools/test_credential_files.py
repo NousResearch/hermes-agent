@@ -147,6 +147,46 @@ class TestIterSkillsFiles:
         # Symlink should be excluded
         assert not any("evil" in f["container_path"] for f in files)
 
+    def test_skips_excluded_bookkeeping_dirs(self, tmp_path):
+        """Bookkeeping and dependency dirs must not be uploaded to a sandbox.
+
+        The sync path used a bare rglob("*"), so the .hub download cache,
+        .archive, curator backups and any node_modules/.git under a skills
+        tree were packed up on every sync even though the sandbox never
+        reads them. Sync now honours EXCLUDED_SKILL_DIRS like discovery.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        # Progressive-disclosure support files must still be synced.
+        (skills_dir / "cat" / "myskill" / "references").mkdir()
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+
+        for excluded in (".hub", ".archive", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "SKILL.md").write_text("# stale copy")
+        # Also nested inside an otherwise-valid skill package.
+        cache = skills_dir / "cat" / "myskill" / "__pycache__"
+        cache.mkdir()
+        (cache / "helper.cpython-311.pyc").write_text("bytecode")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            files = iter_skills_files()
+
+        paths = {f["container_path"] for f in files}
+        assert "/root/.hermes/skills/cat/myskill/SKILL.md" in paths
+        assert "/root/.hermes/skills/cat/myskill/references/api.md" in paths
+        for excluded in (
+            ".hub",
+            ".archive",
+            ".curator_backups",
+            "node_modules",
+            "__pycache__",
+        ):
+            assert not any(excluded in path for path in paths), excluded
+
     def test_empty_when_no_skills_dir(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

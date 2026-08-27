@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
+from agent.skill_utils import EXCLUDED_SKILL_DIRS
+
 try:  # pragma: no cover - exercised via the fail-closed test below
     from agent.file_safety import get_read_block_error
 except ImportError:  # noqa: F401 - sentinel consumed in register_credential_file
@@ -344,15 +346,32 @@ def _safe_skills_path(skills_dir: Path) -> str:
     return str(safe_dir)
 
 
+def _is_excluded_skills_dir(rel: Path) -> bool:
+    """True if *rel* sits under a directory excluded from skill scanning.
+
+    Reuses ``agent.skill_utils.EXCLUDED_SKILL_DIRS`` so the sync path agrees
+    with discovery. These are local bookkeeping and dependency directories
+    (``.hub`` download cache, ``.archive``, ``.curator_backups``,
+    ``node_modules``, ``__pycache__``, ``.git``, ...) that the remote agent
+    never reads.
+
+    This deliberately does not use ``is_excluded_skill_path()``, which also
+    prunes ``references/``, ``templates/``, ``assets/`` and ``scripts/``.
+    Those hold progressive-disclosure support files and bundled scripts the
+    sandbox does execute, so they must keep syncing.
+    """
+    return any(part in EXCLUDED_SKILL_DIRS for part in rel.parts[:-1])
+
+
 def iter_skills_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
     """Yield individual (host_path, container_path) entries for skills files.
 
     Includes both the local skills dir and any external dirs configured via
-    skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually (Daytona, Modal) rather than mounting a
-    directory.
+    skills.external_dirs.  Skips symlinks and anything under
+    EXCLUDED_SKILL_DIRS entirely.  Preferred for backends that upload files
+    individually (Daytona, Modal) rather than mounting a directory.
     """
     result: List[Dict[str, str]] = []
 
@@ -364,6 +383,8 @@ def iter_skills_files(
             if item.is_symlink() or not item.is_file():
                 continue
             rel = item.relative_to(skills_dir)
+            if _is_excluded_skills_dir(rel):
+                continue
             result.append({
                 "host_path": str(item),
                 "container_path": f"{container_root}/{rel}",
@@ -380,6 +401,8 @@ def iter_skills_files(
                 if item.is_symlink() or not item.is_file():
                     continue
                 rel = item.relative_to(ext_dir)
+                if _is_excluded_skills_dir(rel):
+                    continue
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",
@@ -392,6 +415,8 @@ def iter_skills_files(
                 if item.is_symlink() or not item.is_file():
                     continue
                 rel = item.relative_to(proj_dir)
+                if _is_excluded_skills_dir(rel):
+                    continue
                 result.append({
                     "host_path": str(item),
                     "container_path": f"{container_root}/{rel}",

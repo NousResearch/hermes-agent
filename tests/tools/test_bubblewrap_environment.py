@@ -828,6 +828,73 @@ class TestSandboxDirGuard:
             env.cleanup()
 
 
+class TestProfileHomeGuard:
+    """Under a profile home_mode the profile home is bound read-write on top
+    of every overlay, so a HERMES_HOME/home that resolves to a tree holding
+    a hidden path, or lying under one, would show the secrets again at the
+    bind."""
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "homes" / "home"
+        for rel in (".ssh", ".config"):
+            (home / rel).mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        hh = tmp_path / "hermes"
+        hh.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hh))
+        return hh
+
+    @staticmethod
+    def _link(hermes_home, target, link="absolute"):
+        (hermes_home / "home").symlink_to(target if link == "absolute" else os.path.relpath(target, hermes_home))
+
+    @staticmethod
+    def _constructs(work_dir, mode):
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode=mode))
+        env.cleanup()
+
+    @pytest.mark.parametrize("link", ["absolute", "relative"])
+    @pytest.mark.parametrize("rel", ["", ".config", ".ssh"])
+    def test_profile_home_linked_into_the_home_tree_is_refused_under_home_mode_profile(self, sandbox_root, work_dir, fake_home, hermes_home, link, rel):
+        # HOME and HOME/.config contain hidden paths; HOME/.ssh is one.
+        target = fake_home / rel if rel else fake_home
+        self._link(hermes_home, target, link)
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert os.path.realpath(target) in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    def test_profile_home_linked_to_hermes_home_itself_is_refused(self, sandbox_root, work_dir, fake_home, hermes_home):
+        # The bind would show config.yaml and .env at HERMES_HOME/home.
+        self._link(hermes_home, hermes_home)
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    def test_plain_profile_home_constructs_under_home_mode_profile(self, sandbox_root, work_dir, fake_home, hermes_home):
+        (hermes_home / "home").mkdir()
+        self._constructs(work_dir, "profile")
+
+    @pytest.mark.parametrize("where", ["outside", "under-hermes-home"])
+    def test_profile_home_linked_to_a_clean_directory_constructs_under_home_mode_profile(self, sandbox_root, work_dir, fake_home, hermes_home, tmp_path, where):
+        target = tmp_path / "elsewhere" / "home" if where == "outside" else hermes_home / "profiles" / "x"
+        target.mkdir(parents=True)
+        self._link(hermes_home, target)
+        self._constructs(work_dir, "profile")
+
+    @pytest.mark.parametrize("rel", ["", ".ssh"])
+    def test_the_same_links_construct_under_home_mode_auto(self, sandbox_root, work_dir, fake_home, hermes_home, rel):
+        # Nothing binds the profile home back under auto.
+        self._link(hermes_home, fake_home / rel if rel else fake_home)
+        self._constructs(work_dir, "auto")
+
+
 class TestChdirFailureDetection:
     """The retry fires only for a spawn bwrap aborted before the shell ran."""
 

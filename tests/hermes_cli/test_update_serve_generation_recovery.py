@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import update_abort_recovery as abort_recovery
 from hermes_cli import update_cmd
 from hermes_cli import update_restart_recovery as recovery
 
@@ -43,6 +44,18 @@ def _runtime(kind: str, profile: str, supervisor: str, pid):
 
 def _plan(*runtimes):
     return SimpleNamespace(runtimes=list(runtimes))
+
+
+def _serve_runtime(pid, *, create_time=None, kind="serve", profile="default"):
+    """A planned serve runtime carrying its process incarnation, the way the
+    inventory records it (``detail["create_time"]`` from the spawn ledger)."""
+    return SimpleNamespace(
+        kind=kind,
+        profile=profile,
+        supervisor="manual-serve",
+        pid=pid,
+        detail={"create_time": create_time},
+    )
 
 
 def _identity_module():
@@ -331,7 +344,9 @@ def test_serve_unit_verified_when_main_pid_changes(linux_systemctl):
         main_pids={"hermes-serve.service": 4242},
     )
     out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
-    assert out == {"verified": ["hermes-serve"], "failed": []}
+    # Identity stays scope-qualified: the same unit name can exist in the
+    # system manager as a different process (#92145 review).
+    assert out == {"verified": ["user/hermes-serve"], "failed": []}
     assert fake.restarted == ["hermes-serve.service"]
 
 
@@ -351,7 +366,7 @@ def test_unchanged_main_pid_is_not_verified(linux_systemctl):
         return original_call(argv, **kwargs)
 
     out = recovery.restart_serve_units(run=frozen, sleep=lambda _: None)
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    assert out == {"verified": [], "failed": ["user/hermes-serve"]}
 
 
 def test_unit_that_does_not_come_back_active_is_failed(linux_systemctl):
@@ -370,7 +385,7 @@ def test_unit_that_does_not_come_back_active_is_failed(linux_systemctl):
         return original_call(argv, **kwargs)
 
     out = recovery.restart_serve_units(run=dies, sleep=lambda _: None)
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    assert out == {"verified": [], "failed": ["user/hermes-serve"]}
 
 
 def test_nonzero_restart_is_failed_not_silently_skipped(linux_systemctl):
@@ -382,7 +397,7 @@ def test_nonzero_restart_is_failed_not_silently_skipped(linux_systemctl):
         restart_rc=1,
     )
     out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    assert out == {"verified": [], "failed": ["user/hermes-serve"]}
 
 
 def test_restart_timeout_is_failed(linux_systemctl):
@@ -399,7 +414,7 @@ def test_restart_timeout_is_failed(linux_systemctl):
         return original_call(argv, **kwargs)
 
     out = recovery.restart_serve_units(run=timing_out, sleep=lambda _: None)
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    assert out == {"verified": [], "failed": ["user/hermes-serve"]}
 
 
 def test_inactive_serve_unit_is_left_alone(linux_systemctl):
@@ -421,10 +436,12 @@ def test_units_already_restarted_by_the_phase_are_skipped(linux_systemctl):
         main_pids={"hermes-serve.service": 1, "hermes-serve-work.service": 2},
     )
     out = recovery.restart_serve_units(
-        skip_units=["hermes-serve"], run=fake, sleep=lambda _: None
+        skip_units=[{"scope": "user", "unit": "hermes-serve"}],
+        run=fake,
+        sleep=lambda _: None,
     )
     assert fake.restarted == ["hermes-serve-work.service"]
-    assert out == {"verified": ["hermes-serve-work"], "failed": []}
+    assert out == {"verified": ["user/hermes-serve-work"], "failed": []}
 
 
 def test_unrelated_hermes_server_service_is_never_touched(linux_systemctl):
@@ -436,7 +453,7 @@ def test_unrelated_hermes_server_service_is_never_touched(linux_systemctl):
     )
     out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
     assert fake.restarted == ["hermes-serve.service"]
-    assert out["verified"] == ["hermes-serve"]
+    assert out["verified"] == ["user/hermes-serve"]
 
 
 def test_gateway_units_are_not_restarted_by_the_serve_pass(linux_systemctl):
@@ -484,13 +501,15 @@ def test_active_unit_with_no_readable_main_pid_is_failed(linux_systemctl):
         main_pids={"hermes-serve.service": 0},
     )
     out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    assert out == {"verified": [], "failed": ["user/hermes-serve"]}
     assert fake.restarted == []
 
 
 def test_same_unit_name_in_both_scopes_is_proven_in_both(linux_systemctl):
     """User and system scope are two different processes, not one."""
     calls: list[tuple[str, list]] = []
+
+    pids = {"user": 10, "system": 20}
 
     def dual_scope(argv, **kwargs):
         scope = "user" if "--user" in argv else "system"
@@ -500,17 +519,24 @@ def test_same_unit_name_in_both_scopes_is_proven_in_both(linux_systemctl):
         if "is-active" in argv:
             return _Completed(0, stdout="active")
         if "show" in argv:
-            return _Completed(0, stdout="10" if scope == "user" else "20")
+            return _Completed(0, stdout=str(pids[scope]))
         if "restart" in argv:
             # The user scope relaunches cleanly; the system scope is refused
             # (no privilege) and must not be masked by the user-scope success.
-            return _Completed(0 if scope == "user" else 1)
+            if scope == "user":
+                pids["user"] += 1000
+                return _Completed(0)
+            return _Completed(1)
         raise AssertionError(argv)
 
     out = recovery.restart_serve_units(run=dual_scope, sleep=lambda _: None)
     restarts = [scope for scope, argv in calls if "restart" in argv]
     assert restarts == ["user", "system"]
-    assert out == {"verified": [], "failed": ["hermes-serve"]}
+    # One name, two processes, two independent outcomes.
+    assert out == {
+        "verified": ["user/hermes-serve"],
+        "failed": ["system/hermes-serve"],
+    }
 
 
 def test_restart_is_invoked_without_an_interactive_auth_prompt(linux_systemctl):
@@ -548,6 +574,8 @@ def test_skip_unit_names_are_filtered_to_the_serve_family():
                         "skip": [
                             "hermes-serve",
                             "hermes-serve-work.service",
+                            {"scope": "system", "unit": "hermes-serve"},
+                            {"scope": "user", "unit": "hermes-serve-work.service"},
                             "hermes-server",
                             "../../etc/systemd/evil",
                             "hermes-serve; rm -rf /",
@@ -559,7 +587,13 @@ def test_skip_unit_names_are_filtered_to_the_serve_family():
         )
     )
     assert recover_serve is True
-    assert skip == ["hermes-serve", "hermes-serve-work.service"]
+    # Qualified entries keep their scope; the legacy bare shape stays bare.
+    assert skip == [
+        "hermes-serve",
+        "hermes-serve-work",
+        "system/hermes-serve",
+        "user/hermes-serve-work",
+    ]
 
 
 def test_malformed_serve_block_is_rejected():
@@ -596,7 +630,7 @@ def test_absent_serve_block_defaults_to_no_serve_recovery():
 def test_serve_only_fleet_still_spawns_the_recovery_child(monkeypatch):
     """Before #92145 the driver returned early whenever no gateway profile was
     supervised, so a stale serve unit was never even attempted."""
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -613,7 +647,7 @@ def test_serve_only_fleet_still_spawns_the_recovery_child(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("serve", "default", "manual-serve", 4242)),
         gateway_mode=False,
@@ -627,7 +661,7 @@ def test_serve_only_fleet_still_spawns_the_recovery_child(monkeypatch):
 
 def test_child_timeout_budget_covers_the_serve_pass(monkeypatch):
     """A serve-only recovery must not be killed before its settle window."""
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -644,7 +678,7 @@ def test_child_timeout_budget_covers_the_serve_pass(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("serve", "default", "manual-serve", 4242)),
         gateway_mode=False,
@@ -654,7 +688,7 @@ def test_child_timeout_budget_covers_the_serve_pass(monkeypatch):
 
 def test_verified_serve_units_do_not_enter_gateway_restart_vocabulary(monkeypatch):
     """Serve coverage must not silently widen the gateway fleet-probe gate."""
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
 
     def fake_run(argv, **kwargs):
         return _Completed(
@@ -669,7 +703,7 @@ def test_verified_serve_units_do_not_enter_gateway_restart_vocabulary(monkeypatc
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("gateway", "default", "systemd", 111)),
         gateway_mode=False,
@@ -679,12 +713,12 @@ def test_verified_serve_units_do_not_enter_gateway_restart_vocabulary(monkeypatc
 
 
 def test_no_serve_authority_and_no_gateway_profile_spawns_nothing(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: False)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: False)
 
     def unreachable(*a, **k):
         raise AssertionError("recovery child spawned with nothing to recover")
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", unreachable)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", unreachable)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("serve", "default", "manual-serve", 4242)),
         gateway_mode=False,
@@ -694,7 +728,7 @@ def test_no_serve_authority_and_no_gateway_profile_spawns_nothing(monkeypatch):
 
 
 def test_already_restarted_units_are_forwarded_as_skips(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -711,18 +745,22 @@ def test_already_restarted_units_are_forwarded_as_skips(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("gateway", "default", "systemd", 111)),
         gateway_mode=False,
-        skip_units={"hermes-serve"},
+        skip_units={"user/hermes-serve"},
     )
-    assert captured["payload"]["serve_units"]["skip"] == ["hermes-serve"]
+    # The scope travels with the unit: settling `user/hermes-serve` must not
+    # suppress recovery of a stale system-scope unit of the same name.
+    assert captured["payload"]["serve_units"]["skip"] == [
+        {"scope": "user", "unit": "hermes-serve"}
+    ]
 
 
 def test_unreadable_serve_block_from_the_child_reads_as_failure(monkeypatch):
     """A child that answers with a broken serve block has proven nothing."""
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
 
     def fake_run(argv, **kwargs):
         return _Completed(
@@ -737,7 +775,7 @@ def test_unreadable_serve_block_from_the_child_reads_as_failure(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("gateway", "default", "systemd", 111)),
         gateway_mode=False,
@@ -756,7 +794,7 @@ def test_unreadable_serve_block_from_the_child_reads_as_failure(monkeypatch):
 
 def test_missing_serve_block_off_linux_is_not_a_failure(monkeypatch):
     """Hosts with no serve authority must not manufacture a phantom failure."""
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: False)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: False)
 
     def fake_run(argv, **kwargs):
         return _Completed(
@@ -770,7 +808,7 @@ def test_missing_serve_block_off_linux_is_not_a_failure(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("gateway", "default", "systemd", 111)),
         gateway_mode=False,
@@ -779,12 +817,12 @@ def test_missing_serve_block_off_linux_is_not_a_failure(monkeypatch):
 
 
 def test_spawn_failure_reports_empty_serve_coverage(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_serve_unit_recovery_available", lambda: True)
+    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
 
     def boom(*a, **k):
         raise OSError("no fork available")
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", boom)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", boom)
     result = update_cmd._recover_gateway_restart_after_abort(
         _plan(_runtime("gateway", "default", "systemd", 111)),
         gateway_mode=False,
@@ -814,8 +852,8 @@ def test_serve_coverage_reaches_the_persisted_receipt(tmp_path, monkeypatch):
             "failed": [],
             "skipped": [],
             "serve_units": {
-                "verified": ["hermes-serve"],
-                "failed": ["hermes-serve-work"],
+                "verified": ["user/hermes-serve"],
+                "failed": ["system/hermes-serve-work"],
             },
             "stale_runtimes": [
                 {
@@ -832,9 +870,11 @@ def test_serve_coverage_reaches_the_persisted_receipt(tmp_path, monkeypatch):
     persisted = json.loads(path.read_text(encoding="utf-8"))["gateway_restart"][
         "fresh_recovery"
     ]
+    # The receipt keeps the scope: an operator reading it must know WHICH
+    # manager owns the unit that could not be proven (#96235 review).
     assert persisted["serve_units"] == {
-        "verified": ["hermes-serve"],
-        "failed": ["hermes-serve-work"],
+        "verified": ["user/hermes-serve"],
+        "failed": ["system/hermes-serve-work"],
     }
     assert persisted["stale_runtimes"] == [
         {
@@ -987,3 +1027,201 @@ def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monke
     assert signalled == [7001]
     assert restarted == ["hermes-serve.service"]
     assert result["killed"] == [7001]
+
+
+# ---------------------------------------------------------------------------
+# Scope-qualified identity (review on #96235)
+# ---------------------------------------------------------------------------
+
+
+def _dual_scope_systemctl(*, user_pid=10, system_pid=20, settle=("user", "system")):
+    """Both managers own a ``hermes-serve.service``; each is its own process."""
+    state = {"user": user_pid, "system": system_pid}
+    calls: list[tuple[str, list]] = []
+
+    def run(argv, **kwargs):
+        scope = "user" if "--user" in argv else "system"
+        calls.append((scope, list(argv)))
+        if "list-units" in argv:
+            return _Completed(0, stdout="hermes-serve.service loaded active running x")
+        if "is-active" in argv:
+            return _Completed(0, stdout="active")
+        if "show" in argv:
+            return _Completed(0, stdout=str(state[scope]))
+        if "restart" in argv:
+            if scope in settle:
+                state[scope] += 1000
+            return _Completed(0)
+        raise AssertionError(argv)
+
+    return run, calls
+
+
+def test_settled_user_scope_does_not_suppress_the_stale_system_scope(
+    linux_systemctl,
+):
+    """The dual-scope skip collision (review on #96235).
+
+    ``user/hermes-serve`` was restarted before the phase aborted;
+    ``system/hermes-serve`` is a different process still on the pre-update
+    generation. A bare ``hermes-serve`` skip token suppressed BOTH, leaving
+    the stale one running with nothing reporting it.
+    """
+    run, calls = _dual_scope_systemctl()
+    out = recovery.restart_serve_units(
+        skip_units=[{"scope": "user", "unit": "hermes-serve"}],
+        run=run,
+        sleep=lambda _: None,
+    )
+    restarted_scopes = [scope for scope, argv in calls if "restart" in argv]
+    assert restarted_scopes == ["system"]
+    assert out == {"verified": ["system/hermes-serve"], "failed": []}
+
+
+def test_settled_system_scope_does_not_suppress_the_stale_user_scope(
+    linux_systemctl,
+):
+    """Mirror: authority for one scope is not authority for the other, in
+    either direction."""
+    run, calls = _dual_scope_systemctl()
+    out = recovery.restart_serve_units(
+        skip_units=["system/hermes-serve"],
+        run=run,
+        sleep=lambda _: None,
+    )
+    restarted_scopes = [scope for scope, argv in calls if "restart" in argv]
+    assert restarted_scopes == ["user"]
+    assert out == {"verified": ["user/hermes-serve"], "failed": []}
+
+
+def test_one_authorized_scope_never_mutates_the_same_name_in_the_other(
+    linux_systemctl,
+):
+    """Name equality is not identity: no systemctl verb at all may reach the
+    scope that was already settled."""
+    run, calls = _dual_scope_systemctl()
+    recovery.restart_serve_units(
+        skip_units=[{"scope": "user", "unit": "hermes-serve.service"}],
+        run=run,
+        sleep=lambda _: None,
+    )
+    user_verbs = [
+        argv for scope, argv in calls if scope == "user" and "list-units" not in argv
+    ]
+    assert user_verbs == [], user_verbs
+
+
+def test_each_scope_reports_its_own_outcome(linux_systemctl):
+    """One scope failing must not be reported as the other's failure."""
+    run, _ = _dual_scope_systemctl(settle=("user",))
+    out = recovery.restart_serve_units(run=run, sleep=lambda _: None)
+    assert out == {
+        "verified": ["user/hermes-serve"],
+        "failed": ["system/hermes-serve"],
+    }
+
+
+def test_legacy_unqualified_skip_is_honoured_in_both_scopes(linux_systemctl):
+    """A payload written by a pre-update interpreter carries no scope.
+
+    That entry is all the information there is, so it suppresses both — the
+    documented lossy shape, kept only for that skew. The current tree always
+    sends the qualified form (see
+    ``test_already_restarted_units_are_forwarded_as_skips``).
+    """
+    run, calls = _dual_scope_systemctl()
+    out = recovery.restart_serve_units(
+        skip_units=["hermes-serve"], run=run, sleep=lambda _: None
+    )
+    assert [argv for scope, argv in calls if "restart" in argv] == []
+    assert out == {"verified": [], "failed": []}
+
+
+def test_qualified_skip_payload_shape():
+    """``restarted_scoped_units`` reaches the child as scope + unit."""
+    assert update_cmd._qualified_serve_skips(
+        {"user/hermes-serve", "system/hermes-serve-work"}
+    ) == [
+        {"scope": "system", "unit": "hermes-serve-work"},
+        {"scope": "user", "unit": "hermes-serve"},
+    ]
+
+
+def test_unscoped_bookkeeping_entries_are_forwarded_without_a_scope():
+    """A name with no scope must not be given one it was never proven for."""
+    assert update_cmd._qualified_serve_skips({"hermes-serve"}) == [
+        {"unit": "hermes-serve"}
+    ]
+
+
+def test_scope_qualified_failure_blocks_completion():
+    """Completion accounting reads the qualified id, not a bare name."""
+    assert (
+        update_cmd._abort_recovery_is_complete(
+            planned_gateway_profiles={"default"},
+            covered_gateway_profiles={"default"},
+            recovery_result={
+                "verified": ["default"],
+                "relaunch_attempted": [],
+                "failed": [],
+                "serve_units": {
+                    "verified": ["user/hermes-serve"],
+                    "failed": ["system/hermes-serve"],
+                },
+            },
+            stale_runtime_rows=[],
+        )
+        is False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Survivor identity is the process incarnation, not the PID number
+# ---------------------------------------------------------------------------
+
+
+def test_pid_reuse_by_a_new_serve_is_not_reported_as_the_old_survivor(monkeypatch):
+    """Same number, later start time: the pre-update process is gone."""
+    monkeypatch.setattr(
+        _identity_module(),
+        "ledger_entries",
+        lambda *a, **k: [{"pid": 4242, "purpose": "serve", "create_time": 5000.0}],
+    )
+    assert (
+        update_cmd._surviving_pre_update_serve_runtimes(
+            _plan(_serve_runtime(4242, create_time=1000.0))
+        )
+        == []
+    )
+
+
+def test_same_pid_and_same_incarnation_is_still_a_survivor(monkeypatch):
+    monkeypatch.setattr(
+        _identity_module(),
+        "ledger_entries",
+        lambda *a, **k: [{"pid": 4242, "purpose": "serve", "create_time": 1000.5}],
+    )
+    rows = update_cmd._surviving_pre_update_serve_runtimes(
+        _plan(_serve_runtime(4242, create_time=1000.0))
+    )
+    assert [row["pid"] for row in rows] == [4242]
+    assert "_create_time" not in rows[0]
+
+
+def test_missing_incarnation_on_either_side_fails_closed(monkeypatch):
+    """No incarnation to compare means the runtime cannot be cleared."""
+    monkeypatch.setattr(
+        _identity_module(),
+        "ledger_entries",
+        lambda *a, **k: [{"pid": 4242, "purpose": "serve"}],
+    )
+    assert update_cmd._surviving_pre_update_serve_runtimes(
+        _plan(_serve_runtime(4242, create_time=1000.0))
+    ) == [
+        {
+            "pid": 4242,
+            "kind": "serve",
+            "profile": "default",
+            "supervisor": "manual-serve",
+        }
+    ]

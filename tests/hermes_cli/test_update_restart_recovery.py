@@ -19,6 +19,7 @@ import sys
 import textwrap
 from types import SimpleNamespace
 
+from hermes_cli import update_abort_recovery as abort_recovery
 from hermes_cli import update_cmd
 
 
@@ -61,7 +62,7 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
         calls.append((argv, kwargs))
         return _successful_recovery_result(verified=["coder", "default"])
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     plan = SimpleNamespace(
         runtimes=[
             _runtime("default", "systemd"),
@@ -136,7 +137,7 @@ def test_abort_recovery_skips_profiles_already_restarted_by_the_phase(monkeypatc
         calls.append((argv, kwargs))
         return _successful_recovery_result(verified=["coder"])
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
     plan = SimpleNamespace(
         runtimes=[_runtime("default", "systemd"), _runtime("coder", "systemd")]
     )

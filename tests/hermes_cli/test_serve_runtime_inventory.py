@@ -216,3 +216,22 @@ def test_scan_dashboard_processes_ledger_respects_exclusions(monkeypatch):
     monkeypatch.setattr(dp.subprocess, "run", lambda *a, **k: fake_run)
 
     assert dp._scan_dashboard_processes(exclude_pids={8124}) == []
+
+
+def test_inventory_records_the_serve_process_incarnation(monkeypatch):
+    """The plan carries ``(pid, create_time)``, not just the PID (#92145 review).
+
+    The post-abort survivor probe compares a planned serve against the live
+    spawn ledger. With only the number to compare, a NEW serve that reused the
+    old PID reads as the pre-update process that never restarted, and recovery
+    stays incomplete forever.
+    """
+    entry = _ledger_entry(create_time=1712345678.5)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].detail["create_time"] == 1712345678.5

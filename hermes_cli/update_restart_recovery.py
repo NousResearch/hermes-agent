@@ -33,6 +33,14 @@ covers both and an abort can strand either one (#92145):
   unit family is enumerated from systemd itself rather than from the update
   inventory, so a manually launched or Desktop-owned ``hermes serve`` — which
   has no relaunch authority — can never enter this path.
+
+Serve-unit identity is always ``<scope>/<unit>`` (``user/hermes-serve``,
+``system/hermes-serve``).  The two managers can each own a unit of the same
+name and they are different processes: an identity that projects the scope
+away lets one settled unit suppress recovery of the other, and lets one
+scope's outcome speak for the other's.  Scope is therefore never dropped and
+reconstructed — not in the skip payload, not in ``verified``/``failed``, not
+in the receipt.
 """
 
 from __future__ import annotations
@@ -56,6 +64,7 @@ _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _UNIT_RE = re.compile(r"^hermes-serve(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
 _SERVE_UNIT_PATTERN = "hermes-serve*"
+_SCOPE_LABELS = ("user", "system")
 _UNIT_RESTART_TIMEOUT = 60
 _UNIT_SETTLE_ATTEMPTS = 10
 _UNIT_SETTLE_DELAY = 1.0
@@ -203,18 +212,23 @@ def restart_profiles(
     }
 
 
-def _systemctl_scopes() -> list[list[str]]:
+def _systemctl_scopes() -> list[tuple[str, list[str]]]:
     """``systemctl`` invocations for the user and system scopes, or nothing.
 
     Mirrors the scope pair the in-process restart phase walks. ``systemctl``
     is resolved through ``shutil.which`` so this module never has to import
     any Hermes platform helper — importing the freshly pulled tree is exactly
     what aborted the phase that called us.
+
+    Each scope is returned with its label because ``hermes-serve.service`` in
+    the user manager and ``hermes-serve.service`` in the system manager are
+    two different processes. Every identity this module produces or consumes
+    stays qualified by that label; the bare unit name is never the key.
     """
     systemctl = shutil.which("systemctl")
     if not systemctl or sys.platform != "linux":
         return []
-    return [[systemctl, "--user"], [systemctl]]
+    return [("user", [systemctl, "--user"]), ("system", [systemctl])]
 
 
 def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[str]:
@@ -325,9 +339,48 @@ def _serve_unit_replaced(
     return False
 
 
+def _qualified(scope_label: str, base: str) -> str:
+    """The only identity this module reports for a serve unit."""
+    return f"{scope_label}/{base}"
+
+
+def _normalized_skips(
+    skip_units: Iterable[Any],
+) -> tuple[set[tuple[str, str]], set[str]]:
+    """Split already-settled units into scope-qualified and legacy entries.
+
+    Qualified entries (``{"scope": "user", "unit": "hermes-serve"}`` or the
+    equivalent ``"user/hermes-serve"`` string) suppress exactly one process.
+
+    A bare ``"hermes-serve"`` carries no scope and therefore cannot say WHICH
+    of two same-named processes was settled. It is honoured across both scopes
+    because that is all the information it contains — the caller in this tree
+    always sends the qualified shape, and this branch exists only for a payload
+    written by a pre-update interpreter that had no scope to send.
+    """
+    qualified: set[tuple[str, str]] = set()
+    legacy: set[str] = set()
+    for entry in skip_units or ():
+        if isinstance(entry, Mapping):
+            scope_label = str(entry.get("scope") or "")
+            base = str(entry.get("unit") or "").removesuffix(".service")
+        else:
+            scope_label, sep, unit = str(entry).partition("/")
+            if not sep:
+                scope_label, unit = "", scope_label
+            base = unit.removesuffix(".service")
+        if not base:
+            continue
+        if scope_label in _SCOPE_LABELS:
+            qualified.add((scope_label, base))
+        else:
+            legacy.add(base)
+    return qualified, legacy
+
+
 def restart_serve_units(
     *,
-    skip_units: Iterable[str] = (),
+    skip_units: Iterable[Any] = (),
     run: Callable[..., Any] = subprocess.run,
     sleep: Callable[[float], Any] = time.sleep,
 ) -> dict[str, list[str]]:
@@ -346,24 +399,29 @@ def restart_serve_units(
     or Desktop-owned ``hermes serve`` owns no unit and therefore cannot be
     touched here.
 
-    Returns ``{"verified": [...], "failed": [...]}`` keyed by base unit name
-    (no ``.service`` suffix), matching the vocabulary the restart phase
-    already uses for ``restarted_services``.
+    Every identity in and out of this function is scope-qualified. The user
+    manager and the system manager can each own a ``hermes-serve.service``,
+    and they are different processes: projecting the scope away would let one
+    already-settled unit suppress recovery of the other, and would let one
+    scope's success describe the other's outcome.
+
+    Returns ``{"verified": [...], "failed": [...]}`` whose entries are
+    ``<scope>/<base unit>`` (no ``.service`` suffix), e.g.
+    ``user/hermes-serve``.
     """
-    skipped = {str(name).removesuffix(".service") for name in skip_units}
-    # base unit name -> replaced?  A unit name can exist in BOTH the user and
-    # the system scope; each is a separate process and each must be proven.
-    # Worst outcome wins, so one unprovable scope cannot be masked by the
-    # other reporting success.
-    outcomes: dict[str, bool] = {}
+    skipped_qualified, skipped_legacy = _normalized_skips(skip_units)
+    # (scope, base unit) -> replaced?  A unit name can exist in BOTH the user
+    # and the system scope; each is a separate process and each is proven,
+    # reported and accounted for on its own.
+    outcomes: dict[tuple[str, str], bool] = {}
     seen: set[tuple[str, str]] = set()
-    for scope in _systemctl_scopes():
-        scope_key = " ".join(scope)
+    for scope_label, scope in _systemctl_scopes():
         for unit in _listed_serve_units(scope, run=run):
             base = unit.removesuffix(".service")
-            if (scope_key, base) in seen or base in skipped:
+            target = (scope_label, base)
+            if target in seen or target in skipped_qualified or base in skipped_legacy:
                 continue
-            seen.add((scope_key, base))
+            seen.add(target)
             if not _unit_is_active(scope, unit, run=run):
                 # Not running: nothing is serving a stale generation from it.
                 continue
@@ -373,7 +431,7 @@ def restart_serve_units(
                 # be observed, so it cannot be claimed. Restarting blind and
                 # reporting success is the failure mode this module exists to
                 # remove.
-                outcomes[base] = False
+                outcomes[target] = False
                 continue
             try:
                 result = run(
@@ -386,21 +444,24 @@ def restart_serve_units(
                     timeout=_UNIT_RESTART_TIMEOUT,
                 )
             except (OSError, subprocess.TimeoutExpired):
-                outcomes[base] = False
+                outcomes[target] = False
                 continue
             if getattr(result, "returncode", 1) != 0:
                 # Includes the unprivileged system-scope case. We do not probe
                 # for sudo here: an unverifiable unit must read as failed so
                 # the update stays explicitly incomplete.
-                outcomes[base] = False
+                outcomes[target] = False
                 continue
-            replaced = _serve_unit_replaced(
+            outcomes[target] = _serve_unit_replaced(
                 scope, unit, previous_pid, run=run, sleep=sleep
             )
-            outcomes[base] = outcomes.get(base, True) and replaced
     return {
-        "verified": sorted(base for base, ok in outcomes.items() if ok),
-        "failed": sorted(base for base, ok in outcomes.items() if not ok),
+        "verified": sorted(
+            _qualified(*target) for target, ok in outcomes.items() if ok
+        ),
+        "failed": sorted(
+            _qualified(*target) for target, ok in outcomes.items() if not ok
+        ),
     }
 
 
@@ -435,16 +496,39 @@ def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
         recover_serve = bool(raw_serve.get("recover"))
         raw_skip = raw_serve.get("skip") or []
         if not isinstance(raw_skip, list) or any(
-            not isinstance(unit, str) for unit in raw_skip
+            not isinstance(entry, (str, dict)) for entry in raw_skip
         ):
             raise ValueError("recovery serve_units skip list is invalid")
-        # Only the shapes systemd can actually produce for this family; a
-        # skip entry is a name filter, never a command argument.
-        skip_units = [
-            unit
-            for unit in raw_skip
-            if _UNIT_RE.fullmatch(unit if unit.endswith(".service") else f"{unit}.service")
-        ]
+        for entry in raw_skip:
+            # A skip entry names one already-settled process. The qualified
+            # shape carries the systemd scope, because `hermes-serve.service`
+            # can exist in BOTH managers and settling one says nothing about
+            # the other. A bare string is the legacy shape a pre-update
+            # interpreter can still send; it is kept, and read as
+            # scope-agnostic by `restart_serve_units`.
+            if isinstance(entry, dict):
+                scope_label = entry.get("scope")
+                unit = entry.get("unit")
+                if not isinstance(unit, str):
+                    raise ValueError("recovery serve_units skip list is invalid")
+                if not isinstance(scope_label, str):
+                    scope_label = ""
+            else:
+                scope_label, _, unit = entry.rpartition("/")
+            # Only the shapes systemd can actually produce for this family; a
+            # skip entry is a name filter, never a command argument. An
+            # unrecognized scope drops the entry rather than raising: dropping
+            # a skip can only ever cause one more restart-and-verify, while
+            # honouring an unreadable one could suppress recovery of a stale
+            # process.
+            if scope_label and scope_label not in _SCOPE_LABELS:
+                continue
+            if not _UNIT_RE.fullmatch(
+                unit if unit.endswith(".service") else f"{unit}.service"
+            ):
+                continue
+            base = unit.removesuffix(".service")
+            skip_units.append(f"{scope_label}/{base}" if scope_label else base)
     return profiles, supervisors, recover_serve, skip_units
 
 

@@ -4051,14 +4051,18 @@ class TelegramAdapter(BasePlatformAdapter):
         buttons: list = []
         for i, model_id in enumerate(page_models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            # Bedrock inference-profile IDs repeat a routing and vendor prefix
-            # (for example ``global.anthropic.``) in every button.  Remove it
-            # only from the display label so the model family/version remains
-            # visible; ``model_id`` is still retained in picker state and is
-            # selected through the index callback below.
-            if short.startswith("global."):
-                _, _, short = short.partition(".")
-                _, _, short = short.partition(".")
+            # Bedrock inference-profile IDs repeat a routing namespace and a
+            # vendor prefix (``global.anthropic.``, ``us.anthropic.``,
+            # ``eu.amazon.``, ``us-gov.anthropic.``, ...) in every button.
+            # Remove both segments only from the display label so the model
+            # family/version remains visible; ``model_id`` is still retained
+            # in picker state and is selected through the index callback
+            # below. The length guard keeps degenerate two-segment IDs
+            # (e.g. ``global.anthropic``) intact — a blank label would be
+            # rejected by Telegram (BUTTON_TEXT_INVALID).
+            parts = short.split(".")
+            if len(parts) >= 3 and parts[0].replace("-", "").isalpha() and len(parts[0]) <= 7:
+                short = ".".join(parts[2:])
             if len(short) > 38:
                 short = short[:35] + "..."
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))

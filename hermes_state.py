@@ -13183,11 +13183,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     #: keeping the dropped turns on disk as ``active = 0``:
     #: :meth:`replace_messages` with ``archive_dropped=True`` (the rewind /
     #: edit / regenerate mode from #82756) and :meth:`archive_and_compact`
-    #: (in-place compaction). A chat rewound to its first turn, or compacted
-    #: with an empty live set, therefore reports ``message_count = 0`` while
-    #: still holding its entire recoverable transcript — and those
-    #: soft-archived rows are the ONLY copy, which is the whole point of
-    #: archiving instead of deleting. Deleting such a row destroys it silently.
+    #: (in-place compaction). ``prompt.submit`` reaches the first with an empty
+    #: prefix on a confirmed ordinal-0 rewind, so a chat whose first user turn
+    #: was regenerated reports ``message_count = 0`` while still holding its
+    #: entire recoverable transcript — and those soft-archived rows are the
+    #: ONLY copy, which is the whole point of archiving instead of deleting
+    #: (#70516 / #80763 / #82756). Deleting such a row destroys it silently.
     #:
     #: So the counter stays as a cheap prefilter and a real ``EXISTS`` probe is
     #: the authority, exactly as every other emptiness test in this module

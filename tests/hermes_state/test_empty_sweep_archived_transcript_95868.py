@@ -10,13 +10,18 @@ keeping every dropped turn on disk as ``active = 0``:
 
 * ``replace_messages(..., archive_dropped=True)`` — the rewind / edit /
   regenerate mode added in #82756 precisely so a user can take a turn back
-  without the rows being unrecoverable.
+  without the rows being unrecoverable. ``prompt.submit`` reaches it with an
+  empty prefix on a confirmed ordinal-0 rewind (regenerating the very first
+  user turn), which is the reachable production shape.
 * ``archive_and_compact`` — in-place compaction, which archives the
-  pre-compaction transcript under the same session id (#38763).
+  pre-compaction transcript under the same session id (#38763). It normally
+  publishes at least a summary row, so it lands on the same shape only when
+  the live set comes back empty; pinned here as defense in depth.
 
-Rewind a chat back to its first turn, or compact it with an empty live set,
-and the row reports ``message_count = 0`` while still holding its entire
-recoverable history. Those soft-archived rows are the ONLY copy.
+Either way the row reports ``message_count = 0`` while still holding its
+entire recoverable history, and those soft-archived rows are the ONLY copy —
+which is the whole point of the archive-instead-of-delete guarantee that
+#70516 / #80763 / #82756 were fixed to provide.
 
 A gateway reload is what makes such a row *eligible*: every detached session
 gets ``ended_at`` stamped (``end_reason='ws_orphan_reap'``), which satisfies

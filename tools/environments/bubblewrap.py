@@ -246,7 +246,12 @@ def empty_file_path(state_dir: str) -> str:
 
     It sits beside the state dir, not inside it: the state dir is bound
     read-write into every spawn, so a file kept there could be rewritten
-    from inside the sandbox and would then show at the hidden paths.
+    from inside the sandbox and would then show at the hidden paths. That
+    holds only while the parent of the state dir lies outside every
+    writable bind, since bwrap follows a symlink put in the file's place
+    when it resolves the bind source; BubblewrapEnvironment therefore
+    refuses a sandbox dir inside the cwd or a read-write operator bind
+    unless a hidden path covers it (_check_sandbox_root).
     """
     return state_dir.rstrip(os.sep) + ".empty"
 
@@ -636,10 +641,12 @@ class BubblewrapEnvironment(LocalEnvironment):
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
+        sandbox_root = os.path.realpath(get_sandbox_dir())
+        self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
         # from get_temp_dir() and LocalEnvironment.__init__ runs the login
         # bootstrap straight away, so the state dir must exist first.
-        self._state_dir = os.path.join(os.path.realpath(get_sandbox_dir()), f"bwrap-{uuid.uuid4().hex[:12]}")
+        self._state_dir = os.path.join(sandbox_root, f"bwrap-{uuid.uuid4().hex[:12]}")
         os.makedirs(self._state_dir, mode=0o700)
         # Read-only and outside the state dir: nothing in a sandbox can
         # write to what shows at the hidden file paths.
@@ -668,6 +675,35 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "a project or scratch directory for a smaller writable set.",
                 self._initial_cwd,
             )
+
+    def _check_sandbox_root(self, sandbox_root: str) -> None:
+        """Refuse a sandbox dir a sandbox could write to.
+
+        The empty file bound over hidden files sits in the sandbox dir
+        beside the state dir. Inside a writable bind a command could
+        replace it with a symlink to a hidden file, and bwrap resolves the
+        bind source on the next spawn, showing the whole secret. Under a
+        hidden path (the default HERMES_HOME/sandboxes) the overlay covers
+        it and nothing in a sandbox can reach it.
+        """
+        if any(_is_within(sandbox_root, hidden) for hidden in self._hidden_paths):
+            return
+        writable: list[str] = [self._initial_cwd] if resolve_profile(self._config.profile).writable_cwd else []
+        writable += [
+            os.path.realpath(os.path.expanduser(bind.src))
+            for bind in filter_binds(self._config.binds, self._hidden_paths)
+            if not bind.readonly
+        ]
+        for root in writable:
+            if _is_within(sandbox_root, root):
+                raise ValueError(
+                    f"terminal.sandbox_dir {sandbox_root} lies inside {root}, which is "
+                    "writable inside the sandbox with the bubblewrap backend: a command "
+                    "could replace the empty file bound over hidden files. Set "
+                    "terminal.sandbox_dir to a directory outside terminal.cwd and "
+                    "outside every read-write terminal.bubblewrap_binds source; the "
+                    "default HERMES_HOME/sandboxes is covered by the HERMES_HOME overlay."
+                )
 
     def get_temp_dir(self) -> str:
         return self._state_dir

@@ -323,6 +323,17 @@ DEFAULT_CONFIG = {
         "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
         "docker_network": True,  # false = --network=none, no network access from commands
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
+        # Bubblewrap backend (backend: bubblewrap): every command runs inside a
+        # bwrap sandbox on this host. Profile is restricted, workspace or
+        # network (cwd writable from workspace up, host network only under
+        # network). Binds is a list of {"src", "dest", "readonly"} objects;
+        # a source under a sensitive path (~/.ssh, ~/.aws, HERMES_HOME, ...)
+        # is ignored. Limits apply per spawn; 0 disables that limit.
+        "bubblewrap_profile": "network",
+        "bubblewrap_binds": [],
+        "bubblewrap_memory_mb": 256,
+        "bubblewrap_cpu_seconds": 30,
+        "bubblewrap_max_procs": 256,
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
         # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).

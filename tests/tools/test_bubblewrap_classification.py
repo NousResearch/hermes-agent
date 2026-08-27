@@ -3,7 +3,9 @@ treats it like local, and it belongs to none of the container or remote
 backend classification sets, so file tools, prompt builder, env probe,
 skills tool and credential files treat it as local. The code execution
 tool has no set of its own: it asks terminal_tool._is_container_backend,
-which reads the _CONTAINER_BACKENDS set checked below.
+which reads the terminal_tool_config._CONTAINER_BACKENDS set checked below.
+The built-in name sets are checked too: bubblewrap is in-tree, so a plugin
+cannot register a backend under its name.
 
 No test here spawns bwrap.
 """
@@ -28,27 +30,40 @@ class TestClassificationSets:
     def test_named_sets_exclude_bubblewrap(self):
         import agent.prompt_builder as prompt_builder
         import tools.env_probe as env_probe
-        import tools.file_tools as file_tools
-        import tools.skills_tool as skills_tool
-        import tools.terminal_tool as terminal_tool
+        import tools.file_tools_paths as file_tools_paths
+        import tools.skills_tool_setup as skills_tool_setup
+        import tools.terminal_tool_config as terminal_tool_config
 
         named = {
-            "terminal_tool._CONTAINER_BACKENDS": terminal_tool._CONTAINER_BACKENDS,
-            "file_tools._CONTAINER_PATH_BACKENDS_FALLBACK": file_tools._CONTAINER_PATH_BACKENDS_FALLBACK,
+            "terminal_tool_config._CONTAINER_BACKENDS": terminal_tool_config._CONTAINER_BACKENDS,
+            "file_tools_paths._CONTAINER_PATH_BACKENDS_FALLBACK": file_tools_paths._CONTAINER_PATH_BACKENDS_FALLBACK,
             "prompt_builder._REMOTE_TERMINAL_BACKENDS": prompt_builder._REMOTE_TERMINAL_BACKENDS,
             "env_probe._REMOTE_BACKENDS": env_probe._REMOTE_BACKENDS,
-            "skills_tool._REMOTE_ENV_BACKENDS": skills_tool._REMOTE_ENV_BACKENDS,
+            "skills_tool_setup._REMOTE_ENV_BACKENDS": skills_tool_setup._REMOTE_ENV_BACKENDS,
         }
         for name, members in named.items():
             assert "docker" in members, name  # the set is the one we mean
             assert "bubblewrap" not in members, name
 
+    def test_builtin_name_sets_reserve_bubblewrap(self):
+        from agent.terminal_env_registry import BUILTIN_BACKEND_NAMES
+        from hermes_cli.doctor_tools import _BUILTIN_TERMINAL_BACKENDS
+        from tools.terminal_tool_backends import _BUILTIN_BACKENDS, _ENV_BUILDERS
+
+        assert "bubblewrap" in BUILTIN_BACKEND_NAMES
+        assert "bubblewrap" in _BUILTIN_TERMINAL_BACKENDS
+        assert "bubblewrap" in _BUILTIN_BACKENDS.split(", ")
+        assert "bubblewrap" in _ENV_BUILDERS
+
+    # terminal_tool_backends is left out on purpose: its builder table and
+    # built-in name list are meant to name bubblewrap.
     @pytest.mark.parametrize("module_name", [
         "tools.terminal_tool",
-        "tools.file_tools",
+        "tools.terminal_tool_config",
+        "tools.file_tools_paths",
         "agent.prompt_builder",
         "tools.env_probe",
-        "tools.skills_tool",
+        "tools.skills_tool_setup",
         "tools.credential_files",
     ])
     def test_inline_backend_literals_exclude_bubblewrap(self, module_name):
@@ -103,13 +118,19 @@ class TestHostPathGates:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         assert image_source._is_local_terminal_backend() is False
 
-    def test_vision_tools_reads_video_sources_host_side_for_bubblewrap(self, monkeypatch):
+    def test_vision_tools_reads_video_sources_host_side_for_bubblewrap(self):
+        # vision_tools has no gate of its own: it asks image_source, checked above.
         from tools import vision_tools
 
-        monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
-        assert vision_tools._terminal_backend_is_local() is True
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        assert vision_tools._terminal_backend_is_local() is False
+        source = inspect.getsource(vision_tools._materialize_video)
+        assert "_is_local_terminal_backend" in source
+        assert "not _is_local_terminal_backend() and path_like" in source
+
+    def test_image_generation_source_gate_names_bubblewrap_beside_local(self):
+        from tools import image_generation_tool
+
+        source = inspect.getsource(image_generation_tool._confine_source_images)
+        assert 'in ("", "local", "bubblewrap")' in source
 
     def test_cwd_placeholder_resolves_messaging_cwd_for_bubblewrap(self):
         from gateway import cwd_placeholder
@@ -119,8 +140,9 @@ class TestHostPathGates:
 
     @pytest.mark.parametrize("path, needle", [
         ("cli.py", 'effective_backend in ("local", "bubblewrap")'),
-        ("run_agent.py", 'backend not in ("local", "bubblewrap")'),
-        ("tui_gateway/server.py", 'backend in ("local", "bubblewrap")'),
+        ("run_agent.py", 'not in ("", "local", "bubblewrap")'),
+        ("tui_gateway/session_workdir.py", 'backend not in ("local", "bubblewrap")'),
+        ("tui_gateway/session_workdir.py", 'backend in ("local", "bubblewrap")'),
     ])
     def test_source_gates_name_bubblewrap_beside_local(self, path, needle):
         from pathlib import Path
@@ -129,7 +151,7 @@ class TestHostPathGates:
         assert needle in (root / path).read_text(), path
 
     def test_tui_gateway_has_both_local_gates(self):
-        from pathlib import Path
+        from tui_gateway import session_workdir
 
-        root = Path(__file__).resolve().parents[2]
-        assert (root / "tui_gateway/server.py").read_text().count('backend in ("local", "bubblewrap")') == 2
+        assert 'not in ("local", "bubblewrap")' in inspect.getsource(session_workdir._terminal_task_cwd_with_source)
+        assert 'in ("local", "bubblewrap")' in inspect.getsource(session_workdir._is_local_terminal_backend)

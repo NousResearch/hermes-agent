@@ -860,9 +860,17 @@ class BubblewrapEnvironment(LocalEnvironment):
         # The overlays land after the cwd bind, so a cwd under a hidden path
         # is masked in every spawn and no command could run there. The profile
         # home is bound back on top of the HERMES_HOME overlay under
-        # home_mode=profile, so a cwd under it is fine.
-        profile_home = os.path.realpath(os.path.join(self._hermes_home, "home"))
-        in_profile_home = self._config.home_mode in PROFILE_HOME_MODES and _is_within(cwd, profile_home)
+        # home_mode=profile, so a cwd under it is fine
+        # when HERMES_HOME/home is a plain directory. The bind lands at the
+        # link path when it is a symlink, so a cwd under a link target inside
+        # HERMES_HOME (or another hidden path) stays masked and gets no
+        # exemption; a link target outside every hidden path needs none.
+        profile_home = os.path.join(self._hermes_home, "home")
+        in_profile_home = (
+            self._config.home_mode in PROFILE_HOME_MODES
+            and not os.path.islink(profile_home)
+            and _is_within(cwd, os.path.realpath(profile_home))
+        )
         if not in_profile_home:
             for hidden in self._hidden_paths:
                 if _is_within(cwd, hidden):

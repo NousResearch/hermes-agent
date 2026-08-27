@@ -326,6 +326,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    ignore_at_all: bool = False
 
 
 @dataclass
@@ -1423,6 +1424,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            ignore_at_all=_to_boolean(extra.get("ignore_at_all", _get_scoped_secret("FEISHU_IGNORE_AT_ALL", "false"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1432,6 +1434,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._ignore_at_all = settings.ignore_at_all
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3329,8 +3332,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
+        # When FEISHU_IGNORE_AT_ALL is set, @_all alone does not trigger
+        # the bot; an explicit bot mention is still required.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
+        if not self._ignore_at_all and "@_all" in raw_content:
             return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):

@@ -2527,3 +2527,37 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+
+class TestApplyYamlConfigIgnoreAtAll(unittest.TestCase):
+    """feishu.ignore_at_all YAML key bridges to FEISHU_IGNORE_AT_ALL env var."""
+
+    def _call(self, feishu_cfg):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        return _apply_yaml_config({}, feishu_cfg)
+
+    def test_bridges_yaml_key_to_env(self):
+        os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
+        try:
+            self._call({"ignore_at_all": True})
+            self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
+        finally:
+            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
+
+    def test_env_wins_over_yaml(self):
+        os.environ["FEISHU_IGNORE_AT_ALL"] = "true"
+        try:
+            self._call({"ignore_at_all": False})
+            self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
+        finally:
+            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
+
+    def test_key_absent_leaves_env_untouched(self):
+        os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
+        try:
+            self._call({"allow_bots": "mentions"})
+            self.assertNotIn("FEISHU_IGNORE_AT_ALL", os.environ)
+        finally:
+            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)

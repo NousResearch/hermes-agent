@@ -4335,10 +4335,14 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
-    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
-    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
-    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.{allow_bots,ignore_at_all} to
+    FEISHU_{ALLOW_BOTS,IGNORE_AT_ALL} (env wins) and seed ``extra`` so a multiplexed secondary
+    profile's adapter reads its own values."""
+    seeded = _apply_yaml_bridge(
+        feishu_cfg,
+        (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"), ("ignore_at_all", "FEISHU_IGNORE_AT_ALL", "lower")),
+    )
+    return {k: str(v).lower() for k, v in seeded.items()} if seeded else None
 
 
 def _is_connected(config) -> bool:

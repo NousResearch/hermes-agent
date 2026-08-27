@@ -890,12 +890,9 @@ def resolve_compression_fallback_route() -> Optional[dict]:
                 exc_info=True,
             )
             api_key = None
-        raw_timeout = entry.get("timeout")
-        timeout = None
-        if isinstance(raw_timeout, (int, float)) and not isinstance(
-            raw_timeout, bool
-        ) and raw_timeout > 0:
-            timeout = float(raw_timeout)
+        from agent.auxiliary_client import _coerce_positive_timeout
+
+        timeout = _coerce_positive_timeout(entry.get("timeout"))
         return {
             "label": f"fallback_chain[{index}]({provider})",
             "provider": provider,

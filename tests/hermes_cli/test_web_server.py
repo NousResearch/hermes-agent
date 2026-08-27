@@ -1742,6 +1742,46 @@ class TestWebServerEndpoints:
         assert not get_env_value(env_var), "deleted endpoint's key still in .env"
 
 
+    def test_numeric_yaml_provider_key_can_be_activated_and_deleted(self):
+        """Hand-edited `providers: 2070:` (YAML int key) must still activate.
+
+        PyYAML loads unquoted 2070 as int; string lookup then 404ed, so
+        Desktop could list the endpoint but not assign or delete it.
+        """
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "model:\n"
+            "  provider: 2070\n"
+            "  default: Qwen.gguf\n"
+            "  base_url: http://192.168.1.10:8082/v1\n"
+            "providers:\n"
+            "  2070:\n"
+            "    name: 2070\n"
+            "    base_url: http://192.168.1.10:8082/v1\n"
+            "    model: Qwen.gguf\n",
+            encoding="utf-8",
+        )
+
+        listed = self.client.get("/api/providers/custom-endpoints")
+        assert listed.status_code == 200
+        assert "2070" in [e["id"] for e in listed.json()["endpoints"]]
+
+        activate = self.client.post(
+            "/api/providers/custom-endpoints/2070/activate", json={}
+        )
+        assert activate.status_code == 200, activate.text
+        assert activate.json()["provider"] == "2070"
+
+        deleted = self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/2070"
+        )
+        assert deleted.status_code == 200, deleted.text
+        providers = load_config().get("providers") or {}
+        assert 2070 not in providers
+        assert "2070" not in providers
+
+
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
         """``?profile=<name>`` must write into that profile's config.yaml.
 

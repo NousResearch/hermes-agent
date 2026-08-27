@@ -700,44 +700,57 @@ In a running session, `/plugins` shows which plugins are currently loaded.
 
 ## Injecting Messages
 
-Plugins can inject messages into a CLI conversation or a known gateway session using `ctx.inject_message()`:
+Plugins can inject messages into a live conversation using `ctx.inject_message()`:
 
 ```python
-# Active CLI conversation
-ctx.inject_message("New data arrived from the webhook", role="user")
+# Safe default: queue for the caller's active CLI conversation.
+ctx.inject_message("New data arrived from the webhook", mode="queue")
 
-# Existing gateway conversation
+# Exact host target captured from lifecycle/session context.
+ctx.inject_message(
+    "Please check the new schema",
+    mode="queue",
+    target_session="gateway:agent:main:telegram:dm:123456789",
+)
+
+# Backward-compatible gateway routing-key alias.
 ctx.inject_message(
     "New data arrived from the webhook",
-    role="user",
     session_key="agent:main:telegram:dm:123456789",
 )
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None) -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, mode: str = "queue", target_session=None, session_key: str | None = None) -> bool`
 
-In CLI mode:
+`mode` selects delivery behaviour:
 
-- If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
-- If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
-- For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
-- Returns `True` if the message was queued successfully.
+- `"queue"` (default): an idle target starts a turn; a busy target queues at the safe boundary after the active turn. It never interrupts the active tool.
+- `"steer"`: explicit mid-turn steering where the host supports it. Idle or unsupported hosts fail closed or use their documented queue-compatible path.
+- `"interrupt"`: legacy hard-interrupt behaviour. Use only when the caller genuinely needs to stop the active turn.
 
-In gateway mode:
+`target_session` is an opaque exact-session token captured from the host lifecycle. A surface-qualified token (`cli:...`, `tui:...`, `gateway:...`) routes only to that surface. `None` means the caller's own session. Unknown, foreign-surface, closed, rotated or unauthorised targets fail closed and return `False`.
 
-- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
-- Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot supply a new chat route through this API.
-- Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
-- Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
-- Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.
-- The route and conversation are pinned while dispatch is pending. Hermes drops the request if topic recovery changes the route or the session rotates before handling starts.
-- The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
-- Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
-- Returns `False` when `session_key` is omitted, the permission is not granted, or no live gateway can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
+General guarantees:
 
-This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
+- Non-`"user"` roles are rendered as `[role] content`.
+- Injected text is conversational input only. It cannot invoke slash commands, approve tools, run shell lines or answer protected confirmation/clarification prompts.
+- `True` means the live host accepted the request; it does not confirm that a later asynchronous turn or platform delivery completed.
 
-Gateway injection can send an agent response to an external messaging platform. It is disabled by default for every plugin. Grant it per plugin in `config.yaml`:
+Supported surfaces:
+
+- **CLI** — queue, steer and interrupt according to live turn state.
+- **TUI/dashboard/Desktop** — exact-session targeting through the TUI router.
+- **Gateway** — queue-only, disabled per plugin by default, using the existing authorised platform route.
+
+Gateway routing retains additional safeguards:
+
+- Hermes resolves the stored session key or durable session ID to the current route.
+- The stored platform, chat, thread, profile and conversation history are reused; plugins cannot fabricate a new chat route.
+- Current gateway authorisation is rechecked before dispatch.
+- The request enters the platform adapter's normal message path and busy-session FIFO.
+- Session rotation, missing origin/adapter, draining state or failed scheduling rejects the request.
+
+Grant gateway injection per plugin in `config.yaml`:
 
 ```yaml
 plugins:
@@ -751,8 +764,31 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 :::
 
 :::note
-This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
+Older Hermes builds without `mode` and `target_session` preserve the historical CLI-only interrupt behaviour. Feature-detect the callable signature when supporting those versions.
 :::
+
+## Exact session context for slash commands
+
+Plugin commands registered with `ctx.register_command()` historically received only the raw argument string. Hermes now supplies exact host context only to handlers that opt in; legacy one-argument handlers remain unchanged.
+
+A handler may declare any of these keyword-only parameters, or accept `**kwargs`:
+
+```python
+def on_peer_name(
+    raw: str,
+    *,
+    session_id: str | None = None,
+    platform: str | None = None,
+    session_target=None,
+) -> str:
+    ...
+```
+
+- `session_id` — exact host conversation ID that invoked the command.
+- `platform` — invoking surface (`"cli"`, `"gateway"`, `"tui"`, etc.).
+- `session_target` — opaque host-owned routing token when the surface exposes one.
+
+The host inspects the handler signature and passes only accepted context fields. This lets plugins bind actions to the invoking session without breaking legacy `fn(raw_args)` handlers.
 
 ## Calling MCP servers from plugins
 

@@ -706,7 +706,7 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    if (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    if (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local", "bubblewrap"):
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url

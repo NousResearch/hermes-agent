@@ -1115,6 +1115,42 @@ class TestBindsFrozenAtConstruction:
         finally:
             env.cleanup()
 
+    def test_a_tilde_source_is_expanded_once_at_construction(self, sandbox_root, work_dir, tmp_path, monkeypatch, caplog):
+        # bwrap does not expand ~; a bare ~ is
+        # HOME, which contains hidden paths, and the filter still drops it.
+        home = tmp_path / "homes" / "home"
+        (home / "data").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        config = BubblewrapConfig(binds=(BindMount(src="~/data", dest="/data"), BindMount(src="~", dest="/mnt")))
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            assert [(b.src, b.dest) for b in env._config.binds] == [(str(home / "data"), "/data")]
+            assert (str(home / "data"), "/data") in [m[1:] for m in _mounts(env._wrap_popen_args(["bash"])) if m[0] == "--ro-bind"]
+            assert "~" not in env._wrap_popen_args(["bash"])
+            assert any("Ignoring terminal.bubblewrap_binds entry ~ ->" in r.getMessage() for r in caplog.records)
+        finally:
+            env.cleanup()
+
+    @needs_bwrap
+    def test_a_tilde_source_is_found_by_bwrap(self, sandbox_root, work_dir, host_dir, monkeypatch):
+        home = host_dir / "home"
+        (home / "data").mkdir(parents=True)
+        (home / "data" / "file").write_text("from-home\n")
+        monkeypatch.setenv("HOME", str(home))
+        # A dest under the fresh /tmp: bwrap can create the mount point there.
+        env = BubblewrapEnvironment(
+            cwd=str(work_dir), timeout=30,
+            config=BubblewrapConfig(binds=(BindMount(src="~/data", dest="/tmp/data"),)),
+        )
+        try:
+            assert env._snapshot_ready is True
+            result = env.execute("cat /tmp/data/file")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == "from-home"
+        finally:
+            env.cleanup()
+
     def test_a_symlink_planted_under_a_dest_after_construction_does_not_move_the_mount(self, sandbox_root, work_dir, tmp_path):
         src = tmp_path / "scratch"
         src.mkdir()

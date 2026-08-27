@@ -397,6 +397,18 @@ def filter_binds(binds: tuple[BindMount, ...], hidden_paths: Sequence[str]) -> l
     return kept
 
 
+def expand_bind_srcs(binds: Iterable[BindMount]) -> list[BindMount]:
+    """Return *binds* with each src taken through expanduser and abspath.
+
+    bwrap does not expand a tilde, so a source written as ~/data made every
+    spawn fail on a missing source path. The
+    sensitivity checks expand the same way, so they and the emitted argv
+    see one path. BubblewrapEnvironment applies this once at construction;
+    build_bwrap_args emits a src as given and resolves nothing per spawn.
+    """
+    return [replace(bind, src=os.path.abspath(os.path.expanduser(bind.src))) for bind in binds]
+
+
 def resolve_bind_dests(binds: Iterable[BindMount]) -> list[BindMount]:
     """Return *binds* with each dest taken through realpath on the host.
 
@@ -784,13 +796,14 @@ class BubblewrapEnvironment(LocalEnvironment):
         # Resolved once and kept for the life of the environment: the set
         # never follows a symlink swapped in later.
         self._hidden_paths = sensitive_paths(self._home, self._hermes_home)
-        # The operator binds are filtered and their destinations resolved
-        # once here, like the hidden set and the cwd, so the mount paths are
-        # fixed for the life of the environment and a dropped bind
-        # warns once; the builder's own filter then drops nothing.
+        # The operator binds are filtered, their sources expanded and their
+        # destinations resolved once here, like the hidden set and the cwd,
+        # so the mount paths are fixed for the life of the environment
+        # and a dropped bind warns once; the builder's own filter
+        # then drops nothing.
         self._config = replace(
             self._config,
-            binds=tuple(resolve_bind_dests(filter_binds(self._config.binds, self._hidden_paths))),
+            binds=tuple(resolve_bind_dests(expand_bind_srcs(filter_binds(self._config.binds, self._hidden_paths)))),
         )
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.

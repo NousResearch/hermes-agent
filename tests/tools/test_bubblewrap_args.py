@@ -234,6 +234,12 @@ class TestExtraBinds:
         argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest="/proj"),)), paths=paths)
         assert (src, "/proj") in triples(argv, "--ro-bind")
 
+    def test_builder_emits_a_tilde_source_as_given(self, paths):
+        # BubblewrapEnvironment expands the source once at construction; the
+        # pure builder resolves nothing per spawn.
+        argv = build(BubblewrapConfig(binds=(BindMount(src="~/data", dest="/data"),)), paths=paths)
+        assert ("~/data", "/data") in triples(argv, "--ro-bind")
+
 
 class TestLoadConfig:
     def test_defaults_when_env_is_empty(self):

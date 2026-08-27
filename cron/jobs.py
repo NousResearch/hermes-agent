@@ -577,6 +577,18 @@ def _ensure_cron_dir(cron_dir: Path) -> None:
     cron_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _ensure_cron_dir(cron_dir: Path) -> None:
+    """Create a cron directory without resurrecting a deleted profile home."""
+    profile_home = cron_dir.parent
+    if profile_home.parent.name == "profiles":
+        # Named profiles are created by the profile lifecycle, not cron.  A
+        # stale multiplex scheduler may still hold this path after deletion;
+        # parents=False makes that race fail closed instead of restoring it.
+        cron_dir.mkdir(exist_ok=True)
+        return
+    cron_dir.mkdir(parents=True, exist_ok=True)
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()

@@ -210,6 +210,29 @@ class TestExtraBinds:
         argv = build(BubblewrapConfig(binds=(BindMount(src=str(link), dest="/x"),)), paths=paths)
         assert (str(link), "/x") not in triples(argv, "--ro-bind")
 
+    @pytest.mark.parametrize("readonly", [True, False])
+    def test_bind_containing_a_hidden_path_mapped_elsewhere_is_dropped(self, paths, readonly, caplog):
+        # A mirror of HOME at /mnt would show ~/.ssh at /mnt/.ssh: the overlays
+        # cover the hidden paths only at their own location.
+        home = paths["home"]
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            argv = build(BubblewrapConfig(binds=(BindMount(src=home, dest="/mnt", readonly=readonly),)), paths=paths)
+        assert not any(dest == "/mnt" for _, dest in triples(argv, "--ro-bind") + triples(argv, "--bind"))
+        messages = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert any(home in m and "/mnt" in m and any(h in m for h in hidden) for m in messages), messages
+
+    def test_bind_containing_a_hidden_path_at_its_own_path_is_kept(self, paths):
+        # dest == src is the cwd=HOME shape: the overlays and pins land on top of it.
+        home = paths["home"]
+        argv = build(BubblewrapConfig(binds=(BindMount(src=home, dest=home, readonly=False),)), paths=paths)
+        assert (home, home) in triples(argv, "--bind")
+
+    def test_project_bind_under_home_mapped_elsewhere_is_kept(self, paths):
+        src = str(Path(paths["home"]) / "proj")
+        argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest="/proj"),)), paths=paths)
+        assert (src, "/proj") in triples(argv, "--ro-bind")
+
 
 class TestLoadConfig:
     def test_defaults_when_env_is_empty(self):

@@ -1,10 +1,32 @@
 """Tests for the LLM chain and the topic-leak sanitiser
 (no raw git commit subjects in topics/titles)."""
+import time
+
+import requests
+
 import llm_generate as lg
 import topics as tp
 
 
 # ── LLM chain ──────────────────────────────────────────────────────────────
+
+_BUILTIN_KEY_VARS = (
+    "COMMANDCODE_API_KEY",
+    "OLLAMA_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_AI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "CONTENT_LLM_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+)
+
+
+def _clear_builtin_keys(monkeypatch):
+    for name in _BUILTIN_KEY_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 def test_fallback_chain_is_ollama_cloud_only():
     bases = [(c["base"], c["model"], c["provider"]) for c in lg._FREE_FALLBACK_CHAIN]
@@ -36,6 +58,10 @@ def test_llm_configs_attaches_ollama_keys(monkeypatch):
 def test_longform_chain_has_provider_fallbacks(monkeypatch):
     monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
+    _clear_builtin_keys(monkeypatch)
+    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-test")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
     cfgs = lg._llm_configs(longform=True)
     models = [c["model"] for c in cfgs]
     assert models[0] == "deepseek/deepseek-v4-flash"
@@ -46,6 +72,10 @@ def test_longform_chain_has_provider_fallbacks(monkeypatch):
 def test_short_and_longform_differ(monkeypatch):
     monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
+    _clear_builtin_keys(monkeypatch)
+    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-test")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
     short = [c["model"] for c in lg._llm_configs(longform=False)]
     long = [c["model"] for c in lg._llm_configs(longform=True)]
     assert short[0] == "deepseek-v4-flash"
@@ -62,8 +92,10 @@ def test_fabricated_numbers_catches_growth_metrics():
 
 
 def test_env_override_is_tried_first(monkeypatch):
+    _clear_builtin_keys(monkeypatch)
     monkeypatch.setenv("CONTENT_LLM_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("CONTENT_LLM_MODEL", "custom-model")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
     cfgs = lg._llm_configs()
     assert (cfgs[0]["base"], cfgs[0]["model"]) == ("https://example.test/v1", "custom-model")
     assert any(c["model"] == "deepseek-v4-flash" for c in cfgs)
@@ -78,6 +110,173 @@ def test_gemini_override_uses_gemini_key(monkeypatch):
     assert cfgs[0]["base"] == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert cfgs[0]["model"] == "gemini-2.5-flash"
     assert cfgs[0]["key"] == "gemini-xyz"
+
+
+def test_commandcode_override_uses_commandcode_key_and_dedupes(monkeypatch):
+    _clear_builtin_keys(monkeypatch)
+    monkeypatch.setenv(
+        "CONTENT_LLM_BASE_URL", "https://api.commandcode.ai/provider/v1"
+    )
+    monkeypatch.setenv("CONTENT_LLM_MODEL", "deepseek/deepseek-v4-flash")
+    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-xyz")
+
+    cfgs = lg._llm_configs(longform=True)
+
+    matching = [
+        cfg
+        for cfg in cfgs
+        if cfg["base"] == "https://api.commandcode.ai/provider/v1"
+        and cfg["model"] == "deepseek/deepseek-v4-flash"
+    ]
+    assert matching == [
+        {
+            "base": "https://api.commandcode.ai/provider/v1",
+            "model": "deepseek/deepseek-v4-flash",
+            "key": "commandcode-xyz",
+        }
+    ]
+
+
+def test_longform_chain_skips_builtin_providers_without_credentials(monkeypatch):
+    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
+    _clear_builtin_keys(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+
+    cfgs = lg._llm_configs(longform=True)
+
+    assert [cfg["model"] for cfg in cfgs] == ["gemini-2.5-flash"]
+
+
+def test_call_llm_retries_transient_http_error(monkeypatch):
+    class Response:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    responses = [
+        Response(503, text="temporarily unavailable"),
+        Response(200, {"choices": [{"message": {"content": "recovered"}}]}),
+    ]
+
+    class Session:
+        trust_env = True
+
+        def post(self, *_args, **_kwargs):
+            return responses.pop(0)
+
+    session = Session()
+    sleeps = []
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    result = lg._call_llm(
+        "system",
+        "user",
+        {"base": "https://example.test/v1", "model": "test", "key": "test"},
+    )
+
+    assert result == "recovered"
+    assert sleeps == [1.0]
+    assert responses == []
+    assert session.trust_env is False
+
+
+def test_call_llm_retries_transient_transport_error(monkeypatch):
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "recovered"}}]}
+
+    calls = []
+
+    class Session:
+        trust_env = True
+
+        def post(self, *_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise requests.ConnectionError("temporary connection reset")
+            return Response()
+
+    sleeps = []
+    monkeypatch.setattr(requests, "Session", Session)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    result = lg._call_llm(
+        "system",
+        "user",
+        {"base": "https://example.test/v1", "model": "test", "key": "test"},
+    )
+
+    assert result == "recovered"
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
+def test_call_llm_malformed_json_degrades_to_none(monkeypatch):
+    class Response:
+        status_code = 200
+        text = "not-json"
+
+        @staticmethod
+        def json():
+            raise ValueError("malformed provider response")
+
+    class Session:
+        trust_env = True
+
+        @staticmethod
+        def post(*_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(requests, "Session", Session)
+
+    assert lg._call_llm(
+        "system",
+        "user",
+        {"base": "https://example.test/v1", "model": "test", "key": "test"},
+    ) is None
+
+
+def test_call_llm_does_not_retry_auth_failure(monkeypatch):
+    class Response:
+        status_code = 401
+        text = "unauthorised"
+
+        @staticmethod
+        def json():
+            return {}
+
+    calls = []
+
+    class Session:
+        trust_env = True
+
+        def post(self, *_args, **_kwargs):
+            calls.append(1)
+            return Response()
+
+    sleeps = []
+    monkeypatch.setattr(requests, "Session", Session)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    result = lg._call_llm(
+        "system",
+        "user",
+        {"base": "https://example.test/v1", "model": "test", "key": "bad"},
+    )
+
+    assert result is None
+    assert len(calls) == 1
+    assert sleeps == []
 
 
 # ── Topic-leak sanitiser ───────────────────────────────────────────────────

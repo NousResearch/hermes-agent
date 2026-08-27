@@ -21,6 +21,7 @@ import os
 import random
 import re
 import sys
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -452,6 +453,7 @@ def _llm_configs(longform: bool = False) -> list[dict]:
             "ollama" if "ollama.com" in base else
             "openai" if "openai.com" in base else
             "gemini" if "generativelanguage.googleapis.com" in base else
+            "commandcode" if "commandcode.ai" in base else
             "opencode"
         )
         configs.append({"base": base, "model": model, "key": _key_for(provider)})
@@ -460,9 +462,11 @@ def _llm_configs(longform: bool = False) -> list[dict]:
     chain = _LONGFORM_CHAIN if longform else _FREE_FALLBACK_CHAIN
     for fb in chain:
         sig = (fb["base"], fb["model"])
-        if sig not in seen:
+        provider = fb.get("provider", "opencode")
+        key = _key_for(provider)
+        if sig not in seen and key:
             configs.append({"base": fb["base"], "model": fb["model"],
-                            "key": _key_for(fb.get("provider", "opencode"))})
+                            "key": key})
             seen.add(sig)
 
     return configs
@@ -496,10 +500,9 @@ def _alert_static_fallback(brand: str, platform: str) -> None:
 
 def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
               max_tokens: int = 3000) -> Optional[str]:
-    """One chat-completions call. Returns the text or None on any failure.
+    """Call one endpoint, retry transient HTTP once, and degrade on failure.
 
-    ``max_tokens`` is overridable so long-form callers (X Articles) can ask for
-    a full article without the default short-post cap truncating it mid-section.
+    ``max_tokens`` remains overridable for long-form callers.
     """
     try:
         import requests
@@ -518,36 +521,64 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
     # session ignore inherited proxy/netrc env entirely.
     session = requests.Session()
     session.trust_env = False
-    try:
-        r = session.post(
-            f"{cfg['base']}/chat/completions",
-            json={
-                "model": cfg["model"],
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.8,
-                # Reasoning models burn tokens on hidden thinking before the
-                # answer; a tight cap returns empty content.
-                "max_tokens": max_tokens,
-            },
-            headers=headers, timeout=timeout,
-        )
+    for attempt in range(2):
+        try:
+            r = session.post(
+                f"{cfg['base']}/chat/completions",
+                json={
+                    "model": cfg["model"],
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": 0.8,
+                    # Reasoning models burn tokens on hidden thinking before the
+                    # answer; a tight cap returns empty content.
+                    "max_tokens": max_tokens,
+                },
+                headers=headers, timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            if attempt == 0:
+                print(
+                    f"[llm_generate] transient LLM transport failure: {exc}; "
+                    "retrying once",
+                    file=sys.stderr,
+                )
+                time.sleep(1.0)
+                continue
+            print(f"[llm_generate] LLM call failed: {exc}", file=sys.stderr)
+            return None
+        except Exception as exc:  # noqa: BLE001 (generation must degrade, not crash the cron)
+            print(f"[llm_generate] LLM call failed: {exc}", file=sys.stderr)
+            return None
+
         if r.status_code != 200:
+            transient = r.status_code == 429 or r.status_code >= 500
+            if transient and attempt == 0:
+                print(
+                    f"[llm_generate] transient LLM HTTP {r.status_code}; retrying once",
+                    file=sys.stderr,
+                )
+                time.sleep(1.0)
+                continue
             print(f"[llm_generate] LLM HTTP {r.status_code}: {r.text[:160]}", file=sys.stderr)
             return None
-        text = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-        # Reasoning models (deepseek-v4-flash etc.) put the answer in
-        # `reasoning_content` when `content` is empty. Fallback to that.
-        if not text.strip():
-            text = (r.json().get("choices") or [{}])[0].get("message", {}).get("reasoning_content", "") or ""
-        # Some models inline their reasoning as <think> blocks in content.
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        return text.strip() or None
-    except Exception as exc:  # noqa: BLE001 (generation must degrade, not crash the cron)
-        print(f"[llm_generate] LLM call failed: {exc}", file=sys.stderr)
-        return None
+
+        try:
+            payload = r.json()
+            text = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            # Reasoning models (deepseek-v4-flash etc.) put the answer in
+            # `reasoning_content` when `content` is empty. Fallback to that.
+            if not text.strip():
+                text = (payload.get("choices") or [{}])[0].get("message", {}).get("reasoning_content", "") or ""
+            # Some models inline their reasoning as <think> blocks in content.
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+            return text.strip() or None
+        except Exception as exc:  # noqa: BLE001 (malformed providers must degrade)
+            print(f"[llm_generate] LLM response parse failed: {exc}", file=sys.stderr)
+            return None
+    return None
 
 
 def generate_one(

@@ -220,6 +220,15 @@ class TestLaunchdRestartWedgedIntegration:
             "_graceful_restart_via_sigusr1",
             lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
         )
+        # KeepAlive revival observed instantly — avoids the real 15s poll
+        # (mocked subprocess.run returns empty stdout, so the PID probe
+        # would otherwise burn the full observation timeout in time.sleep).
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_pid",
+            lambda label, old_pid, timeout=10.0, *, domain: events.append("observe")
+            or True,
+        )
         monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",

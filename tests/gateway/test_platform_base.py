@@ -1255,7 +1255,6 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
-
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).
@@ -1388,6 +1387,7 @@ class TestDockerProfileSandboxMediaTranslation:
             "did not resolve" in r.message and f"session_key={self.SESSION_KEY}" in r.message
             for r in caplog.records
         )
+
 
 class _LockGovernanceProbeAdapter(BasePlatformAdapter):
     """Minimal concrete adapter for platform-lock takeover governance tests."""

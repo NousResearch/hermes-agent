@@ -5548,7 +5548,8 @@ def _wait_for_launchd_service_pid(
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
     from gateway.status import get_running_pid
 
     try:
@@ -5610,7 +5611,7 @@ def launchd_restart():
                 # PID appears before trusting KeepAlive — mirrors the systemd
                 # branch's replacement observation.
                 if _wait_for_launchd_service_pid(
-                    label, pid, timeout=15.0, domain=_launchd_domain()
+                    label, pid, timeout=15.0, domain=domain
                 ):
                     print("✓ Service restart requested")
                     _clear_launchd_unsupported_marker()

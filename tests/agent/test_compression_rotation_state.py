@@ -17,14 +17,20 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 
 from __future__ import annotations
 
+import copy
 import os
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
+from agent.conversation_compression import (
+    CompressionCommitFence,
+    _is_real_user_message,
+)
 from hermes_state import SessionDB
 
 
@@ -66,6 +72,15 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
 
 def _msgs(n=20):
     return [{"role": "user", "content": f"m{i}"} for i in range(n)]
+
+
+def _count_rows(rows, *, content: Any = None, role: str | None = None):
+    return sum(
+        1
+        for row in rows
+        if (content is None or row.get("content") == content)
+        and (role is None or row.get("role") == role)
+    )
 
 
 def _bound_context_compressor(db: SessionDB, session_id: str) -> ContextCompressor:
@@ -195,6 +210,910 @@ class TestWorkspaceMetadataFollowsRotation:
         assert row["chat_id"] == "c1"
         assert row["chat_type"] == "private"
         assert row["user_id"] == "u1"
+
+
+class TestRotationChildFlushDedup:
+    def test_summary_handoff_row_is_persisted_once_in_child(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_LIVE_USER"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [*loaded, {"role": "user", "content": "live question"}]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+
+        returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+        assert any(
+            isinstance(msg, dict)
+            and msg.get("content") == "[CONTEXT COMPACTION] summary"
+            and msg.get(_DB_PERSISTED_MARKER)
+            for msg in returned
+        )
+        assert any(
+            isinstance(msg, dict)
+            and msg.get("content") == "live question"
+            and msg.get(_DB_PERSISTED_MARKER)
+            for msg in returned
+        )
+
+    def test_rotation_flush_of_original_live_list_keeps_user_once_when_handoff_already_contains_user(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_ORIGINAL_LIVE"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        live_user = {
+            "role": "user",
+            "content": "live question",
+            "timestamp": 1234.5,
+        }
+        messages = [*loaded, live_user]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+            copy.deepcopy(live_user),
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            returned, _ = agent._compress_context(
+                messages, "sys", approx_tokens=120_000
+            )
+
+        assert agent.session_id != parent
+        assert _DB_PERSISTED_MARKER in live_user
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(child_rows, content="live question", role="user") == 1
+        assert _count_rows(
+            child_rows, content="[CONTEXT COMPACTION] summary", role="assistant"
+        ) == 1
+
+    def test_failed_publish_leaves_live_user_unmarked_for_later_flush(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_PUBLISH_FAIL"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [*loaded, {"role": "user", "content": "live question"}]
+        live_user = messages[-1]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "tail"},
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            db,
+            "publish_compression_child",
+            side_effect=RuntimeError("simulated publish failure"),
+        ):
+            returned, _ = agent._compress_context(
+                messages, "sys", approx_tokens=120_000
+            )
+
+        assert _DB_PERSISTED_MARKER not in live_user
+
+        retry_session = "PARENT_ROT_PUBLISH_RETRY"
+        db.create_session(retry_session, source="cli")
+        agent.session_id = retry_session
+        real_flush([live_user])
+
+        retry_rows = db.get_messages_as_conversation(
+            retry_session, include_inactive=True
+        )
+        assert _count_rows(retry_rows, content="live question", role="user") == 1
+
+    def test_mid_tool_loop_rows_do_not_duplicate_after_failed_parent_flush(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_TOOL_LOOP"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        assistant_turn = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_turn = {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "tool result",
+        }
+        messages = [
+            *loaded,
+            {"role": "user", "content": "live tool question"},
+            assistant_turn,
+            tool_turn,
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(loaded)
+        agent.context_compressor.compress.return_value = [
+            copy.deepcopy(assistant_turn),
+            copy.deepcopy(tool_turn),
+        ]
+
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            returned, _ = agent._compress_context(
+                messages, "sys", approx_tokens=120_000
+            )
+
+        agent._flush_messages_to_session_db(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(
+            child_rows, content="live tool question", role="user"
+        ) == 1
+        assert _count_rows(child_rows, content="tool result", role="tool") == 1
+
+    def test_mid_tool_loop_rows_do_not_duplicate_after_failed_parent_flush_direct_path(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_TOOL_LOOP_DIRECT"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        assistant_turn = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_turn = {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "tool result",
+        }
+        messages = [
+            *loaded,
+            {"role": "user", "content": "live tool question"},
+            assistant_turn,
+            tool_turn,
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(loaded)
+        agent.context_compressor.compress.return_value = [
+            copy.deepcopy(assistant_turn),
+            copy.deepcopy(tool_turn),
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        assert agent.session_id != parent
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(
+            child_rows, content="live tool question", role="user"
+        ) == 1
+        assert _count_rows(child_rows, content="", role="assistant") == 1
+        assert _count_rows(child_rows, content="tool result", role="tool") == 1
+
+    def test_timestampless_duplicate_content_rows_are_all_stamped(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_DUPLICATE_CONTENT"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        assistant_turn = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_turn = {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "tool result",
+        }
+        messages = [
+            *loaded,
+            {"role": "user", "content": "live tool question"},
+            assistant_turn,
+            copy.deepcopy(assistant_turn),
+            tool_turn,
+            copy.deepcopy(tool_turn),
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(loaded)
+        agent.context_compressor.compress.return_value = [
+            copy.deepcopy(assistant_turn),
+            copy.deepcopy(tool_turn),
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(
+            child_rows, content="live tool question", role="user"
+        ) == 1
+        assert _count_rows(child_rows, content="", role="assistant") == 1
+        assert _count_rows(child_rows, content="tool result", role="tool") == 1
+
+    def test_rotation_stamps_diverged_session_messages_entry_only_when_it_matches(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_SESSION_MESSAGES_DIVERGE"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [*loaded, {"role": "user", "content": "live question"}]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent._session_messages = [
+            *loaded,
+            {"role": "user", "content": "different live question"},
+        ]
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+
+        returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+        agent._flush_messages_to_session_db(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(child_rows, content="live question", role="user") == 1
+        assert _DB_PERSISTED_MARKER in messages[-1]
+        assert _DB_PERSISTED_MARKER not in agent._session_messages[-1]
+
+    # ------------------------------------------------------------------
+    # Item 2 review fixes — symmetric identity validation on the primary
+    # stamp. The guard stamps the anchor-source row (the last real user
+    # message in `messages`, the row the published child actually
+    # represents), NEVER an index that may have drifted, and mirrors the
+    # twin (`_session_messages`) by scoped identity against that anchor
+    # source with a marker-independent exact-hit two-phase scan.
+    # ------------------------------------------------------------------
+
+    def test_rotation_never_stamps_drifted_user_role_neighbor(
+        self, tmp_path: Path
+    ):
+        """A user-role neighbor at a drifted index must not be stamped."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_DRIFTED_NEIGHBOR"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [
+            *loaded,
+            {"role": "user", "content": "live question"},
+            {
+                "role": "user",
+                "content": "drifted neighbor",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        # Index drifted onto the synthetic user-role neighbor (the reanchor
+        # fallback / stale-index failure shape the guard must not trust).
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # The drifted neighbor is not the row the child represents.
+        assert _DB_PERSISTED_MARKER not in messages[-1]
+        # The anchor source (the real live question) is stamped.
+        assert _DB_PERSISTED_MARKER in messages[-2]
+
+    def test_rotation_drifted_index_does_not_duplicate_live_question_in_child(
+        self, tmp_path: Path
+    ):
+        """Merged outcome + drifted index: real flush must not re-append the
+        live question standalone (the duplicate the PR eliminates)."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_DRIFTED_MERGED"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [
+            *loaded,
+            {"role": "user", "content": "live question"},
+            {
+                "role": "user",
+                "content": "drifted neighbor",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": "handoff scaffolding",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        # No standalone "live question" row — the merged handoff already
+        # represents it.
+        assert _count_rows(child_rows, content="live question") == 0
+        assert (
+            _count_rows(
+                child_rows, content="live question\n\nhandoff scaffolding"
+            )
+            == 1
+        )
+
+    def test_merged_outcome_still_stamps_live_question(self, tmp_path: Path):
+        """Constraint: the guard must not break the legitimate merged stamp."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_MERGED_LIVE"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [*loaded, {"role": "user", "content": "live question"}]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": "scaffolding",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        assert _DB_PERSISTED_MARKER in messages[-1]
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert _count_rows(
+            child_rows, content="live question", role="user"
+        ) == 0
+        assert (
+            _count_rows(child_rows, content="live question\n\nscaffolding")
+            == 1
+        )
+
+    def test_adoption_divergence_merged_stamps_both_views_and_no_duplicate(
+        self, tmp_path: Path
+    ):
+        """REAL adoption divergence: durable parent grows under the lease,
+        `messages` rebinds to the adopted snapshot while
+        `agent._session_messages` stays on the old live list, and the merged
+        handoff cannot be mirrored by the wrapper's scoped sync. Both views
+        must carry the marker and the real post-rotation flush over the old
+        live view must not re-append the live question standalone."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_ADOPT_DIVERGE"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        # (b) Old live list object kept alive; divergence set so the twin is
+        # the SAME object the guard scans (not a fresh copy).
+        loaded = db.get_messages_as_conversation(parent, include_inactive=True)
+        old_live_list = [
+            *loaded,
+            {"role": "user", "content": "live question", "timestamp": 1234.5},
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._session_messages = old_live_list
+        assert agent._session_messages is old_live_list
+
+        # (c) The stale snapshot passed to _compress_context is a separate
+        # object (the production frontend-snapshot shape).
+        stale_snapshot = [
+            {"role": "user", "content": "persisted question"},
+            {"role": "assistant", "content": "persisted answer"},
+        ]
+        assert stale_snapshot is not agent._session_messages
+
+        # (d) Pin the initial persist-index state: production "no known
+        # un-persisted tail" shape, so the real code takes the adopt-directly
+        # branch (:2994-3001) and the pre-adoption flush (:2988) is provably
+        # never attempted (no fixture flush can mask the divergence).
+        agent._persist_user_message_idx = None
+        assert agent._persist_user_message_idx is None
+
+        # Grow the DB AFTER the snapshot is taken so the REAL adoption
+        # condition (durable parent longer than the caller snapshot) fires.
+        db.append_message(parent, "user", "live question")
+        durable_check = db.get_messages_as_conversation(parent)
+        assert len(durable_check) == 3 > len(stale_snapshot) == 2
+        # Sync the twin's timestamp to the committed row so the guard's
+        # exact-timestamp twin scan matches the adopted anchor.
+        old_live_list[-1]["timestamp"] = durable_check[-1]["timestamp"]
+
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": "handoff scaffolding",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        # Phase-keyed flush failure: fail ONLY the pre-publish flush (:3780);
+        # a blanket failure would not distinguish the phases and a masked
+        # pre-adoption flush would hide the divergence.
+        flush_attempts = []
+
+        def _fail_only_prepublish_flush(messages_arg, **kwargs):
+            flush_attempts.append((messages_arg, kwargs))
+            raise RuntimeError("simulated pre-publish flush failure")
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=_fail_only_prepublish_flush,
+        ):
+            _returned, _ = agent._compress_context(
+                stale_snapshot,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # The ONLY internal flush was the single pre-publish one.
+        assert len(flush_attempts) == 1
+
+        # (e) Identity and shape asserts BEFORE markers: adoption fired, the
+        # divergence is preserved, the persist index was rebound out of range.
+        adopted = agent.context_compressor.compress.call_args.args[0]
+        assert adopted is not stale_snapshot
+        assert adopted is not agent._session_messages
+        assert agent._session_messages is old_live_list
+        assert agent._persist_user_message_idx == len(adopted)
+        assert adopted[-1]["role"] == "user"
+        assert adopted[-1]["content"] == "live question"
+        assert adopted[-1].get("timestamp") is not None
+        assert old_live_list[-1]["content"] == "live question"
+        assert (
+            old_live_list[-1].get("timestamp") == adopted[-1].get("timestamp")
+        )
+
+        # (f) Markers on BOTH views. Note: the adopted view's rows are
+        # "born durable" (hermes_state stamps _DB_PERSISTED_MARKER on rows
+        # materialized from the DB), so the adopted assert holds even
+        # pre-fix; the DISCRIMINATING assert is the twin's — the old live
+        # view is a constructed list the production code only stamps via
+        # the guard's twin scan (pre-fix it stays unstamped → FAIL).
+        assert _DB_PERSISTED_MARKER in adopted[-1]
+        assert _DB_PERSISTED_MARKER in old_live_list[-1]
+        real_flush(agent._session_messages, conversation_history=loaded)
+
+        # (g) No standalone duplicate by EXACT SCOPED IDENTITY (content +
+        # timestamp), and exactly one merged row.
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert not any(
+            row.get("content") == "live question"
+            and row.get("timestamp") == adopted[-1].get("timestamp")
+            for row in child_rows
+        )
+        assert (
+            _count_rows(
+                child_rows, content="live question\n\nhandoff scaffolding"
+            )
+            == 1
+        )
+
+    def test_rotation_stamps_anchor_source_when_reanchor_fallback_rewrote_turn(
+        self, tmp_path: Path
+    ):
+        """REAL reanchor drift: reanchor_current_turn_user_idx's last-user
+        fallback lands on a trailing production-shaped todo-snapshot row
+        (index 2) while the anchor-source scan selects the rewritten carrier
+        (index 1). The stamp must land on the carrier, not the todo row."""
+        from agent.turn_context import reanchor_current_turn_user_idx
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_REANCHOR_DRIFT"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "old durable")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        # Pinned production-shaped fixture (plan §3.5): the trailing row is
+        # the todo-snapshot shape compress_context appends at :3484-3489.
+        # The reanchor helper's last-user-originated fallback lands on it
+        # (index 2) while the anchor-source scan skips it (synthetic flag)
+        # and selects the rewritten carrier (index 1) — the drift is real.
+        # Deliberately a 3-row fixture (NOT prefixed with `loaded`): the
+        # pinned drift values below were verified against the real
+        # reanchor_current_turn_user_idx on this shape.
+        messages = [
+            {"role": "user", "content": "old durable"},
+            {"role": "user", "content": "current ask\n\n[merged summary]"},
+            {
+                "role": "user",
+                "content": "Current todos:\n- [ ] leftover",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        # Drift-first assertions: prove the reanchor index and the anchor
+        # source diverge BEFORE any stamp behavior is checked.
+        drifted = reanchor_current_turn_user_idx(messages, "current ask")
+        anchor_source = max(
+            i for i, m in enumerate(messages) if _is_real_user_message(m)
+        )
+        assert drifted == 2
+        assert anchor_source == 1
+        assert drifted != anchor_source
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = drifted
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": "handoff scaffolding",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # The carrier (anchor source) is stamped; the todo-snapshot row the
+        # drifted index points at is NOT.
+        assert _DB_PERSISTED_MARKER in messages[1]
+        assert _DB_PERSISTED_MARKER not in messages[2]
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        assert (
+            _count_rows(
+                child_rows,
+                content="current ask\n\n[merged summary]",
+                role="user",
+            )
+            == 0
+        )
+        assert (
+            _count_rows(
+                child_rows,
+                content=(
+                    "current ask\n\n[merged summary]\n\nhandoff scaffolding"
+                ),
+            )
+            == 1
+        )
+
+    def test_no_real_user_anchor_guard_not_entered(self, tmp_path: Path):
+        """Negative regression: placeholder_appended/already_present must not
+        enter the anchor-source guard branch — no exception, rotation happens,
+        no live row outside the handoff carries the marker."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_NO_REAL_ANCHOR"
+        db.create_session(parent, source="cli")
+
+        # All-user-synthetic transcript with NO real user. The rows carry
+        # enough content that compression shrinks the transcript (a single
+        # short synthetic row trips the would-grow gate and aborts rotation,
+        # which would make this a fixture failure, not a regression).
+        messages = [
+            {
+                "role": "user",
+                "content": f"synthetic scaffolding block {i} with enough "
+                f"content to keep the compressed transcript smaller",
+                "_todo_snapshot_synthetic": True,
+            }
+            for i in range(6)
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent.context_compressor.compress.return_value = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # Rotation happened; no live row carries the marker.
+        assert agent.session_id != parent
+        assert _DB_PERSISTED_MARKER not in messages[0]
+
+    def test_list_content_merged_outcome_still_stamps_live_question(
+        self, tmp_path: Path
+    ):
+        """Constraint (reviewer list-content requirement): list-content anchor
+        merged via the list branch (anchor_parts + target_parts) must still
+        stamp the live row and not duplicate it."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_LIST_MERGED"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [
+            *loaded,
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "live question"}],
+            },
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        agent._persist_user_message_idx = len(messages) - 1
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "scaffolding"}],
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        real_flush = agent._flush_messages_to_session_db
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        assert _DB_PERSISTED_MARKER in messages[-1]
+        real_flush(messages, conversation_history=loaded)
+
+        child_rows = db.get_messages_as_conversation(
+            agent.session_id, include_inactive=True
+        )
+        # No standalone live-question row (the flush stores list content
+        # flattened to its text join, so match the flattened string too).
+        assert _count_rows(child_rows, content="live question") == 0
+        assert (
+            _count_rows(
+                child_rows,
+                content=[{"type": "text", "text": "live question"}],
+            )
+            == 0
+        )
+        # Exactly one merged row with the concatenated parts list.
+        assert (
+            _count_rows(
+                child_rows,
+                content=[
+                    {"type": "text", "text": "live question"},
+                    {"type": "text", "text": "scaffolding"},
+                ],
+            )
+            == 1
+        )
+
+    def test_already_stamped_exact_twin_suppresses_broad_fallback(
+        self, tmp_path: Path
+    ):
+        """Two-phase edge (reviewer scenario): an already-stamped exact twin
+        must still count as an exact hit (marker-INDEPENDENT), suppressing the
+        broad fallback so a timestamp-less same-content historical row is NOT
+        stamped as the anchor's twin."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ROT_STAMPED_TWIN"
+        db.create_session(parent, source="cli")
+        db.append_message(parent, "user", "persisted question")
+        db.append_message(parent, "assistant", "persisted answer")
+
+        loaded = db.get_messages_as_conversation(parent)
+        messages = [
+            *loaded,
+            {
+                "role": "user",
+                "content": "live question",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        ]
+
+        agent = _build_agent_with_db(db, parent)
+        # Deliberately do NOT set _persist_user_message_idx: the guard must
+        # not trust a persist index at all.
+        agent._session_messages = [
+            {
+                "role": "user",
+                "content": "live question",
+                "timestamp": "2026-01-01T00:00:00Z",
+                _DB_PERSISTED_MARKER: True,
+            },
+            {"role": "user", "content": "live question"},
+        ]
+        agent.context_compressor.compress.return_value = [
+            {
+                "role": "user",
+                "content": "handoff scaffolding",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+
+        with patch.object(
+            agent,
+            "_flush_messages_to_session_db",
+            side_effect=RuntimeError("simulated parent flush failure"),
+        ):
+            _returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=120_000,
+                commit_fence=CompressionCommitFence(),
+            )
+
+        # The timestamp-less ambiguous row must NOT be stamped as a twin.
+        assert _DB_PERSISTED_MARKER not in agent._session_messages[1]
+        # The already-stamped exact twin keeps its marker (idempotent).
+        assert _DB_PERSISTED_MARKER in agent._session_messages[0]
+        # The primary anchor is still stamped.
+        assert _DB_PERSISTED_MARKER in messages[-1]
 
 
 class TestPlatformForwardedAtBoundary:
@@ -688,7 +1607,14 @@ class TestTodoSnapshotScaffoldingTails:
             _msgs(), "sys", approx_tokens=120_000
         )
 
-        assert [{k: v for k, v in m.items() if k != "_row_id"} for m in compressed] == expected
+        assert [
+            {
+                k: v
+                for k, v in m.items()
+                if k not in {"_row_id", _DB_PERSISTED_MARKER}
+            }
+            for m in compressed
+        ] == expected
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed

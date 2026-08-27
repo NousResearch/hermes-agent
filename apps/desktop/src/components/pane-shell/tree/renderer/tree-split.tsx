@@ -31,7 +31,7 @@ import {
   setTreeSplitWeights
 } from '../store'
 
-import { MINIMIZED_TRACK,
+import {
   allFixedAbsorberIndex,
   COLLAPSED_ZONE_PX,
   computedPx,
@@ -39,6 +39,7 @@ import { MINIMIZED_TRACK,
   edgeFixedZone,
   fixedTrackSize,
   MIN_PANE_PX,
+  MINIMIZED_TRACK,
   paneChrome,
   type PaneSizing,
   resolveCssPx,

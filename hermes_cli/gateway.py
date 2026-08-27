@@ -5599,16 +5599,30 @@ def launchd_restart():
                 f"(up to {wait_budget:.0f}s)..."
             )
             if _graceful_restart_via_sigusr1(pid, wait_budget):
-                # The gateway exited with the planned-restart code and
-                # launchd's unconditional KeepAlive revives it. Do NOT
-                # kickstart here: the replacement may already be up, and
-                # ``-k`` would kill it and restart a second time.
-                print("✓ Service restart requested")
-                _clear_launchd_unsupported_marker()
-                return
-            print(
-                f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart"
-            )
+                # The gateway exited with the planned-restart code. When
+                # launchd is actually supervising this label, KeepAlive
+                # revives it — do NOT kickstart (the replacement may already
+                # be up, and ``-k`` would kill it and restart a second time).
+                # But a graceful exit alone doesn't prove supervision:
+                # detached-fallback gateways and unloaded jobs also exit
+                # cleanly with nobody to revive them (and the SIGUSR1 helper
+                # returns True for an already-gone PID). Verify a replacement
+                # PID appears before trusting KeepAlive — mirrors the systemd
+                # branch's replacement observation.
+                if _wait_for_launchd_service_pid(
+                    label, pid, timeout=15.0, domain=_launchd_domain()
+                ):
+                    print("✓ Service restart requested")
+                    _clear_launchd_unsupported_marker()
+                    return
+                print(
+                    "⚠ launchd did not revive the gateway after its graceful "
+                    "exit — forcing restart"
+                )
+            else:
+                print(
+                    f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart"
+                )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()

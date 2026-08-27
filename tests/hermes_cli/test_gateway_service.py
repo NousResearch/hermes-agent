@@ -963,6 +963,15 @@ class TestGatewaySystemServiceRouting:
             ),
         )
         monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+        # KeepAlive revives the label on a fresh PID — replacement observed.
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_pid",
+            lambda label, old_pid, timeout=10.0, *, domain: calls.append(
+                ("observe", label, old_pid, domain)
+            )
+            or True,
+        )
 
         gateway_cli.launchd_restart()
 
@@ -971,9 +980,59 @@ class TestGatewaySystemServiceRouting:
         assert not any(call[0] == "sigterm" for call in calls)
         # ``-k`` after a successful graceful exit would kill the replacement.
         assert not any(call[0] == "kickstart" for call in calls)
+        # The success message must follow an observed replacement PID.
+        assert ("observe", "ai.hermes.gateway", 654, "gui/501") in calls
         out = capsys.readouterr().out
-        assert "27" in out
+        assert "up to 27s" in out
         assert "up to 0s" not in out
+
+    def test_launchd_restart_forces_kickstart_when_no_replacement_appears(
+        self, monkeypatch, capsys
+    ):
+        """A graceful exit with no KeepAlive revival must not report success.
+
+        Detached-fallback gateways (macOS 26 unsupported-domain marker) and
+        unloaded jobs also exit cleanly on SIGUSR1, but nobody revives them —
+        and ``_graceful_restart_via_sigusr1`` returns True for an already-gone
+        PID. Without replacement observation the CLI would print
+        \"✓ Service restart requested\" while the gateway stays down.
+        """
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 654)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "probe_gateway_loop_liveness",
+            lambda pid, **kw: gateway_cli.GATEWAY_LOOP_ALIVE,
+        )
+        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_pid",
+            lambda label, old_pid, timeout=10.0, *, domain: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: calls.append(("kickstart", a[0])) or SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+
+        gateway_cli.launchd_restart()
+
+        # No replacement observed → must escalate to kickstart -k.
+        assert any(call[0] == "kickstart" for call in calls)
+        out = capsys.readouterr().out
+        assert "did not revive" in out
+        assert "✓ Service restarted" in out
 
 
 

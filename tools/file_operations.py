@@ -34,6 +34,7 @@ import sys
 import difflib
 import hashlib
 import json
+import logging
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -47,6 +48,8 @@ from agent.file_safety import (
     get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -1596,10 +1599,20 @@ class ShellFileOperations(FileOperations):
                 return self._read_file_missing(path, offset, limit)
             if marker == NOT_REGULAR_SENTINEL:
                 return self._not_regular_error(path)
+            logger.debug(
+                "read_file: compound probe reply for %s has no sentinel "
+                "(exit %s, %d chars); falling back to sequential probes",
+                path, probe.exit_code, len(output),
+            )
             return self._read_file_sequential(path, offset, limit)
 
         segments = _split_segments(output, sentinel)
         if probe.exit_code != 0 or len(segments) != 6:
+            logger.debug(
+                "read_file: compound probe for %s returned exit %s with %d "
+                "segments (want 6); falling back to sequential probes",
+                path, probe.exit_code, len(segments),
+            )
             return self._read_file_sequential(path, offset, limit)
         size_seg, sample_seg, page_seg, wc_seg, tail_seg, status_seg = segments
 
@@ -1607,6 +1620,11 @@ class ShellFileOperations(FileOperations):
         try:
             sample_rc, read_rc = int(status[0]), int(status[1])
         except (IndexError, ValueError):
+            logger.debug(
+                "read_file: compound probe for %s has unparseable status %r; "
+                "falling back to sequential probes",
+                path, status_seg[-40:],
+            )
             return self._read_file_sequential(path, offset, limit)
 
         try:
@@ -1621,6 +1639,11 @@ class ShellFileOperations(FileOperations):
         if sample_bytes is not None:
             is_binary = self._is_likely_binary_bytes(sample_bytes)
         else:
+            logger.debug(
+                "read_file: no usable base64 sample for %s (base64 exit %s); "
+                "paying one extra round-trip for the text heuristic",
+                path, sample_rc,
+            )
             sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
             sample_result = self._exec(sample_cmd)
             sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
@@ -2354,16 +2377,31 @@ class ShellFileOperations(FileOperations):
             if _strip_terminal_fence_leaks(output).strip() == MISSING_SENTINEL:
                 ending = _detect_line_ending(pre_content) if pre_content else None
                 return False, pre_content, ending
+            logger.debug(
+                "write_file: pre-write probe reply for %s has no sentinel "
+                "(exit %s, %d chars); falling back to sequential probes",
+                path, probe.exit_code, len(output),
+            )
             return self._probe_write_target_sequential(path, pre_content, want_pre)
 
         segments = _split_segments(output, sentinel)
         if probe.exit_code != 0 or len(segments) != 2:
+            logger.debug(
+                "write_file: pre-write probe for %s returned exit %s with %d "
+                "segments (want 2); falling back to sequential probes",
+                path, probe.exit_code, len(segments),
+            )
             return self._probe_write_target_sequential(path, pre_content, want_pre)
         head_seg, body = segments
 
         head_bytes = self._decode_base64_sample(head_seg)
         if head_bytes is None:
             # No clean base64 on this shell; ask the way we used to.
+            logger.debug(
+                "write_file: no usable base64 head for %s; paying one extra "
+                "round-trip for the BOM probe",
+                path,
+            )
             has_bom = self._file_has_bom(path, pre_content)
         else:
             has_bom = head_bytes.startswith(_UTF8_BOM.encode("utf-8"))

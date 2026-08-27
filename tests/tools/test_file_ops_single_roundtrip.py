@@ -7,6 +7,7 @@ line count, trailing newline), so each proves the compound reply carries
 that answer.
 """
 
+import logging
 import os
 import sys
 import threading
@@ -448,3 +449,23 @@ class TestCompoundFallback:
         assert r.error is None and r.content == "1|one\n2|two\n3|"
         assert r.total_lines == 2
 
+    def test_fallback_is_logged_at_debug(self, shell, tmp_path, caplog):
+        """A backend that keeps falling back shows up in debug logs."""
+        ops, calls = shell
+        p = _write(tmp_path, "a.txt", b"one\n")
+        real_exec = ops._exec
+
+        def garbled(command, *args, **kwargs):
+            if READ_PROBE_MARK in command:
+                return ExecuteResult(stdout="garbage\n", exit_code=0)
+            return real_exec(command, *args, **kwargs)
+
+        with caplog.at_level(logging.DEBUG, logger="tools.file_operations"), \
+             patch.object(ops, "_exec", side_effect=garbled):
+            r = ops.read_file(p)
+        assert r.error is None and r.content == "1|one\n2|"
+        assert any(
+            "falling back to sequential probes" in rec.getMessage()
+            and str(p) in rec.getMessage()
+            for rec in caplog.records
+        )

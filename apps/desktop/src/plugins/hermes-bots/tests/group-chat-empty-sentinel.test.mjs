@@ -213,7 +213,7 @@ async function drain(gc, group) {
 }
 
 test('(empty) sentinel: a "(empty)" member reply is converted like the gateway, never appended raw', async () => {
-  const gc = load((profile, prompt) => {
+  const gc = load(profile => {
     if (profile === 'research') return '(empty)'
     return '(pass)'
   })
@@ -228,7 +228,7 @@ test('(empty) sentinel: a "(empty)" member reply is converted like the gateway, 
 })
 
 test('(empty) sentinel: normal replies are untouched', async () => {
-  const gc = load((profile, prompt) => {
+  const gc = load(profile => {
     if (profile === 'research') return 'I am not empty.'
     return '(pass)'
   })

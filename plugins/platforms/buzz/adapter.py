@@ -624,6 +624,8 @@ class BuzzAdapter(BasePlatformAdapter):
         # Verified local-agent identities may acknowledge explicit tags without
         # gaining prompt/dispatch authority. This keeps the human allow-list
         # intact while providing receipt visibility for agent-authored notes.
+        # If a pubkey appears in both sets, allowed_users takes precedence: the
+        # normal authorized dispatch path runs and this reaction-only path does not.
         raw_reaction_only = (
             os.getenv("BUZZ_REACTION_ONLY_USERS")
             or extra.get("reaction_only_users", [])

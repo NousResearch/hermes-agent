@@ -775,6 +775,19 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
     @pytest.mark.asyncio
+    async def test_allowlist_takes_precedence_over_reaction_only(self, adapter):
+        adapter._allowed_pubkeys = {AGENT_PUBKEY}
+        adapter._reaction_only_pubkeys = {AGENT_PUBKEY}
+        adapter.send_reaction = AsyncMock(return_value=True)
+        event = _event("e1", pubkey=AGENT_PUBKEY, content="@Chip coordinate", created_at=10)
+        event["tags"].append(["p", SELF_PUBKEY])
+
+        await self._poll_with(adapter, event)
+
+        adapter.send_reaction.assert_not_awaited()
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
     async def test_agent_message_without_explicit_recipient_gets_no_reaction(self, adapter):
         adapter._allowed_pubkeys = {OTHER_PUBKEY}
         adapter._reaction_only_pubkeys = {AGENT_PUBKEY}

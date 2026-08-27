@@ -519,6 +519,17 @@ def uid_thread_count(uid: int) -> int:
     return count
 
 
+# Processes the wrapper itself forks before the command runs: bwrap, its
+# pid-1 init, the bash that runs the command, and that shell's command
+# substitutions and mktemp for the snapshot; a python3 under execute_code
+# counts too. RLIMIT_NPROC is checked against the uid's live thread count
+# at each fork, so without headroom a tight max_procs (or host threads
+# started between the /proc scan and the fork) fails the spawn before the
+# command starts: "bwrap: Can't fork for pid 1: Resource temporarily
+# unavailable".
+WRAPPER_PROCESS_ALLOWANCE = 16
+
+
 def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, int]:
     """The rlimits a spawn gets from the three terminal.bubblewrap_* keys.
 
@@ -528,7 +539,9 @@ def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, in
     create its namespace), so max_procs is applied on top of the uid's
     current thread count: it bounds what the sandbox may add, and the
     documented default of 256 keeps working on a desktop that already runs
-    more.
+    more. WRAPPER_PROCESS_ALLOWANCE is added on top of that for the
+    wrapper's own processes, so max_procs is what the command may add,
+    not what the command and the wrapper share.
     """
     limits: dict[int, int] = {}
     if config.memory_mb:
@@ -536,7 +549,7 @@ def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, in
     if config.cpu_seconds:
         limits[resource.RLIMIT_CPU] = config.cpu_seconds
     if config.max_procs:
-        limits[resource.RLIMIT_NPROC] = uid_threads + config.max_procs
+        limits[resource.RLIMIT_NPROC] = uid_threads + config.max_procs + WRAPPER_PROCESS_ALLOWANCE
     return limits
 
 

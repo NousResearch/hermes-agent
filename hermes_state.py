@@ -2882,9 +2882,24 @@ def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
 
     This is the public entry point for secondary users of ``state.db`` that
     must inherit its owner's journal mode while retaining per-connection
-    durability settings.
+    durability settings. Also applies the configured ``database.synchronous``
+    level (a per-connection pragma that would otherwise only ride on the
+    journal-mode setup path guest connections must not run).
     """
-    return _reapply_durability_barriers(conn)
+    ok = _reapply_durability_barriers(conn)
+    try:
+        # Local import avoids a circular import with hermes_cli.config.
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        cfg = load_config_readonly()
+        raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
+        if raw_synchronous is not None:
+            _apply_synchronous_pragma(
+                conn, raw_synchronous, db_label="state.db (guest)"
+            )
+    except Exception:
+        pass
+    return ok
 
 
 @contextmanager

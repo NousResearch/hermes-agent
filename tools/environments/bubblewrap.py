@@ -341,9 +341,29 @@ def hidden_path_under(src: str, hidden_paths: Sequence[str]) -> str | None:
     return None
 
 
+def _real_host_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
 def _same_host_path(a: str, b: str) -> bool:
-    resolve = lambda p: os.path.realpath(os.path.abspath(os.path.expanduser(p)))
-    return resolve(a) == resolve(b)
+    return _real_host_path(a) == _real_host_path(b)
+
+
+def _swappable_link(path: str, roots: Iterable[str]) -> str | None:
+    """The outermost symlink component of *path* whose parent resolves inside a writable root, else None.
+
+    Such a link sits in a directory a sandbox can write to, so a command can
+    replace it; a link outside the writable set is on the read-only root.
+    """
+    roots = list(roots)
+    found: str | None = None
+    while True:
+        parent = os.path.dirname(path)
+        if parent == path:
+            return found
+        if os.path.islink(path) and any(_is_within(os.path.realpath(parent), root) for root in roots):
+            found = path
+        path = parent
 
 
 def filter_binds(binds: tuple[BindMount, ...], hidden_paths: Sequence[str]) -> list[BindMount]:
@@ -776,6 +796,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
+        self._check_bind_sources()
         sandbox_root = os.path.realpath(get_sandbox_dir())
         self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
@@ -859,6 +880,61 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "the hidden set is writable inside the sandbox. Set terminal.cwd to "
                 "a project or scratch directory for a smaller writable set.",
                 self._initial_cwd,
+            )
+
+    def _check_bind_sources(self) -> None:
+        """Refuse a read-write bind whose source a sandbox could swap.
+
+        bwrap resolves a bind source on the host at every spawn. When a
+        component of the source path sits inside the writable set (the cwd
+        under a writable profile, another read-write bind's source, the
+        profile home under a profile home_mode) and is a symlink or a
+        directory a command can rename, the command replaces it and
+        chooses the next spawn's mount source, gaining read-write access
+        to any host directory without a hidden path below it. A mount
+        point cannot be renamed (EBUSY), so
+        a source bound at its own real path directly under a writable
+        root is fixed: the source and its parent are mount points inside.
+        One level deeper the parent is a plain directory: renamed,
+        recreated and given a relative symlink at the source path, it
+        steers the next spawn's mount. A read-only bind shows nothing the
+        root bind does not.
+        """
+        writable: dict[str, str] = {}
+        if resolve_profile(self._config.profile).writable_cwd:
+            writable[self._initial_cwd] = "terminal.cwd"
+        for bind in self._config.binds:
+            if not bind.readonly:
+                writable.setdefault(_real_host_path(bind.src), "the read-write bind source")
+        if self._config.home_mode in PROFILE_HOME_MODES:
+            writable.setdefault(os.path.realpath(os.path.join(self._hermes_home, "home")), "the profile home")
+        for bind in self._config.binds:
+            if bind.readonly:
+                continue
+            given = os.path.abspath(os.path.expanduser(bind.src))
+            real = os.path.realpath(given)
+            link = _swappable_link(given, writable)
+            if link is not None:
+                problem = f"its source path goes through the symlink {link}, which a command could replace"
+            else:
+                inside = [
+                    root for root in writable
+                    if any(path != root and _is_within(path, root) for path in (given, real))
+                ]
+                if not inside or (bind.dest == real and os.path.dirname(real) in writable):
+                    continue
+                problem = (
+                    f"its source lies inside {writable[inside[0]]} {inside[0]}, which is "
+                    "writable inside the sandbox"
+                )
+            raise ValueError(
+                f"terminal.bubblewrap_binds entry {bind.src} -> {bind.dest} is read-write "
+                f"and {problem} with the bubblewrap backend: a command could swap the "
+                "source and choose the next spawn's mount. Bind it read-write only at "
+                "its own path (dest equal to src) directly under terminal.cwd, a "
+                "read-write bind source or the profile home, with no symlink on the "
+                "way, where the source and its parent are mount points inside and "
+                "cannot be moved; or make it read-only."
             )
 
     def _check_sandbox_root(self, sandbox_root: str) -> None:

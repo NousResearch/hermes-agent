@@ -2988,6 +2988,13 @@ class ShellFileOperations(FileOperations):
             return shown + (f" (+{extra} more)" if extra > 0 else "")
 
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        # Apply the same macOS TCC-protected exclusions the main engines use.
+        # The probes re-scan the root — the hidden probe even with --hidden
+        # --no-ignore — so without this a ZERO-RESULT broad search still
+        # descends into protected app data and fires the unattended prompt
+        # the primary exclusion just avoided.
+        for _item in self._macos_search_exclusions(path):
+            glob_expr += f" --glob {self._escape_shell_arg(f'!{_item}/**')}"
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
             f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "

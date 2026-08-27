@@ -209,3 +209,28 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+def test_zero_match_probes_keep_protected_globs(tmp_path, monkeypatch):
+    """The zero-match probes re-scan the root (the hidden probe with
+    --hidden --no-ignore) — they must carry the same protected exclusions
+    as the primary engines, or a zero-result broad search still descends
+    into protected app data and fires the unattended TCC prompt."""
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    env = RecordingEnvironment(home)
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "rg")
+
+    ops._zero_match_probe("needle.[0-9]", str(home), None)
+
+    probe_commands = [c for c in env.commands if c.startswith("rg ")]
+    assert probe_commands, "probes issued no rg commands"
+    assert any("--hidden --no-ignore" in c for c in probe_commands)
+    for command in probe_commands:
+        for dirname in PROTECTED_NAMES:
+            assert f"!{dirname}/**" in command, (
+                f"probe missing exclusion for {dirname}: {command}"
+            )

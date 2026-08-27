@@ -375,6 +375,8 @@ def main() -> int:
                           "desc": f"Synthesised from ~/brain/{brain_slug}.md"})
 
     # ── 2. Comparison pages ───────────────────────────────────────────────
+    if not _DRY_RUN:
+        COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
     for cfg in COMPARISON_PAGES:
         slug = cfg["slug"]
         comp_path = COMPARISONS_DIR / f"{slug}.md"

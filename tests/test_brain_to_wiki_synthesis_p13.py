@@ -82,6 +82,22 @@ def test_dry_run_does_not_write_wiki_pages(monkeypatch, fake_layout):
     assert "Last updated" not in (fake_wiki / "index.md").read_text()
 
 
+def test_normal_run_creates_missing_comparisons_directory(monkeypatch, fake_layout):
+    """A fresh wiki layout must not crash before writing comparison pages."""
+    fake_repo, fake_brain, fake_wiki = fake_layout
+    comparisons = fake_wiki / "comparisons"
+    comparisons.rmdir()
+
+    mod = _load_module(monkeypatch, fake_repo, fake_brain, fake_wiki)
+
+    assert mod.main() == 0
+    assert comparisons.is_dir()
+    assert {path.name for path in comparisons.glob("*.md")} == {
+        "convex-vs-supabase.md",
+        "keyword-vs-embeddings-brain-search.md",
+    }
+
+
 def test_dry_run_main_exits_zero_empty(monkeypatch, fake_layout, tmp_path):
     """--dry-run with no brain pages must exit 0 (silent)."""
     fake_repo, fake_brain, fake_wiki = fake_layout

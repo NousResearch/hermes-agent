@@ -26,7 +26,15 @@ def _run_apply_profile_override(
     Returns the value of os.environ["HERMES_HOME"] after the call,
     or None if unset.
     """
-    hermes_root = tmp_path / ".hermes"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if hermes_home is not None:
+        monkeypatch.setenv("HERMES_HOME", hermes_home)
+    else:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    from hermes_constants import get_default_hermes_root
+
+    hermes_root = get_default_hermes_root()
     hermes_root.mkdir(parents=True, exist_ok=True)
 
     if active_profile is not None:
@@ -34,12 +42,6 @@ def _run_apply_profile_override(
 
     if active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    if hermes_home is not None:
-        monkeypatch.setenv("HERMES_HOME", hermes_home)
-    else:
-        monkeypatch.delenv("HERMES_HOME", raising=False)
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
@@ -146,16 +148,18 @@ class TestSupervisedChildIgnoresStickyProfile:
         """A supervised named-profile slot passes ``-p <name>`` explicitly;
         that must still resolve (the sentinel guard only skips the sticky
         active_profile fallback, never an explicit flag)."""
-        hermes_root = tmp_path / ".hermes"
-        hermes_root.mkdir(parents=True, exist_ok=True)
-        (hermes_root / "active_profile").write_text("briefer")
-        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
-        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
-
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
+
+        from hermes_constants import get_default_hermes_root
+
+        hermes_root = get_default_hermes_root()
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
 
         from hermes_cli.main import _apply_profile_override
         _apply_profile_override()

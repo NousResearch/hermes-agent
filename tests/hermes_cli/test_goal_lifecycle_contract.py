@@ -224,6 +224,42 @@ def test_enqueued_continuation_stays_recoverable_until_consumer_starts(monkeypat
     assert goals.GoalManager("enqueue-recovery").start_continuation() is False
 
 
+def test_stale_generation_event_cannot_consume_newer_pending_checkpoint(monkeypatch, tmp_path):
+    mgr = _manager(monkeypatch, tmp_path, sid="generation-scope")
+    mgr.set("only consume the matching checkpoint")
+    mgr.evaluate_after_turn("", turn_outcome=goals.EXECUTION_FAILED)
+    stale_goal_id = mgr.state.goal_id
+    stale_revision = mgr.state.checkpoint_revision
+    stale_token = mgr.state.continuation_token
+
+    # A real user turn evaluates new unfinished work before the old FIFO item
+    # drains, replacing the durable continuation generation.
+    mgr.start_continuation()
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *args, **kwargs: ("continue", "new work remains", False, None, False),
+    )
+    mgr.evaluate_after_turn("real user progress")
+    assert mgr.state.checkpoint_revision > stale_revision
+    assert mgr.state.continuation_pending is True
+
+    stale = goals.GoalManager("generation-scope")
+    assert stale.start_continuation(
+        expected_goal_id=stale_goal_id,
+        expected_checkpoint_revision=stale_revision,
+        expected_continuation_token=stale_token,
+    ) is False
+    assert goals.GoalManager("generation-scope").state.continuation_pending is True
+
+    current = goals.GoalManager("generation-scope")
+    assert current.start_continuation(
+        expected_goal_id=current.state.goal_id,
+        expected_checkpoint_revision=current.state.checkpoint_revision,
+        expected_continuation_token=current.state.continuation_token,
+    ) is True
+
+
 def test_pause_and_verified_completion_beat_queued_continuation(monkeypatch, tmp_path):
     paused = _manager(monkeypatch, tmp_path, sid="pause-race")
     paused.set("pause me")

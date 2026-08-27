@@ -149,6 +149,23 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     assert exec_line == f"{hermes_bin} desktop"
 
 
+def test_exec_matches_mixed_case_venv_shebang(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    interpreter = "/opt/PythonEnv/bin/python3.14"
+    hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+    monkeypatch.setattr(lde.sys, "executable", interpreter)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{hermes_bin} desktop"
+
+
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")

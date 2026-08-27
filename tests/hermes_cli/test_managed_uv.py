@@ -23,6 +23,15 @@ def _make_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
+def _write_admitted_project(root: Path, requires_python: str = ">=3.11,<3.15") -> None:
+    """Give managed-runtime fallback tests an explicit admission contract."""
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        f"requires-python = \"{requires_python}\"\n",
+        encoding="utf-8",
+    )
+
+
 def _runtime_info(
     executable: Path,
     sqlite_version: tuple[int, int, int],
@@ -638,6 +647,7 @@ class TestRuntimeRequestMinorLine:
         import hermes_cli.managed_uv as managed_uv
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
 
+        _write_admitted_project(tmp_path)
         state = {}
 
         def fake_run(cmd, **kwargs):
@@ -745,6 +755,7 @@ class TestPatchRetryOnVulnerableCandidate:
         import hermes_cli.managed_uv as managed_uv
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
 
+        _write_admitted_project(tmp_path)
         fake_run, fake_probe = self._versioned_probe_run(vulnerable_versions)
         current = SQLiteRuntimeInfo(
             executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
@@ -785,6 +796,7 @@ class TestPatchRetryOnVulnerableCandidate:
 
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
 
+        _write_admitted_project(tmp_path)
         current = SQLiteRuntimeInfo(
             executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
             python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
@@ -836,7 +848,7 @@ class TestMinorLineFallForward:
     """Regression tests for issue #76106: when EVERY build on the current
     minor line (e.g. all of 3.11 on Windows) links a vulnerable SQLite,
     the provisioner must fall forward to the next supported minor line
-    (3.12, then 3.13) -- first via a bare minor request, then via explicit
+    (3.12, then 3.13, then 3.14 when admitted) -- first via a bare minor request, then via explicit
     patches on that line -- instead of leaving the user stuck on every
     `hermes update` with no path to a fixed runtime.
     """
@@ -911,6 +923,7 @@ class TestMinorLineFallForward:
         and succeed via the explicit patch."""
         import hermes_cli.managed_uv as managed_uv
 
+        _write_admitted_project(tmp_path)
         install_calls = []
         fake_run, fake_probe = self._mapped_run(
             resolutions={
@@ -952,15 +965,21 @@ class TestMinorLineFallForward:
     def test_returns_none_with_bounded_attempts_when_all_minors_exhausted(
         self, tmp_path, monkeypatch
     ):
-        """When every build on every supported minor line (3.11-3.13) is
+        """When every build on every supported minor line (3.11-3.14) is
         vulnerable, the provisioner must give up with None -- and the total
         install workload must stay bounded by _MAX_PATCH_RETRIES per line."""
         import hermes_cli.managed_uv as managed_uv
 
+        _write_admitted_project(tmp_path)
         install_calls = []
-        resolutions = {"3.11": (3, 11, 14), "3.12": (3, 12, 30), "3.13": (3, 13, 30)}
+        resolutions = {
+            "3.11": (3, 11, 14),
+            "3.12": (3, 12, 30),
+            "3.13": (3, 13, 30),
+            "3.14": (3, 14, 30),
+        }
         patch_lists = {}
-        for minor in (11, 12, 13):
+        for minor in (11, 12, 13, 14):
             versions = [(3, minor, v) for v in range(30, 10, -1)]  # 20 patches
             patch_lists[f"3.{minor}"] = versions
             for version in versions:
@@ -984,13 +1003,14 @@ class TestMinorLineFallForward:
 
         cap = managed_uv._MAX_PATCH_RETRIES
         # Per line: one bare request + at most _MAX_PATCH_RETRIES explicit
-        # patches; three lines total (3.11, 3.12, 3.13) and nothing beyond
-        # 3.13 (requires-python is <3.14).
+        # patches; four lines total (3.11 through 3.14) and nothing beyond
+        # 3.14 (the project's requires-python contract is <3.15).
         assert install_calls.count("3.11") == 1
         assert install_calls.count("3.12") == 1
         assert install_calls.count("3.13") == 1
-        assert not any(call.startswith("3.14") for call in install_calls)
-        for minor in (11, 12, 13):
+        assert install_calls.count("3.14") == 1
+        assert not any(call.startswith("3.15") for call in install_calls)
+        for minor in (11, 12, 13, 14):
             explicit = [
                 call for call in install_calls
                 if call.startswith(f"3.{minor}.")
@@ -998,7 +1018,20 @@ class TestMinorLineFallForward:
             assert len(explicit) <= cap, (
                 f"3.{minor} explicit retries must be capped at {cap}: {explicit}"
             )
-        assert len(install_calls) <= 3 * (1 + cap)
+        assert len(install_calls) <= 4 * (1 + cap)
+
+    def test_future_minors_follow_project_admission_bound(self, tmp_path):
+        import hermes_cli.managed_uv as managed_uv
+
+        _write_admitted_project(tmp_path, ">=3.11,<3.15")
+        assert managed_uv._supported_future_python_minors(
+            tmp_path, self._current_3_11_14()
+        ) == [12, 13, 14]
+
+        _write_admitted_project(tmp_path, ">=3.11,<3.14")
+        assert managed_uv._supported_future_python_minors(
+            tmp_path, self._current_3_11_14()
+        ) == [12, 13]
 
 
 class TestListAvailablePatches:

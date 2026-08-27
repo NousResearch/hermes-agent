@@ -111,6 +111,32 @@ def test_canonical_session_resolves_hidden_row(home):
     assert row["last_session"]["id"] == "visible1"
 
 
+def test_profile_list_opens_one_db_for_all_session_summaries(home, monkeypatch):
+    """The roster's three session views share one profile-local connection."""
+    db = _db(home)
+    _add_session(db, "forever1", title="Bot Chat", ts=1000, text="forever chat content")
+    _add_session(db, "worker1", source="kanban", title="Task", ts=2000, text="worker output")
+    db.close()
+
+    import hermes_state
+
+    original = hermes_state.SessionDB
+    opened = []
+
+    class CountingSessionDB(original):
+        def __init__(self, *args, **kwargs):
+            opened.append(kwargs.get("db_path"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state, "SessionDB", CountingSessionDB)
+
+    row = _row(_profiles({}), "default")
+
+    assert row["canonical_session"]["id"] == "forever1"
+    assert row["worker_session"]["id"] == "worker1"
+    assert opened == [home / "state.db"]
+
+
 def test_canonical_session_none_when_no_bot_chat_row(home):
     db = _db(home)
     _add_session(db, "real1", title="Real", ts=1000, text="real content")

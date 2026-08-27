@@ -108,6 +108,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  const submitCooldownRef = useRef<number | null>(null)
+  const blurTimerRef = useRef<number | null>(null)
   // True while OS-drop files are being staged/uploaded into the session. Blocks
   // submit and shows a spinner so confirming the edit can't race the async
   // upload and drop the gateway-side ref before it lands in the draft.
@@ -124,6 +126,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // cleanup so keyboard routing falls back to the visible chat composer.
   useEffect(
     () => () => {
+      if (submitCooldownRef.current !== null) {
+        clearTimeout(submitCooldownRef.current)
+      }
+
+      if (blurTimerRef.current !== null) {
+        clearTimeout(blurTimerRef.current)
+      }
+
       notifyThreadEditClose()
       releaseActiveComposer('edit')
     },
@@ -602,7 +612,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       // Clear latch after cooldown to allow re-submission. This prevents rapid
       // double-Enter but doesn't require tracking when onEdit settles (which may
       // be synchronous or async, and whose promise we don't have access to).
-      window.setTimeout(() => {
+      if (submitCooldownRef.current !== null) {
+        window.clearTimeout(submitCooldownRef.current)
+      }
+
+      submitCooldownRef.current = window.setTimeout(() => {
+        submitCooldownRef.current = null
         setSubmitting(false)
       }, 200)
     } catch {
@@ -618,7 +633,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return
       }
 
-      window.setTimeout(() => {
+      if (blurTimerRef.current !== null) {
+        window.clearTimeout(blurTimerRef.current)
+      }
+
+      blurTimerRef.current = window.setTimeout(() => {
+        blurTimerRef.current = null
         const root = rootRef.current
         const active = document.activeElement
 

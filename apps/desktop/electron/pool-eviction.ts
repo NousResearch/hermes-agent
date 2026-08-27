@@ -17,6 +17,35 @@
 export interface PoolEvictionEntry {
   lastActiveAt?: null | number
   process?: unknown
+  /** True for a local backend reservation before its child process is attached. */
+  countsTowardPoolCap?: boolean
+}
+
+export const POOL_CAPACITY_EXCEEDED = 'POOL_CAPACITY_EXCEEDED'
+
+export class PoolCapacityError extends Error {
+  readonly code = POOL_CAPACITY_EXCEEDED
+
+  constructor(max: number) {
+    super(`Local profile backend budget reached (${max}); wait for an active profile backend to finish or close it before opening another.`)
+    this.name = 'PoolCapacityError'
+  }
+}
+
+function isLocalBackendEntry(entry: PoolEvictionEntry): boolean {
+  return Boolean(entry.process) || entry.countsTowardPoolCap === true
+}
+
+/**
+ * Hard admission guard for local profile backends. Unlike LRU eviction this
+ * counts in-flight reservations, so concurrent profile opens cannot all observe
+ * spare capacity and stampede the host with MCP-heavy child trees.
+ */
+export function canAdmitLocalBackend(
+  entries: Iterable<[unknown, PoolEvictionEntry]>,
+  max: number
+): boolean {
+  return [...entries].filter(([, entry]) => isLocalBackendEntry(entry)).length < Math.max(1, max)
 }
 
 /**
@@ -32,7 +61,7 @@ export function selectPoolEvictions<K>(
   now: number,
   freshMs: number
 ): K[] {
-  const spawned = [...entries].filter(([, entry]) => Boolean(entry.process))
+  const spawned = [...entries].filter(([, entry]) => isLocalBackendEntry(entry))
 
   if (spawned.length <= keep) {
     return []

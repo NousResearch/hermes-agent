@@ -250,6 +250,26 @@ def validate_signal_config(config: PlatformConfig) -> bool:
 # Signal Adapter
 # ---------------------------------------------------------------------------
 
+def _sig_secret(name: str, default: str = "") -> str:
+    """Resolve a per-profile ``SIGNAL_*`` setting honoring the active secret
+    scope (#93522).
+
+    Under ``gateway.multiplex_profiles`` every secondary profile is
+    constructed inside ``_profile_runtime_scope`` (``gateway/run.py``) and
+    its ``.env`` lives in that scope — raw ``os.getenv`` misses it and
+    leaks the default profile's values instead. The primary/active profile
+    is constructed without a scope and legitimately owns ``os.environ``
+    (same canonical shape as QQ's ``_resolve_qq_secret``).
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
@@ -268,7 +288,10 @@ class SignalAdapter(BasePlatformAdapter):
         self.ignore_stories = extra.get("ignore_stories", True)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
-        group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        # Scoped reads (#93522): allowlists are per-profile authorization
+        # config; raw os.getenv misses secondary profiles' .env values and
+        # leaks the default profile's list into them.
+        group_allowed_str = _sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
         # Mention filter — only respond in groups when the bot account is @mentioned.
@@ -285,7 +308,7 @@ class SignalAdapter(BasePlatformAdapter):
         # every inbound DM from any contact gets a 👀 reaction).
         # "*" means all users allowed (open mode); empty means no restriction
         # recorded at adapter level (run.py still enforces auth separately).
-        dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
+        dm_allowed_str = _sig_secret("SIGNAL_ALLOWED_USERS", "*")
         self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
 
         # HTTP client

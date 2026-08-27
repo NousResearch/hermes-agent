@@ -249,9 +249,19 @@ def cron_list(show_all: bool = False):
 
 def cron_tick():
     """Run due jobs once and exit."""
-    from cron.scheduler import tick
+    from cron.scheduler import CronTickYielded, tick
     try:
         tick(verbose=True)
+    except CronTickYielded as exc:
+        # Not expected on this surface (a one-shot CLI process has no boot
+        # fingerprint, so the yield gate is inert) — but if a future caller
+        # records one, report cleanly instead of a traceback.
+        print(color(f"✗ {exc}", Colors.YELLOW))
+        print(
+            "  A fresher gateway process owns the runtime lock and will fire "
+            "due jobs; this stale process yielded its tick."
+        )
+        return 1
     except OSError as exc:
         # tick() now propagates real lock-acquisition failures (EMFILE,
         # EACCES on open, ...) instead of swallowing them as contention

@@ -1000,6 +1000,20 @@ def release_gateway_runtime_lock() -> None:
     _clear_running_pid_cache()
 
 
+def owns_gateway_runtime_lock() -> bool:
+    """Return True when THIS process holds the gateway runtime lock.
+
+    ``is_gateway_runtime_lock_active`` answers "does *anyone* hold the lock?"
+    and deliberately returns True for the lock's own owner — a caller deciding
+    whether to yield to a *fresh* gateway (e.g. the cron tick's stale-code
+    gate) must distinguish self-ownership from another process's lock, and
+    re-probing the lock file cannot: acquiring a probe handle on a lock this
+    process already holds succeeds on POSIX. The in-process handle is the only
+    discriminator, so expose it as a tiny predicate.
+    """
+    return _gateway_lock_handle is not None
+
+
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """Return True when some process currently owns the gateway runtime lock."""
     global _gateway_lock_handle

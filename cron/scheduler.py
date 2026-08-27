@@ -206,6 +206,91 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
         return None
 
 
+class CronTickYielded(RuntimeError):
+    """A stale-code ticker yielded this tick to a fresh gateway.
+
+    Raised by ``tick()`` BEFORE the tick lock is acquired when the process is
+    provably running stale code (boot fingerprint ≠ disk), it does NOT own the
+    gateway runtime lock, and that lock is held by another (fresh) process.
+    Fresh code picks the job up within one tick interval, so the stale process
+    must stay out of the dispatch race entirely — including lock contention,
+    which would otherwise starve the fresh ticker on a busy minute.
+
+    Raised instead of returned so the provider loops
+    (``cron/scheduler_provider.py``) record it via ``record_ticker_error`` and
+    mark the heartbeat ``success=False``: a yielded tick is NOT a healthy tick
+    (``hermes cron status`` must not show green while jobs only fire from the
+    other process). Liveness stays visible — the loop keeps beating and keeps
+    yielding; if the fresh gateway dies, its lock releases and the stale
+    ticker's next tick proceeds normally (self-healing, no restart needed).
+
+    Skew detection returning ``None`` (non-git install, no boot fingerprint —
+    e.g. a one-shot CLI tick, or any probe failure) never yields: yield only
+    on certainty, fail open otherwise.
+    """
+
+    def __init__(self, boot_rev: str, disk_rev: str) -> None:
+        self.boot_rev = boot_rev
+        self.disk_rev = disk_rev
+        super().__init__(
+            f"Cron tick yielded to a fresh gateway process (stale code: "
+            f"booted on {boot_rev}, disk is at {disk_rev})"
+        )
+
+
+# Log the yield at most once per episode: a stale ticker that keeps yielding
+# for hours must not spam the error log every interval. Reset when the
+# condition clears (proceeds without yielding) or the skew changes.
+_YIELD_LOG_INTERVAL_SECONDS = 3600.0
+_last_yield_log: dict[str, object] = {}
+
+
+def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
+    """Decide whether this tick must yield to a fresher gateway process.
+
+    Returns the ``(boot_rev, disk_rev)`` skew labels when ALL of: this process
+    has a boot fingerprint that differs from the checkout on disk (code
+    skew), it does not own the gateway runtime lock, and some other process
+    currently holds that lock — i.e. a fresh gateway is alive and will
+    dispatch due jobs itself. Returns ``None`` otherwise.
+
+    Every probe failure returns ``None``: the gateway-status import, the lock
+    probe, and skew detection are each individually fail-open. Yielding is a
+    certainty claim, never a guess.
+    """
+    skew = _detect_gateway_code_skew()
+    if skew is None:
+        return None
+    try:
+        from gateway import status as _gateway_status
+    except Exception:
+        return None
+    try:
+        if _gateway_status.owns_gateway_runtime_lock():
+            return None
+        if not _gateway_status.is_gateway_runtime_lock_active():
+            return None
+    except Exception:
+        return None
+    return skew
+
+
+def _log_tick_yield_once(reason: str) -> None:
+    """Log the yield at error level once per episode (skew signature)."""
+    global _last_yield_log
+    now = time.monotonic()
+    last_reason = _last_yield_log.get("reason")
+    last_at = _last_yield_log.get("at", 0.0)
+    if last_reason != reason or (now - float(last_at)) >= _YIELD_LOG_INTERVAL_SECONDS:
+        logger.error(
+            "Cron tick yielded: this process is running stale code (%s) and a "
+            "fresher gateway owns the runtime lock — jobs will fire from that "
+            "process. Restart this one to reclaim its ticks.",
+            reason,
+        )
+    _last_yield_log = {"reason": reason, "at": now}
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -7934,6 +8019,22 @@ def tick(
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
+    # Stale-code yield gate — BEFORE the lock race (#stale-tick-preemption).
+    # A long-lived process whose checkout was updated underneath it (hot
+    # ``git pull``, interrupted ``hermes update``) serves MIXED sys.modules:
+    # every agent job it dispatches can die on ImportErrors whose real cause
+    # is staleness. When this process is provably stale AND a fresher
+    # process holds the gateway runtime lock, that process's own ticker
+    # dispatches due jobs — this one must not even enter the lock race and
+    # preempt dispatch on a busy minute. When no fresh holder exists
+    # (desktop-standalone users), yielding would silently kill the user's
+    # only ticker, so the tick proceeds and job failures surface through the
+    # delivery path's stale-code hint instead.
+    _skew = _should_yield_tick_to_fresh_gateway()
+    if _skew is not None:
+        _log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
+        raise CronTickYielded(_skew[0], _skew[1])
+
     lock_dir, lock_file = _get_lock_paths()
     _ensure_cron_dir(lock_dir)
 

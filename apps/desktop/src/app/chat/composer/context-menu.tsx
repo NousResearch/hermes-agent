@@ -44,7 +44,7 @@ import {
   Plus,
   Trash2
 } from '@/lib/icons'
-import { reorderCommitHaptic, REORDER_DRAG_TRANSITION_CSS, REORDER_RAIL_TRANSITION_CSS } from '@/lib/reorder'
+import { REORDER_DRAG_TRANSITION_CSS, REORDER_RAIL_TRANSITION_CSS, reorderCommitHaptic } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import {
   $promptTemplates,

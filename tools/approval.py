@@ -2971,6 +2971,15 @@ def clear_session(session_key: str) -> None:
         entry.result = "deny"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
+    # Session-persistent code kernels are owned by this same key: they die
+    # at the same boundary that clears the session's approval and yolo
+    # state, so a finished conversation cannot leak a live interpreter.
+    try:
+        from tools.code_kernel import shutdown_kernels_for_owner
+
+        shutdown_kernels_for_owner(session_key)
+    except Exception:
+        pass
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:

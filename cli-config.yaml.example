@@ -1517,6 +1517,16 @@ stt:
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
+  # kernel_mode: per-call | session (default: per-call)
+  #   per-call — fresh child process per execute_code call; no state carries over.
+  #   session  — one persistent kernel per (task, mode, interpreter, cwd, tool-set):
+  #              variables, imports, and loaded data survive across calls, so
+  #              multi-step data work stops re-loading its inputs every call.
+  #              A timed-out/interrupted cell kills the kernel (state lost; the
+  #              next call starts fresh). Pass reset=true on a call to discard
+  #              state deliberately. Security scrubbing, tool whitelist, and
+  #              output redaction are identical in both modes.
+  # kernel_mode: per-call
 
 # =============================================================================
 # Subagent Delegation

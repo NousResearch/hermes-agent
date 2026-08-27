@@ -2864,6 +2864,34 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Kernel lifetime:
+        #   per-call (default) — a fresh child process per execute_code call;
+        #     no state carries over. Today's behavior.
+        #   session            — one persistent kernel per (session owner,
+        #     mode, interpreter, cwd, tool-set): variables, imports, and
+        #     loaded data survive across calls AND across the user turns of
+        #     one conversation (the owner is the conversation's approval
+        #     session key; delegated subagent sessions get their own).
+        #     Kernels are disposed with their session (session clear/new),
+        #     reaped after kernel_idle_timeout seconds idle, and capped at
+        #     max_session_kernels live children process-wide (LRU evicted).
+        #     A timed-out or interrupted cell kills the kernel (state lost,
+        #     next call starts fresh), and the child environment is frozen
+        #     at kernel spawn — pass reset=true after changing env
+        #     passthrough. Tool RPC authority is rebound to each cell: a
+        #     later cell's tool calls run under that cell's approval and
+        #     session context, never the first cell's. Security scrubbing,
+        #     the tool whitelist, and output redaction are identical in
+        #     both modes. NOTE for per-script static policy (see
+        #     check_execute_code_guard): a persistent namespace lets cell
+        #     N+1 reach objects cell N created, which a single-cell static
+        #     scan cannot see — the runtime RPC boundary (allow-list, call
+        #     budget, per-cell authority) is the operative cross-cell
+        #     enforcement in this mode.
+        "kernel_mode": "per-call",
+        # Lifecycle bounds for kernel_mode: session.
+        "kernel_idle_timeout": 1800,
+        "max_session_kernels": 4,
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).

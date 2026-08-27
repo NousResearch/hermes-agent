@@ -123,9 +123,12 @@ terminal:
 ```
 
 `dest` defaults to `src`. A source that lies under a hidden path (for
-example `~/.ssh/config`) is ignored with a warning. Because the root is
-read-only, a `dest` must already exist on the host or sit under a writable
-mount.
+example `~/.ssh/config`) is ignored with a warning. So is a source that
+contains a hidden path (for example your home directory) when `dest`
+differs from `src`: the hidden paths are covered only at their own
+location, so a copy of the tree elsewhere would show them. Bind such a
+source at its own path instead. Because the root is read-only, a `dest`
+must already exist on the host or sit under a writable mount.
 
 ## Resource limits
 

@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { $workspaceMode, setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
+  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   blankDraftTile,
@@ -502,6 +504,76 @@ describe('boot-restore selection homing (⌘R tab persistence)', () => {
     // One-shot consumed: the next selection change is a real navigation.
     $selectedStoredSessionId.set('nav-2')
     expect(activePane()).toBe('workspace')
+  })
+})
+
+describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
+  afterEach(() => {
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    setWorkspaceScope('sessions')
+  })
+
+  it('a Bots-pane click keeps the main-zone bot tile focused instead of collapsing to a null selection edge', () => {
+    // Bot chats open as TILES and never set $selectedStoredSessionId. Clicking
+    // a roster row moves the interaction tracker to the sidebar group, whose
+    // active pane is chrome ('hermes-bots:pane'), not a session tile. The old
+    // derivation then fell back to the null primary selection and published a
+    // NULL "focused session" edge — which the Bots plugin read as "the chat
+    // lost the center", releasing its open claim and re-asserting the Bots
+    // home over the still-visible chat (the reported "jumps to the list").
+    setWorkspaceScope('bots', 'bot:b')
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(
+      split('row', [
+        group(['sessions', 'hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'grp-sessions' }),
+        group(['workspace', tilePane('chat-b')], { active: tilePane('chat-b'), id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-sessions')
+
+    expect($focusedStoredSessionId.get()).toBe('chat-b')
+  })
+
+  it('the main-zone tile also answers while the tracker sits on the workspace tab itself', () => {
+    setWorkspaceScope('bots', 'bot:b')
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(group(['workspace', tilePane('chat-b')], { active: tilePane('chat-b'), id: 'grp-main' }))
+    noteActiveTreeGroup('grp-main')
+
+    expect($focusedStoredSessionId.get()).toBe('chat-b')
+  })
+
+  it('a closed bot chat (no tile in main) still falls back to the selection', () => {
+    setWorkspaceScope('bots', 'bot:b')
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(
+      split('row', [
+        group(['sessions', 'hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'grp-sessions' }),
+        group(['workspace'], { active: 'workspace', id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-sessions')
+
+    // No tile owns the main zone — the chat was closed — so the null edge is
+    // genuine and must still surface (that is what lets the Bots home return).
+    expect($focusedStoredSessionId.get()).toBeNull()
+  })
+
+  it('sessions mode keeps collapsing to the primary selection (derivation gated to Bot Mode)', () => {
+    $selectedStoredSessionId.set('primary-1')
+    $layoutTree.set(
+      split('row', [
+        group(['sessions'], { active: 'sessions', id: 'grp-sessions' }),
+        group(['workspace', tilePane('stacked')], { active: tilePane('stacked'), id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-sessions')
+
+    // The main-zone tile must NOT answer here: in sessions mode the sidebar
+    // highlight follows the primary selection exactly as it always has.
+    expect($workspaceMode.get()).toBe('sessions')
+    expect($focusedStoredSessionId.get()).toBe('primary-1')
   })
 })
 

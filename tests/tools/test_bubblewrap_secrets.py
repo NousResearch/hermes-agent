@@ -364,6 +364,27 @@ class TestAncestorPinIntegration:
 
 
 @needs_bwrap
+class TestAncestorBindIntegration:
+    """An operator bind of HOME at another destination would show the secrets
+    at that destination; it is dropped."""
+
+    def test_ro_bind_of_home_elsewhere_is_dropped_and_shows_nothing(self, sandbox_root, work_dir, fake_home):
+        config = BubblewrapConfig(binds=(BindMount(src=str(fake_home), dest="/mnt", readonly=True),))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+        try:
+            assert not any(m[-1] == "/mnt" for m in _mounts(env._wrap_popen_args(["bash"])))
+            out = env.execute(
+                "test -e /mnt/.ssh && echo MNT-SSH-EXISTS; cat /mnt/.ssh/secret 2>/dev/null; "
+                f"ls -A /mnt/.ssh {fake_home}/.ssh 2>/dev/null"
+            )["output"]
+            assert "MNT-SSH-EXISTS" not in out
+            assert MARKER not in out
+            assert "secret" not in out.split()
+        finally:
+            env.cleanup()
+
+
+@needs_bwrap
 class TestSymlinkedEntryIntegration:
     """A sensitive entry that is a symlink (a dotfiles repository) is hidden
     at its target, and with cwd=HOME the parent of the target cannot be

@@ -1,10 +1,18 @@
 import { useEffect } from 'react'
 
-import { fetchStoredTranscriptAcrossBackends, getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import {
+  fetchStoredTranscriptAcrossBackends,
+  getLatestSessionMessages,
+  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+} from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
 import { notify } from '@/store/notifications'
-import { isReadOnlyRuntimeId, readOnlyRuntimeIdFor, resumeWithStoredTranscriptFallback } from '@/store/read-only-transcript'
+import {
+  isReadOnlyRuntimeId,
+  readOnlyRuntimeIdFor,
+  resumeWithStoredTranscriptFallback
+} from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
@@ -245,8 +253,7 @@ export function useSessionTileDelegate({
               ...state,
               busy: false,
               awaitingResponse: false,
-              messages:
-                state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
+              messages: state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
             }),
             storedSessionId
           )

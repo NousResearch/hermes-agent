@@ -17,7 +17,7 @@
  */
 import { atom } from 'nanostores'
 
-import type { SessionOwnerResolutionError } from './session-owner-resolution';
+import type { SessionOwnerResolutionError } from './session-owner-resolution'
 import { isSessionOwnerResolutionError } from './session-owner-resolution'
 
 /** Stored session ids currently open as read-only stored transcripts. The

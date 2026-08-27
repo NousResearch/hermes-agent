@@ -111,6 +111,9 @@ DEFAULT_CONFIG = {
         # transport-layer failures (timeout/overloaded) before the agent
         # switches to the fallback model.  Lower to 1 for fast failover on
         # flaky primaries; raise to tolerate longer provider hiccups.
+        # 0 disables transport-failure fallback entirely (rate-limit and
+        # billing failover still applies); negative values are invalid
+        # and fall back to the default.
         "transport_fallback_threshold": 2,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing

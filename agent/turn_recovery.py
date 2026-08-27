@@ -1416,7 +1416,10 @@ def route_classified_error(
         # Compression exhausted or didn't help: fall through to normal error handling.
 
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
-    # the retry window); transport errors get 1 retry first.
+    # the retry window); transport errors are gated by agent._transport_fallback_threshold
+    # (default 2) — 1 = fall back on the first transport failure, N = require N
+    # consecutive failures, 0 = disabled (never switch models on transport errors;
+    # rate-limit/billing fallback above still applies).
     is_rate_limited = classified.reason in _RATE_LIMIT_REASONS
     # Some relays wrap upstream output-cap 400s as 429 (rate_limit). Only the max_tokens
     # clamp fixes it. Parsed once; gates the eager-fallback exemption and overflow entry.
@@ -1436,12 +1439,13 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    _tft = getattr(agent, "_transport_fallback_threshold", 2)
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (
             _is_transport_failure
-            and retry_count
-            >= getattr(agent, "_transport_fallback_threshold", 2)
+            and _tft > 0  # 0 = disabled: never fall back on transport errors
+            and retry_count >= _tft
         )
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):

@@ -1359,12 +1359,20 @@ def _apply_agent_section(agent, _agent_cfg):
     # failures (timeout/overloaded) before eager fallback to the next model
     # in the fallback chain fires.  The hardcoded value of 2 is unchanged as
     # the default; overridable via agent.transport_fallback_threshold in
-    # config.yaml for users who want slower (raise) or faster (lower to 1)
-    # failover on flaky primaries.
+    # config.yaml.  0 disables transport-failure fallback entirely (rate-limit
+    # /billing failover still applies); large values make fallback extremely
+    # reluctant; 1 = fallback on the first transport failure.  Negative
+    # values are invalid and fall back to the default.
     try:
         _raw_tft = _agent_section.get("transport_fallback_threshold", 2)
         _tft = int(_raw_tft)
-        _tft = max(_tft, 1)  # 1 = fallback on the first transport failure
+        if _tft < 0:
+            logger.warning(
+                "Invalid agent.transport_fallback_threshold=%r (< 0) — "
+                "falling back to the default of 2",
+                _raw_tft,
+            )
+            _tft = 2
     except (TypeError, ValueError):
         _tft = 2
     agent._transport_fallback_threshold = _tft

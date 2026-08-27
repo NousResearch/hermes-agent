@@ -21,6 +21,7 @@ import {
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $sessions,
   resolveComposerSessionKey,
@@ -208,6 +209,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // must never inherit the currently selected session after the user moves
       // to another chat.
       let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+
+      // A read-only stored-transcript open (#94724: owner unresolvable under
+      // registry topology) has no routable live runtime — refuse the send
+      // with the explanation rather than minting a prompt on a backend that
+      // never owned the session.
+      if (isStoredTranscriptReadOnly(targetStoredSessionId)) {
+        notify({ kind: 'info', message: copy.readOnlyTranscriptSendBlocked })
+
+        return false
+      }
 
       let targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current

@@ -6,7 +6,13 @@ import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
-import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  fetchStoredTranscriptAcrossBackends,
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
@@ -52,6 +58,7 @@ import {
   untombstoneSessions
 } from '@/store/projects'
 import { setApprovalRequest } from '@/store/prompts'
+import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
   $connection,
@@ -90,6 +97,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,
@@ -1583,6 +1591,10 @@ export function useSessionActions({
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
+        // A live resume proves the owner routed — retire any read-only latch
+        // a previous no-owner open left behind (#94724: the backfill stamped
+        // the row, or a topology change made the owner resolvable again).
+        clearStoredTranscriptReadOnly(storedSessionId)
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
@@ -1721,6 +1733,47 @@ export function useSessionActions({
 
         if (!isCurrentResume()) {
           return
+        }
+
+        // #94724 no-owner recovery: the owner ladder failed closed — which is
+        // CORRECT under registry topology — but the stored transcript may be
+        // fully intact in some backend's state.db. If the ambient REST
+        // fallback above didn't already paint it, probe the registered
+        // backends READ-ONLY (id-only GET; no live session is routed or
+        // minted anywhere). When history is reachable, open the session
+        // read-only instead of dead-ending on the resolution error: writes
+        // stay blocked, and a later resume (after the single-match owner
+        // backfill stamps the row) upgrades it back to a live session.
+        if (isSessionOwnerResolutionError(err)) {
+          let painted = !fallbackError && viewMessagesForReconcile().length > 0
+
+          if (!painted) {
+            const stored = await fetchStoredTranscriptAcrossBackends(storedSessionId).catch(() => null)
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (stored && stored.messages.length > 0) {
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+                : viewMessagesForReconcile()
+
+              setMessages(reconcileAuthoritativeMessages(stored.messages, previousMessages))
+              painted = true
+            }
+          }
+
+          if (painted) {
+            markStoredTranscriptReadOnly(storedSessionId)
+            notify({
+              kind: 'info',
+              title: copy.readOnlyTranscriptTitle,
+              message: copy.readOnlyTranscriptBody
+            })
+
+            return
+          }
         }
 
         // The session is genuinely gone (deleted, or a stale id from a wiped /

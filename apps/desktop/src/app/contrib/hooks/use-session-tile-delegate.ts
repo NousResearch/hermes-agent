@@ -1,8 +1,12 @@
 import { useEffect } from 'react'
 
-import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { fetchStoredTranscriptAcrossBackends, getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { translateNow } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
+import { notify } from '@/store/notifications'
+import { isReadOnlyRuntimeId, readOnlyRuntimeIdFor, resumeWithStoredTranscriptFallback } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
@@ -138,6 +142,11 @@ export function useSessionTileDelegate({
         return true
       },
       interruptSession: async runtimeId => {
+        // Read-only stored-transcript tiles have no live turn to interrupt.
+        if (isReadOnlyRuntimeId(runtimeId)) {
+          return
+        }
+
         // Same cooldown as the primary chat's Stop (#83855): the gateway may
         // still be winding down after this interrupt, so a quick edit/resend
         // on the tile must go interrupt-first even though busy already reads
@@ -193,17 +202,65 @@ export function useSessionTileDelegate({
             ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
             : owner
 
-        const [prefetch, resumed] = await Promise.all([
-          getLatestSessionMessages(storedSessionId, restScope).catch(() => null),
-          singleFlightSessionResume(storedSessionId, () =>
-            requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-              session_id: storedSessionId,
-              cols: 96,
-              omit_messages: true,
-              ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-            })
+        const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+
+        // #94724 no-owner recovery: dispatching the resume through the same
+        // fail-closed gate as the window's RPC dispatcher keeps an unknown
+        // owner off the ambient socket, and the wrapper opens the stored
+        // transcript read-only instead of dead-ending the tile — the id-only
+        // REST read routes no live session at all.
+        const outcome = await resumeWithStoredTranscriptFallback(
+          storedSessionId,
+          () => {
+            assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
+
+            return singleFlightSessionResume(storedSessionId, () =>
+              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                session_id: storedSessionId,
+                cols: 96,
+                omit_messages: true,
+                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+              })
+            )
+          },
+          async () => {
+            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+
+            if (!stored) {
+              throw new Error('stored transcript unavailable on every reachable backend')
+            }
+
+            return stored
+          }
+        )
+
+        const prefetch = await prefetchPromise
+
+        if (outcome.mode === 'read-only') {
+          const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)
+
+          updateSessionState(
+            readOnlyId,
+            state => ({
+              ...state,
+              busy: false,
+              awaitingResponse: false,
+              messages:
+                state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
+            }),
+            storedSessionId
           )
-        ])
+
+          notify({
+            kind: 'info',
+            title: translateNow('desktop.readOnlyTranscriptTitle'),
+            message: translateNow('desktop.readOnlyTranscriptBody')
+          })
+
+          return readOnlyId
+        }
+
+        const resumed = outcome.resumed
 
         const runtimeId = resumed?.session_id
 
@@ -233,6 +290,15 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
+        // A read-only stored-transcript tile has no live runtime to submit
+        // into (#94724). Refuse with the explanation instead of minting a
+        // misrouted prompt on a backend that never owned the session.
+        if (isReadOnlyRuntimeId(runtimeId)) {
+          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
+
+          return
+        }
+
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
         const routedRequest = storedSessionId

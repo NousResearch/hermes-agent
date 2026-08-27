@@ -203,7 +203,8 @@ def _setup_backend_bubblewrap(config: dict) -> None:
     _report_binary(shutil.which("bwrap"),
                    "bwrap not found. Install the bubblewrap package (apt, dnf or pacman: bubblewrap).",
                    "Install: https://github.com/containers/bubblewrap", "bwrap found: ")
-    config["terminal"].setdefault("cwd", str(Path.home()))
+    _setup._info(None, "The working directory is the writable set: point terminal.cwd at a project",
+                 "or scratch directory rather than your home directory.")
     _prompt_bubblewrap_profile(config)
 
 

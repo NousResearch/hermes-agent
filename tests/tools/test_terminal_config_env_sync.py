@@ -138,3 +138,30 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+BUBBLEWRAP_KEYS = {
+    "bubblewrap_profile": "TERMINAL_BUBBLEWRAP_PROFILE",
+    "bubblewrap_binds": "TERMINAL_BUBBLEWRAP_BINDS",
+    "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
+    "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
+    "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+}
+
+
+def test_bubblewrap_defaults_feed_the_backend_loader():
+    """The bridged env values of the defaults load into the builder's own
+    defaults, JSON-encoded list included."""
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.environments import bubblewrap
+
+    assert {bubblewrap.ENV_PROFILE, bubblewrap.ENV_BINDS, bubblewrap.ENV_MEMORY_MB,
+            bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS} == set(BUBBLEWRAP_KEYS.values())
+
+    env = {
+        TERMINAL_CONFIG_ENV_MAP[key]: _terminal_env_value(DEFAULT_CONFIG["terminal"][key])
+        for key in BUBBLEWRAP_KEYS
+    }
+    assert env[bubblewrap.ENV_BINDS] == "[]"
+    assert bubblewrap.load_bubblewrap_config(env) == bubblewrap.BubblewrapConfig()

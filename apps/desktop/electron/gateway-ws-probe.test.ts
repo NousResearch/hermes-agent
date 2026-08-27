@@ -116,6 +116,94 @@ test('probe times out when the socket never opens', async () => {
   assert.match(result.reason, /Timed out/)
 })
 
+// --- progress-aware waiting (#96177) ------------------------------------------
+// A Windows cold start can hold the backend's GIL for 12-28s while gateway
+// platform modules import, leaving the WS upgrade unanswered past the fixed
+// 10s budget. With `keepWaitingWhile`, the probe must survive that window as
+// long as the backend reports progress — and still fail fast when it stops.
+
+test('probe waits past the base budget while keepWaitingWhile reports progress', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+  let progressed = true
+
+  const promise = probeGatewayWebSocket('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 30,
+    readyGraceMs: 10,
+    progressCheckIntervalMs: 5,
+    maxConnectWaitMs: 500,
+    keepWaitingWhile: () => progressed
+  })
+
+  // The upgrade lands AFTER the 30ms quiet budget — the exact cold-start
+  // shape from #96177 (backend alive and importing, socket unanswered).
+  setTimeout(() => {
+    instances[0].emit('open')
+  }, 60)
+
+  const result = await promise
+  assert.equal(result.ok, true, 'progress-aware probe must outlive the fixed budget')
+})
+
+test('probe fails once progress stops after the base budget', async () => {
+  const { FakeWs } = makeFakeWs()
+  let progressed = true
+
+  const promise = probeGatewayWebSocket('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 30,
+    readyGraceMs: 10,
+    progressCheckIntervalMs: 5,
+    maxConnectWaitMs: 500,
+    keepWaitingWhile: () => progressed
+  })
+
+  setTimeout(() => {
+    progressed = false
+  }, 40)
+
+  const result = await promise
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /Timed out/)
+  assert.match(result.reason, /backend progress stopped after 30ms/, 'reason names the quiet budget')
+})
+
+test('probe respects the hard cap even while progress keeps reporting true', async () => {
+  const { FakeWs } = makeFakeWs()
+
+  const result = await probeGatewayWebSocket('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 30,
+    readyGraceMs: 10,
+    progressCheckIntervalMs: 5,
+    maxConnectWaitMs: 60,
+    keepWaitingWhile: () => true
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /Timed out/)
+  assert.match(result.reason, /hard cap 60ms/, 'reason names the cap that ended the wait')
+})
+
+test('a throwing keepWaitingWhile fails closed at the base budget', async () => {
+  const { FakeWs } = makeFakeWs()
+
+  const result = await probeGatewayWebSocket('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 20,
+    readyGraceMs: 10,
+    progressCheckIntervalMs: 5,
+    maxConnectWaitMs: 500,
+    keepWaitingWhile: () => {
+      throw new Error('boom')
+    }
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /Timed out after \d+ms waiting for the WebSocket to open\./)
+  assert.doesNotMatch(result.reason, /backend progress/, 'no extension when the check throws')
+})
+
 test('probe fails gracefully when the constructor throws', async () => {
   class ThrowingWs {
     constructor() {

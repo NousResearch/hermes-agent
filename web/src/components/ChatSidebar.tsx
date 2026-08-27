@@ -62,6 +62,11 @@ interface SessionInfo {
   title?: string
 }
 
+// Auto-redial budget for the JSON-RPC sidecar (#95951). After this many
+// bounded-backoff attempts the manual Reconnect affordance stays the only
+// path, mirroring the events feed's give-up contract.
+const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
+
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: 'idle',
   connecting: 'connecting',
@@ -205,6 +210,40 @@ export function ChatSidebar({
       }
     })
 
+    // Auto-redial after a transient drop (#95951): a dashboard service
+    // restart closes the sidecar's WebSocket with 1012, and GatewayClient
+    // deliberately delegates reconnect policy to this connection owner.
+    // Bounded exponential backoff — the same shape the PTY pane uses —
+    // capped at SIDE_CAR_MAX_RECONNECT_ATTEMPTS; after that the manual
+    // Reconnect affordance stays the only path. A successful open resets
+    // the counter; unmount or a scope switch (version bump) cancels the
+    // pending timer because this effect tears down with the old client.
+    let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    let redialAttempt = 0;
+    const offRedial = gw.onState((s) => {
+      if (s === "open") {
+        redialAttempt = 0;
+        return;
+      }
+      if (s !== "closed" && s !== "error") {
+        return;
+      }
+      if (cancelled || redialTimer) {
+        return;
+      }
+      if (redialAttempt >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
+        return;
+      }
+      const delayMs = Math.min(250 * 2 ** redialAttempt, 3000);
+      redialAttempt += 1;
+      redialTimer = setTimeout(() => {
+        redialTimer = null;
+        if (!cancelled) {
+          setVersion((v) => v + 1);
+        }
+      }, delayMs);
+    });
+
     // Create the sidecar session so the gateway surfaces session-scoped
     // signals (connection state, credential warnings). It's independent of the
     // PTY pane's session by design. The model picker no longer rides this
@@ -227,12 +266,16 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true
+      if (redialTimer) {
+        clearTimeout(redialTimer)
+        redialTimer = null
+      }
+      offRedial()
       offState()
       offSessionInfo()
       offError()
       gw.close()
     }
-    // `profile` is read from render; scope changes bump `version` → redial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw, version])
 

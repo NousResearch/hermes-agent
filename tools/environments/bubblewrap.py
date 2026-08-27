@@ -322,6 +322,8 @@ def build_bwrap_args(
     ]
     if profile.share_net:
         argv.append("--share-net")
+    for name in HOST_SOCKET_VARS:
+        argv += ["--unsetenv", name]
 
     argv += [
         "--ro-bind", "/", "/",
@@ -363,6 +365,11 @@ def build_bwrap_args(
     argv += ["--chdir", tracked_cwd, "--"]
     return argv
 
+
+# Variables that name host agent or bus sockets. LocalEnvironment passes them
+# through; the bwrap prefix unsets them so the sandbox env is local's minus
+# exactly these, with no change to LocalEnvironment.
+HOST_SOCKET_VARS: tuple[str, ...] = ("SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS")
 
 PROBE_ARGS: tuple[str, ...] = ("--unshare-user", "--ro-bind", "/", "/", "true")
 PROBE_TIMEOUT_SECONDS = 5

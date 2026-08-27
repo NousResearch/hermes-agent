@@ -631,12 +631,27 @@ def _notify_session_boundary(
         pass
 
 
+_SESSION_OWNERSHIP_UNAVAILABLE = (
+    "Hermes could not safely reserve this session. Try again."
+)
+
+_AUTOMATIC_SESSION_END_REASONS = frozenset({
+    "ws_orphan_reap",
+    "ws_disconnect",
+    "idle_timeout",
+    "lru_evict",
+    "tui_shutdown",
+})
+
+
 def _claim_active_session_slot(
     session_key: str,
     *,
     live_session_id: str,
     surface: str = "tui",
+    profile_home: str | Path | None = None,
 ) -> tuple[Any, str | None]:
+    track_liveness = str(surface or "").strip().lower() == "desktop"
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
 
@@ -645,10 +660,16 @@ def _claim_active_session_slot(
             surface=surface,
             config=_load_cfg(),
             metadata={"live_session_id": live_session_id},
+            registry_home=profile_home,
+            track_liveness=track_liveness,
         )
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
-        return None, None
+        return (
+            (None, _SESSION_OWNERSHIP_UNAVAILABLE)
+            if track_liveness
+            else (None, None)
+        )
 
 
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
@@ -671,6 +692,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         str(session.get("session_key") or ""),
         live_session_id=sid,
         surface=_session_source(session),
+        profile_home=session.get("profile_home"),
     )
     if limit_message is not None:
         return limit_message
@@ -678,16 +700,89 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return None
 
 
-def _release_active_session_slot(session: dict | None) -> None:
-    if not session:
-        return
-    lease = session.pop("active_session_lease", None)
+def _release_active_session_lease(lease) -> bool:
     if lease is None:
+        return True
+    attempts = 3 if getattr(lease, "track_liveness", False) else 1
+    for attempt in range(attempts):
+        try:
+            lease.release()
+            break
+        except Exception:
+            if attempt + 1 >= attempts:
+                logger.warning("Failed to release active session slot", exc_info=True)
+                return False
+            time.sleep(0.05 * (attempt + 1))
+    released = getattr(lease, "released", True)
+    enabled = getattr(lease, "enabled", True)
+    return bool(released or not enabled)
+
+
+def _release_active_session_slot(session: dict | None) -> bool:
+    if not session:
+        return True
+    lease = session.get("active_session_lease")
+    if _release_active_session_lease(lease):
+        if session.get("active_session_lease") is lease:
+            session.pop("active_session_lease", None)
+        return True
+    return False
+
+
+@contextlib.contextmanager
+def _other_runtime_lease_guard(session_id: str, session: dict):
+    """Release this runtime and lock sibling ownership through the DB write."""
+    lease = session.get("active_session_lease")
+    try:
+        from hermes_cli.active_sessions import (
+            active_session_liveness_guard,
+            release_active_session_liveness_guard,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to load active session ownership guard; preserving session %s: %s",
+            session_id,
+            exc,
+        )
+        yield True
+        return
+
+    last_error: Exception | None = None
+    stack = contextlib.ExitStack()
+    for attempt in range(3):
+        try:
+            if lease is not None and getattr(lease, "enabled", False):
+                guard = release_active_session_liveness_guard(lease, session_id)
+            else:
+                guard = active_session_liveness_guard(
+                    session_id, registry_home=session.get("profile_home")
+                )
+            active = stack.enter_context(guard)
+            break
+        except Exception as exc:
+            stack.close()
+            stack = contextlib.ExitStack()
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.05 * (attempt + 1))
+    else:
+        logger.warning(
+            "Failed to inspect active session leases; preserving session %s: %s",
+            session_id,
+            last_error,
+        )
+        yield True
         return
     try:
-        lease.release()
-    except Exception:
-        logger.debug("Failed to release active session slot", exc_info=True)
+        yield active
+    finally:
+        stack.close()
+        if (
+            lease is not None
+            and getattr(lease, "released", False)
+            and session.get("active_session_lease") is lease
+        ):
+            session.pop("active_session_lease", None)
 
 
 def _transfer_active_session_slot(
@@ -713,6 +808,9 @@ def _transfer_active_session_slot(
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)
 
+    if getattr(lease, "track_liveness", False):
+        return False
+
     # Fallback: the in-place transfer could not move the lease (entry pruned /
     # pid-check transiently failed). Reserve the new slot BEFORE releasing the
     # old one, so a concurrent gateway at the session cap cannot grab the freed
@@ -722,6 +820,7 @@ def _transfer_active_session_slot(
         new_session_id,
         live_session_id=sid,
         surface=_session_source(session),
+        profile_home=session.get("profile_home"),
     )
     if new_lease is not None:
         old_lease = session.pop("active_session_lease", None)
@@ -796,7 +895,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if history_ready is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
-    _release_active_session_slot(session)
+    _desktop_automatic_cleanup = bool(
+        end_reason in _AUTOMATIC_SESSION_END_REASONS
+        and _session_source(session).strip().lower() == "desktop"
+    )
+    # Automatic Desktop cleanup removes its lease inside the lock-held lifecycle
+    # guard below. Explicit close and non-Desktop paths keep force/end semantics.
+    if not _desktop_automatic_cleanup:
+        _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
@@ -864,27 +970,42 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Use session_id (from agent.session_id) not session_key — after compression,
     # session_key may be stale (the ended parent) while session_id is the live
     # continuation. Fix for #20001.
-    _tui_owns_lifecycle = True
-    if session_id:
-        try:
-            # End the row in the *session's* profile state.db (app-global
-            # remote mode), not the launch profile's shared handle.
-            with _session_db(session) as db:
-                if db is not None:
-                    # Don't end gateway-originated sessions — the gateway owns
-                    # their lifecycle.  The TUI is a viewer, not the owner.
-                    # Ending a gateway session in state.db triggers a Groundhog
-                    # Day routing loop: the gateway's #54878 self-heal detects
-                    # the stale entry, recovers to the parent session, context
-                    # compression splits back to the reaped child, and the cycle
-                    # repeats on every inbound message.  (#60609)
-                    row = db.get_session(session_id)
-                    source = (row or {}).get("source", "")
-                    _tui_owns_lifecycle = not _is_gateway_owned_source(source)
-                    if _tui_owns_lifecycle:
-                        db.end_session(session_id, end_reason)
-        except Exception:
-            pass
+    if _desktop_automatic_cleanup and not session_id:
+        _release_active_session_slot(session)
+    _lifecycle_guard = (
+        _other_runtime_lease_guard(session_id, session)
+        if _desktop_automatic_cleanup and session_id
+        else contextlib.nullcontext(False)
+    )
+    with _lifecycle_guard as _other_runtime_owns_lifecycle:
+        _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
+        if _other_runtime_owns_lifecycle:
+            logger.info(
+                "Preserving session %s during %s: another backend owns an active lease",
+                session_id,
+                end_reason,
+            )
+        if session_id:
+            try:
+                # End the row in the *session's* profile state.db (app-global
+                # remote mode), not the launch profile's shared handle.
+                with _session_db(session) as db:
+                    if db is not None:
+                        # Don't end gateway-originated sessions — the gateway owns
+                        # their lifecycle.  The TUI is a viewer, not the owner.
+                        # Ending a gateway session in state.db triggers a Groundhog
+                        # Day routing loop: the gateway's #54878 self-heal detects
+                        # the stale entry, recovers to the parent session, context
+                        # compression splits back to the reaped child, and the cycle
+                        # repeats on every inbound message.  (#60609)
+                        row = db.get_session(session_id)
+                        source = (row or {}).get("source", "")
+                        if _is_gateway_owned_source(source):
+                            _tui_owns_lifecycle = False
+                        elif _tui_owns_lifecycle:
+                            db.end_session(session_id, end_reason)
+            except Exception:
+                pass
 
     # A session's in-flight async delegations end WITH the session (#55578):
     # once nobody owns the return address, a still-running background subagent

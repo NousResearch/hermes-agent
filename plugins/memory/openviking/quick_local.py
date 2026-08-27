@@ -199,6 +199,14 @@ def resolve_hermes_vlm_config() -> dict[str, Any]:
     api_base = _clean_value(runtime.get("base_url"))
     api_key = _clean_value(runtime.get("api_key"))
 
+    if not api_base:
+        raise QuickLocalSetupError(
+            "Hermes' LLM provider did not resolve an API base URL."
+        )
+    if not api_key:
+        raise QuickLocalSetupError(
+            "Hermes' LLM provider did not resolve reusable static credentials."
+        )
     if not _has_copyable_static_credentials(provider, source, api_key):
         raise QuickLocalSetupError(
             "Hermes is using refreshed OAuth, cloud-native, or external-process "
@@ -213,15 +221,6 @@ def resolve_hermes_vlm_config() -> dict[str, Any]:
             "API-key provider, or connect to an OpenViking server configured "
             "separately."
         )
-    if not api_base:
-        raise QuickLocalSetupError(
-            "Hermes' LLM provider did not resolve an API base URL."
-        )
-    if not api_key:
-        raise QuickLocalSetupError(
-            "Hermes' LLM provider did not resolve reusable static credentials."
-        )
-
     vlm: dict[str, Any]
     if api_mode == "anthropic_messages":
         if not runtime_model.startswith("anthropic/"):
@@ -301,7 +300,7 @@ class QuickLocalSetup:
                 "Quick Local preflight belongs to a different Hermes profile."
             )
         vlm = resolve_hermes_vlm_config()
-        self._ensure_openviking_installed(preflight.paths)
+        runtime_changed = self._ensure_openviking_installed(preflight.paths)
 
         reusable_endpoint = find_reusable_endpoint(preflight.paths, self._health_check)
         if reusable_endpoint:
@@ -311,10 +310,10 @@ class QuickLocalSetup:
                     "Quick Local's saved endpoint does not contain a valid port."
                 )
             server_config = build_server_config(preflight.paths, vlm, port=port)
-            server_restart_required = not _stored_server_config_matches(
+            config_changed = not _stored_server_config_matches(
                 preflight.paths, server_config
             )
-            if server_restart_required:
+            if config_changed:
                 _prepare_private_directory(preflight.paths.root)
                 atomic_json_write(
                     preflight.paths.server_config,
@@ -335,7 +334,7 @@ class QuickLocalSetup:
                 paths=preflight.paths,
                 endpoint=reusable_endpoint,
                 reused=True,
-                server_restart_required=server_restart_required,
+                server_restart_required=runtime_changed or config_changed,
             )
 
         port = find_available_port(
@@ -374,9 +373,10 @@ class QuickLocalSetup:
             reused=False,
         )
 
-    def _ensure_openviking_installed(self, paths: QuickLocalPaths) -> None:
+    def _ensure_openviking_installed(self, paths: QuickLocalPaths) -> bool:
+        """Ensure a compatible runtime, returning whether installation was needed."""
         if openviking_install_satisfies_requirement(paths):
-            return
+            return False
         self._emit(
             QuickLocalStage.INSTALL_OPENVIKING,
             f"Installing {OPENVIKING_REQUIREMENT}...",
@@ -430,6 +430,7 @@ class QuickLocalSetup:
                 "Could not install a compatible OpenViking version. Review the "
                 "installer output above."
             )
+        return True
 
     def _validate_generated_config(
         self,

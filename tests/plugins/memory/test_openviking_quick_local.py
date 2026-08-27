@@ -176,7 +176,7 @@ def test_resolve_vlm_accepts_structured_persisted_default(monkeypatch):
                 "api_key": lambda: "short-lived",
                 "source": "key_cmd",
             },
-            "cannot be copied safely",
+            "did not resolve reusable static credentials",
         ),
         (
             {
@@ -233,6 +233,45 @@ def test_resolve_vlm_rejects_credentials_or_transports_openviking_cannot_reuse(
         quick_local.resolve_hermes_vlm_config()
 
 
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("api_key", "did not resolve reusable static credentials"),
+        ("base_url", "did not resolve an API base URL"),
+    ],
+)
+@pytest.mark.parametrize("missing_value", [None, "", " \t "])
+def test_resolve_vlm_reports_missing_fields_before_classifying_credentials(
+    field, message, missing_value, monkeypatch
+):
+    from hermes_cli import config as config_module
+    from hermes_cli import runtime_provider
+
+    monkeypatch.setattr(
+        config_module,
+        "load_config",
+        lambda: {"model": {"provider": "custom", "default": "model-1"}},
+    )
+    runtime = {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": "https://llm.example/v1",
+        "api_key": "secret",
+        "source": "env/config",
+        field: missing_value,
+    }
+    monkeypatch.setattr(
+        runtime_provider, "resolve_runtime_provider", lambda **_kwargs: runtime
+    )
+    classify = MagicMock(wraps=quick_local._has_copyable_static_credentials)
+    monkeypatch.setattr(quick_local, "_has_copyable_static_credentials", classify)
+
+    with pytest.raises(quick_local.QuickLocalSetupError, match=message):
+        quick_local.resolve_hermes_vlm_config()
+
+    classify.assert_not_called()
+
+
 def test_openviking_install_is_bounded_and_isolated(tmp_path, monkeypatch):
     from hermes_cli import managed_uv
 
@@ -255,7 +294,7 @@ def test_openviking_install_is_bounded_and_isolated(tmp_path, monkeypatch):
     setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (True, ""))
     paths = quick_local.managed_paths(tmp_path)
 
-    setup._ensure_openviking_installed(paths)
+    assert setup._ensure_openviking_installed(paths) is True
 
     assert calls[0][0] == [
         "/usr/local/bin/uv",
@@ -410,7 +449,7 @@ def test_reuse_rechecks_runtime_and_refreshes_saved_vlm(tmp_path, monkeypatch):
     setup = quick_local.QuickLocalSetup(
         health_check=lambda _endpoint: (True, ""),
     )
-    ensure_runtime = MagicMock()
+    ensure_runtime = MagicMock(return_value=False)
     monkeypatch.setattr(setup, "_ensure_openviking_installed", ensure_runtime)
 
     result = setup.provision(hermes_home=tmp_path)
@@ -423,6 +462,68 @@ def test_reuse_rechecks_runtime_and_refreshes_saved_vlm(tmp_path, monkeypatch):
     )
     resolve.assert_called_once_with()
     ensure_runtime.assert_called_once_with(paths)
+
+
+@pytest.mark.parametrize("runtime_current", [False, True])
+def test_reuse_with_unchanged_config_requires_restart_only_after_runtime_upgrade(
+    tmp_path, monkeypatch, runtime_current
+):
+    from hermes_cli import managed_uv
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        json.dumps({
+            "model": {"provider": "custom:quick-local-test", "default": "model-1"},
+            "custom_providers": [
+                {
+                    "name": "quick-local-test",
+                    "base_url": "https://llm.example/v1",
+                    "api_key": "secret",
+                    "api_mode": "chat_completions",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    paths = quick_local.managed_paths(tmp_path)
+    paths.runtime_python.parent.mkdir(parents=True)
+    paths.runtime_python.touch()
+    paths.server_command.touch()
+    vlm = quick_local.resolve_hermes_vlm_config()
+    assert vlm["model"] == "model-1"
+    assert vlm["api_key"] == "secret"
+    server_config = quick_local.build_server_config(paths, vlm, port=1938)
+    quick_local.atomic_json_write(paths.server_config, server_config, mode=0o600)
+    quick_local.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1938", "actor_peer_id": "hermes"},
+        mode=0o600,
+    )
+    compatible = MagicMock(side_effect=[runtime_current, True])
+    monkeypatch.setattr(
+        quick_local, "openviking_install_satisfies_requirement", compatible
+    )
+    ensure_uv = MagicMock(return_value="/usr/local/bin/uv")
+    monkeypatch.setattr(managed_uv, "ensure_uv", ensure_uv)
+    install = MagicMock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(quick_local.subprocess, "run", install)
+    write = MagicMock(wraps=quick_local.atomic_json_write)
+    monkeypatch.setattr(quick_local, "atomic_json_write", write)
+    setup = quick_local.QuickLocalSetup(health_check=lambda _endpoint: (True, ""))
+
+    result = setup.provision(hermes_home=tmp_path)
+
+    assert result.reused is True
+    assert result.endpoint == "http://127.0.0.1:1938"
+    assert result.server_restart_required is (not runtime_current)
+    assert json.loads(paths.server_config.read_text(encoding="utf-8")) == server_config
+    write.assert_not_called()
+    if runtime_current:
+        ensure_uv.assert_not_called()
+        install.assert_not_called()
+    else:
+        ensure_uv.assert_called_once_with()
+        install.assert_called_once()
 
 
 def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkeypatch):
@@ -443,7 +544,7 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
             "api_base": "https://llm.example/v1",
         },
     )
-    monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: None)
+    monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: True)
     monkeypatch.setattr(quick_local, "find_available_port", lambda **_kwargs: 1937)
 
     def start(endpoint, config_path, hermes_home, server_command):
@@ -469,6 +570,7 @@ def test_fresh_provision_validates_before_writing_active_config(tmp_path, monkey
     paths = result.paths
     assert result.endpoint == "http://127.0.0.1:1937"
     assert result.reused is False
+    assert result.server_restart_required is False
     final_config = json.loads(paths.server_config.read_text(encoding="utf-8"))
     assert final_config["storage"]["workspace"] == str(paths.workspace)
     assert final_config["server"]["port"] == 1937
@@ -511,7 +613,7 @@ def test_failed_validation_stops_child_and_leaves_profile_inactive(
             "api_base": "https://llm.example/v1",
         },
     )
-    monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: None)
+    monkeypatch.setattr(setup, "_ensure_openviking_installed", lambda _paths: True)
     monkeypatch.setattr(quick_local, "find_available_port", lambda **_kwargs: 1933)
     monkeypatch.setattr(
         quick_local,
@@ -792,10 +894,10 @@ def test_quick_local_cli_reports_when_running_server_needs_restart(
     )
 
     output = capsys.readouterr().out
-    assert "Quick Local settings were updated" in output
-    assert "still using the previous Hermes LLM settings" in output
+    assert "Quick Local restart required" in output
+    assert "updated runtime or Hermes LLM settings" in output
     assert "Stop the Quick Local server at http://127.0.0.1:1933" in output
-    assert "Hermes will restart it with the updated settings" in output
+    assert "Hermes will restart it with the updated runtime and settings" in output
     assert "OpenViking memory is ready" not in output
 
 

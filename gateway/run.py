@@ -639,6 +639,18 @@ def _deliver_approval_message(
     ``send()`` call with the approval, context, and instructions all
     in one message.
 
+    Delivery contract: every definitive button-path failure (error
+    result, scheduling failure, exception) falls back to the text
+    prompt — falling back only *asks* the user, it never grants
+    anything, so availability costs nothing here.  ``DeliveryError``
+    is reserved for when the text path itself definitively fails:
+    at that point no prompt reached the user, and the caller
+    (``_await_gateway_decision``) must treat the approval as
+    notify-failed/BLOCKED rather than wait on a reply that can never
+    come.  An *ambiguous* send (result timeout) on either path is
+    treated as possibly-delivered: the prompt registration stays
+    armed and nothing is re-sent (see ``_approval_send_outcome``).
+
     Raises ``ValueError`` when *description* is empty (fail-closed:
     callers guarantee a non-empty enhanced description upstream).
     """
@@ -672,10 +684,9 @@ def _deliver_approval_message(
                 logger=logger,
                 log_message="send_exec_approval scheduling error",
             )
-            if _fut is None:
-                raise DeliveryError(
-                    "send_exec_approval: loop unavailable — delivery status unknown"
-                )
+            # _fut may be None (loop unavailable) — _approval_send_outcome
+            # classifies that as a definitive failure, and the text path
+            # below turns it into DeliveryError if the loop is truly gone.
             _outcome = _approval_send_outcome(_fut, timeout=15)
             if _outcome == "sent":
                 return  # button success — single message, no follow-up
@@ -699,12 +710,18 @@ def _deliver_approval_message(
                 "Button-based approval failed (send returned error), "
                 "falling back to text"
             )
-        except DeliveryError:
-            raise
         except Exception as _e:
-            raise DeliveryError(
-                f"send_exec_approval delivery failed: {_e}"
-            ) from _e
+            # An exception here means the coroutine was never accepted by
+            # the loop (construction/scheduling raised) — post-scheduling
+            # failures surface through _fut.result() inside
+            # _approval_send_outcome, which classifies instead of raising.
+            # The card therefore definitively did NOT post, so the
+            # single-message text fallback below is duplicate-safe and
+            # keeps the user able to approve (fallback only asks; it
+            # grants nothing).
+            logger.warning(
+                "Button-based approval failed, falling back to text: %s", _e
+            )
 
     # --- Text fallback: single message with full context ---
     _p = getattr(adapter, "typed_command_prefix", "/")
@@ -731,6 +748,19 @@ def _deliver_approval_message(
         _send_fut.result(timeout=15)
     except DeliveryError:
         raise
+    except concurrent.futures.TimeoutError:
+        # Boundary rule (see _approval_send_outcome): a result() timeout is
+        # ambiguous — the message may have posted with a late ack. The
+        # prompt registration stays alive, so a typed /approve still
+        # resolves it; escalating to DeliveryError here would drop the
+        # pending entry underneath a possibly-rendered prompt and BLOCK a
+        # command the user can still legitimately approve. If the message
+        # truly never posted, the decision wait times out on its own and
+        # silence-is-not-consent blocks the command.
+        logger.warning(
+            "Approval text send timed out — treating as possibly-delivered "
+            "(no re-send; the prompt stays armed for a late reply)"
+        )
     except Exception as _e:
         raise DeliveryError(
             f"Failed to send approval request: {_e}"

@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import unicodedata
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -1034,11 +1035,27 @@ def _sanitize_explanation(explanation: dict | None) -> dict:
         # before the split would glue "normal text\\n/approve session"
         # into one non-matching line.
         value = value.replace("\r\n", "\n").replace("\r", "\n")
-        value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", "", value)
+        # U+2028/U+2029 (LINE/PARAGRAPH SEPARATOR) and NEL render as line
+        # breaks on several chat clients but would not be split below —
+        # normalize them to LF so a forged command after one still lands at
+        # the start of a detectable line.
+        value = re.sub(r"[\u2028\u2029\x85]", "\n", value)
+        # Strip C0 (except LF), DEL, and C1 controls.
+        value = re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "", value)
+        # Strip Unicode format characters (category Cf): zero-width and
+        # bidi controls (U+200B, U+202E, U+2066…) are invisible or reorder
+        # rendering, so a ZWSP-prefixed "/approve" would dodge the
+        # line-anchored forge regex below while displaying as a clean
+        # "/approve" line.
+        value = "".join(
+            ch for ch in value if unicodedata.category(ch) != "Cf"
+        )
         # Drop lines that try to forge approve/deny commands or approval
-        # headings so a model cannot hijack the approval-instruction surface.
+        # headings so a model cannot hijack the approval-instruction
+        # surface. Match past leading whitespace — an indented "/approve"
+        # still reads as an instruction line.
         safe_lines = [
-            ln for ln in value.split("\n") if not _FORGE_RE.match(ln)
+            ln for ln in value.split("\n") if not _FORGE_RE.match(ln.lstrip())
         ]
         value = "\n".join(safe_lines)
         if len(value) > 1000:
@@ -1049,6 +1066,16 @@ def _sanitize_explanation(explanation: dict | None) -> dict:
             cleaned[key] = value
             total += len(value)
     return cleaned
+
+
+# Hard ceiling for the combined approval description. The sanitised model
+# context is capped at 3000 chars, but the system risk description joined in
+# front of it is unbounded (one clause per warning), and platform surfaces
+# have hard limits the description shares with the command preview and
+# instructions (Discord embeds 4096, Telegram messages 4096). Clamp once
+# here so every surface receives a bounded description.
+_MAX_ENHANCED_DESC = 3500
+_ENHANCED_DESC_TRUNC = "\n… [context truncated]"
 
 
 def _build_enhanced_description_with_context(
@@ -1081,6 +1108,11 @@ def _build_enhanced_description_with_context(
             parts.append("—— End unverified context ——")
 
     result = "\n".join(parts)
+    if len(result) > _MAX_ENHANCED_DESC:
+        result = (
+            result[: _MAX_ENHANCED_DESC - len(_ENHANCED_DESC_TRUNC)]
+            + _ENHANCED_DESC_TRUNC
+        )
     if not result or not result.strip():
         raise ValueError(
             "Approval description is empty — refusing to deliver "

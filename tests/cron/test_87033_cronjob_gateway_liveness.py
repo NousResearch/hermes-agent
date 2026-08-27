@@ -278,3 +278,43 @@ class TestRuntimeLockFirstLiveness:
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
+
+
+class TestCronStatusLockFirst:
+    """`hermes cron status` shares the lock-first false-alarm fix (#95947).
+
+    Sibling site of `_builtin_gateway_liveness`: it previously declared
+    "Gateway is not running — cron jobs will NOT fire" from a bare
+    `find_gateway_pids()` miss even while the runtime lock proved the
+    gateway (and its ticker) alive.
+    """
+
+    def _run_status(self, *, pids, lock_active, lock_pid=None):
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stdout
+
+        import hermes_cli.cron as cron_cli
+
+        out = io.StringIO()
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=list(pids)),
+            patch(
+                "gateway.status.is_gateway_runtime_lock_active",
+                return_value=lock_active,
+            ),
+            patch("gateway.status.get_running_pid", return_value=lock_pid),
+            redirect_stdout(out),
+        ):
+            cron_cli.cron_status()
+        return out.getvalue()
+
+    def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
+        text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
+        assert "NOT fire" not in text
+        assert "Gateway is running" in text or "running" in text
+
+    def test_no_lock_no_pids_still_warns(self, hermes_env):
+        text = self._run_status(pids=[], lock_active=False)
+        assert "NOT fire" in text

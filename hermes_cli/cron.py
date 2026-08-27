@@ -404,7 +404,24 @@ def cron_status():
         return
 
     pids = find_gateway_pids()
-    if pids:
+    gateway_alive_via_lock = False
+    if not pids:
+        # Same false-alarm class the cronjob tool fixed (#95947): the pid scan
+        # can transiently miss a live gateway (just after a restart) while the
+        # runtime lock — held for exactly the gateway's lifetime — proves the
+        # ticker's process is alive. Only declare "not running" when both the
+        # scan AND the lock say so.
+        try:
+            from gateway.status import get_running_pid, is_gateway_runtime_lock_active
+
+            if is_gateway_runtime_lock_active():
+                gateway_alive_via_lock = True
+                lock_pid = get_running_pid()
+                if lock_pid:
+                    pids = [lock_pid]
+        except Exception:
+            pass
+    if pids or gateway_alive_via_lock:
         # The gateway PROCESS is alive — but the cron ticker THREAD inside it
         # can die silently, or stay alive while every tick fails. Check both
         # the liveness heartbeat and the last-successful-tick marker so we
@@ -432,7 +449,8 @@ def cron_status():
                 f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
                 Colors.YELLOW,
             ))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            if pids:
+                print(f"  PID: {', '.join(map(str, pids))}")
             print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
         elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
             # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
@@ -442,7 +460,8 @@ def cron_status():
                 f"succeeded in {int(ok_age)}s — ticks may be failing.",
                 Colors.YELLOW,
             ))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            if pids:
+                print(f"  PID: {', '.join(map(str, pids))}")
             last_error = get_ticker_last_error()
             if last_error:
                 # Show WHY ticks fail — e.g. a root-rewritten jobs.json
@@ -470,7 +489,8 @@ def cron_status():
             print("  Check the gateway log for 'Cron tick error'.")
         else:
             print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-            print(f"  PID: {', '.join(map(str, pids))}")
+            if pids:
+                print(f"  PID: {', '.join(map(str, pids))}")
             if hb_age is not None:
                 print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:

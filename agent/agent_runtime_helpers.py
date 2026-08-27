@@ -3073,8 +3073,12 @@ def copy_reasoning_content_for_api(
         api_msg.pop("reasoning_details", None)
         if needs_thinking_pad:
             # Preserve the destination provider's structural requirement
-            # without forwarding any unknown-origin hidden trace.
-            apply_reasoning_content_policy(api_msg, api_msg, True)
+            # without forwarding any unknown-origin hidden trace. Use a
+            # synthetic source so callers that build ``api_msg`` selectively
+            # (without the role field) still receive the required pad.
+            apply_reasoning_content_policy(
+                {"role": source_msg.get("role")}, api_msg, True
+            )
         return
 
     if retain_route_provenance:

@@ -649,6 +649,53 @@ class TestClaimingAndBounds:
             f"{len(attempts)} requests burned on one doomed package"
         )
 
+    def test_a_lapsed_claimant_yields_even_before_anyone_reclaims(self, store):
+        """Seventh review: the check-to-POST expiry race.
+
+        A claims, sleeps past its own lease, and wakes BEFORE any other
+        process reclaims. Its token is still in the row, so a read-only
+        ownership check passes — and then B reclaims while A's POST is in
+        flight: both send. The pre-POST renewal must instead REJECT a
+        claimant whose lease already expired, whether or not anyone has
+        reclaimed yet, because expiry alone means another process may claim
+        at any moment.
+        """
+        _add_package(store, "pkg-1", "2026-08-26")
+
+        posts = []
+        sender_a = SharedMetricsSender(
+            store, ENDPOINT,
+            post=lambda e, p, *, timeout: (posts.append("A"), FakeResponse(202))[1],
+            sleep=lambda _s: None,
+            now=lambda: clock["t"],
+        )
+        clock = {"t": NOW}
+        claimed = sender_a._claim_next(NOW, set())
+        assert claimed is not None and not claimed["skip"]
+
+        # Suspended past the 300s lease; wakes with the row NOT yet reclaimed.
+        clock["t"] = NOW + timedelta(seconds=400)
+        result = sender_a._send_one(claimed)
+
+        assert posts == [], (
+            "a claimant with an expired lease transmitted before renewal"
+        )
+        assert result == "deferred"
+        # The row must remain claimable by the next process.
+        row = _row(store, "pkg-1")
+        assert row["send_state"] == "pending"
+
+    def test_renewal_extends_the_lease_across_the_post(self, store):
+        """A healthy in-lease claimant renews and its POST is covered."""
+        _add_package(store, "pkg-1", "2026-08-26")
+        sender = _sender(store, FakeTransport(FakeResponse(202)))
+        claimed = sender._claim_next(NOW, set())
+        assert claimed is not None
+        lease_before = _row(store, "pkg-1")["next_attempt_at"]
+
+        assert sender._renew_claim("pkg-1", claimed["claim_token"]) is True
+        assert _row(store, "pkg-1")["next_attempt_at"] >= lease_before
+
     def test_a_lapsed_claimant_resuming_after_reclaim_cannot_double_post(
         self, store
     ):

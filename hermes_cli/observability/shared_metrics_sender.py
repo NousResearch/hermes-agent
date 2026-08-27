@@ -525,25 +525,53 @@ class SharedMetricsSender:
                     params,
                 )
 
-    def _still_owns(self, package_id: str, token: str | None) -> bool:
-        """Return whether this pass's claim on the row is still current."""
+    def _renew_claim(self, package_id: str, token: str | None) -> bool:
+        """Atomically re-assert ownership and extend the lease. CAS, one row.
+
+        A read-only ownership check is not enough: a claimant whose lease
+        expired while suspended can pass the check (its token is still in
+        the row if no one reclaimed yet) and then POST while another process
+        legitimately reclaims — the check-to-POST expiry race a seventh
+        review reproduced. Renewal closes it by requiring, in ONE statement:
+
+        - the token still matches (nobody reclaimed), AND
+        - the current lease is UNEXPIRED (this claimant is not stale), AND
+        - the row is still pending,
+
+        and only then pushing next_attempt_at a fresh lease into the future,
+        so the upcoming POST (30s timeout, well under the 300s lease) runs
+        entirely inside renewed authority. rowcount == 1 is the only grant.
+        A claimant that wakes past its own lease fails the unexpired
+        condition and yields even though its token was never replaced.
+        """
         if token is None:
-            # Defensive: a package dict without a token (not produced by
-            # _claim_next today) gets no authority rather than unlimited.
             return False
         try:
+            now = self._now()
+            lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
             with self._store._connection() as connection:
-                row = connection.execute(
-                    "SELECT 1 FROM package_outbox"
-                    " WHERE package_id = ? AND claim_token = ?"
-                    "   AND (send_state IS NULL OR send_state = 'pending')",
-                    (package_id, token),
-                ).fetchone()
-            return row is not None
+                with write_txn(connection):
+                    cursor = connection.execute(
+                        """
+                        UPDATE package_outbox
+                        SET next_attempt_at = ?
+                        WHERE package_id = ?
+                          AND claim_token = ?
+                          AND (send_state IS NULL OR send_state = 'pending')
+                          AND next_attempt_at > ?
+                        """,
+                        (
+                            _isoformat(lease_until),
+                            package_id,
+                            token,
+                            _isoformat(now),
+                        ),
+                    )
+                    return cursor.rowcount == 1
         except Exception:
-            # If the check itself fails, do not transmit on stale authority.
+            # If renewal itself fails, do not transmit on unproven authority.
             logger.warning(
-                "Unable to verify shared-metrics claim ownership", exc_info=True
+                "Unable to renew shared-metrics claim", exc_info=True
             )
             return False
 
@@ -591,15 +619,18 @@ class SharedMetricsSender:
         body = self._body(package["payload_json"], package["derived"])
 
         for attempt in range(1, self._max_attempts + 1):
-            # Revalidate ownership immediately before the external POST. The
-            # claim can lapse between claiming and here — a suspended laptop,
-            # a GC pause, a long gzip — and another process may have
-            # reclaimed and transmitted. Without this check the resumed
-            # claimant POSTs a duplicate; the ingest key is minute-prefixed,
-            # so duplicates become distinct stored objects, not overwrites.
-            if not self._still_owns(package_id, token):
+            # Atomically renew the claim before EVERY external POST. The
+            # renewal is compare-and-set on (token, pending, lease unexpired)
+            # and extends the lease past the request, so a suspended-then-
+            # resumed claimant whose lease lapsed yields here even if nobody
+            # has reclaimed yet — a read-only ownership check passed in that
+            # state and still double-sent (check-to-POST expiry race). The
+            # ingest key is minute-prefixed, so duplicates become distinct
+            # stored objects, not overwrites.
+            if not self._renew_claim(package_id, token):
                 logger.info(
-                    "Shared-metrics claim on %s superseded; yielding", package_id
+                    "Shared-metrics claim on %s superseded or expired; yielding",
+                    package_id,
                 )
                 return "deferred"
             try:

@@ -6165,16 +6165,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         and isinstance(_stdio_dead_result := _stdio_dead(), bool)
                         and _stdio_dead_result
                     ):
-                        # Dead stdio children with a stale session object: the
-                        # transport failed WITHOUT clearing session, so the
-                        # transport-down reconnect path above never fires.
-                        # Signal the server task to rebuild the transport
-                        # (respawn the subprocess) in the background and return
-                        # a clean reconnecting error; the next call lands on
-                        # the fresh session. The breaker resets once it
-                        # initializes. No explicit _bump_server_error here:
-                        # this error return flows through the handler's JSON
-                        # parse, which already bumps once on any error payload.
+                        # Dead children but stale server.session, so the
+                        # transport-down path above never fired — signal the
+                        # server task to respawn and return a clean
+                        # reconnecting error. No explicit _bump_server_error:
+                        # the error return flows through the handler's JSON
+                        # parse, which already bumps once.
                         if _signal_reconnect(server):
                             return tool_error(
                                 f"MCP server '{server_name}' stdio subprocess is "

@@ -36,16 +36,6 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
     ready_flag = threading.Event()
     ready_flag.set()
 
-    class _ReadyAdapter:
-        def is_set(self):
-            return ready_flag.is_set()
-
-        def clear(self):
-            ready_flag.clear()
-
-        def set(self):
-            ready_flag.set()
-
     class _ReconnectAdapter:
         def __init__(self):
             self.set_calls = 0
@@ -54,7 +44,7 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
             self.set_calls += 1
 
     server._reconnect_event = _ReconnectAdapter()
-    server._ready = _ReadyAdapter()
+    server._ready = ready_flag
     server._is_recycled_stdio.return_value = False
     # The fast-fail gate requires a callable returning a real bool
     # (MagicMock's truthy Mock is deliberately ignored).

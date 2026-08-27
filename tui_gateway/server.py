@@ -6093,6 +6093,73 @@ def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     return tuple(sorted(picked.items()))
 
 
+def _compressor_ctor_default(name: str, fallback: Any) -> Any:
+    """Read a normalized default from ContextCompressor's REAL signature.
+
+    Unset restoration must go through the same derivation the construction
+    path uses (#94724 review finding on #95980) — pulling the default off
+    ``ContextCompressor.__init__`` itself instead of hardcoding copies keeps
+    the two from drifting.
+    """
+    try:
+        import inspect
+
+        from agent.context_compressor import ContextCompressor
+
+        default = inspect.signature(ContextCompressor.__init__).parameters[
+            name
+        ].default
+        if default is inspect.Parameter.empty:
+            return fallback
+        return default
+    except Exception:
+        return fallback
+
+
+def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
+    """Default compaction threshold when ``compression.threshold`` is unset.
+
+    Mirrors agent_init exactly: the ctor's global default, then the per-model
+    resolution (Codex gpt-5.4/5.5 + spark autoraise, Arcee Trinity, etc.)
+    via the SAME ``_resolve_compression_threshold`` helper — so removing the
+    key restores the model-derived value, not a bare constant.
+    """
+    try:
+        pct = float(_compressor_ctor_default("threshold_percent", 0.50))
+    except (TypeError, ValueError):
+        pct = 0.50
+    try:
+        from agent.agent_init import _resolve_compression_threshold
+        from agent.auxiliary_client import (
+            _compression_threshold_for_model,
+            _is_codex_gpt54_or_gpt55,
+            _is_codex_spark,
+        )
+
+        model = getattr(agent, "model", "") or ""
+        provider = getattr(agent, "provider", "") or ""
+        autoraise_enabled = str(
+            compression.get("codex_gpt55_autoraise", True)
+        ).lower() in {"true", "1", "yes"}
+        model_cthresh = _compression_threshold_for_model(
+            model,
+            provider,
+            allow_codex_gpt55_autoraise=autoraise_enabled,
+        )
+        pct, _notice = _resolve_compression_threshold(
+            pct,
+            model_cthresh,
+            model=model,
+            is_codex_autoraise=(
+                _is_codex_gpt54_or_gpt55(model, provider)
+                or _is_codex_spark(model, provider)
+            ),
+        )
+    except Exception:
+        pass
+    return pct
+
+
 def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """Update a live session's compressor from current config.yaml.
 
@@ -6100,6 +6167,15 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     Recomputes the trigger from the ratio-based threshold and then applies
     ``compression.threshold_tokens`` so raising, lowering, or clearing the
     cap all take effect on the next preflight.
+
+    Every adopted key has UNSET semantics (#94724 review finding on the
+    merged #95980): removing a key from config.yaml restores the normalized
+    default — or the model-derived value — on the next turn, through the
+    same derivation the construction path uses (ContextCompressor ctor
+    defaults read off its real signature, the Codex threshold autoraise via
+    ``_resolve_compression_threshold``, context-length re-inference via the
+    deferred ``get_model_context_length`` resolution). The old behavior
+    acted only on PRESENT keys, leaving stale values active forever.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
@@ -6111,10 +6187,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     else:
         agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
 
-    idle_raw = compression.get(
-        "idle_compact_after_seconds",
-        getattr(agent, "compression_idle_compact_after_seconds", 0),
-    )
+    # Absence restores the agent_init/config default (0 = disabled).
+    idle_raw = compression.get("idle_compact_after_seconds", 0)
     try:
         agent.compression_idle_compact_after_seconds = max(0, int(idle_raw or 0))
     except (TypeError, ValueError):
@@ -6124,31 +6198,55 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     if cc is None:
         return
 
-    if "tail_mode" in compression:
-        mode = str(compression.get("tail_mode") or "legacy").strip().lower()
-        cc.tail_mode = mode if mode in ("legacy", "lean") else "legacy"
+    # tail_mode: ctor normalization — unknown/absent values land on "lean",
+    # matching agent_init's default and the compressor's own fallback.
+    default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
+    mode = str(compression.get("tail_mode", default_tail) or default_tail)
+    mode = mode.strip().lower()
+    cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
 
     def _assign_int(key: str, attr: str, default: int, min_value: int = 0) -> None:
-        if key not in compression:
-            return
+        raw = compression.get(key, default)
         try:
-            raw = compression.get(key)
             value = default if raw is None else int(raw)
-            setattr(cc, attr, max(min_value, value))
         except (TypeError, ValueError):
             return
+        setattr(cc, attr, max(min_value, value))
 
-    _assign_int("proactive_prune_tokens", "proactive_prune_tokens", 0)
-    _assign_int("proactive_prune_min_result_chars", "proactive_prune_min_result_chars", 8000)
-    _assign_int("proactive_prune_min_reclaim_tokens", "proactive_prune_min_reclaim_tokens", 0)
-    _assign_int("protect_last_n", "protect_last_n", 20)
-    _assign_int("min_tail_user_messages", "min_tail_user_messages", 1, min_value=1)
+    _assign_int(
+        "proactive_prune_tokens",
+        "proactive_prune_tokens",
+        int(_compressor_ctor_default("proactive_prune_tokens", 0)),
+    )
+    _assign_int(
+        "proactive_prune_min_result_chars",
+        "proactive_prune_min_result_chars",
+        int(_compressor_ctor_default("proactive_prune_min_result_chars", 8000)),
+    )
+    _assign_int(
+        "proactive_prune_min_reclaim_tokens",
+        "proactive_prune_min_reclaim_tokens",
+        int(_compressor_ctor_default("proactive_prune_min_reclaim_tokens", 4096)),
+    )
+    _assign_int(
+        "protect_last_n",
+        "protect_last_n",
+        int(_compressor_ctor_default("protect_last_n", 20)),
+    )
+    _assign_int(
+        "min_tail_user_messages",
+        "min_tail_user_messages",
+        int(_compressor_ctor_default("min_tail_user_messages", 1)),
+        min_value=1,
+    )
 
-    if "target_ratio" in compression:
-        try:
-            cc.summary_target_ratio = max(0.10, min(float(compression["target_ratio"]), 0.80))
-        except (TypeError, ValueError):
-            pass
+    try:
+        ratio_raw = compression.get(
+            "target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20)
+        )
+        cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
+    except (TypeError, ValueError):
+        pass
 
     raw_thresholds = compression.get("model_thresholds")
     if isinstance(raw_thresholds, dict):
@@ -6157,34 +6255,46 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
             for k, v in raw_thresholds.items()
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         }
+    else:
+        # Absent (or invalid shape — agent_init treats both as empty):
+        # stale per-model overrides must stop steering the live threshold.
+        cc.model_thresholds = {}
 
+    # threshold: present value wins; absence derives the default through
+    # the same agent_init resolution (global default + per-model autoraise).
+    pct: float | None = None
     if "threshold" in compression:
         try:
             pct = float(compression["threshold"])
-            cc._config_threshold_percent = pct
-            cc._configured_threshold_percent = pct
-            base = pct
-            model_thresholds = getattr(cc, "model_thresholds", None) or {}
-            if model_thresholds:
-                from agent.context_compressor import resolve_model_threshold
-
-                base = resolve_model_threshold(
-                    getattr(agent, "model", "") or "",
-                    model_thresholds,
-                    pct,
-                )
-            cc._base_threshold_percent = base
-            if hasattr(cc, "_effective_threshold_percent"):
-                try:
-                    cc.threshold_percent = cc._effective_threshold_percent(
-                        cc.context_length, base
-                    )
-                except Exception:
-                    cc.threshold_percent = pct
-            else:
-                cc.threshold_percent = pct
         except (TypeError, ValueError):
-            pass
+            pct = None
+    if pct is None:
+        pct = _derived_default_threshold_percent(agent, compression)
+    try:
+        cc._config_threshold_percent = pct
+        cc._configured_threshold_percent = pct
+        base = pct
+        model_thresholds = getattr(cc, "model_thresholds", None) or {}
+        if model_thresholds:
+            from agent.context_compressor import resolve_model_threshold
+
+            base = resolve_model_threshold(
+                getattr(agent, "model", "") or "",
+                model_thresholds,
+                pct,
+            )
+        cc._base_threshold_percent = base
+        if hasattr(cc, "_effective_threshold_percent"):
+            try:
+                cc.threshold_percent = cc._effective_threshold_percent(
+                    cc.context_length, base
+                )
+            except Exception:
+                cc.threshold_percent = pct
+        else:
+            cc.threshold_percent = pct
+    except (TypeError, ValueError):
+        pass
 
     raw_ctx = model_cfg.get("context_length")
     if raw_ctx is not None:
@@ -6198,6 +6308,14 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
                 cc.context_length = new_ctx
             except Exception:
                 pass
+    elif getattr(cc, "_config_context_length", None) is not None:
+        # model.context_length removed: drop the config override and force
+        # re-inference from model metadata on next access — the same
+        # deferred get_model_context_length resolution agent construction
+        # uses (#32221). The re-resolve also re-applies the small-context
+        # threshold floor for the genuinely re-inferred window.
+        cc._config_context_length = None
+        cc._resolved_context_length = None
 
     coerce_cap = getattr(cc, "_coerce_threshold_tokens_cap", None)
     if callable(coerce_cap):
@@ -6208,6 +6326,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
             cc.threshold_tokens_cap = cap if cap > 0 else None
         except (TypeError, ValueError):
             cc.threshold_tokens_cap = None
+    else:
+        cc.threshold_tokens_cap = None
 
     # Invalidate cached trigger so the next preflight re-derives from the
     # current percent/window and then applies the (possibly new) cap.

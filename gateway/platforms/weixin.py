@@ -799,12 +799,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
         if self._group_policy != "disabled":
             logger.warning(
-                "[%s] WEIXIN_GROUP_POLICY=%s is set, but QR-login connects an iLink bot identity (e.g. ...@im.bot) "
-                "which typically cannot be invited into ordinary WeChat groups. iLink usually does not deliver "
-                "ordinary-group events for these accounts, so group messages may never reach Hermes regardless of "
-                "this policy. If group delivery doesn't work, the limitation is on the iLink side, not in Hermes.",
-                self.name, self._group_policy)
-        self._wire_plugin_handlers(None)  # plugin-registered native handlers
+                "[%s] WEIXIN_GROUP_POLICY=%s is set, but QR-login connects an iLink bot "
+                "identity (e.g. ...@im.bot) which typically cannot be invited into ordinary "
+                "WeChat groups. iLink usually does not deliver ordinary-group events for "
+                "these accounts, so group messages may never reach Hermes regardless of this "
+                "policy. If group delivery doesn't work, the limitation is on the iLink side, "
+                "not in Hermes.",
+                self.name,
+                self._group_policy,
+            )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

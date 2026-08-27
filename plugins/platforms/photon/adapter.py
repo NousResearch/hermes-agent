@@ -579,9 +579,12 @@ class PhotonAdapter(BasePlatformAdapter):
             self._watchdog_running = True
             self._watchdog_task = loop.create_task(self._presence_watchdog())
         self._mark_connected()
-        logger.info("[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
-                    self._sidecar_bind, self._sidecar_port)
-        self._wire_plugin_handlers(None)  # ctx.register_platform_handler natives
+        logger.info(
+            "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
+            self._sidecar_bind, self._sidecar_port,
+        )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

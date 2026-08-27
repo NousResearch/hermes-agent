@@ -459,190 +459,88 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     return None
 
 
-def _resolve_local_engine_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
-    """Local engine (no provider / override): ``browser.engine: lightpanda`` or the packaged Chromium."""
-    err = _resolve_lightpanda_cdp(env, task_id, session_name)
-    if err or _has_cdp_env(env):
-        return err
-    return _resolve_managed_chromium_cdp(env, task_id, session_name)
-
-
-def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
-    """Point the harness at the configured backend's CDP endpoint; error string on failure.
-
-    Precedence: (1) ``BU_CDP_WS``/``BU_CDP_URL`` already in env (operator override); (2) ``BROWSER_CDP_URL``
-    env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
-    so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
-    (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
-    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
-    the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
-    each name gets its OWN browser — what makes named sessions concurrent-safe.
-    """
-    if _has_cdp_env(env):
-        return None
+def _real_profile_consented() -> bool:
+    """Whether the user opted in to real-profile local browsing (config read)."""
     try:
-        from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_session import _get_session_info
-        from tools.browser_tool_cdp import _get_cdp_override
+        from tools.browser_tool import _use_real_profile
+
+        return _use_real_profile()
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
-        logger.debug("browser_tool backend resolution unavailable: %s", e)
-        return None
-    override = _quiet(_get_cdp_override, "")
-    if override:
-        _set_cdp_env(env, override)
-        return None
-    provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
-    if provider is None:
-        return _resolve_local_engine_cdp(env, task_id, session_name)
-
-    # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
-    # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
-    # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
-    # provisions the browser server-side and returns its CDP URL.
-    provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
-        return None
-
-    provider_name = type(provider).__name__
-    err = _export_session_cdp(
-        env, _get_session_info, _backend_cache_key(task_id, session_name),
-        lambda e: (f"Cloud browser provider {provider_name} failed to provide a session: {e}. "
-                   "Fix the provider configuration or switch backends via `hermes tools` → Browser Automation."),
-        f"Cloud browser provider {provider_name} returned no CDP endpoint, so Browser Use mode "
-        "cannot drive it. Switch to the built-in browser tools for this provider.",
-    )
-    # A provider browser keyed bu-named-<name> is exclusive to this session — the
-    # own-tab preamble would just leak a blank tab into it.
-    if err is None and session_name:
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
-    return err
+        logger.debug("real-profile consent lookup failed: %s", e)
+        return False
 
 
 def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
-    """Point the harness at the user's real-profile copy-browser (a SNAPSHOT of their default Chromium
-    profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
-    (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
-    ``local`` arg) → the user's browser even under a cloud backend. Operator overrides (BU_CDP_* env,
-    /browser connect, ``browser.cdp_url``) own the session either way. Fail closed: a launch error is
-    returned so a consented user is never silently downgraded."""
-    if not _real_profile_consented() or _has_cdp_env(env):
+    """Point the harness at the user's real-profile copy-browser when consented.
+
+    With ``browser.use_real_profile`` on, local browsing must mean the user's
+    default Chromium with their logins — a browser Hermes launches on a
+    SNAPSHOT of their real profile (see hermes_cli.browser_connect). Two ways
+    in:
+
+    - the effective backend is already local (no cloud provider, no CDP
+      override, no legacy Browser Use cloud config): every local attach
+      upgrades to the real profile, silently — this is requirement one; or
+    - ``force_local`` (the consent-gated ``local`` tool arg): the model was
+      asked to drive the user's actual browser even though a cloud backend
+      is configured. The cloud backend keeps serving everything else.
+
+    Explicit operator overrides (BU_CDP_WS/BU_CDP_URL env, /browser connect,
+    ``browser.cdp_url``) own the session either way, matching the built-in
+    lane's precedence.
+
+    Sets BU_CDP_URL/BU_CDP_WS on success. Returns an error string when the
+    real-profile launch fails (fail closed — a consented user is never
+    silently downgraded to a throwaway browser), else None.
+    """
+    if not _real_profile_consented():
         return None
+    if env.get("BU_CDP_WS") or env.get("BU_CDP_URL"):
+        return None
+
     try:
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        from tools.browser_tool_cloud import _get_cloud_provider
-        from tools.browser_tool_real_profile import _real_profile_cdp
+        from tools.browser_tool import (
+            _get_cdp_override_raw,
+            _get_cloud_provider,
+            _real_profile_cdp,
+        )
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("real-profile backend resolution unavailable: %s", e)
         return None
-    if _quiet(_get_cdp_override_raw, ""):
-        return None
-    # Only auto-upgrade genuinely-local attaches; any cloud path (provider, provider lookup failure, or
-    # legacy BU cloud config) stays on its backend unless the model passes local=true.
-    if not force_local and (_quiet(_get_cloud_provider, object()) is not None
-                            or is_legacy_browser_use_cloud_config(_read_browser_cfg())):
-        return None
+
+    try:
+        if _get_cdp_override_raw():
+            return None
+    except Exception:
+        pass
+
+    if not force_local:
+        # Only auto-upgrade genuinely-local attaches; any cloud path (provider
+        # or legacy Browser Use cloud config) stays on its backend unless the
+        # model passes local=true.
+        try:
+            if _get_cloud_provider() is not None:
+                return None
+        except Exception:
+            return None
+        if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+            return None
+
     cdp, err = _real_profile_cdp()
-    if cdp and not err:
-        _set_cdp_env(env, cdp)
-    return err or None
+    if err:
+        return err
+    if cdp:
+        env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+    return None
 
 
-def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
-    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault_fill`` has
-    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
-    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
-    cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
-    if not cdp:
-        return
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-        from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
-        policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
-                                         dialog_policy=policy, dialog_timeout_s=timeout_s)
-    except Exception as exc:
-        logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
-
-
-def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
-    """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
-    BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
-    sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
-    provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
-    if rp_err:
-        return rp_err
-    # local=True is only served by the real-profile route; consent off must not pretend.
-    if local and not _has_cdp_env(env) and not _real_profile_consented():
-        return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
-                "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
-    return _resolve_backend_cdp(env, task_id, session_name=session)
-
-
-def _group_popen_kwargs() -> dict:
-    """Popen kwargs starting the CLI in its own process group (a new session on POSIX) so a
-    timeout can take down every process that inherited the capture pipes, not just the CLI
-    child. Windows also hides the console the .cmd shim would flash (as browser_tool does)."""
-    def _flags() -> dict:
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                "startupinfo": si}
-    return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
-
-
-def _clamp_timeout(timeout_s: Any) -> int:
-    try:
-        return max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
-    except (TypeError, ValueError):
-        return _DEFAULT_TIMEOUT_S
-
-
-# After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
-# instant; the deadline only guards against a process outside the group still holding a pipe.
-_POST_KILL_DRAIN_S = 10.0
-
-
-def _kill_cli_process_group(proc) -> None:
-    """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
-    on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
-    if os.name == "nt":
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-                           check=False, creationflags=windows_hide_flags())
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
-
-
-def _run_cli_killing_process_group(cmd, code, env, timeout):
-    """Run the CLI in its own process group and kill the whole group on timeout.
-
-    ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
-    inherited the stdout/stderr pipes (browser_harness daemon / Chrome helper) is orphaned
-    still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
-    blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
-    """
-    proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
-    )
-    try:
-        stdout, stderr = proc.communicate(input=code, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_cli_process_group(proc)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=_POST_KILL_DRAIN_S)
-        raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-
-
-def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
+def browser_exec(
+    code: str,
+    session: str = "",
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    task_id: Optional[str] = None,
+    local: bool = False,
+):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
@@ -664,10 +562,35 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
-    if route_err:
-        return tool_error(route_err)
-    _attach_vault_supervisor(env, task_id)
+    # Real-profile consent: on a local backend this upgrades the attach to
+    # the user's default browser (profile snapshot, logins included); with
+    # local=True it forces that even under a cloud backend. Runs BEFORE
+    # provider resolution so a real-profile hit short-circuits the cloud
+    # path via the BU_CDP_* env contract.
+    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local))
+    if rp_err:
+        return tool_error(rp_err)
+    if local and not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
+        # local=True is only served by the real-profile route; anything else
+        # (consent off — schema normally hidden, but be explicit; or an
+        # operator CDP override owning the session) must not pretend.
+        if not _real_profile_consented():
+            return tool_error(
+                "local=true was requested but browser.use_real_profile is off. "
+                "Enable it in config.yaml (browser.use_real_profile: true) or "
+                "the desktop Settings → Browser section, then retry."
+            )
+    # Route through the configured browser backend (Browserbase, Firecrawl,
+    # Nous gateway, CDP override, local Chrome, …). Named sessions compose
+    # with the backend: BU_NAME namespaces the harness daemon (its IPC
+    # socket, log, and pid), and on provider backends the name additionally
+    # keys its own cloud browser — so concurrent sessions stop clobbering
+    # each other's daemon (#86894). Browser Use direct-API cloud configs
+    # are the one exception: the CLI manages named cloud browsers natively,
+    # and _resolve_backend_cdp skips provider resolution for them.
+    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
+    if backend_err:
+        return tool_error(backend_err)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -715,19 +638,25 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
 
 _HEADER_BASE = (
-    "Drive a real web browser via the Browser Use CLI: `code` runs as full Python (stdlib available) "
-    "with pre-imported browser helpers; stdout comes back in the result. Start `code` with a one-line "
-    "comment describing the step for the user in plain language, max 60 chars "
-    "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the step label.\n\n"
-    "STATE: the browser session and workspace persist across calls; Python variables do NOT (fresh "
-    "interpreter each call). The workspace dir is $BH_AGENT_WORKSPACE (also `workspace` in every result); "
-    "functions defined in agent_helpers.py there are auto-imported into every call. For multi-item tasks "
-    "('all N products / every entry'), append each batch to a JSON/CSV file in the workspace, then read it "
-    "back and aggregate in code — dedupe/count/sort with Python, not in your head — and verify the "
-    "collected count against what was asked before answering.\n\n"
-    "Batch each sub-procedure (navigate, wait, extract, act) into one call — do not spend a call per "
-    "action — but for long extractions prefer several medium calls that append to workspace files over "
-    "one giant call, so progress survives timeouts."
+    "Drive a real web browser via the Browser Use CLI: `code` runs as full "
+    "Python (stdlib available) with pre-imported browser helpers; stdout "
+    "comes back in the result. Start `code` with a one-line comment "
+    "describing the step for the user in plain language, max 60 chars "
+    "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the "
+    "step label.\n\n"
+    "STATE: the browser session and workspace persist across calls; Python "
+    "variables do NOT (fresh interpreter each call). The workspace dir is "
+    "$BH_AGENT_WORKSPACE (also `workspace` in every result); functions "
+    "defined in agent_helpers.py there are auto-imported into every call. "
+    "For multi-item tasks ('all N products / every entry'), append each "
+    "batch to a JSON/CSV file in the workspace, then read it back and "
+    "aggregate in code — dedupe/count/sort with Python, not in your head — "
+    "and verify the collected count against what was asked before "
+    "answering.\n\n"
+    "Batch each sub-procedure (navigate, wait, extract, act) into one call "
+    "— do not spend a call per action — but for long extractions prefer "
+    "several medium calls that append to workspace files over one giant "
+    "call, so progress survives timeouts."
 )
 
 _HEADER_VISION = (
@@ -779,17 +708,24 @@ def _description_header() -> str:
 
 def _dynamic_schema_overrides() -> dict:
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
-    # ``local`` exists ONLY when the user consented to real-profile browsing — everyone
-    # else's schema carries zero extra surface. The caller memoizes on config.yaml mtime,
-    # so toggling consent applies next session, not mid-chat.
+    # The ``local`` argument exists ONLY when the user consented to
+    # real-profile browsing — everyone else's schema carries zero extra
+    # surface. get_definitions() applies this at schema-build time, and the
+    # caller memoizes on config.yaml mtime, so toggling consent changes the
+    # schema on the next session rather than mid-conversation.
     if _real_profile_consented():
         props = dict(BROWSER_EXEC_SCHEMA["parameters"]["properties"])
         props["local"] = {
-            "type": "boolean", "default": False,
-            "description": ("Drive the user's own local browser (a Hermes-managed copy of their real "
-                            "default-Chromium profile, logins/cookies included) instead of the configured "
-                            "cloud browser backend. Use when the user asks to act as themselves — their "
-                            "accounts, their sessions. No-op when the backend is already local. Default false."),
+            "type": "boolean",
+            "description": (
+                "Drive the user's own local browser (a Hermes-managed copy of "
+                "their real default-Chromium profile, logins/cookies included) "
+                "instead of the configured cloud browser backend. Use when the "
+                "user asks to act as themselves — their accounts, their "
+                "sessions. No-op when the backend is already local. Default "
+                "false."
+            ),
+            "default": False,
         }
         overrides["parameters"] = {**BROWSER_EXEC_SCHEMA["parameters"], "properties": props}
     return overrides
@@ -803,10 +739,19 @@ BROWSER_EXEC_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
-            "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
-            "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
-                          "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
+            "code": {
+                "type": "string",
+                "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back.",
+            },
+            "session": {
+                "type": "string",
+                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session.",
+            },
+            "timeout_s": {
+                "type": "integer",
+                "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S}).",
+                "default": _DEFAULT_TIMEOUT_S,
+            },
         },
         "required": ["code"],
     },
@@ -823,8 +768,10 @@ registry.register(
     toolset="browser-use",
     schema=BROWSER_EXEC_SCHEMA,
     handler=lambda args, **kw: browser_exec(
-        code=args.get("code", ""), session=args.get("session", "") or "",
-        timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
+        code=args.get("code", ""),
+        session=args.get("session", "") or "",
+        timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
+        task_id=kw.get("task_id"),
         local=bool(args.get("local", False)),
     ),
     check_fn=is_browser_use_cli_mode,

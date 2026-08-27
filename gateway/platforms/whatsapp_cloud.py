@@ -288,6 +288,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] WHATSAPP_CLOUD_APP_SECRET is not set — incoming webhook POSTs will be refused "
                 "with 503. Set the app secret to enable inbound message delivery."
             )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
 
@@ -356,21 +357,52 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         formatted = self.format_message(content)
         last_message_id: Optional[str] = None
-        for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):
-            # Quote the user's message on the first chunk only.
-            payload = self._outbound_payload(
-                chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if idx == 0 else None
-            )
-            ids, err = await self._post_messages(
-                payload,
-                fail_log="[whatsapp_cloud] send failed",
-                reject_log="[whatsapp_cloud] send rejected (status=%d): %s",
-            )
-            if err is not None:
-                return SendResult(success=False, error=err)
-            last_message_id = ids[0].get("id") if ids else last_message_id
-        # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
-        # quoted message's id, so this is how replies to our messages resolve text.
+        for idx, chunk in enumerate(chunks):
+            payload: Dict[str, Any] = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": chat_id,
+                "type": "text",
+                "text": {"body": chunk, "preview_url": True},
+            }
+            if reply_to and idx == 0:
+                # Quote the user's message on the first chunk only.
+                payload["context"] = {"message_id": reply_to}
+            try:
+                resp = await self._http_client.post(url, headers=headers, json=payload)
+            except Exception as exc:
+                logger.exception("[whatsapp_cloud] send failed")
+                return SendResult(success=False, error=str(exc) or type(exc).__name__)
+
+            if resp.status_code != 200:
+                # Meta returns structured errors in the body — surface them
+                # to the caller so log lines have actionable context.
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = {"raw": resp.text[:500]}
+                error_msg = self._format_graph_error(body, resp.status_code)
+                logger.warning(
+                    "[whatsapp_cloud] send rejected (status=%d): %s",
+                    resp.status_code,
+                    error_msg,
+                )
+                return SendResult(success=False, error=error_msg)
+
+            try:
+                data = resp.json()
+                ids = data.get("messages") or []
+                if ids:
+                    last_message_id = ids[0].get("id")
+            except Exception:
+                pass
+
+        # Remember (chat_id, wamid) -> text so that when the user replies to
+        # one of our messages, _build_message_event_from_cloud can resolve the
+        # quoted text. Meta's inbound webhook ``context`` object carries only
+        # the quoted message's id, never its text, so without this index the
+        # agent would never learn what the user was replying to. Best-effort;
+        # rich_sent_store swallows all errors.
         if last_message_id:
             rich_sent_store.record(chat_id, last_message_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
@@ -406,17 +438,58 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self, chat_id: str, interactive: Dict[str, Any], metadata: Optional[Dict[str, Any]],
         state: "OrderedDict[str, str]", state_id: str, session_key: str,
     ) -> SendResult:
-        """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
-        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
-        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
-        result = await self._post_message_result(
-            self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
-            fail_log="[whatsapp_cloud] interactive send failed",
-            reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
-        )
-        if result.success:
-            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
-        return result
+        """Low-level POST for an ``interactive`` message payload.
+
+        ``interactive_body`` is the inner ``interactive: {...}`` dict —
+        the caller supplies ``type``, ``body``, and ``action``. This
+        wrapper handles auth, error mapping, and message_id extraction so
+        each send_* method stays focused on its own button shape.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        url = self._graph_url("messages")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": chat_id,
+            "type": "interactive",
+            "interactive": interactive_body,
+        }
+        if reply_to:
+            payload["context"] = {"message_id": reply_to}
+
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] interactive send failed")
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] interactive rejected (status=%d): %s",
+                resp.status_code, error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        last_message_id: Optional[str] = None
+        try:
+            data = resp.json()
+            ids = data.get("messages") or []
+            if ids:
+                last_message_id = ids[0].get("id")
+        except Exception:
+            pass
+        return SendResult(success=True, message_id=last_message_id)
 
     @staticmethod
     def _truncate_button_label(text: str, limit: int = 20) -> str:
@@ -538,12 +611,42 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_block["caption"] = caption
         if filename and media_kind == "document":
             media_block["filename"] = filename
-        return await self._post_message_result(
-            self._outbound_payload(chat_id, media_kind, media_block, reply_to),
-            fail_log="[whatsapp_cloud] media send failed",
-            reject_log="[whatsapp_cloud] media send rejected (status=%d, kind=%s): %s",
-            reject_args=(media_kind,),
-        )
+
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": chat_id,
+            "type": media_kind,
+            media_kind: media_block,
+        }
+        if reply_to:
+            payload["context"] = {"message_id": reply_to}
+
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] media send failed")
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] media send rejected (status=%d, kind=%s): %s",
+                resp.status_code, media_kind, error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        try:
+            data = resp.json()
+            ids = data.get("messages") or []
+            wamid = ids[0].get("id") if ids else None
+        except Exception:
+            wamid = None
+        return SendResult(success=True, message_id=wamid)
 
     async def _send_media_from_path_or_link(
         self, chat_id: str, source: str, media_kind: str, *, caption: Optional[str] = None,

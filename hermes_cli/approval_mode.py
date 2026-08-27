@@ -40,10 +40,10 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     if requested not in VALID_APPROVAL_MODES:
         return ApprovalModeResult(False, current, False, "Usage: /approvals [manual|smart|off]")
 
-    # set_config_value is the canonical managed-scope/write-safety chokepoint. It reports managed
-    # policy through stderr + SystemExit, and the fail-closed write guard raises RuntimeError on an
-    # unparseable config.yaml; capture both for slash-command output instead of terminating the
-    # interactive worker.
+    # set_config_value is the canonical managed-scope/write-safety chokepoint.
+    # It reports managed policy through stderr + SystemExit, and the fail-closed
+    # write guard raises RuntimeError on an unparseable config.yaml; capture both
+    # for slash-command output instead of terminating the interactive worker.
     from hermes_cli.config import set_config_value
     output = StringIO()
     try:

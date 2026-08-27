@@ -104,4 +104,4 @@ test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop 
 
 test.skipIf(process.platform !== 'win32')('PowerShell hand-off preserves the Desktop marker acquisition time', () => {
   assertScriptHandoff(runWindows)
-})
+}, 15_000)

@@ -271,6 +271,17 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
     assert captured["args"] == ["mcp"]
 
 
+def test_standard_existing_profile_grant_stays_in_process_off_macos():
+    from tools.computer_use.cua_backend import _standard_runtime_launch_args
+
+    args, socket_path = _standard_runtime_launch_args(
+        ["mcp"], grant_existing_profile=True, platform="linux"
+    )
+
+    assert args == ["mcp", "--grant", "existing-profile"]
+    assert socket_path is None
+
+
 def test_transport_reset_invalidates_native_capabilities():
     from tools.computer_use.cua_backend import CuaDriverBackend
 

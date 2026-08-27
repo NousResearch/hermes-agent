@@ -2336,6 +2336,7 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'."
         )
+    manual_run_at = _hermes_now().isoformat()
     return update_job(
         job["id"],
         {
@@ -2343,7 +2344,10 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
+            "next_run_at": manual_run_at,
+            # Persist run-now intent alongside the arbitrary instant so cron
+            # expression/TZ repair guards do not mistake it for stale state.
+            "manual_run_at": manual_run_at,
         },
     )
 
@@ -2621,13 +2625,237 @@ def mark_job_run(
     return _under_fire_fence(job_id, locked)
 
 
-def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
-    """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
-    try:
-        save_job_output(job.get("id", ""), text)
-        return True
-    except Exception as e:
-        logger.debug("Failed to write %s diagnostic for job %r: %s", what, job.get("id"), e)
+def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
+    """Set/clear a persisted alert-dedup marker; return the PRIOR value.
+
+    The marker records that the operator was already alerted about this
+    job's condition, so the scheduler alerts exactly once and stays silent
+    on subsequent ticks until the condition heals (same alert-once shape as
+    the dead-pin auto-pause in #73506). Persisted on the job record so the
+    dedup survives gateway restarts. Fields: ``preflight_alerted`` (blocked
+    config, T1-26) and ``drift_alerted`` (#44585 drift-guard skip).
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                prior = bool(job.get(field))
+                if value:
+                    job[field] = True
+                else:
+                    job.pop(field, None)
+                if prior != value:
+                    jobs[i] = job
+                    save_jobs(jobs)
+                return prior
+    return False
+
+
+def _set_preflight_alerted(job_id: str, value: bool) -> bool:
+    """Set/clear the preflight alert-dedup marker; return the PRIOR value."""
+    return _set_alert_flag(job_id, "preflight_alerted", value)
+
+
+def mark_preflight_alerted(job_id: str) -> bool:
+    """Mark the job as preflight-alerted; return True if it already was."""
+    return _set_preflight_alerted(job_id, True)
+
+
+def clear_preflight_alerted(job_id: str) -> None:
+    """Clear the preflight alert-dedup marker (config validates again)."""
+    _set_preflight_alerted(job_id, False)
+
+
+def mark_drift_alerted(job_id: str) -> bool:
+    """Mark the job as drift-alerted; return True if it already was."""
+    return _set_alert_flag(job_id, "drift_alerted", True)
+
+
+def clear_drift_alerted(job_id: str) -> None:
+    """Clear the drift alert-dedup marker (resolution matches again)."""
+    _set_alert_flag(job_id, "drift_alerted", False)
+
+
+def note_fire_forward_failure(job_id: str, detail: str) -> bool:
+    """Durably record that a scheduled fire could not be handed to the runner.
+
+    Written by the dashboard fire webhook when the loopback forward to the
+    gateway api_server fails (gateway unreachable / listener not bound) —
+    the shape behind "job runs manually but never auto-fires". Without this
+    stamp the miss is invisible outside gui.log: no execution row is created
+    (the claim never happens) and ``last_status``/``last_error`` only cover
+    runs that actually started.
+
+    Stored as ``last_fire_error`` (``{"at": iso, "detail": str}``) on the job
+    record so `cronjob list`, the CLI, and the dashboard all surface it.
+    Cleared by the next successful run (``mark_job_run``). Repeated failures
+    overwrite in place — latest miss wins; per-fire history lives in the
+    scheduler's own logs.
+
+    Returns True when a job record was found and stamped.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                job["last_fire_error"] = {
+                    "at": _hermes_now().isoformat(),
+                    "detail": str(detail or "")[:500],
+                }
+                jobs[i] = job
+                save_jobs(jobs)
+                return True
+    return False
+
+
+def _mark_job_run_locked(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    *,
+    status: Optional[str] = None,
+    expected_fire_owner: Optional[str] = None,
+) -> bool:
+    """
+    Mark a job as having been run.
+    
+    Updates last_run_at, last_status, increments completed count,
+    computes next_run_at, and auto-deletes if repeat limit reached.
+
+    ``delivery_error`` is tracked separately from the agent error — a job
+    can succeed (agent produced output) but fail delivery (platform down).
+
+    ``status`` overrides the derived ``last_status`` ("ok"/"error") with a
+    specific terminal status for this run — e.g. ``"blocked_config"`` when
+    the pre-dispatch configuration validation refused to run the agent
+    (T1-26), so `cronjob list` distinguishes "your config is broken" from
+    "the run itself failed".
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                if expected_fire_owner is not None:
+                    claim = job.get("fire_claim")
+                    if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
+                        logger.warning(
+                            "mark_job_run: job_id %s fire claim owner changed; "
+                            "discarding stale completion",
+                            job_id,
+                        )
+                        return False
+                now = _hermes_now().isoformat()
+                job["last_run_at"] = now
+                job.pop("manual_run_at", None)
+                job["last_status"] = status or ("ok" if success else "error")
+                job["last_error"] = error if not success else None
+                # A healthy run means the configuration validates again — drop
+                # the preflight alert-dedup marker so a FUTURE config break
+                # re-alerts instead of being silently swallowed. Same contract
+                # for the drift marker (#44585 alert-once): a run that made it
+                # through the guard means resolution matches again.
+                if success:
+                    job.pop("preflight_alerted", None)
+                    job.pop("drift_alerted", None)
+                    # The fire hand-off demonstrably works again — clear the
+                    # forward-failure stamp so it only ever describes the
+                    # CURRENT auto-fire health, not a healed past incident.
+                    job.pop("last_fire_error", None)
+                # Consecutive agent-failure streak. Any successful run resets
+                # it; delivery failures alone do NOT count (the agent did its
+                # job). Read by the scheduler's failure-delivery path to nudge
+                # the user to review a repeatedly-failing automation
+                # (Poke-inspired; see cron/scheduler._failure_streak_nudge).
+                if success:
+                    job["failure_streak"] = 0
+                else:
+                    job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+                # Track delivery failures separately — cleared on successful delivery
+                job["last_delivery_error"] = delivery_error
+                # Clear any external-fire claim so a re-armed recurring job can
+                # be claimed again on its next fire (Phase 4C CAS).
+                job["fire_claim"] = None
+                # Clear the one-shot running-claim (#59229): the run is over, so
+                # a re-armed recurring job or a re-dispatched one-shot recovery
+                # is claimable again. No-op if the job never carried a claim.
+                if job.get("run_claim") is not None:
+                    job["run_claim"] = None
+                
+                # Increment completed count.  Finite one-shot jobs are
+                # pre-claimed by claim_dispatch() BEFORE the side effect runs
+                # (issue #38758), which already incremented completed — do not
+                # double-count them here.  Recurring jobs and direct callers
+                # with no pre-run claim still get the legacy increment.
+                if job.get("repeat"):
+                    repeat = job["repeat"]
+                    times = repeat.get("times")
+                    completed = repeat.get("completed", 0)
+                    kind = job.get("schedule", {}).get("kind")
+                    preclaimed_oneshot = (
+                        kind == "once"
+                        and times is not None
+                        and times > 0
+                        and completed > 0
+                    )
+                    if not preclaimed_oneshot:
+                        completed += 1
+                        repeat["completed"] = completed
+
+                    # Check if we've hit the repeat limit
+                    if times is not None and times > 0 and completed >= times:
+                        # Limit reached: retain the record as a terminal
+                        # completion instead of popping it. Deleting the job
+                        # here discarded the last_status / last_error /
+                        # last_delivery_error written above — a finished
+                        # one-shot vanished from `cronjob list` with no
+                        # inspectable outcome, and a failed delivery was
+                        # invisible. Mirror the terminal shape of the
+                        # next_run_at-is-None branch below; the retention
+                        # sweep prunes these after
+                        # COMPLETED_ONESHOT_RETENTION_DAYS.
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                        job["next_run_at"] = None
+                        save_jobs(jobs)
+                        return True
+                
+                # Compute next run
+                job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                # If no next run, decide whether this is terminal completion
+                # (one-shot) or a transient failure (recurring schedule couldn't
+                # compute — e.g. 'croniter' missing from the runtime env).
+                # Recurring jobs must NEVER be silently disabled: that turns a
+                # missing runtime dep into "job completed" and the user's
+                # schedule quietly goes off. See issue #16265.
+                if job["next_run_at"] is None:
+                    kind = job.get("schedule", {}).get("kind")
+                    if kind in {"cron", "interval"}:
+                        job["state"] = "error"
+                        if not job.get("last_error"):
+                            job["last_error"] = (
+                                "Failed to compute next run for recurring "
+                                "schedule (is the 'croniter' package "
+                                "installed in the gateway's Python env?)"
+                            )
+                        logger.error(
+                            "Job '%s' (%s) could not compute next_run_at; "
+                            "leaving enabled and marking state=error so the "
+                            "job is not silently disabled.",
+                            job.get("name", job.get("id", "?")),
+                            kind,
+                        )
+                    else:
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                elif job.get("state") != "paused":
+                    job["state"] = "scheduled"
+
+                save_jobs(jobs)
+                return True
+
+        logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
         return False
 
 
@@ -3566,6 +3794,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)
+            # Intentionally string-exact (raw stored values, not normalized
+            # datetimes): trigger_job stamps the SAME isoformat string into
+            # both fields, and any rewrite of next_run_at (schedule edit,
+            # recovery re-anchor, fire-claim advance) must invalidate the
+            # marker. Do not "fix" this with _ensure_aware normalization.
+            manual_run = job.get("manual_run_at") == next_run
             # Migration repair: a cron job persists next_run_at as an absolute
             # instant, but the cron expr describes local wall-clock intent. If the
             # configured/system timezone changed after persistence, the stored
@@ -3583,6 +3817,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # rare relative to the double-fire bug this prevents (#28934).
             if (
                 kind == "cron"
+                and not manual_run
                 and next_run_dt <= now
                 and _timezone_offset_mismatch(raw_next_run_dt, now)
                 and _stored_wall_clock_is_future(raw_next_run_dt, now)
@@ -3669,7 +3904,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # so re-anchor before either can fire. Recomputation uses the
                 # current expression, so this converges — it cannot defer
                 # forever.
-                if kind == "cron" and not _cron_next_run_matches_expr(
+                if not manual_run and kind == "cron" and not _cron_next_run_matches_expr(
                     schedule, next_run_dt
                 ):
                     new_next = compute_next_run(schedule, now.isoformat())
@@ -3694,7 +3929,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # (gateway was down and missed the window). Fast-forward to
                 # the next future occurrence instead of firing a stale run.
                 grace = _compute_grace_seconds(schedule)
-                if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+                if (
+                    not manual_run
+                    and kind in {"cron", "interval"}
+                    and (now - next_run_dt).total_seconds() > grace
+                ):
                     # Job is past its catch-up grace window — skip accumulated
                     # missed runs but still execute once now to avoid deferring
                     # indefinitely (e.g. a long-running job just finished).

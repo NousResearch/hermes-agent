@@ -265,6 +265,20 @@ class SessionOwnerBackfill(BaseModel):
     cannot inject an arbitrary owner."""
     profile: Optional[str] = None
 
+
+class SessionOwnerBackfill(BaseModel):
+    """Body for POST /api/sessions/owner-backfill (#94724 legacy migration).
+
+    ``profile`` scopes WHICH profile's state.db is stamped (same semantics as
+    every other session route); the stamped value is always that store's own
+    serving-profile identity — the caller cannot inject an arbitrary owner.
+    """
+
+    profile: Optional[str] = None
+
+
+# --- from web_server.py (originally lines 12149-12174) ---
+
 class SessionPrune(BaseModel):
     older_than_days: Optional[float] = 90
     source: Optional[str] = None

@@ -125,6 +125,38 @@ test('groupChatMemberBots: seats local meta members plus stored remote descripto
   assert.equal(members[2], roster[2])
 })
 
+test('groupChatMemberBots: persisted unreachable source members stay seated next to a live same-name twin', () => {
+  const { groupChatMemberBots, $groupChats } = load()
+  const live = {
+    name: 'profile-a',
+    handle: 'profile-a-this-device',
+    connectionId: 'local',
+    connectionKind: 'local',
+    connectionLabel: 'This device',
+    sourceReachable: true
+  }
+  const stored = {
+    name: 'profile-a',
+    handle: 'profile-a-127-0-0-1-19119',
+    connectionId: 'loopback-19119',
+    connectionKind: 'remote',
+    connectionLabel: '127.0.0.1:19119',
+    remoteSource: true,
+    sourceScoped: true,
+    sourceReachable: false
+  }
+  $groupChats.set({ Research: { log: [], members: [stored] } })
+
+  const members = groupChatMemberBots('Research', [live, stored], {
+    'profile-a': { group: 'Research' }
+  })
+
+  assert.equal(members.length, 2)
+  assert.equal(members[0], live)
+  assert.equal(members[1], stored)
+  assert.equal(members[1].handle, 'profile-a-127-0-0-1-19119')
+})
+
 test('groupChatMemberBots: stored descriptors beat presentation-only ghosts', () => {
   const { groupChatMemberBots, $groupChats } = load()
   const ghost = {

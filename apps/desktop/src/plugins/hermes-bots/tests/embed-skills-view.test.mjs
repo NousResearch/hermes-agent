@@ -222,6 +222,9 @@ test('Edit Profile model options use the captured non-identity Bot route', async
     'profile',
     remoteBot.route,
     'model.options',
-    { include_unconfigured: true, explicit_only: false, refresh: true }
+    // No `refresh`: the picker's catalog read participates in the staleTime
+    // cache — a forced network read on every mount re-entered the spinner and
+    // wiped staged selections on Bots view remounts (#95279).
+    { include_unconfigured: true, explicit_only: false }
   ]])
 })

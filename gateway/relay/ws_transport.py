@@ -145,7 +145,48 @@ def _normalize_slack_parent_command(text: str, message_type: MessageType) -> tup
 
 
 def _media_types_from_wire(raw: Dict[str, Any]) -> list[str]:
-    """Per-attachment MIME types, parallel to ``media_urls``.
+    """Per-attachment MIME types, aligned to ``media_urls`` BY URL.
+
+    INVARIANT: the returned list is ALWAYS the same length as ``media_urls``
+    (padded with ``""``), or empty when there are no urls. Consumers index the
+    two lists by the same ``i`` (``_event_media_type_at``) AND concatenate them
+    pairwise (``merge_pending_message_event`` extends both), so a short
+    ``media_types`` is not a harmless absence — on a merge it shifts every
+    subsequent entry onto the wrong url.
+
+    Resolution is BY URL LOOKUP, never by position: ``media_urls`` (legacy,
+    flat) and ``media`` (rich, Phase 2) are independent wire fields that may
+    disagree in order, and a length check alone accepts a reordered pair —
+    attaching one attachment's MIME to another's url, which silently
+    mis-routes it. A url with no matching ``media[]`` entry keeps its slot as
+    ``""`` and falls back to message-level classification.
+    """
+    urls = raw.get("media_urls")
+    if not isinstance(urls, list) or not urls:
+        return []
+    media = raw.get("media")
+    mime_by_url: dict[str, str] = {}
+    if isinstance(media, list):
+        for m in media:
+            if isinstance(m, dict):
+                url = m.get("url")
+                if isinstance(url, str) and url:
+                    mime_by_url[url] = m.get("mime") or ""
+    # One slot per url, ALWAYS — even with no media[] at all (all ""), so the
+    # parallel-array invariant holds for every consumer.
+    types = [mime_by_url.get(u, "") if isinstance(u, str) else "" for u in urls]
+    missing = sum(1 for t in types if not t)
+    if missing and mime_by_url:
+        logger.debug(
+            "relay inbound: %d/%d media_urls had no matching media[] mime",
+            missing,
+            len(types),
+        )
+    return types
+
+
+def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
+    """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
     INVARIANT: always the same length as ``media_urls`` (padded with ``""``), or
     empty when there are no urls — consumers index the two lists pairwise, so a
@@ -237,9 +278,31 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         reply_to_author_name=reply_to.get("author"),
         reply_to_is_own_message=bool(reply_to.get("is_own", False)),
         media_urls=raw.get("media_urls") or [],
-        # Parallel to media_urls; run.py's per-attachment classifiers consult
-        # media_types[i] FIRST (routes a relayed image/document/voice like native).
+        # Per-attachment MIME types, parallel to media_urls, from the
+        # connector's rich media[] array. run.py's per-attachment classifiers
+        # (_event_media_type_at) consult media_types[i] FIRST and only fall
+        # back to the message-level type when it's empty — so this mapping is
+        # what lets a relayed image/document/audio attachment route exactly
+        # like its native-adapter equivalent (and what makes a kind:"voice"
+        # attachment STT-eligible). Entries without a mime keep positional
+        # alignment with an empty string.
+        #
+        # media_urls and media[] are independent wire fields. Today's
+        # connector builds both from the same list, but a malformed or
+        # future producer could disagree — and a LENGTH MISMATCH would
+        # silently misassociate a MIME with the wrong URL (worse than no
+        # MIME at all: it mis-routes an attachment). Fail safe: map only
+        # when the two agree, otherwise leave media_types empty and let the
+        # message-level type drive classification (pre-fix behaviour).
         media_types=_media_types_from_wire(raw),
+        # Surrounding channel/group CONTEXT the connector attached for this
+        # addressed turn (design relay-channel-context): a read-only, oldest→
+        # newest list of nearby non-addressed messages (Model A pull / Model B
+        # buffer). Rendered into the existing ``channel_context`` field — the
+        # same read-only injection path history-backfill already uses
+        # (run.py prepends it ahead of the trigger message). Absent / empty on a
+        # connector that doesn't send it, a dm, or a no-context platform, so
+        # this is purely additive and byte-identical to today when unset.
         channel_context=_render_relay_context(raw.get("context")),
         # Structured interactive-prompt reply, verbatim off the wire; the adapter
         # consumes it to resolve pending approvals/confirms/clarifies.

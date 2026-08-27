@@ -101,6 +101,40 @@ def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     return kwargs
 
 
+def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    """Return explicitly configured Slack link-preview controls.
+
+    Omitting a key preserves Slack's existing default.  Passing ``False``
+    suppresses only the automatic preview while leaving the link text and URL
+    in the message untouched.
+
+    String booleans are coerced the same way as the relay plane's
+    ``_slack_unfurl_hints``: ``hermes config set`` and Railway persist YAML
+    ``"true"``/``"false"`` as strings, and a silently dropped string would
+    make the knob a no-op on the native plane only. Unrecognized values are
+    dropped (NOT coerced to False) so junk config keeps Slack's default
+    instead of accidentally suppressing previews.
+    """
+    settings = extra or {}
+    kwargs: Dict[str, bool] = {}
+    for key in ("unfurl_links", "unfurl_media"):
+        val = settings.get(key)
+        if isinstance(val, bool):
+            kwargs[key] = val
+        elif isinstance(val, str) and val.strip().lower() in {
+            "1",
+            "0",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+        }:
+            kwargs[key] = val.strip().lower() in {"1", "true", "yes", "on"}
+    return kwargs
+
+
 async def _read_error_text_limited(
     response: Any, *, limit: int = _SLACK_ERROR_BODY_LIMIT_BYTES) -> str:
     content = getattr(response, "content", None)
@@ -1873,10 +1907,269 @@ class SlackAdapter(BasePlatformAdapter):
             )
             _apply_slack_proxy(self._app.client, proxy_url)
             for token in bot_tokens:
-                await self._authenticate_workspace(token, proxy_url)
-            self._register_bolt_handlers()
-            # _running=True only once the handler is alive (watchdog needs the live
-            # task); on failure keep it False so ``finally`` releases the lock.
+                client = AsyncWebClient(
+                    token=token,
+                    user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+                )
+                _apply_slack_proxy(client, proxy_url)
+                auth_response = await client.auth_test()
+                team_id = auth_response.get("team_id", "")
+                bot_user_id = auth_response.get("user_id", "")
+                bot_name = auth_response.get("user", "unknown")
+                team_name = auth_response.get("team", "unknown")
+
+                self._team_clients[team_id] = client
+                self._team_bot_user_ids[team_id] = bot_user_id
+                self._team_bot_names[team_id] = bot_name
+
+                # First token always wins as the primary bot user id; we
+                # cleared ``_bot_user_id`` above so this picks up the current
+                # token's identity even on reconnect.
+                if self._bot_user_id is None:
+                    self._bot_user_id = bot_user_id
+                if self._bot_display_name is None:
+                    self._bot_display_name = bot_name
+
+                logger.info(
+                    "[Slack] Authenticated as @%s in workspace %s (team: %s)",
+                    bot_name,
+                    team_name,
+                    team_id,
+                )
+
+                self._warn_if_missing_group_dm_scopes(auth_response, team_name)
+                self._warn_if_not_bot_token(auth_response, team_name)
+                self._warn_if_inchannel_without_flat_reply(team_name)
+
+            # Register message event handler
+            @self._app.event("message")
+            async def handle_message_event(event, say, body):
+                await self._handle_slack_message(event, body)
+
+            # Handle app_mention explicitly. In some Slack app configurations,
+            # channel mentions arrive only as app_mention events rather than the
+            # generic message event. Forward them into the normal message
+            # pipeline so @mentions reliably produce replies.
+            # NOTE: when Slack fires BOTH message and app_mention for the same
+            # @mention, they share the same event ts — the dedup in
+            # _handle_slack_message (MessageDeduplicator) suppresses the second.
+            @self._app.event("app_mention")
+            async def handle_app_mention(event, say, body):
+                await self._handle_slack_message(event, body)
+
+            @self._app.event("app_home_opened")
+            async def handle_app_home_opened(event, say, body):
+                await self._handle_app_home_opened(event, body)
+
+            @self._app.event("app_context_changed")
+            async def handle_app_context_changed(event, say, body):
+                await self._handle_app_context_changed(event, body)
+
+            # File lifecycle events can arrive around snippet uploads even when
+            # the actual user message is what we care about. Ack them so Slack
+            # doesn't log noisy 404 "unhandled request" warnings.
+            @self._app.event("file_shared")
+            async def handle_file_shared(event, say, body):
+                await self._handle_slack_file_shared(event, body)
+
+            @self._app.event("file_created")
+            async def handle_file_created(event, say):
+                pass
+
+            @self._app.event("file_change")
+            async def handle_file_change(event, say):
+                pass
+
+            # Forward reaction_added events through the normal message
+            # pipeline (see _handle_slack_reaction). Skills that present
+            # confirmation-style proposals ("react 👍 to proceed") then work
+            # end-to-end. Registered explicitly so high-traffic channels do
+            # not fill gateway.error.log with Slack Bolt "Unhandled request"
+            # warnings.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._handle_slack_reaction(event)
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                await self._handle_slack_reaction(event, removed=True)
+
+            @self._app.event("assistant_thread_started")
+            async def handle_assistant_thread_started(event, say, body):
+                await self._handle_assistant_thread_lifecycle_event(event, body)
+
+            @self._app.event("assistant_thread_context_changed")
+            async def handle_assistant_thread_context_changed(event, say, body):
+                await self._handle_assistant_thread_lifecycle_event(event, body)
+
+            # Catch-all no-op ack for any other subscribed event type that
+            # Hermes has no listener for (e.g. user_change,
+            # user_huddle_changed, member_joined_channel, channel_archive,
+            # pin_added, etc.).
+            #
+            # Two reasons this must exist (issues #6572 and the Event
+            # Subscriptions auto-disable failure mode):
+            #   1. Correctness at scale: without a matching listener,
+            #      slack-bolt returns HTTP 404 for every unhandled event
+            #      envelope and never sends the Socket Mode ack. When the app
+            #      is subscribed to high-volume events (user_change fires on
+            #      every presence/status change for the whole org), the flood
+            #      of un-acked 404s pushes Slack's failure rate past its
+            #      95%/60-min threshold and Slack auto-disables the app's
+            #      Event Subscriptions — silently killing ALL inbound
+            #      delivery until manually re-enabled.
+            #   2. Noise: each unhandled envelope also logs a slack_bolt
+            #      "Unhandled request" WARNING, flooding gateway logs in
+            #      busy channels.
+            #
+            # Registered AFTER every named handler: bolt dispatches to the
+            # first matching listener, so the named handlers above always
+            # win and this only fires for truly unhandled types. The
+            # envelope is acked with 200, keeping the failure rate near 0%
+            # regardless of which events the Slack app manifest subscribes
+            # to. A debug line preserves visibility into unknown event
+            # types without per-message WARNING noise.
+            @self._app.event(re.compile(r".*"))
+            async def handle_unhandled_event(event, body, logger):
+                logger.debug(
+                    "[Slack] Ignoring unhandled event type=%s (no listener "
+                    "registered; subscribed events not handled by Hermes can "
+                    "be removed from the Slack app manifest via "
+                    "`hermes slack manifest`)",
+                    (event or {}).get(
+                        "type",
+                        (body or {}).get("event", {}).get("type", "unknown"),
+                    ),
+                )
+
+            # Register slash command handler(s)
+            #
+            # Every gateway command from COMMAND_REGISTRY is a native Slack
+            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
+            # /model work directly without /hermes prefix). A single regex
+            # matcher dispatches all of them to one handler so we don't need
+            # N identical @app.command() decorators.
+            #
+            # The slash commands must ALSO be declared in the Slack app
+            # manifest (see `hermes slack manifest`). In Socket Mode, Slack
+            # routes the command event through the socket regardless of the
+            # manifest's request URL, but it will not deliver an event for
+            # a slash command the manifest doesn't declare.
+            from hermes_cli.commands import slack_native_slashes
+            import re as _re
+
+            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            if _slash_names:
+                _slash_pattern = _re.compile(
+                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+                )
+            else:  # pragma: no cover - registry always non-empty
+                _slash_pattern = _re.compile(r"^/hermes$")
+
+            @self._app.command(_slash_pattern)
+            async def handle_hermes_command(ack, command):
+                slash = (command.get("command") or "").lstrip("/")
+                await ack(
+                    response_type="ephemeral",
+                    text=f"Running `/{slash}`…",
+                )
+                await self._handle_slash_command(command)
+
+            # Register Block Kit action handlers for approval buttons
+            for _action_id in (
+                "hermes_approve_once",
+                "hermes_approve_session",
+                "hermes_approve_always",
+                "hermes_deny",
+            ):
+                self._app.action(_action_id)(self._handle_approval_action)
+
+            # Register Block Kit action handlers for slash-confirm buttons
+            # (generic three-option prompts; see tools/slash_confirm.py).
+            for _action_id in (
+                "hermes_confirm_once",
+                "hermes_confirm_always",
+                "hermes_confirm_cancel",
+            ):
+                self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            self._app.action("hermes_feedback")(self._handle_feedback_action)
+
+            # Register Block Kit action handlers for clarify buttons
+            # (interactive multiple-choice prompts; see tools/clarify_gateway.py).
+            # Choice buttons use indexed action IDs so each ID is unique within
+            # its actions block, as required by Slack's Block Kit schema.
+            self._app.action(
+                _re.compile(r"^hermes_clarify_choice_\d+$")
+            )(self._handle_clarify_action)
+            self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+
+            # Register plugin-provided Block Kit action handlers.
+            #
+            # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
+            # at register() time; the manager queues them and the adapter
+            # wires them into AsyncApp here so slack_bolt's matcher knows
+            # about them before Socket Mode starts dispatching events.
+            #
+            # Each callback is wrapped so a misbehaving plugin can't take
+            # down the gateway: any exception inside the plugin handler is
+            # caught and logged, and slack_bolt still sees a clean ack.
+            try:
+                from hermes_cli.plugins import get_plugin_manager
+                _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Could not load plugin action handlers: %s", e,
+                )
+                _plugin_handlers = []
+
+            # Closure factory — keeps the wrapper's signature limited to
+            # ``(ack, body, action)``. slack_bolt inspects listener
+            # signatures via ``inspect.signature`` and passes ``None`` for
+            # any parameter name it doesn't recognise, so capturing loop
+            # vars as default args (``_cb=_cb`` etc.) silently clobbers
+            # them at dispatch time.
+            def _make_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, action):
+                    try:
+                        await cb(ack, body, action)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.error(
+                            "[Slack] Plugin '%s' action handler raised: %s",
+                            plugin_name, exc, exc_info=True,
+                        )
+                        # Best-effort ack so Slack doesn't retry the click.
+                        try:
+                            await ack()
+                        except Exception:
+                            pass
+                return _wrapped
+
+            for _action_id, _cb, _plugin_name in _plugin_handlers:
+                self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+                logger.debug(
+                    "[Slack] Registered plugin action handler %s (from %s)",
+                    _action_id, _plugin_name,
+                )
+            if _plugin_handlers:
+                logger.info(
+                    "[Slack] Wired %d plugin action handler(s)",
+                    len(_plugin_handlers),
+                )
+
+            # Generic plugin-registered native handlers
+            # (ctx.register_platform_handler("slack", ...)). Factories get
+            # the slack_bolt AsyncApp — the full app.event()/app.action()/
+            # app.command() surface, not just Block Kit actions. Wired
+            # before Socket Mode starts so bolt's matcher knows about them
+            # before events dispatch.
+            self._wire_plugin_handlers(self._app)
+
+            # Bring up the handler and watchdog atomically. ``_running`` only
+            # flips to True after the handler is alive so the watchdog loop
+            # observes the live task immediately; on any failure here we tear
+            # down whatever we managed to start, leave ``_running=False``, and
+            # let the ``finally`` block release the platform lock cleanly.
             try:
                 self._start_socket_mode_handler()
                 self._running = True
@@ -2269,7 +2562,52 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            last_result = None
+
+            # reply_broadcast: also post thread replies to the main channel.
+            # Controlled via platform config: gateway.slack.reply_broadcast
+            broadcast = self.config.extra.get("reply_broadcast", False)
+
+            # Block Kit (opt-in): render the primary message as structured
+            # blocks. Only applied to a single-chunk message — a >39k response
+            # that had to be split is pathological for Block Kit's 50-block /
+            # 3000-char limits, so those fall back to plain text. The ``text``
+            # field is always kept as the notification/accessibility fallback.
+            blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+
+            for i, chunk in enumerate(chunks):
+                kwargs = {
+                    "channel": chat_id,
+                    "text": chunk,
+                    "mrkdwn": True,
+                    **_slack_unfurl_kwargs(self.config.extra),
+                }
+                if blocks and i == 0:
+                    kwargs["blocks"] = blocks
+                if thread_ts:
+                    kwargs["thread_ts"] = thread_ts
+                    # Only broadcast the first chunk of the first reply
+                    if broadcast and i == 0:
+                        kwargs["reply_broadcast"] = True
+
+                try:
+                    last_result = await self._get_client(
+                        chat_id, team_id=team_id
+                    ).chat_postMessage(**kwargs)
+                except Exception as e:
+                    if kwargs.get("blocks") and self._is_block_payload_rejection(e):
+                        retry_kwargs = dict(kwargs)
+                        retry_kwargs.pop("blocks", None)
+                        logger.info(
+                            "[Slack] Block Kit payload rejected; retrying send without blocks: %s",
+                            e,
+                        )
+                        last_result = await self._get_client(
+                            chat_id, team_id=team_id
+                        ).chat_postMessage(**retry_kwargs)
+                    else:
+                        raise
+
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
@@ -2475,12 +2813,16 @@ class SlackAdapter(BasePlatformAdapter):
         "method_deprecated", "not_authed", "streaming_not_allowed")
 
     def supports_draft_streaming(
-        self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Return whether Slack's native stream can preserve configured behavior."""
         if self._native_stream_unsupported:
             return False
-        # chat.*Stream has no unfurl controls; configured unfurl behavior needs
-        # the edit-based transport whose chat.postMessage carries them.
+        # Slack's chat.*Stream API contract has no unfurl controls. Route
+        # explicitly configured behavior through the edit-based transport,
+        # whose initial chat.postMessage carries these options.
         if _slack_unfurl_kwargs(self.config.extra):
             return False
         return self._app is not None
@@ -6946,14 +7288,49 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
-async def _standalone_send_media(
-    token: str, chat_id: str, media_files: list, thread_id: Optional[str], formatted: Optional[str],
-    formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Media branch of ``_standalone_send``: ``files_upload_v2`` per file (+ optional text post).
-    ``caption`` rides as ``initial_comment`` on the first successful upload unless
-    link-preview controls are explicit (the upload API cannot carry them)."""
-    warnings: List[str] = []
-    # Local import: tests inject a fake slack_sdk; a missing install gets a clean error.
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    caption=None,
+):
+    """Out-of-process Slack delivery via the Web API.
+
+    Implements the ``standalone_sender_fn`` contract so ``deliver=slack`` cron
+    jobs and ``send_message`` MEDIA attachments succeed when the cron/tool
+    process is not co-located with the gateway (the in-process adapter weakref
+    is ``None`` in that case). Replaces the legacy ``_send_slack`` helper that
+    used to live in ``tools/send_message_tool.py``.
+
+    Text uses ``chat.postMessage`` (aiohttp). Media uses ``files_upload_v2`` via
+    ``AsyncWebClient`` — the same upload path as the live Slack adapter — so
+    PDFs/images/documents arrive as native Slack file shares.
+
+    ``force_document`` is accepted for signature parity but unused — Slack
+    treats every upload as a generic file share.
+
+    When ``caption`` is set (single captionable MEDIA:<path> + short text), the
+    text normally rides as ``initial_comment`` on the upload instead of a
+    separate ``chat.postMessage``. If link-preview controls are explicit, the
+    text is posted separately because Slack's file-upload API cannot carry
+    those controls.
+    """
+    del force_document  # signature parity with other standalone senders
+    # Profile-scoped read: under multiplex os.environ may hold ANOTHER
+    # profile's bot token (first-writer-wins env bridges), so honor the
+    # secret scope's verdict instead of reading the process env directly.
+    raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
+
+    # ``SLACK_BOT_TOKEN`` can be a comma-separated list in multi-workspace
+    # gateways, and OAuth installs persist per-workspace tokens in
+    # slack_tokens.json. The standalone path has no team→client map, so try
+    # each token individually instead of sending the literal comma-joined
+    # string, which Slack rejects as ``invalid_auth`` (#47547).
+    tokens = [t.strip() for t in str(raw_token or "").split(",") if t.strip()]
     try:
         from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
     except ImportError:
@@ -7062,12 +7439,142 @@ async def _standalone_send(
                     f"Slack user ID resolution failed for {chat_id} "
                     "(conversations.open — check the bot's im:write scope)")}
         chat_id = resolved
-    formatted = _standalone_format_mrkdwn(message) if message else message
-    formatted_caption = _standalone_format_mrkdwn(caption) if caption else caption
+
+
+    media_files = media_files or []
+    warnings: List[str] = []
+
+    def _format_mrkdwn(text: str) -> str:
+        if not text:
+            return text
+        try:
+            _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
+            return _fmt_adapter.format_message(text)
+        except Exception:
+            logger.debug(
+                "Failed to apply Slack mrkdwn formatting in _standalone_send",
+                exc_info=True,
+            )
+            return text
+
+    formatted = _format_mrkdwn(message) if message else message
+    formatted_caption = _format_mrkdwn(caption) if caption else caption
     unfurl_kwargs = _slack_unfurl_kwargs(getattr(pconfig, "extra", None))
+
+    # --- Media path: AsyncWebClient.files_upload_v2 (+ optional text) ---
     if media_files:
-        return await _standalone_send_media(
-            token, chat_id, media_files, thread_id, formatted, formatted_caption, unfurl_kwargs)
+        # Function-local import: tests inject a fake slack_sdk via
+        # sys.modules, and installs without slack_sdk get a clean error
+        # instead of an ImportError at module load.
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
+        except ImportError:
+            return {
+                "error": (
+                    "slack_sdk not installed. Run: pip install 'slack-sdk' "
+                    "(required for Slack MEDIA delivery via send_message)"
+                )
+            }
+
+        client = _AsyncWebClient(token=token)
+        _apply_slack_proxy(client, resolve_proxy_url())
+        last_message_id = None
+
+        # Slack's file-upload API cannot accept chat.postMessage's unfurl
+        # controls. When either control is explicit, keep the caption as a
+        # separate text post so the configured behavior is actually honored.
+        caption_as_upload_comment = bool(formatted_caption) and not unfurl_kwargs
+        text_to_send = (
+            "" if caption_as_upload_comment else (formatted_caption or formatted or "")
+        )
+        if text_to_send.strip():
+            post_kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": text_to_send,
+                "mrkdwn": True,
+                **unfurl_kwargs,
+            }
+            if thread_id:
+                post_kwargs["thread_ts"] = thread_id
+            try:
+                post_payload = _slack_response_payload(
+                    await client.chat_postMessage(**post_kwargs)
+                )
+                if not post_payload.get("ok", True):
+                    return {
+                        "error": f"Slack API error: {post_payload.get('error', 'unknown')}"
+                    }
+                last_message_id = post_payload.get("ts")
+            except Exception as e:
+                return {"error": f"Slack send failed: {e}"}
+
+        caption_pending = caption_as_upload_comment
+        uploaded_any = False
+        for media_path, _is_voice in media_files:
+            if not os.path.exists(media_path):
+                warning = f"Media file not found, skipping: {media_path}"
+                logger.warning("[Slack] %s", warning)
+                warnings.append(warning)
+                if caption_pending:
+                    # Keep caption deliverable even when the file is missing.
+                    try:
+                        fallback_kwargs: Dict[str, Any] = {
+                            "channel": chat_id,
+                            "text": formatted_caption,
+                            "mrkdwn": True,
+                            **unfurl_kwargs,
+                        }
+                        if thread_id:
+                            fallback_kwargs["thread_ts"] = thread_id
+                        fb = _slack_response_payload(
+                            await client.chat_postMessage(**fallback_kwargs)
+                        )
+                        if fb.get("ok", True):
+                            last_message_id = fb.get("ts") or last_message_id
+                            caption_pending = False
+                    except Exception:
+                        logger.warning(
+                            "[Slack] Caption-fallback send failed for missing media",
+                            exc_info=True,
+                        )
+                continue
+            try:
+                upload_result = await _standalone_upload_file(
+                    client,
+                    chat_id,
+                    media_path,
+                    initial_comment=(formatted_caption or "") if caption_pending else "",
+                    thread_id=thread_id,
+                )
+                if upload_result.get("error"):
+                    warnings.append(
+                        f"Failed to send media {media_path}: {upload_result['error']}"
+                    )
+                    continue
+                uploaded_any = True
+                caption_pending = False
+                last_message_id = upload_result.get("message_id") or last_message_id
+            except Exception as e:
+                warning = f"Failed to send media {media_path}: {e}"
+                logger.error("[Slack] %s", warning, exc_info=True)
+                warnings.append(warning)
+
+        if last_message_id is None and not uploaded_any and not text_to_send.strip():
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "platform": "slack",
+            "chat_id": chat_id,
+            "message_id": last_message_id,
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
     # --- Text-only path (existing aiohttp chat.postMessage) ---
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
@@ -7080,8 +7587,16 @@ async def _standalone_send(
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
         last_error = "unknown"
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
+            timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
+        ) as session:
+            payload = {
+                "channel": chat_id,
+                "text": formatted,
+                "mrkdwn": True,
+                **unfurl_kwargs,
+            }
+            if thread_id:
+                payload["thread_ts"] = thread_id
             for tok in tokens:
                 data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
                 if data.get("ok"):

@@ -2,6 +2,7 @@
 validation, migration, and the ``hermes config`` command."""
 
 import copy
+from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -101,9 +102,28 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-    from hermes_cli.config_backups import backup_config
-    backup_path = backup_config(config_path, "corrupt")
-    msg = format_config_parse_failure(config_path, exc, fallback=fallback)
+
+    backup_path = _backup_corrupt_config(config_path)
+
+    if fallback == "last-known-good":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"Keeping the previously loaded config for this process — "
+            f"edits to config.yaml are being IGNORED until the YAML is fixed."
+        )
+    elif fallback == "refuse-write":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"REFUSING to write config.yaml so the existing file is preserved. "
+            f"Fix the YAML (hermes config edit) and retry."
+        )
+    else:
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"Falling back to default config — every user override "
+            f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
+            f"Fix the YAML and restart."
+        )
     if backup_path is not None:
         msg += f" A copy of the broken file was saved to {backup_path}."
     logger.warning("%s Details: %s", msg, _yaml_error_details(exc))
@@ -1171,6 +1191,54 @@ def _canonical_api_mode(api_mode: str) -> str:
     return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
 
 
+def coerce_provider_id(value: Any) -> str:
+    """Provider identity fields are strings.
+
+    PyYAML loads unquoted scalars like ``provider: 2070`` / ``2070:`` as int,
+    and later ``.strip()`` / ``.lower()`` on that value 500s the Model tab.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def stringify_provider_map(providers: Any) -> dict:
+    """Copy a ``providers:`` mapping so keys are strings.
+
+    Desktop Custom Endpoints store the name as the dict key. An unquoted
+    YAML key ``2070:`` loads as int; picker code then calls ``ep_name.lower()``
+    and CRUD looks up ``"2070"`` and misses.
+    """
+    if not isinstance(providers, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for stored, value in providers.items():
+        key = coerce_provider_id(stored)
+        if key:
+            out[key] = value
+    return out
+
+
+def find_provider_entry(providers: Any, key: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Return ``(stored_key, entry)`` matching *key* by string identity.
+
+    Needed because PyYAML may have stored the key as ``2070`` (int) while
+    Desktop looks up ``"2070"``. Prefer an exact string hit, then scan.
+    """
+    if not isinstance(providers, dict):
+        return None, None
+    want = coerce_provider_id(key)
+    if not want:
+        return None, None
+    exact = providers.get(want)
+    if isinstance(exact, dict):
+        return want, exact
+    for stored, entry in providers.items():
+        if coerce_provider_id(stored) == want and isinstance(entry, dict):
+            return stored, entry
+    return None, None
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1188,6 +1256,7 @@ def _normalize_custom_provider_entry(
     # alias keys back into config.yaml through any later
     # save_config(load_config()) round-trip.
     entry = dict(entry)
+    provider_key = coerce_provider_id(provider_key)
 
     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
@@ -1265,12 +1334,7 @@ def _normalize_custom_provider_entry(
     if not base_url:
         return None
 
-    name = ""
-    raw_name = entry.get("name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        name = raw_name.strip()
-    elif provider_key.strip():
-        name = provider_key.strip()
+    name = coerce_provider_id(entry.get("name")) or provider_key
     if not name:
         return None
 
@@ -1432,7 +1496,9 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
     for key, entry in providers_dict.items():
         if isinstance(entry, dict) and not is_provider_enabled(entry):
             continue
-        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        normalized = _normalize_custom_provider_entry(
+            entry, provider_key=coerce_provider_id(key)
+        )
         if normalized is not None:
             custom_providers.append(normalized)
 
@@ -2857,32 +2923,27 @@ def read_raw_config_readonly() -> Dict[str, Any]:
     return _read_raw_config_impl(want_deepcopy=False)
 
 
-def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) -> RuntimeError:
-    """Error for a write that must not replace an existing config.yaml. Plain lead + ``Details:``."""
-    where = _yaml_error_location(exc)
-    at = f" ({where})" if where else ""
-    return RuntimeError(
-        f"Your settings file ({config_path}) {reason}{at}, so this change was not saved. {fix} "
-        f"Details: {_yaml_error_details(exc)}")
+def require_readable_config_before_write(
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Refuse to replace an existing config.yaml that cannot be read or parsed.
 
+    Guards two collapse-to-empty failure modes that would otherwise let a
+    read-then-write caller silently wipe user overrides:
 
-def _backups_dir_display() -> str:
-    from hermes_constants import display_hermes_home
-    return f"{display_hermes_home()}/backups/config/"
+    1. **Unreadable** (permissions / broken mount) - byte open fails.
+    2. **Unparseable or non-mapping** - YAML load raises, or the root is a
+       list/scalar. ``read_user_config_raw()`` / bare ``except`` loaders treat
+       both as ``{}``, so a subsequent write would replace the recoverable
+       file with only the caller's partial dict.
 
-
-_FIX_PERMS = "Fix the file permissions or move it aside first."
-_FIX_YAML = (
-    "Fix it with `hermes config edit` and check with `hermes config check`, or copy the newest good "
-    "file from {backups} over config.yaml.")
-
-
-def require_readable_config_before_write(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Refuse to replace an existing config.yaml that cannot be read or parsed; return the mapping.
-    Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
-    wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
-    non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
-    replace the recoverable file with only the caller's partial dict. Fails closed."""
+    Returns the loaded mapping (or ``{}`` for a missing / empty / null
+    document) so mutation callers can skip a second parse. A valid empty
+    mapping (``{}``) is allowed through so first-time installs and
+    intentional empty configs still work. On parse failure this also
+    snapshots a ``.corrupt.*.bak`` via :func:`_warn_config_parse_failure`
+    before raising.
+    """
     if config_path is None:
         config_path = get_config_path()
     try:
@@ -2911,9 +2972,71 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
     return loaded
 
+    return _load_user_config_for_mutation(config_path)
+
+
+def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
+    """Load raw user config for a fail-closed mutation path.
+
+    Fail closed on parse / non-mapping (no bare-except to ``{}`` collapse).
+    Used by :func:`require_readable_config_before_write` and any caller that
+    must re-validate after other work. Distinct from
+    :func:`read_user_config_raw`, which collapses non-dict roots to ``{}``.
+    """
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            loaded = fast_safe_load(f)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    except Exception as exc:
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+            f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
+        ) from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        exc = TypeError(
+            f"top-level YAML must be a mapping, got {type(loaded).__name__}"
+        )
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+            f"got {type(loaded).__name__}. Fix the file or restore from a "
+            f".corrupt.*.bak backup first."
+        ) from exc
+    return loaded
+
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
+    """Fail-closed atomic write for ``config.yaml``.
+
+    The single chokepoint every config-update path should use instead of
+    calling :func:`utils.atomic_yaml_write` directly. It runs
+    :func:`require_readable_config_before_write` first, so a full-file
+    replacement can never silently clobber an existing ``config.yaml`` that
+    degraded to an empty dict on read (permission error, broken mount,
+    transient I/O, unparseable YAML, or a non-mapping root). New-file
+    creation still works when the path is absent.
+
+    Root cause this guards: ``read_user_config_raw()`` returns ``{}`` for an
+    absent file / unreadable path edge cases and collapses non-dict roots.
+    Callers that read then overwrite can't tell these apart, so a broken
+    config would be replaced with only defaults or the single edited section. Routing every
+    write through this helper enforces the invariant in one place rather than
+    relying on each of ~15 independent write sites to remember the guard.
+
+    ``kwargs`` are forwarded verbatim to ``atomic_yaml_write``
+    (``sort_keys``, ``default_flow_style``, ``extra_content``, ...).
+    """
+    from utils import atomic_yaml_write
+
     require_readable_config_before_write(config_path)
     atomic_yaml_write(config_path, data, **kwargs)
 
@@ -4291,7 +4414,12 @@ def _coerce_int(value: str):
 
 
 def _coerce_float(value: str):
-    """Return float(value) for a clean float literal, else None."""
+    """Return ``float(value)`` when conversion preserves its decimal value.
+
+    Decimal-looking identifiers can be much more precise than a binary float.
+    Silently rounding one here corrupts it before it reaches ``config.yaml``,
+    so values that do not round-trip through ``float`` remain strings.
+    """
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -4299,6 +4427,11 @@ def _coerce_float(value: str):
     # Reject NaN/inf spellings — they are almost never intended config values
     # and round-trip confusingly through YAML.
     if f != f or f in (float("inf"), float("-inf")):
+        return None
+    try:
+        if Decimal(value) != Decimal(str(f)):
+            return None
+    except InvalidOperation:
         return None
     return f
 
@@ -4430,40 +4563,27 @@ def _exit_if_key_managed(key: str, action: str) -> None:
         sys.exit(1)
 
 
-def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> str:
-    """Refuse (or with ``force`` allow) a single-segment key overwriting a mapping with a scalar.
-    Bare ``model`` is a documented shorthand — redirected to ``model.default`` so siblings survive.
-    Returns the (possibly redirected) key."""
-    existing = user_config.get(key)
-    if "." in key or not isinstance(existing, dict):
-        return key
-    if key == "model":
-        if force:
-            print(
-                f"⚠ Replacing entire 'model' section with a scalar "
-                f"(discarding {len(existing)} existing sub-key(s))")
-            return key
-        print(
-            f"✓ Redirecting bare 'model' to 'model.default' "
-            f"(preserving {len(existing)} existing model sub-key(s))")
-        return "model.default"
-    if force:
-        return key
-    sub = [k for k in existing if isinstance(k, str)]
-    err = [
-        f"✗ Cannot set '{key}' to a scalar — '{key}' is a "
-        f"configuration section with {len(sub)} sub-key(s)."]
-    if sub:
-        err.append(f"  Sub-keys: {', '.join(sub[:8])}")
-        if len(sub) > 8:
-            err.append(f"  ... and {len(sub) - 8} more")
-    err += [
-        "  Use a dotted path to set a specific leaf key:",
-        f"    hermes config set {key}.<sub-key> <value>",
-        "  Or use --force to replace the entire section:",
-        f"    hermes config set --force {key} {value!r}"]
-    print("\n".join(err), file=sys.stderr)
-    sys.exit(1)
+    # Unknown-key notice (#34067): the key is still written (arbitrary keys
+    # are supported — top-level scalars are bridged into os.environ for
+    # skills and external apps), but a plausible-but-wrong dotted path like
+    # ``gateway.discord.gateway_restart_notification`` previously reported
+    # bare success and left the user debugging behavior that never changed.
+    # Warn after the write so the user gets immediate feedback plus a
+    # "did you mean" hint, without blocking legitimate unknown keys.
+    is_known, suggestion = _validate_config_key(key)
+
+    # Otherwise it goes to config.yaml
+    # Read the raw user config (not merged with defaults) to avoid
+    # dumping all default values back to the file
+    config_path = get_config_path()
+    # Fail-closed parse via require_readable (unparseable / non-mapping
+    # refuse-write); returns the mapping so we do not re-parse / collapse.
+    user_config = require_readable_config_before_write(config_path)
+    
+    # Handle nested keys (e.g., "tts.provider") including numeric list
+    # indices (e.g., "custom_providers.0.api_key").  Delegates to
+    # _set_nested which preserves list-typed nodes; before #17876 the
+    # inline navigation here silently overwrote lists with dicts.
 
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
@@ -4688,6 +4808,8 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
+    # Fail-closed parse via require_readable (unparseable / non-mapping
+    # refuse-write); returns the mapping so we do not re-parse / collapse.
     user_config = require_readable_config_before_write(config_path)
 
     key, _redirect_note = _redirect_platform_display_key(key)
@@ -4871,14 +4993,179 @@ _CONFIG_USAGE = """Available commands:
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
-    handler = _CONFIG_SUBCOMMANDS.get(subcmd)
-    if handler is not None:
-        handler(args)
-        return
-    print(f"Unknown config command: {subcmd}")
-    print()
-    print(_CONFIG_USAGE)
-    sys.exit(1)
+    
+    if subcmd is None or subcmd == "show":
+        show_config()
+    
+    elif subcmd == "edit":
+        edit_config()
+    
+    elif subcmd == "get":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config get <key> [--json]")
+            print()
+            print("Examples:")
+            print("  hermes config get model")
+            print("  hermes config get terminal.backend")
+            print("  hermes config get skills.config --json")
+            sys.exit(1)
+        get_config_value(key, as_json=getattr(args, 'json', False))
+
+    elif subcmd == "set":
+        key = getattr(args, 'key', None)
+        value = getattr(args, 'value', None)
+        force = bool(getattr(args, 'force', False))
+        if not key or value is None:
+            print("Usage: hermes config set [--force] <key> <value>")
+            print()
+            print("Examples:")
+            print("  hermes config set model anthropic/claude-sonnet-4")
+            print("  hermes config set terminal.backend docker")
+            print("  hermes config set OPENROUTER_API_KEY sk-or-...")
+            print()
+            print("  --force: skip the unknown-key notice for unrecognized keys,")
+            print("           and allow a scalar to replace a whole mapping section")
+            sys.exit(1)
+        try:
+            set_config_value(key, value, force=force)
+        except RuntimeError as exc:
+            # Fail-closed write guard (unparseable / non-mapping / unreadable
+            # config.yaml). Surface a clean CLI error instead of a traceback.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    elif subcmd == "unset":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config unset <key>")
+            print()
+            print("Examples:")
+            print("  hermes config unset model")
+            print("  hermes config unset terminal.backend")
+            print("  hermes config unset OPENROUTER_API_KEY")
+            sys.exit(1)
+        try:
+            unset_config_value(key)
+        except RuntimeError as exc:
+            # Same fail-closed guard surface as `config set` above.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
+    
+    elif subcmd == "path":
+        print(get_config_path())
+    
+    elif subcmd == "env-path":
+        print(get_env_path())
+    
+    elif subcmd == "migrate":
+        print()
+        print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
+        print()
+        
+        # Check what's missing
+        missing_env = get_missing_env_vars(required_only=False)
+        missing_config = get_missing_config_fields()
+        current_ver, latest_ver = check_config_version()
+        
+        if not missing_env and not missing_config and current_ver >= latest_ver:
+            print(color("✓ Configuration is up to date!", Colors.GREEN))
+            print()
+            return
+        
+        # Show what needs to be updated
+        if current_ver < latest_ver:
+            print(f"  Config version: {current_ver} → {latest_ver}")
+        
+        if missing_config:
+            print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
+        
+        required_missing = [v for v in missing_env if v.get("is_required")]
+        optional_missing = [
+            v for v in missing_env
+            if not v.get("is_required") and not v.get("advanced")
+        ]
+        
+        if required_missing:
+            print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
+            for var in required_missing:
+                print(f"     • {var['name']}")
+        
+        if optional_missing:
+            print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
+            for var in optional_missing:
+                tools = var.get("tools", [])
+                tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
+                print(f"     • {var['name']}{tools_str}")
+        
+        print()
+        
+        # Run migration
+        results = migrate_config(interactive=True, quiet=False)
+        
+        print()
+        if results["env_added"] or results["config_added"]:
+            print(color("✓ Configuration updated!", Colors.GREEN))
+        
+        if results["warnings"]:
+            print()
+            for warning in results["warnings"]:
+                print(color(f"  ⚠️  {warning}", Colors.YELLOW))
+        
+        print()
+    
+    elif subcmd == "check":
+        # Non-interactive check for what's missing
+        print()
+        print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
+        print()
+        
+        current_ver, latest_ver = check_config_version()
+        if current_ver >= latest_ver:
+            print(f"  Config version: {current_ver} ✓")
+        else:
+            print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
+        
+        print()
+        print(color("  Required:", Colors.BOLD))
+        for var_name in REQUIRED_ENV_VARS:
+            if get_env_value(var_name):
+                print(f"    ✓ {var_name}")
+            else:
+                print(color(f"    ✗ {var_name} (missing)", Colors.RED))
+        
+        print()
+        print(color("  Optional:", Colors.BOLD))
+        for var_name, info in OPTIONAL_ENV_VARS.items():
+            if get_env_value(var_name):
+                print(f"    ✓ {var_name}")
+            else:
+                tools = info.get("tools", [])
+                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
+                print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
+        
+        missing_config = get_missing_config_fields()
+        if missing_config:
+            print()
+            print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
+            print("    Run 'hermes config migrate' to add them")
+        
+        print()
+    
+    else:
+        print(f"Unknown config command: {subcmd}")
+        print()
+        print("Available commands:")
+        print("  hermes config           Show current configuration")
+        print("  hermes config edit      Open config in editor")
+        print("  hermes config get <key>          Print a resolved config value")
+        print("  hermes config set <key> <value>   Set a config value")
+        print("  hermes config unset <key>        Remove a config value")
+        print("  hermes config check     Check for missing/outdated config")
+        print("  hermes config migrate   Update config with new options")
+        print("  hermes config path      Show config file path")
+        print("  hermes config env-path  Show .env file path")
+        sys.exit(1)
 
 
 # ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----

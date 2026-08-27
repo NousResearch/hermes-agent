@@ -1050,7 +1050,72 @@ class ProcessRegistry(ProcessCheckpointMixin):
         pty_scope_attempted = False
         if use_pty:
             try:
-                return self._spawn_local_pty(session, safe_command, env_vars)
+                if _IS_WINDOWS:
+                    from winpty import PtyProcess as _PtyProcessCls
+                else:
+                    from ptyprocess import PtyProcess as _PtyProcessCls
+                user_shell = _find_shell()
+                pty_env = _sanitize_subprocess_env(os.environ, env_vars)
+                pty_env["PYTHONUNBUFFERED"] = "1"
+                # PTY mode is a real TTY, so pager-happy tools (git log/diff,
+                # man) WILL page and hang waiting for `q` — default them to
+                # cat, honoring any pager the user already exported.
+                pty_env.setdefault("GIT_PAGER", "cat")
+                pty_env.setdefault("PAGER", "cat")
+                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+
+                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
+                # Wrap the PTY command in a systemd scope so interactive
+                # executors get their own cgroup, same as pipe mode.
+                pty_in_supervised_gateway = (
+                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                )
+                pty_use_systemd_scope = (
+                    pty_in_supervised_gateway and _systemd_run_user_scope_available()
+                )
+
+                if pty_use_systemd_scope:
+                    pty_argv = _build_systemd_scope_argv(
+                        pty_argv,
+                        unit_suffix=session.id,
+                    )
+                    session.systemd_unit = f"hermes-worker-{session.id}.scope"
+                    pty_scope_attempted = True
+                elif pty_in_supervised_gateway:
+                    logger.debug(
+                        "PTY background executor not isolated in a "
+                        "systemd scope (systemd-run --user unavailable); "
+                        "worker shares the gateway cgroup."
+                    )
+
+                pty_proc = _PtyProcessCls.spawn(
+                    pty_argv,
+                    cwd=session.cwd,
+                    env=pty_env,
+                    dimensions=(30, 120),
+                )
+                session.pid = pty_proc.pid
+                session.host_start_time = self._safe_host_start_time(session.pid)
+                # Store the pty handle on the session for read/write
+                session._pty = pty_proc
+
+                # PTY reader thread
+                reader = threading.Thread(
+                    target=self._pty_reader_loop,
+                    args=(session,),
+                    daemon=True,
+                    name=f"proc-pty-reader-{session.id}",
+                )
+                session._reader_thread = reader
+                reader.start()
+
+                with self._lock:
+                    self._prune_if_needed()
+                    self._running[session.id] = session
+
+                self._write_checkpoint()
+                return session
+
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:

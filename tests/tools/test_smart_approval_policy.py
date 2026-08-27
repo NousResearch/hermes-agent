@@ -111,7 +111,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
 
 
     @patch("agent.auxiliary_client._get_task_timeout")
-    @patch("tools.approval_context._get_approval_config")
+    @patch("tools.approval._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_smart_approve_passes_explicit_timeout(
         self, mock_call_llm, mock_cfg, mock_task_timeout
@@ -130,7 +130,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         assert kwargs.get("timeout") == 42.0
 
 
-    @patch("tools.approval_context._get_approval_config")
+    @patch("tools.approval._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
     def test_smart_approve_failure_logs_warning_and_escalates(
         self, mock_call_llm, mock_cfg
@@ -141,7 +141,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         mock_call_llm.side_effect = TimeoutError("stalled provider")
         mock_cfg.return_value = {"mode": "smart"}
 
-        with patch("tools.approval_smart.logger") as mock_logger:
+        with patch("tools.approval.logger") as mock_logger:
             assert _smart_approve("echo hi", "flagged") == "escalate"
 
         assert mock_logger.warning.called

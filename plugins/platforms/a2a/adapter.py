@@ -328,9 +328,14 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_stop.clear()  # disconnect sets it; reset for reconnection
         self._watchdog_thread = _daemon_thread(self._watchdog_loop, "a2a-watchdog")
         self._mark_connected()
-        logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
-                    "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
-        self._wire_plugin_handlers(None)  # plugin-registered native handlers
+
+        exposure = "localhost-only" if security.localhost_only() else "REMOTE (bearer auth)"
+        logger.info(
+            "A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
+            self.host, self.port, exposure, self.agent_name, len(self._agents),
+        )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

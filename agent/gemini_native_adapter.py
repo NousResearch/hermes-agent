@@ -295,12 +295,23 @@ def _looks_like_json_schema(node: Any) -> bool:
 
 
 def _translate_tool_result_to_gemini(
-    message: Dict[str, Any], tool_name_by_call_id: Optional[Dict[str, str]] = None, include_ids: bool = False, *, is_gemini3: bool = False,
+    message: Dict[str, Any],
+    tool_name_by_call_id: Optional[Dict[str, str]] = None,
+    include_ids: bool = False,
+    *,
+    is_gemini3: bool = False,
 ) -> Dict[str, Any]:
     tool_call_id = str(message.get("tool_call_id") or "")
-    # functionResponse.name must echo the matching functionCall.name, so the call-id
-    # mapping beats the result's own name (may be an unwrapped MCP name via `tool_call`).
-    name = str((tool_name_by_call_id or {}).get(tool_call_id) or message.get("name") or tool_call_id or "tool")
+    # A tool result can carry the unwrapped internal tool name (for example,
+    # an MCP tool invoked through the `tool_call` bridge). Gemini requires
+    # functionResponse.name to echo the matching functionCall.name, so the
+    # call-id mapping must take precedence over the internal result name.
+    name = str(
+        tool_name_by_call_id.get(tool_call_id)
+        or message.get("name")
+        or tool_call_id
+        or "tool"
+    )
     raw_content = message.get("content")
     content = _coerce_content_to_text(raw_content)
     try:
@@ -322,9 +333,19 @@ def _translate_tool_result_to_gemini(
     }
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
-    # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.
-    if image_parts := [p for p in _extract_multimodal_parts(raw_content) if "inlineData" in p] if is_gemini3 else []:
-        function_response["parts"] = image_parts
+    # Gemini 3.x supports embedding images directly inside
+    # functionResponse.parts (Google's recommended shape for multimodal tool
+    # results — see "Multimodal function responses" in the Gemini docs).
+    # Gemini 2.x rejects the field, so only attach inlineData when the target
+    # model supports it — otherwise the vision tool result is silently
+    # downgraded to text-only.
+    if is_gemini3:
+        image_parts = [
+            p for p in _extract_multimodal_parts(raw_content)
+            if "inlineData" in p
+        ]
+        if image_parts:
+            function_response["parts"] = image_parts
     return {"functionResponse": function_response}
 
 
@@ -365,7 +386,10 @@ def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _build_gemini_contents(
-    messages: List[Dict[str, Any]], include_tool_call_ids: bool = False, *, is_gemini3: bool = False
+    messages: List[Dict[str, Any]],
+    include_tool_call_ids: bool = False,
+    *,
+    is_gemini3: bool = False,
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
@@ -378,8 +402,19 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
         if role in {"tool", "function"}:
-            part = _translate_tool_result_to_gemini(msg, tool_name_by_call_id, include_tool_call_ids, is_gemini3=is_gemini3)
-            contents.append({"role": "user", "parts": [part]})
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        _translate_tool_result_to_gemini(
+                            msg,
+                            tool_name_by_call_id=tool_name_by_call_id,
+                            include_ids=include_tool_call_ids,
+                            is_gemini3=is_gemini3,
+                        )
+                    ],
+                }
+            )
             continue
         parts = _extract_multimodal_parts(msg.get("content"))
         tool_calls = msg.get("tool_calls") or []
@@ -469,13 +504,12 @@ def build_gemini_request(
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
     model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
-    # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
-    is_gemini3 = gemini_requires_tool_call_ids(model)
-    contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
-    optional = (
-        ("systemInstruction", system_instruction),
-        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
-        ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
+    version = _gemini_major_version(model)
+    is_gemini3 = version is not None and version >= 3
+    contents, system_instruction = _build_gemini_contents(
+        messages,
+        include_tool_call_ids=gemini_requires_tool_call_ids(model),
+        is_gemini3=is_gemini3,
     )
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.

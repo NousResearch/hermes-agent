@@ -6,7 +6,13 @@ import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
-import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  fetchStoredTranscriptAcrossBackends,
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
@@ -52,6 +58,7 @@ import {
   untombstoneSessions
 } from '@/store/projects'
 import { setApprovalRequest } from '@/store/prompts'
+import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
   $connection,
@@ -90,22 +97,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { clearSessionControl } from '@/store/session-control'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
-import {
-  beginSessionMutation,
-  endSessionMutation,
-  isSessionRemovalPending,
-  tombstoneSessions,
-  untombstoneSessions
-} from '@/store/session-removal'
-import {
-  requestForSessionProfile,
-  type SessionOwnerRoute,
-  sessionOwnerRouteFromRow,
-  type SessionOwnerScope,
-  type SessionProfileRoute
-} from '@/store/session-request-router'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,

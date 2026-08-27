@@ -4885,11 +4885,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         """Return whether *message* contains user input worth anchoring."""
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
-        # display_kind rows (internal notifications, hidden scaffolding) are not human input
-        # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
-        display_kind = message.get("display_kind")
-        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
+        # Display-only timeline metadata (e.g. ``display_kind="internal_notification"``
+        # for Kanban/background completion wakes, ``"hidden"`` scaffolding) is a
+        # DB-sidecar notice, not human input. Treating it as an actionable turn
+        # lets routine operational traffic anchor the compaction tail or become
+        # the auto-focus source instead of the user's real objective (#92703).
+        # Mirrors the exclusion in ``is_user_originated_turn``.
+        if message.get("display_kind"):
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return False
+        content = message.get("content")
+        if cls._is_context_summary_content(content):
             return False
         return not cls._is_blank_user_turn(message)
 
@@ -4913,7 +4920,17 @@ This compaction should PRIORITISE preserving all information related to the focu
             # display_kind notices are operational traffic, not user intent.
             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            if cls._is_synthetic_compression_user_turn(msg):
+                continue
+            # Display-only timeline notices (e.g. Kanban/background completion
+            # wakes, ``display_kind="internal_notification"``) are operational
+            # traffic, not user intent -- exclude them from the focus hint so
+            # routine notifications don't shadow the user's real objective
+            # (#92703).
+            if msg.get("display_kind"):
+                continue
+            content = msg.get("content")
+            text = _redact_compaction_text(_content_text_for_contains(content).strip())
             if not text:
                 continue
             text = " ".join(text.split())

@@ -683,6 +683,7 @@ class BuzzAdapter(BasePlatformAdapter):
             self.relay_url, self._display_name or self._self_npub[:16], len(self._channel_state),
             transport_used, "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
 

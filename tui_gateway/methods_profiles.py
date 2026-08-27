@@ -983,17 +983,158 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
         cfg = load_config() or {}
         if isinstance(params.get("disabled_skills"), list):
             try:
-                from hermes_cli.skills_config import save_disabled_skills
-                save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
-                applied["skills"] = True
-                cfg = load_config() or {}
+                (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8")
+                applied["soul"] = True
             except Exception:
-                applied["skills"] = False
-        if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
-        if want_mcp:
-            applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+                applied["soul"] = False
+
+        if isinstance(params.get("description"), str):
+            try:
+                from hermes_cli.profiles import write_profile_meta
+
+                write_profile_meta(
+                    profile_dir,
+                    description=params["description"].strip(),
+                    description_auto=False,
+                )
+                applied["description"] = True
+            except Exception:
+                applied["description"] = False
+
+        model = str(params.get("model") or "").strip()
+        provider = str(params.get("provider") or "").strip()
+        confirm_message = None
+        if model and provider:
+            # #95293 remainder: this is the Bots editor's model-switch path,
+            # and it used to write guarded (data-policy / expensive) models
+            # silently — the ONE surface that bypassed the selection guard
+            # every other switch path enforces. Same handshake contract as
+            # ``config.set model``: without ``confirm_expensive_model`` a
+            # guarded pick answers ``confirm_required`` + ``confirm_message``
+            # and writes NOTHING; the client resends with
+            # ``confirm_expensive_model: true`` once the user confirms. A
+            # misbehaving guard must never break the save (treated as "no
+            # warning"), matching ``_apply_model_switch``.
+            if not is_truthy_value(params.get("confirm_expensive_model", False)):
+                try:
+                    from hermes_cli.model_selection_guards import combined_selection_warning
+
+                    warning = combined_selection_warning(model, provider=provider or None)
+                    confirm_message = warning.message if warning is not None else None
+                except Exception:
+                    confirm_message = None
+            if confirm_message is None:
+                try:
+                    from hermes_cli.web_routers.profiles import _write_profile_model
+
+                    _write_profile_model(profile_dir, provider, model)
+                    applied["model"] = True
+                except Exception:
+                    applied["model"] = False
+
+        needs_cfg = (
+            isinstance(params.get("disabled_skills"), list)
+            or isinstance(params.get("enabled_toolsets"), list)
+            or isinstance(params.get("enabled_mcp_servers"), list)
+        )
+        if needs_cfg:
+            # Launch profile's MCP catalog, read BEFORE the home override
+            # flips config resolution to the target profile.
+            launch_mcp = {}
+            if isinstance(params.get("enabled_mcp_servers"), list):
+                try:
+                    from hermes_cli.config import load_config_readonly
+
+                    launch_cfg = load_config_readonly() or {}
+                    if isinstance(launch_cfg.get("mcp_servers"), dict):
+                        launch_mcp = launch_cfg["mcp_servers"]
+                except Exception:
+                    launch_mcp = {}
+
+            token = set_hermes_home_override(str(profile_dir))
+            try:
+                from hermes_cli.config import load_config, save_config
+
+                cfg = load_config() or {}
+
+                if isinstance(params.get("disabled_skills"), list):
+                    try:
+                        from hermes_cli.skills_config import save_disabled_skills
+
+                        wanted = {
+                            str(s).strip()
+                            for s in params["disabled_skills"]
+                            if str(s).strip()
+                        }
+                        save_disabled_skills(cfg, wanted)
+                        applied["skills"] = True
+                        cfg = load_config() or {}
+                    except Exception:
+                        applied["skills"] = False
+
+                if isinstance(params.get("enabled_toolsets"), list):
+                    try:
+                        wanted = [str(t).strip() for t in params["enabled_toolsets"] if str(t).strip()]
+                        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+                        if wanted:
+                            tools_cfg["enabled_toolsets"] = sorted(set(wanted))
+                        else:
+                            tools_cfg.pop("enabled_toolsets", None)
+                        cfg["tools"] = tools_cfg
+                        save_config(cfg)
+                        applied["toolsets"] = True
+                    except Exception:
+                        applied["toolsets"] = False
+
+                # ``enabled_mcp_servers`` (list[str], replace semantics):
+                # toggle the profile's mcp_servers entries via the standard
+                # ``disabled`` flag. Enabling a server the profile doesn't
+                # define copies its definition from the LAUNCH profile's
+                # config (capabilities UIs offer the main profile's catalog);
+                # unknown names are skipped, never invented. Server defs are
+                # config, not secrets — credentials stay in .env/auth.
+                if isinstance(params.get("enabled_mcp_servers"), list):
+                    try:
+                        wanted = {
+                            str(s).strip()
+                            for s in params["enabled_mcp_servers"]
+                            if str(s).strip()
+                        }
+                        cfg = load_config() or {}
+                        mcp_cfg = (
+                            cfg.get("mcp_servers")
+                            if isinstance(cfg.get("mcp_servers"), dict)
+                            else {}
+                        )
+
+                        for srv in wanted:
+                            if srv in mcp_cfg and isinstance(mcp_cfg[srv], dict):
+                                mcp_cfg[srv].pop("disabled", None)
+                            elif srv in launch_mcp and isinstance(launch_mcp[srv], dict):
+                                mcp_cfg[srv] = dict(launch_mcp[srv])
+                                mcp_cfg[srv].pop("disabled", None)
+                        for srv, entry in mcp_cfg.items():
+                            if srv not in wanted and isinstance(entry, dict):
+                                entry["disabled"] = True
+
+                        if mcp_cfg:
+                            cfg["mcp_servers"] = mcp_cfg
+                        save_config(cfg)
+                        applied["mcp_servers"] = True
+                    except Exception:
+                        applied["mcp_servers"] = False
+            finally:
+                reset_hermes_home_override(token)
+
+        result = {"ok": all(applied.values()) if applied else True, "applied": applied}
+        if confirm_message is not None:
+            # Model write pending user confirmation — same shape config.set
+            # returns, so clients reuse one confirm handler for both surfaces.
+            result["confirm_required"] = True
+            result["confirm_message"] = confirm_message
+        return _ok(rid, result)
+    except Exception as e:
+        return _err(rid, 5064, str(e))
 
 
 @_profile_handler("profiles.configure", 5064)

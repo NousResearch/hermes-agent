@@ -99,6 +99,14 @@ class TestSmartApproval:
 
 
 class TestDetectDangerousRm:
+    def test_browser_close_profile_requires_approval(self):
+        dangerous, _, description = detect_dangerous_command(
+            "hermes browser close-profile --browser chrome"
+        )
+        assert dangerous is True
+        assert "browser" in description.lower()
+        assert detect_dangerous_command("hermes browser --help") == (False, None, None)
+
     def test_rm_flags_after_operands_detected(self):
         # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.
         # Port of openai/codex#33464.

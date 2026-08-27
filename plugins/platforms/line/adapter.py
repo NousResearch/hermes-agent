@@ -438,11 +438,19 @@ class LineAdapter(BasePlatformAdapter):
             return self._fail("missing_dep", "aiohttp is required for the LINE adapter — install with `pip install aiohttp`")
         self._app = web.Application(client_max_size=WEBHOOK_BODY_MAX_BYTES)
         self._app.router.add_post(self.webhook_path, self._handle_webhook)
-        self._app.router.add_get(f"{self.webhook_path}/health", self._handle_health)  # tunnel/proxy probe
-        self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
-        # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
+        # Public health probe — useful for tunnel/proxy verification.
+        self._app.router.add_get(f"{self.webhook_path}/health", self._handle_health)
+        # Media serving endpoint.
+        self._app.router.add_get(
+            f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}",
+            self._handle_media,
+        )
+
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
-        from gateway.platforms.shared_ingress import bind_listener
+
+        self._runner = web.AppRunner(self._app)
         try:
             # SO_REUSEADDR: on macOS/BSD two sockets with it can silently split traffic →
             # disable; on Linux it only allows rebinding past TIME_WAIT → keep default.

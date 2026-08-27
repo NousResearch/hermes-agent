@@ -25,8 +25,18 @@ from hermes_cli.web_routers._common import (
 
 router = APIRouter()
 
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
+# Late-bound web_server helpers (resolved at call time; cycle-safe,
+# monkeypatch-transparent).
+_find_toolset_provider_row = late("_find_toolset_provider_row")
+_probe_terminal_backend = late("_probe_terminal_backend")
+_profile_cli_args = late("_profile_cli_args")
+_profile_scope = late("_profile_scope")
+_resolve_toolset_model_plugin = late("_resolve_toolset_model_plugin")
+_spawn_hermes_action = late("_spawn_hermes_action")
+_toolset_model_catalog = late("_toolset_model_catalog")
+load_config = late("load_config")
+save_config = late("save_config")
+run_in_threadpool = late("run_in_threadpool")
 
 # Live proxies for web_server-owned module state (mutations/monkeypatches
 # on web_server remain authoritative; resolved at operation time).
@@ -67,7 +77,7 @@ async def get_toolsets(profile: Optional[str] = None):
             configured = {name: _toolset_has_keys(name, config, features=features) for name, _, _ in toolset_rows}
         return config, toolset_rows, enabled_by_platform, configured
 
-    config, toolset_rows, enabled_by_platform, configured = await run_in_threadpool(_read)
+    config, toolset_rows, enabled_by_platform, features = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
         try:

@@ -484,8 +484,58 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            if await self._reuse_running_bridge(bridge_path):
-                return True
+            
+            # Check if bridge is already running and connected
+            import aiohttp
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"http://127.0.0.1:{self._bridge_port}/health",
+                        timeout=aiohttp.ClientTimeout(total=2)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            bridge_status = data.get("status", "unknown")
+                            if bridge_status == "connected":
+                                # Staleness handshake: only reuse a running
+                                # bridge if it is serving the same bridge.js
+                                # that is on disk right now.  A long-lived
+                                # bridge survives gateway restarts AND
+                                # `hermes update`, so without this check it
+                                # keeps serving pre-update code forever
+                                # (e.g. no inbound media download).  Old
+                                # bridges that don't report scriptHash are
+                                # treated as stale by definition.
+                                running_hash = data.get("scriptHash", "")
+                                disk_hash = _file_content_hash(bridge_path)
+                                running_read_receipts = bool(data.get("sendReadReceipts", False))
+                                config_matches = running_read_receipts == self._send_read_receipts
+                                if (
+                                    running_hash
+                                    and disk_hash
+                                    and running_hash == disk_hash
+                                    and config_matches
+                                ):
+                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    self._mark_connected()
+                                    self._bridge_process = None  # Not managed by us
+                                    self._http_session = aiohttp.ClientSession()
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    # Plugin-registered native handlers.
+                                    self._wire_plugin_handlers(None)
+                                    return True
+                                stale_reason = (
+                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                                    if running_hash != disk_hash
+                                    else "send_read_receipts config changed"
+                                )
+                                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
+                            else:
+                                print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
+            except Exception:
+                pass  # Bridge not running, start a new one
+            
+            # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
@@ -501,6 +551,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._attach_to_bridge(self._bridge_process)
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
+            # Plugin-registered native handlers.
             self._wire_plugin_handlers(None)
             return True
         except Exception as e:

@@ -167,6 +167,12 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
-    def wait(self, seconds: float) -> ActionResult:  # default implementation
+        `element` is the 1-based SOM index returned by a prior capture call.
+        """
+
+    # ── Timing ──────────────────────────────────────────────────────
+    def wait(self, seconds: float) -> ActionResult:
+        """Default implementation: time.sleep."""
+        import time
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")

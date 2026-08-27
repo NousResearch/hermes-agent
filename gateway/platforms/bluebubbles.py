@@ -228,10 +228,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = await bind_listener(
             self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
         self._mark_connected()
-        if self._runner is not None:
-            logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
-                        self.webhook_path)
-        await self._register_webhook()  # the server only sends events to webhooks registered via its API
+        logger.info(
+            "[bluebubbles] webhook listening on http://%s:%s%s",
+            self.webhook_host,
+            self.webhook_port,
+            self.webhook_path,
+        )
+
+        # Register webhook with BlueBubbles server
+        # This is required for the server to know where to send events
+        await self._register_webhook()
+
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
@@ -349,8 +356,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
         """Create a new chat by sending the first message to *address*."""
-        return await self._post_message(
-            "/api/v1/chat/new", {"addresses": [address], "message": message, "tempGuid": _temp_guid()})
+        payload = {
+            "addresses": [address],
+            "message": message,
+            "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+        }
+        try:
+            res = await self._api_post("/api/v1/chat/new", payload)
+            data = res.get("data") or {}
+            msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+            return SendResult(success=True, message_id=str(msg_id), raw_response=res)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     # --- Text sending ---
 
@@ -377,9 +394,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:
-                payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
-            if not (last := await self._post_message("/api/v1/message/text", payload)).success:
-                return last
+                payload["method"] = "private-api"
+                payload["selectedMessageGuid"] = reply_to
+                payload["partIndex"] = 0
+            try:
+                res = await self._api_post("/api/v1/message/text", payload)
+                data = res.get("data") or {}
+                msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+                last = SendResult(
+                    success=True, message_id=str(msg_id), raw_response=res
+                )
+            except Exception as exc:
+                return SendResult(success=False, error=str(exc) or type(exc).__name__)
         return last
 
     # --- Media sending (outbound) ---

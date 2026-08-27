@@ -247,3 +247,110 @@ def test_recheck_still_blocks_user_files_amid_staging_artifacts(tmp_path, monkey
         tmp_path, ignore_staging_artifacts=True
     )
     assert reason is not None
+
+
+def test_zip_overlay_blocked_on_ignored_user_file(tmp_path, monkeypatch):
+    """#87392 follow-up: a gitignored file outside the preserved entries is
+    still user data the overlay would delete — it must block."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess, "run", _porcelain_run("!! scratch/notes.local\n")
+    )
+    reason = update_cmd._zip_overlay_block_reason(tmp_path)
+    assert reason is not None
+    assert "uncommitted" in reason or "untracked" in reason
+
+
+def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
+    """The ignored-mode flag must be one real git accepts — run REAL git.
+
+    Review of the first draft caught ``--ignored=all`` (not a valid mode:
+    git exits 128 'Invalid ignored mode'), which the mocked siblings could
+    not see; with an invalid flag every ZIP update would be refused as
+    'could not check the working tree'. This test creates a real repo with
+    a real .gitignore and asserts the guard both runs clean AND still sees
+    ignored user files.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", ".gitignore"], check=True
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(tmp_path),
+            "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "init",
+        ],
+        check=True,
+    )
+    # Clean tree: guard must pass (flag valid, no false refusal).
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # Ignored user file: guard must block.
+    (tmp_path / "data.local").write_text("x")
+    reason = update_cmd._zip_overlay_block_reason(tmp_path)
+    assert reason is not None
+    # Ignored preserved entry: still no refusal.
+    (tmp_path / "data.local").unlink()
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "lib.py").write_text("x")
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+
+
+def test_zip_overlay_requests_ignored_files_from_git(tmp_path, monkeypatch):
+    """The status invocation itself must carry a (valid) ignored mode."""
+    seen = {}
+
+    def capture_run(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "status" in joined and "--porcelain" in joined:
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(update_cmd.subprocess, "run", capture_run)
+    update_cmd._zip_overlay_block_reason(tmp_path)
+    assert "--ignored=matching" in [str(c) for c in seen["cmd"]]
+
+
+def test_preserved_filter_does_not_split_non_rename_lines():
+    """A plain ignored FILE literally named 'venv -> node_modules' is ONE
+    path (porcelain v1 doesn't quote spaces) — splitting it would filter it
+    as two preserved tops and fail-open into the destructive swap."""
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "!! venv -> node_modules"
+    )
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "?? venv -> node_modules"
+    )
+    # Real rename crossing out of a preserved dir still blocks…
+    assert not update_cmd._is_zip_preserved_entry_status_line(
+        "R  venv/x -> src/x"
+    )
+    # …and a rename fully inside preserved entries is still filtered.
+    assert update_cmd._is_zip_preserved_entry_status_line(
+        "R  venv/a -> node_modules/b"
+    )
+
+
+def test_swap_preserve_set_is_the_module_constant():
+    """The swap loop and the dirty-tree filter must share one source of
+    truth for the preserved entries (no comment-synced duplicate)."""
+    import inspect
+
+    src = inspect.getsource(update_cmd._update_via_zip)
+    assert "preserve = _ZIP_PRESERVED_TOP_LEVEL" in src
+
+
+def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
+    """venv/node_modules are gitignored on every normal install and the swap
+    preserves them — the ignored probe must not turn them into a false
+    refusal."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        _porcelain_run("!! venv/\n!! node_modules/\n!! .env\n"),
+    )
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None

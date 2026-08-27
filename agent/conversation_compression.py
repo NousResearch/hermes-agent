@@ -142,7 +142,8 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 
 # Formatted from the same constants the emission sites use, so noise-filter tests exercise the ACTUAL wording.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
-    COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS,
+    COMPACTION_STATUS,
+    COMPACTION_DONE_STATUS,
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
@@ -2503,17 +2504,28 @@ class _CompactionLifecycle:
     if _compaction_status:
         agent._emit_status(_compaction_status)
     _compaction_done_emitted = False
+    # Commit outcome of this attempt; rebound to "committed" on the success
+    # path just before returning the compressed history. The lifecycle
+    # closure reads it at call time, so any abort/exception path that skips
+    # that rebind keeps the terminal edge suppressed.
+    _commit_status = "aborted"
 
-    def _complete_compaction_lifecycle() -> None:
+    def _complete_compaction_lifecycle(*, force_terminal: bool = False) -> None:
         nonlocal _compaction_done_emitted
         if _compaction_done_emitted:
             return
-        self._done_emitted = True
-        # Suppressed start → no terminal edge. Non-compacting aborts (lock contender,
-        # cancelled fence) opt in via force_terminal so clients can retire their phase.
-        # Failure warnings go through _emit_warning and are never suppressed here.
-        if self.status_emitted and (self.commit_status == "committed" or force_terminal):
-            _emit_compaction_done(self._agent)
+        _compaction_done_emitted = True
+        # A suppressed start (quiet context engine) opened no visible
+        # compaction phase — emit no terminal edge either. Failure warnings
+        # go through agent._emit_warning and are never suppressed here.
+        # Aborts that never compacted (lock contender, cancelled commit
+        # fence) opt in via force_terminal: they still need the structured
+        # terminal edge so clients can retire their compaction phase. Chat
+        # surfaces filter this routine notice independently.
+        if _compaction_status_emitted and (
+            _commit_status == "committed" or force_terminal
+        ):
+            _emit_compaction_done(agent)
 
 
 class _CompressionLease:
@@ -2741,9 +2753,30 @@ def _acquire_compression_lease(
                 )
             _lock_acquired = True  # acquired-but-unlocked compatibility path
         else:
-            if not lease.begin_lock_setup():
-                logger.info(
-                    "Compression commit cancelled before lock acquisition (session=%s).", agent.session_id or "none"
+            if commit_fence is not None:
+                _lock_setup_entered = commit_fence.begin_lock_setup()
+                if not _lock_setup_entered:
+                    logger.info(
+                        "Compression commit cancelled before lock acquisition "
+                        "(session=%s).",
+                        agent.session_id or "none",
+                    )
+                    agent._last_compaction_in_place = False
+                    _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                    if not _existing_sp:
+                        _existing_sp = agent._build_system_prompt(system_message)
+                    _emit_compression_attempt_telemetry(
+                        agent,
+                        started_at=_attempt_started_at,
+                        commit_status="aborted",
+                        split_status="aborted",
+                        failure_class="commit_fence_cancelled",
+                    )
+                    _complete_compaction_lifecycle(force_terminal=True)
+                    return messages, _existing_sp
+            try:
+                _lock_acquired = _try_acquire_lock(
+                    _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
                 )
                 agent._last_compaction_in_place = False
                 return _abort_lease(agent, lifecycle, system_message, attempt_started_at, "commit_fence_cancelled")
@@ -2753,10 +2786,96 @@ def _acquire_compression_lease(
             return _sit_out_lock_contention(
                 agent, lease, lifecycle, system_message, approx_tokens, attempt_started_at
             )
-    if lease.holder is not None:
-        agent._active_compression_lock_holder = lease.holder
-        if commit_fence is not None and commit_fence.register_cancelled_lock_release(lease.release_holder_only):
-            # Cancellation won during lock setup (hook ran synchronously, lease gone): abort before any summary work.
+            _lock_holder = None  # don't release a lock we don't own
+            # Signal to callers that this no-op is due to a concurrent lock,
+            # not a genuine "nothing to compress" or aux-model failure.
+            # Manual /compress callers can surface a clear status message
+            # instead of the misleading "No changes from compression" text.
+            agent._compression_skipped_due_to_lock = existing or True
+            # Surface to the user once — quiet for downstream auto-compress loops
+            if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
+                agent._last_compression_lock_warning_sid = _lock_sid
+                try:
+                    agent._emit_warning(
+                        "⚠ Skipping concurrent compression — another path "
+                        "is already compressing this session. Will retry "
+                        "after it finishes."
+                    )
+                except Exception:
+                    pass
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            try:
+                if hasattr(agent.context_compressor, "_begin_compression_telemetry"):
+                    agent.context_compressor._begin_compression_telemetry(current_tokens=approx_tokens)
+            except Exception:
+                pass
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="lock_contended",
+            )
+            _complete_compaction_lifecycle(force_terminal=True)
+            return messages, _existing_sp
+    _lock_released = False
+    _lock_release_guard = threading.Lock()
+
+    def _release_lock_holder_only() -> None:
+        """Stop this holder's refresher and release only its durable lock.
+
+        Holder-qualified and idempotent (#76354 F4, from PR #71569): safe for
+        the HOST to invoke after a timeout without an ABA race — the DB
+        release is scoped to this worker's holder token, so a NEW holder's
+        lease can never be deleted by this stale release.
+        """
+        nonlocal _lock_released
+        with _lock_release_guard:
+            if _lock_released:
+                return
+            _lock_released = True
+            if getattr(agent, "_active_compression_lock_holder", None) == _lock_holder:
+                agent._active_compression_lock_holder = None
+            if _lock_refresher is not None:
+                try:
+                    _lock_refresher.stop()
+                except Exception as _stop_err:
+                    logger.debug("compression lock refresher stop failed: %s", _stop_err)
+            if _lock_db is not None and _lock_sid and _lock_holder:
+                try:
+                    _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+                except Exception as _rel_err:
+                    logger.debug("compression lock release failed: %s", _rel_err)
+
+    def _release_lock() -> None:
+        """Finish lifecycle cleanup and release the OLD session lock once."""
+        try:
+            _complete_compaction_lifecycle()
+        finally:
+            try:
+                _release_lock_holder_only()
+            finally:
+                try:
+                    if commit_fence is not None:
+                        commit_fence.clear_cancelled_lock_release(
+                            _release_lock_holder_only
+                        )
+                finally:
+                    _finish_lock_setup()
+
+    if _lock_holder is not None:
+        agent._active_compression_lock_holder = _lock_holder
+        if (
+            commit_fence is not None
+            and commit_fence.register_cancelled_lock_release(
+                _release_lock_holder_only
+            )
+        ):
+            # Cancellation already won while we were inside lock setup: the
+            # hook just ran synchronously, our lease is gone — abort before
+            # any summary work.
             logger.info(
                 "Compression commit cancelled before summary dispatch (session=%s).", agent.session_id or "none"
             )
@@ -4882,10 +5001,18 @@ def _compress_context_via_codex_app_server(
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
         agent._emit_status(COMPACTION_STATUS)
-    _activity_heartbeat = _CompressionActivityHeartbeat(agent, emit_client_status=True).start()
+    except Exception:
+        pass
+
+    _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
         result = codex_session.compact_thread()
     except BaseException:
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression failed")
+        raise
+
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
         _activity_heartbeat.stop("context compression failed")
         raise
     failed = bool(getattr(result, "interrupted", False) or getattr(result, "error", None))
@@ -4894,18 +5021,35 @@ def _compress_context_via_codex_app_server(
         with contextlib.suppress(Exception):
             codex_session.close()
         agent._codex_session = None
-    if failed:
-        with contextlib.suppress(Exception):
-            agent._emit_warning(f"⚠ Codex app-server compaction failed: {result.error}")
-        # The transcript is returned unchanged, so the session is still over
-        # threshold. Without a brake the next turn retries immediately.
-        _record_codex_compaction_failure(agent, str(getattr(result, "error", None) or "compaction interrupted"))
-        return messages, _existing_system_prompt(agent, system_message)
-    with _swallow('codex compaction bookkeeping failed', exc_info=True):
-        from agent.codex_runtime import _record_codex_app_server_compaction, _record_codex_app_server_usage
-        _record_codex_app_server_compaction(agent, result, approx_tokens=approx_tokens, force=True)
-        # An empty usage report must consume the pending verdict, not leave deferral
-        # armed until a later turn; minimal test engines may lack update_from_response.
+
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
+        try:
+            agent._emit_warning(
+                f"⚠ Codex app-server compaction failed: {result.error}"
+            )
+        except Exception:
+            pass
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    try:
+        from agent.codex_runtime import (
+            _record_codex_app_server_compaction,
+            _record_codex_app_server_usage,
+        )
+
+        _record_codex_app_server_compaction(
+            agent,
+            result,
+            approx_tokens=approx_tokens,
+            force=True,
+        )
+        # An empty usage report must consume the pending post-compaction verdict
+        # rather than leaving preflight deferral armed until some unrelated later
+        # Codex turn supplies usage. Minimal external test engines may not expose
+        # the ContextEngine update hook; preserve their existing bookkeeping.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
@@ -4913,7 +5057,9 @@ def _compress_context_via_codex_app_server(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",
     )
-    existing_prompt = _existing_system_prompt(agent, system_message)
+    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+    if not existing_prompt:
+        existing_prompt = agent._build_system_prompt(system_message)
     # Terminal edge only on success — failure/interrupt paths above return
     # without it, matching the main compress_context() gating.
     _emit_compaction_done(agent)

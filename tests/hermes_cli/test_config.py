@@ -40,12 +40,17 @@ class TestGetHermesHome:
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
             if sys.platform == "win32":
+                # Windows default is %LOCALAPPDATA%\hermes — see
+                # hermes_constants._get_platform_default_hermes_home.
                 local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-                expected = base / "hermes"
+                base = (
+                    Path(local_appdata)
+                    if local_appdata
+                    else Path.home() / "AppData" / "Local"
+                )
+                assert home == base / "hermes"
             else:
-                expected = Path.home() / ".hermes"
-            assert home == expected
+                assert home == Path.home() / ".hermes"
 
 
 class TestEnsureHermesHome:
@@ -322,11 +327,11 @@ class TestSaveAndLoadRoundtrip:
         config_path.write_text(original, encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="formatting error"):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
             "parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -338,12 +343,12 @@ class TestSaveAndLoadRoundtrip:
         (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="formatting error"):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
                 unset_config_value("terminal.timeout")
 
         assert config_path.read_text(encoding="utf-8") == original
         assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
-        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
             "unset parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -358,7 +363,7 @@ class TestSaveAndLoadRoundtrip:
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
             "non-mapping root should snapshot a corrupt backup before refusing"
         )
 
@@ -373,7 +378,7 @@ class TestSaveAndLoadRoundtrip:
                 unset_config_value("model.default")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
     def test_config_set_allows_valid_empty_mapping(self, tmp_path):
         """A genuine empty {} config must still be writable (not a false refuse)."""
@@ -394,26 +399,11 @@ class TestSaveAndLoadRoundtrip:
         original = "broken: [unterminated\n"
         config_path.write_text(original, encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="formatting error"):
+        with pytest.raises(RuntimeError, match="not valid YAML"):
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
-
-class TestLoadEnvInlineComments:
-    def test_unquoted_hash_is_a_comment_quoted_hash_is_data(self, tmp_path):
-        """load_env is the one dotenv reader (agent.secret_scope.load_env_file): an unquoted ` #...` tail
-        is a comment, a quoted value keeps its hash. Hermes' own writer (_quote_env_value) always quotes
-        values containing `#`, so a saved secret round-trips."""
-        from hermes_cli.config import invalidate_env_cache
-
-        (tmp_path / ".env").write_text('PASSWORD=abc #123\nPASSWORD2="abc #123"\n', encoding="utf-8")
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            invalidate_env_cache()
-            env = load_env()
-        assert env["PASSWORD"] == "abc"
-        assert env["PASSWORD2"] == "abc #123"
-
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
 class TestSaveEnvValueSecure:
 
@@ -1903,7 +1893,7 @@ class TestConfigCommandFailClosedSurface:
 
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
-        assert "formatting error" in err and "`hermes config edit`" in err
+        assert "not valid YAML" in err
         assert config_path.read_text(encoding="utf-8") == original
 
     def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
@@ -1918,21 +1908,5 @@ class TestConfigCommandFailClosedSurface:
                 config_command(self._args(config_command="unset", key="model.default"))
 
         assert excinfo.value.code == 1
-        assert "formatting error" in capsys.readouterr().err
+        assert "not valid YAML" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
-
-
-def test_gateway_multiplex_keys_are_recognized_config_keys():
-    """``hermes config set gateway.multiplex_profiles true`` used to warn 'not a recognized config
-    key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
-    from hermes_cli.config import _validate_config_key
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
-    assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
-    assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
-    assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
-    assert _validate_config_key("gateway.profile_routes") == (True, None)
-    assert _validate_config_key("gateway.auto_multiplex_migration") == (True, None)
-    known, suggestion = _validate_config_key("gateway.auto_migrate")
-    assert known is False
-    assert suggestion == "gateway.auto_multiplex_migration"

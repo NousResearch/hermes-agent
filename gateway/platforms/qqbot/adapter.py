@@ -215,6 +215,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
+            # Plugin-registered native handlers (ctx.register_platform_handler).
             self._wire_plugin_handlers(None)
             return True
         except Exception as exc:
@@ -1455,7 +1456,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return await sender(chat_id, truncated, reply_to, keyboard=keyboard)
         except Exception as exc:
-            logger.error("[%s] send_with_keyboard failed: %s", self._log_tag, exc)
+            logger.error(
+                "[%s] send_with_keyboard failed: %s", self._log_tag, exc
+            )
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     async def send_approval_request(

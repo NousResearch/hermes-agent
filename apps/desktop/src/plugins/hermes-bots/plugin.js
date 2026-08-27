@@ -58,6 +58,7 @@ import {
   SelectTrigger,
   SelectValue,
   Switch,
+  surfaceModelSwitchConfirm,
   Textarea,
   Tip,
   useQuery,
@@ -493,7 +494,7 @@ function groupActivityLabel(event) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
-  if (kind === 'cancelled' || kind === 'settled') {
+  if (kind === 'cancelled' || kind === 'settled' || kind === 'capped') {
     return base
   }
 
@@ -511,8 +512,10 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
+  capped: 'turn stopped at the round/message cap',
   delivered: 'delivered a late reply',
-  held: 'is held (stopped by you) — @mention it or say resume to release'
+  held: 'is held (stopped by you) — @mention it or say resume to release',
+  stopped: 'stopped the room — remaining turns are held until resumed'
 }
 
 const GROUP_ACTIVITY_GLYPHS = {
@@ -524,8 +527,10 @@ const GROUP_ACTIVITY_GLYPHS = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
+  capped: 'debug-step-over',
   delivered: 'mail-read',
-  held: 'debug-pause'
+  held: 'debug-pause',
+  stopped: 'debug-stop'
 }
 
 /** Text tone for an activity row: quiet for pass/cancel/settle, accent for
@@ -5242,6 +5247,31 @@ function botSourceStatus(bot) {
 
   return { available: true, key: 'unknown', label: 'Status unknown', tone: 'muted' }
 }
+
+/** Drop unreachable same-name copies from the top-level agent list.
+ *
+ *  Group rooms persist source-qualified members. After Desktop moves to the
+ *  built-in This-device source, the old loopback row (127.0.0.1:port, not
+ *  listening) still sits next to the live profile and looks like a second
+ *  agent (#92286). Routing identities stay intact: this only filters sidebar
+ *  tiles. $lastRoster, group members, and @-mentions still see every
+ *  (connectionId, profile) row.
+ *
+ *  Ghosts stay: a selected-but-offline owner must remain visible rather than
+ *  being replaced by a same-named twin on another gateway. A name with no
+ *  reachable copy is kept, so a genuinely down source still has a row. */
+function preferReachableSameNameRows(bots) {
+  const rows = Array.isArray(bots) ? bots : []
+  const reachableNames = new Set()
+
+  for (const bot of rows) {
+    if (botSourceStatus(bot).available) {
+      reachableNames.add(bot?.name)
+    }
+  }
+
+  return rows.filter(bot => botSourceStatus(bot).available || bot?.ghost || !reachableNames.has(bot?.name))
+}
 // ── cross-connection routing ─────────────────────────────────────────────────
 // A bot from another registered connection (remoteSource rows) is reached
 // through host.requestProfile with a route descriptor; local bots keep the
@@ -5634,6 +5664,12 @@ async function openStoredBotChat(owner, storedId, summary) {
   const hasAuthoritativeCount =
     typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  // Current SDKs export the Bot-specific budget. The fallback preserves
+  // compatibility with older hosts and isolated plugin test harnesses.
+  const hydrationTimeoutMs =
+    typeof sdk !== 'undefined' && Number.isFinite(sdk.BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS)
+      ? sdk.BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS
+      : 60_000
 
   // A profile backend that just woke up can lose the hydration-timeout race
   // even though the session is fine (hermes-agent#89617) — clicking Retry
@@ -5655,6 +5691,7 @@ async function openStoredBotChat(owner, storedId, summary) {
     awaitHydration: true,
     expectHistory,
     forceResume: true,
+    hydrationTimeoutMs,
     keepAllProfilesScope: true,
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
@@ -6665,7 +6702,10 @@ function knownGroups(metaByName) {
 // room messages that are NEW since it last saw the room.
 
 const GROUP_CHAT_MAX_ROUNDS = 3
+
+// #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.
 const GROUP_CHAT_MAX_MESSAGES = 10
+const GROUP_CHAT_MAX_CONTINUATIONS = 2
 const GROUP_CHAT_HISTORY_LIMIT = 24
 const GROUP_CHAT_MAX_MEMBERS = 6
 
@@ -6678,6 +6718,44 @@ function isGroupPassText(text) {
   }
 
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
+}
+
+/** #94376: pick the reply a finished turn should surface among the messages
+ *  appended since `before`. Scans newest-first and prefers the last
+ *  substantive (non-pass) assistant answer over a trailing pass — a Codex
+ *  intent-ack continuation nudge can land a complete answer and then get a
+ *  synthetic "(pass)" to the nudge itself, which must not hide the answer.
+ *  When only pass text exists in range, returns the newest (last
+ *  chronological) one rather than the oldest. Returns null only when no
+ *  assistant message appears in that range. */
+function pickGroupTurnReply(messages, before) {
+  let passText = null
+
+  for (let i = messages.length - 1; i >= before; i--) {
+    const msg = messages[i]
+
+    if (msg?.role !== 'assistant') {
+      continue
+    }
+
+    const text = typeof msg.content === 'string'
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
+        : msg?.text || ''
+    const replyText = String(text).trim()
+
+    if (isGroupPassText(replyText)) {
+      if (passText === null) {
+        passText = replyText
+      }
+      continue
+    }
+
+    return replyText
+  }
+
+  return passText
 }
 
 /** Deterministic @mention parse. Handles @name, @"two words" via display
@@ -7180,12 +7258,24 @@ function groupChatEntryId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
+/** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
+ *  a FAILURE marker, never bot text. Mirror gateway/run.py's user-friendly
+ *  substitution so the room log never shows the raw sentinel. */
+const GROUP_EMPTY_SENTINEL = '(empty)'
+const GROUP_EMPTY_FRIENDLY =
+  '⚠️ The model returned no response after processing tool results. ' +
+  'This can happen with some models — try again or rephrase your question.'
+function normalizeGroupChatText(text) {
+  const trimmed = String(text || '').trim()
+  return trimmed === GROUP_EMPTY_SENTINEL ? GROUP_EMPTY_FRIENDLY : trimmed
+}
+
 function appendGroupChatEntry(group, from, text, thread, images) {
   const entry = {
     id: groupChatEntryId(),
     at: Date.now(),
     from,
-    text: String(text).trim(),
+    text: normalizeGroupChatText(text),
     thread: thread || 'legacy'
   }
 
@@ -7590,6 +7680,11 @@ async function runGroupChatMemberTurnLeased(group, member, prompt, thread, image
     return null
   }
 
+  // #91868/#94569: remember the epoch this turn was dispatched under so the
+  // poll loop below can tell an explicit stop from ordinary room churn.
+  const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
+  const memberKey = groupMemberKey(member)
+
   recordGroupActivity(group, { kind: 'working', member: member.name, thread })
 
   // Baseline: how many messages exist before our submit.
@@ -7665,6 +7760,18 @@ async function runGroupChatMemberTurnLeased(group, member, prompt, thread, image
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, GROUP_TURN_POLL_MS))
 
+    // #91868/#94569: an explicit stop (stopGroupThread) bumped the epoch AND
+    // held this member — the member's session was interrupted, so nothing is
+    // coming; abandon the poll instead of grinding until the deadline. Both
+    // conditions on purpose: an ordinary newer send bumps the epoch WITHOUT
+    // a hold, and that turn must keep polling so finished work can still be
+    // delivered (the #93127 commit check decides its fate, not this loop).
+    const roomDuringPoll = $groupChats.get()[group] || {}
+
+    if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
+      return null
+    }
+
     let state = null
 
     try {
@@ -7685,25 +7792,16 @@ async function runGroupChatMemberTurnLeased(group, member, prompt, thread, image
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
+      const replyText = pickGroupTurnReply(messages, before)
 
-        if (msg?.role === 'assistant') {
-          const text = typeof msg.content === 'string'
-            ? msg.content
-            : Array.isArray(msg.content)
-              ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-              : msg?.text || ''
-          const replyText = String(text).trim()
+      if (replyText !== null) {
+        recordGroupActivity(group, {
+          kind: isGroupPassText(replyText) ? 'passed' : 'replied',
+          member: member.name,
+          thread
+        })
 
-          recordGroupActivity(group, {
-            kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-            member: member.name,
-            thread
-          })
-
-          return replyText
-        }
+        return replyText
       }
 
       recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
@@ -7784,33 +7882,20 @@ async function harvestStrandedGroupReply(group, member) {
     return
   }
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
+  const reply = pickGroupTurnReply(messages, strandedBefore)
 
-    if (msg?.role === 'assistant') {
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-          : msg?.text || ''
-      const reply = String(text).trim()
-
-      if (reply && !isGroupPassText(reply)) {
-        recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
-        appendGroupChatEntry(
-          group,
-          { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
-          reply,
-          strandedThread
-        )
-        updateGroupChat(group, r => {
-          r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
-          return r
-        })
-      }
-
-      return
-    }
+  if (reply && !isGroupPassText(reply)) {
+    recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
+    appendGroupChatEntry(
+      group,
+      { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+      reply,
+      strandedThread
+    )
+    updateGroupChat(group, r => {
+      r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+      return r
+    })
   }
 }
 
@@ -7946,6 +8031,140 @@ function heldMemberWatermarkAdvance(seen, logLength) {
 
 // --- end member-hold helpers ---
 
+/** Members cited by @mention in a thread who have not posted any entry after
+ *  the citing one — the unresolved-handoff detector for #94478. A mention
+ *  inside a member reply is visible to the NEXT round's responder selection,
+ *  but the round loop exits first when nobody has new delta to read
+ *  (`spokeThisRound === 0`) or a cap lands, so the room settles while a
+ *  called bot never answers. Returns member keys still owed a turn. */
+function unaddressedGroupMentions(group, members, thread) {
+  const room = $groupChats.get()[group] || { log: [] }
+  const log = (room.log || []).filter(e => groupThreadOf(e) === thread)
+
+  // key → log INDEX of the entry that most recently cited this member.
+  // Entry ids are UUIDs (groupChatEntryId), NOT monotonic — index order is
+  // the only guaranteed ordering, and it is what "answered after the citing
+  // entry" actually means. (#94478 review)
+  const citedAt = new Map()
+
+  for (const entry of log) {
+    const parsed = parseGroupChatMentions(entry.text || '', members)
+
+    // A user send re-drives everyone anyway; only member-to-member handoffs
+    // can strand here.
+    if (entry.from.kind !== 'member') {
+      continue
+    }
+
+    for (const key of parsed.mentioned) {
+      const citingMemberKey = (() => {
+        const m = members.find(mm => mm.name === entry.from?.name)
+
+        return m ? groupMemberKey(m) : null
+      })()
+
+      // Never count a bot citing itself as a pending handoff.
+      if (citingMemberKey && citingMemberKey !== key) {
+        citedAt.set(key, log.indexOf(entry))
+      }
+    }
+  }
+
+  // A citation is answered when the cited member posts any entry after the
+  // citing one (its turn, whatever the content).
+  const lastPostAt = new Map()
+
+  for (const entry of log) {
+    if (entry.from.kind !== 'member') {
+      continue
+    }
+
+    const speakerKey = (() => {
+      const m = members.find(mm => mm.name === entry.from?.name)
+
+      return m ? groupMemberKey(m) : null
+    })()
+
+    if (speakerKey) {
+      lastPostAt.set(speakerKey, log.indexOf(entry))
+    }
+  }
+
+  return [...citedAt.keys()].filter(key => {
+    const citedIdx = citedAt.get(key)
+    const answeredIdx = lastPostAt.get(key)
+
+    return answeredIdx === undefined || answeredIdx <= citedIdx
+  })
+}
+
+/** #91868/#94569: the REAL stop path for a group round. The round loop's only
+ *  cancellation primitives were the epoch bump (checked at member boundaries)
+ *  and #93129 holds (skip FUTURE turns) — neither touches the member whose
+ *  model call is in flight RIGHT NOW, so "stop" meant "finish this turn
+ *  first". This primitive does all three legs atomically enough to matter:
+ *
+ *  1. Bumps the room epoch — the driving loop bails at its next boundary and
+ *     never selects another member (`isCurrent()` in runGroupChatRounds).
+ *  2. Sets a #93129 hold for EVERY member — future turns stay skipped until
+ *     the user explicitly releases (resume / @all resume / direct mention),
+ *     the exact contract user-typed "@all stop" already has.
+ *  3. Sends session.interrupt to the member currently ON TURN (room.turn,
+ *     runtime-only) via its own route, so the in-flight model call actually
+ *     dies instead of grinding to completion in the background. Best-effort:
+ *     an unreachable member still leaves the room stopped — the poll loop's
+ *     staleness check (epoch moved AND member held) abandons the turn.
+ *
+ *  `members` is the live roster when the caller has one (the workspace);
+ *  falls back to the room's durable roster so a two-arg call still works. */
+async function stopGroupThread(group, thread, members = null) {
+  const room = $groupChats.get()[group] || {}
+  const roster = Array.isArray(members) && members.length ? members : room.members || []
+  const turnName = room.turn || null
+  const stamp = { at: Date.now(), byMessageId: null, thread: thread || null }
+
+  updateGroupChat(group, r => {
+    r.epoch = (r.epoch || 0) + 1
+    r.running = false
+    r.turn = null
+
+    // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
+    // held-skip path (watermark consume + 'held' activity note) and every
+    // release gesture apply unchanged. An existing hold keeps its stamp.
+    const holds = { ...(r.holds || {}) }
+
+    for (const member of roster) {
+      const key = groupMemberKey(member)
+
+      if (key && !holds[key]) {
+        holds[key] = { ...stamp }
+      }
+    }
+
+    r.holds = holds
+    return r
+  })
+
+  // Recorded AFTER the bump so the event is tagged with the new epoch — it
+  // stays visible as the current run's outcome instead of dropping out of
+  // view with the superseded run's events.
+  recordGroupActivity(group, { kind: 'stopped', member: 'You', thread: thread || null })
+
+  // Interrupt the member actually mid-turn. room.turn is runtime-only and
+  // names exactly one member (the loop is serial); a settled room has none.
+  const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
+  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+
+  if (onTurn && sessionId) {
+    try {
+      await requestForBot(onTurn, 'session.interrupt', { session_id: sessionId })
+    } catch {
+      /* best-effort — the epoch/hold legs above already stopped the room;
+         the abandoned poll loop exits on its staleness check */
+    }
+  }
+}
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
@@ -7955,6 +8174,11 @@ async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
+  let continuations = 0
+  // #94478: how this drive ended. 'settled' means quiet consensus (everyone
+  // passed with nothing pending); 'capped' means a round/message/continuation
+  // cap forced the exit — the activity feed must tell those apart.
+  let exitKind = 'settled'
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -7992,6 +8216,8 @@ async function runGroupChatRounds(group, members, thread) {
         if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
           if (!isCurrent()) {
             recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
+          } else {
+            exitKind = 'capped' // message cap, not consensus (#94478)
           }
           return
         }
@@ -8071,8 +8297,14 @@ async function runGroupChatRounds(group, members, thread) {
             clearBotAttention(groupMemberKey(member))
           }
         } catch (error) {
-          recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
-          noteBotAttention(groupMemberKey(member), error?.message || error)
+          const reason = String(error?.data?.reason || '').trim()
+          recordGroupActivity(group, {
+            kind: 'failed',
+            member: member.name,
+            thread,
+            ...(reason ? { reason } : {})
+          })
+          noteBotAttention(groupMemberKey(member), reason || error?.message || error)
           reply = null // a failed turn is a pass, never a room error
         }
 
@@ -8127,12 +8359,135 @@ async function runGroupChatRounds(group, members, thread) {
       }
 
       if (spokeThisRound === 0) {
-        return // everyone passed — the conversation settled
+        // #94478: "everyone passed" is NOT the only way a round can go quiet —
+        // responders can be narrowed to members with no new delta while the
+        // thread's tail carries an @mention handoff that was never answered.
+        // Before settling, check for cited members still owed a turn and run
+        // one bounded continuation round for exactly those members. If none
+        // exist (or the continuation also goes quiet), the room genuinely
+        // settled.
+        const pendingKeys = unaddressedGroupMentions(group, members, thread)
+
+        // #94478 review: bound continuation rounds independently of the
+        // message cap so a pathological mention chain can't consume the
+        // room's entire budget on back-and-forth handoffs.
+        continuations += 1
+
+        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
+          const citedMembers = members.filter(member => pendingKeys.includes(groupMemberKey(member)))
+
+          if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
+            const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
+            const continuationResponders = citedMembers.filter(
+              member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+            )
+
+            for (const member of continuationResponders) {
+              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
+                break
+              }
+
+              const room = $groupChats.get()[group] || { log: [], watermarks: {} }
+              const memberKey = groupMemberKey(member)
+              const markKey = `${thread}::${memberKey}`
+              const seen = room.watermarks[markKey] || 0
+              const delta = room.log.slice(seen).filter(e => groupThreadOf(e) === thread)
+
+              // A cited member always has delta here (the citing reply IS in
+              // its tail); skip defensively anyway so an empty prompt never
+              // fires.
+              if (!delta.length) {
+                continue
+              }
+
+              const heldEntry = (room.holds || {})[memberKey]
+
+              if (heldEntry) {
+                continue // holds still apply to continuation turns (#93129)
+              }
+
+              const prompt = buildGroupChatTurnPrompt({
+                groupName: group,
+                members,
+                viewer: member,
+                // The continuation prompt centers on what the member missed:
+                // everything since its watermark, which includes the reply
+                // that cites it.
+                deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(e => formatGroupChatLine(e, member.name))
+              })
+
+              updateGroupChat(group, r => {
+                r.turn = member.name
+                return r
+              })
+
+              let continuationReply = null
+
+              try {
+                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+
+                if (continuationReply !== null) {
+                  clearBotAttention(memberKey)
+                }
+              } catch (error) {
+                recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
+                noteBotAttention(memberKey, error?.message || error)
+                continuationReply = null
+              }
+
+              if (!isCurrent()) {
+                return
+              }
+
+              updateGroupChat(group, r => {
+                r.watermarks[markKey] = r.log.length
+                return r
+              })
+
+              if (continuationReply !== null && !isGroupPassText(continuationReply)) {
+                appendGroupChatEntry(
+                  group,
+                  { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+                  continuationReply,
+                  thread
+                )
+                updateGroupChat(group, r => {
+                  r.watermarks[markKey] = r.log.length
+                  return r
+                })
+                posted += 1
+
+                // The continuation's own reply may cite someone else — fall
+                // through to the normal loop so the next round handles it via
+                // the same responder machinery. Reaching here means the loop
+                // continues rather than settling; the outer for-loop's next
+                // iteration re-evaluates everything.
+                spokeThisRound += 1
+              }
+            }
+          }
+        }
+
+        if (spokeThisRound === 0) {
+          // Genuinely nothing left to say — including after the continuation
+          // attempt above produced no spoken turns. Settle honestly, but if
+          // cited members are STILL owed a turn and only the continuation /
+          // message caps stopped us from driving them, this is a capped
+          // exit, not consensus. (#94478)
+          if (pendingKeys.length && (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)) {
+            exitKind = 'capped'
+          }
+          return
+        }
       }
     }
+
+    // All GROUP_CHAT_MAX_ROUNDS rounds ran with someone still speaking —
+    // the round cap ended the drive, not consensus. (#94478)
+    exitKind = 'capped'
   } finally {
     if (isCurrent()) {
-      recordGroupActivity(group, { kind: 'settled', member: null, thread })
+      recordGroupActivity(group, { kind: exitKind, member: null, thread })
       updateGroupChat(group, r => {
         r.running = false
         r.turn = null
@@ -8875,6 +9230,34 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
 
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
+// #95279: the picker's catalog read rides the BOT's own socket — a lazily
+// dialed second backend that can wedge (cold pool spawn, dropped remote hop)
+// without the primary socket ever noticing. An unbounded RPC there left the
+// query pending forever and the picker spinning ("never settles"). Bound every
+// attempt: past the budget the query rejects and ModelPicker falls back to its
+// free-text inputs instead of an eternal GlyphSpinner.
+const MODEL_OPTIONS_SETTLE_MS = 20000
+
+function boundedModelOptionsFetch(fetch, settleMs = MODEL_OPTIONS_SETTLE_MS) {
+  // window.setTimeout (not bare setTimeout): bare vm test harnesses expose
+  // timers only through the window shim. With no scheduler at all, degrade to
+  // the old unbounded behavior rather than not fetching.
+  const scope = typeof window === 'undefined' ? null : window
+
+  if (!scope || typeof scope.setTimeout !== 'function') {
+    return fetch
+  }
+
+  let timerId = null
+  const deadline = new Promise((_, reject) => {
+    timerId = scope.setTimeout(() => {
+      reject(new Error(`model.options did not answer within ${Math.round(settleMs / 1000)}s (#95279 settle guard)`))
+    }, settleMs)
+  })
+
+  return Promise.race([fetch, deadline]).finally(() => scope.clearTimeout(timerId))
+}
+
 function useModelOptions(bot = null) {
   // Hook body runs during render: an orphaned row must paint the picker
   // disabled/erroring, not throw into the pane's error boundary.
@@ -8884,11 +9267,18 @@ function useModelOptions(bot = null) {
 
   return useQuery({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
-    queryFn: () => requestForBot(bot, 'model.options', {
-      include_unconfigured: true,
-      explicit_only: false,
-      refresh: true
-    }),
+    // No forced `refresh`: forcing a network read on EVERY mount bypassed the
+    // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
+    // pane visibility flip) knocked the picker back into its loading state and
+    // discarded the user's staged selection mid-edit (#95279). The cached read
+    // still refreshes per staleTime like every other surface's catalog.
+    queryFn: () =>
+      boundedModelOptionsFetch(
+        requestForBot(bot, 'model.options', {
+          include_unconfigured: true,
+          explicit_only: false
+        })
+      ),
     enabled: !orphaned,
     staleTime: 120000,
     retry: false
@@ -9740,6 +10130,29 @@ async function applyAdvancedConfig(bot, state) {
 
   const result = await requestForBot(bot, 'profiles.configure', payload)
   const merged = { ...applied, ...(result?.applied || {}) }
+
+  // #95293 remainder: the gateway now guards data-policy / expensive models
+  // on THIS surface too — `confirm_required` means the model section is
+  // PENDING the user's confirmation, not failed. Route it through the SAME
+  // shared confirm handler the core picker uses (one applier, no forked
+  // confirm logic per surface): the Confirm action resends ONLY the model
+  // section with `confirm_expensive_model: true`.
+  if (result?.confirm_required && payload.model && payload.provider) {
+    delete merged.model
+    surfaceModelSwitchConfirm({
+      confirmLabel: 'Confirm',
+      confirmMessage: result.confirm_message,
+      failureMessage: 'Model switch failed',
+      finish: () => queryClient.invalidateQueries({ queryKey: ROSTER_KEY }),
+      requestConfirmed: () =>
+        requestForBot(bot, 'profiles.configure', {
+          name: bot.name,
+          model: payload.model,
+          provider: payload.provider,
+          confirm_expensive_model: true
+        })
+    })
+  }
 
   return { ...result, ok: Object.values(merged).every(Boolean), applied: merged }
 }
@@ -13059,27 +13472,54 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // #94570 shell rewired onto the real primitive (#91868/#94569): the button
+  // must stop the ROUND, not just spray per-member interrupts — without the
+  // epoch bump + holds the loop marched on to the next member. Thread scope:
+  // the run being stopped is the one the latest activity belongs to.
+  const stopRoomRun = async () => {
+    await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
+    host.notify({ kind: 'success', message: `Stopped ${group} — remaining turns are held until you resume` })
+  }
+
   const activityPanel = jsxs('div', {
     className: 'border-b border-(--ui-stroke-secondary)',
     children: [
-      jsxs('button', {
-        type: 'button',
-        'aria-expanded': activityOpen,
-        'aria-controls': `group-activity:${group}`,
-        title: activityOpen ? 'Hide room activity' : 'Show room activity',
-        className:
-          'flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
-        onClick: () => setActivityOpen(prev => !prev),
+      jsxs('div', {
+        className: 'flex items-center gap-1',
         children: [
-          jsx(Codicon, {
-            name: activityOpen ? 'chevron-down' : 'chevron-right',
-            className: 'shrink-0 text-[0.65rem]'
+          jsxs('button', {
+            type: 'button',
+            'aria-expanded': activityOpen,
+            'aria-controls': `group-activity:${group}`,
+            title: activityOpen ? 'Hide room activity' : 'Show room activity',
+            className:
+              'flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
+            onClick: () => setActivityOpen(prev => !prev),
+            children: [
+              jsx(Codicon, {
+                name: activityOpen ? 'chevron-down' : 'chevron-right',
+                className: 'shrink-0 text-[0.65rem]'
+              }),
+              jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
+              latestActivity
+                ? jsx('span', {
+                    className: 'min-w-0 flex-1 truncate',
+                    children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+                  })
+                : null
+            ]
           }),
-          jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
-          latestActivity
-            ? jsx('span', {
-                className: 'min-w-0 flex-1 truncate',
-                children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+          room.running
+            ? jsx('button', {
+                type: 'button',
+                title: 'Stop this run — interrupts the member on turn and holds the rest',
+                className:
+                  'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.7rem] font-medium text-(--ui-accent) transition-colors hover:bg-(--chrome-action-hover)',
+                onClick: () => void stopRoomRun(),
+                children: [
+                  jsx(Codicon, { name: 'debug-stop', className: 'shrink-0 text-[0.75rem]' }),
+                  'Stop'
+                ]
               })
             : null
         ]
@@ -13106,7 +13546,20 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
                         jsx('span', {
                           className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
                           children: relativeTime(event.at)
-                        })
+                        }),
+                        event.kind === 'working'
+                          ? jsx('button', {
+                              type: 'button',
+                              title: 'Stop this run — interrupts the member on turn and holds the rest',
+                              className:
+                                'inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[0.65rem] font-medium text-(--ui-accent) transition-colors hover:bg-(--chrome-action-hover)',
+                              onClick: () => void stopRoomRun(),
+                              children: [
+                                jsx(Codicon, { name: 'debug-stop', className: 'shrink-0 text-[0.7rem]' }),
+                                'Stop'
+                              ]
+                            })
+                          : null
                       ]
                     }, `${event.at}:${i}`)
                   )
@@ -14491,7 +14944,7 @@ function BotsPane() {
   const botRows =
     rowKindFilter === 'groups'
       ? []
-      : filteredRoster.map(bot => ({
+      : preferReachableSameNameRows(filteredRoster).map(bot => ({
           kind: 'bot',
           bot,
           pinned: isPinned(bot),

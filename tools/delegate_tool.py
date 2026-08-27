@@ -1057,13 +1057,17 @@ def _build_child_agent(
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
     import uuid as _uuid
-    from run_agent import AIAgent
-    from agent.delegation_context import delegated_child_context
-    # Role is depth-derived: a child may delegate iff the kill switch is on and
-    # depth budget remains below max_spawn_depth. The `role` arg is ignored.
+
+    # ── Role resolution ─────────────────────────────────────────────────
+    # Depth-derived, not caller-declared: a child may delegate iff the
+    # kill switch is on and depth budget remains below max_spawn_depth.
+    # The legacy `role` arg no longer participates (it asked the caller
+    # to guess a fact the config already knows); it is still accepted and
+    # normalised for wire compat, but capability comes from depth alone.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
+    effective_role = "orchestrator" if orchestrator_ok else "leaf"
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -1477,29 +1481,242 @@ def _build_children(
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
-        except ValueError as exc:
-            return [], str(exc)
-        if _task_schema is not None:
-            with _quiet("Could not attach output schema to child %d", i):
-                child._delegate_output_schema = _task_schema
-        # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
-        _t_images = task_images[i] if task_images and i < len(task_images) else None
-        if _t_images:
-            with _quiet("Could not attach images to child %d", i):
-                child._delegate_images = _t_images
-        # Tee progress events into the live transcript (wrapper keeps the
-        # _flush contract and swallows writer failures).
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
-            child._live_transcript_path = str(_writer.path)
-        if live_deleg_id:
-            setattr(child, "_delegation_id", live_deleg_id)
-            _ident_ref = getattr(child, "_progress_identity_ref", None)
-            if isinstance(_ident_ref, dict):
-                _ident_ref["delegation_id"] = live_deleg_id
-        children.append((i, t, child))
-    return children, None
+            if runtime is not None and child_session_id and not child_turn_is_active:
+                runtime.unregister_subagent({"child_session_id": child_session_id})
+        except Exception:
+            logger.debug("Failed to close child Relay session after delegation")
+
+
+_PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
+_PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()
+_CHILD_CONSTRUCTION_LOCK = threading.RLock()
+
+
+def _build_child_preserving_parent_tools(**kwargs):
+    """Build a child without leaking its resolved toolset into the parent."""
+    import model_tools
+
+    with _CHILD_CONSTRUCTION_LOCK:
+        parent_tool_names = list(model_tools._last_resolved_tool_names)
+        try:
+            child = _build_child_agent(**kwargs)
+        finally:
+            model_tools._last_resolved_tool_names = parent_tool_names
+    child._delegate_saved_tool_names = parent_tool_names
+    return child
+
+
+def _parent_finalization_lock(parent_agent) -> threading.RLock:
+    """Return the per-parent lock that serializes lifecycle side effects."""
+    if parent_agent is None:
+        return _PARENT_FINALIZATION_FALLBACK_LOCK
+    lock = getattr(parent_agent, "_subagent_finalization_lock", None)
+    if lock is not None:
+        return lock
+    with _PARENT_FINALIZATION_LOCK_GUARD:
+        lock = getattr(parent_agent, "_subagent_finalization_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            try:
+                setattr(parent_agent, "_subagent_finalization_lock", lock)
+            except Exception:
+                return _PARENT_FINALIZATION_FALLBACK_LOCK
+    return lock
+
+
+def _finalize_child_results(
+    results: List[Dict[str, Any]],
+    task_list: List[Dict[str, Any]],
+    children: List[tuple[int, Dict[str, Any], Any]],
+    parent_agent,
+) -> None:
+    """Apply host-owned summary, memory, hook, and cost contracts once."""
+    with _parent_finalization_lock(parent_agent):
+        _apply_summary_budget(results, parent_agent)
+        child_by_index = {index: child for index, _task, child in children}
+
+        if parent_agent and getattr(parent_agent, "_memory_manager", None):
+            for entry in results:
+                try:
+                    task_index = entry.get("task_index", -1)
+                    task_goal = (
+                        task_list[task_index]["goal"]
+                        if isinstance(task_index, int)
+                        and 0 <= task_index < len(task_list)
+                        else ""
+                    )
+                    child = child_by_index.get(task_index)
+                    parent_agent._memory_manager.on_delegation(
+                        task=task_goal,
+                        result=entry.get("summary", "") or "",
+                        child_session_id=getattr(child, "session_id", ""),
+                    )
+                except Exception:
+                    pass
+
+        parent_session_id = getattr(parent_agent, "session_id", None)
+        try:
+            from hermes_cli.plugins import invoke_hook as invoke_hook
+        except Exception:
+            invoke_hook = None
+
+        children_cost_total = 0.0
+        for entry in results:
+            child_role = entry.pop("_child_role", None)
+            child_cost = entry.pop("_child_cost_usd", 0.0)
+            try:
+                if child_cost:
+                    children_cost_total += float(child_cost)
+            except (TypeError, ValueError):
+                pass
+            if invoke_hook is None:
+                continue
+            try:
+                child_index = entry.get("task_index", -1)
+                child = child_by_index.get(child_index)
+                invoke_hook(
+                    "subagent_stop",
+                    parent_session_id=parent_session_id,
+                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                    child_session_id=getattr(child, "session_id", None),
+                    child_role=child_role,
+                    child_summary=entry.get("summary"),
+                    child_status=entry.get("status"),
+                    tool_call_history=_subagent_stop_tool_call_history(
+                        entry.get("tool_trace")
+                    ),
+                    duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                )
+            except Exception:
+                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+        if children_cost_total > 0.0:
+            try:
+                current = float(
+                    getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0
+                )
+                parent_agent.session_estimated_cost_usd = current + children_cost_total
+                if getattr(parent_agent, "session_cost_source", "none") in {
+                    None,
+                    "",
+                    "none",
+                }:
+                    parent_agent.session_cost_source = "subagent"
+                if getattr(parent_agent, "session_cost_status", "unknown") in {
+                    None,
+                    "",
+                    "unknown",
+                }:
+                    parent_agent.session_cost_status = "estimated"
+            except Exception:
+                logger.debug("Subagent cost rollup failed", exc_info=True)
+
+
+def _run_child_lifecycle(
+    task_index: int,
+    goal: str,
+    child=None,
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """Run one child and apply the same host lifecycle used by delegate_task."""
+    result = _run_single_child(task_index, goal, child, parent_agent)
+    result.setdefault("task_index", task_index)
+    task = {"goal": goal}
+    _finalize_child_results(
+        [result],
+        [{"goal": ""} for _ in range(task_index)] + [task],
+        [(task_index, task, child)],
+        parent_agent,
+    )
+    return result
+
+
+def _recover_tasks_from_json_string(
+    tasks: Any,
+) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    if not isinstance(tasks, str):
+        return None, None
+    raw = tasks.strip()
+    if not raw:
+        return None, "Provide either 'goal' (single task) or 'tasks' (batch)."
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, (
+            "tasks must be a JSON array of task objects; received a string "
+            f"that could not be parsed as JSON ({exc.msg})."
+        )
+    if not isinstance(parsed, list):
+        return None, (
+            f"tasks must be a JSON array of task objects; parsed "
+            f"{type(parsed).__name__} instead."
+        )
+    return parsed, None
+
+
+# Placeholder shapes for batch goal validation: bare 'TODO', bare 'task N'
+# labels, or goals still carrying unexpanded template markers.
+#
+# The marker regex is deliberately NARROW: it only fires on snake_case /
+# space-separated placeholder identifiers (`<feature_name>`, `{file path}`,
+# `<FEATURE-NAME>`) — the shape LLM templates actually leave behind. Bare
+# single-word brackets are left alone because legitimate coding goals are
+# full of them: generics (`Vec<T>`, `Result<String>`), HTML tags (`<div>`),
+# JSON/dict snippets (`{"key": 1}`), glob braces (`{a,b}`), and f-string
+# style (`{i}`) must never be rejected (post-merge audit of #81141).
+_PLACEHOLDER_GOAL_RE = re.compile(r"^(todo|task\s*\d+)$", re.IGNORECASE)
+_TEMPLATE_MARKER_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+>"
+    r"|\{[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+\}"
+)
+_MIN_BATCH_GOAL_LEN = 10
+
+
+def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
+    """Validate a tasks=[...] batch beyond per-task goal presence.
+
+    Returns an actionable error string, or None when the batch is valid.
+
+    A one-entry array is the canonical single-task shape (the advertised
+    interface is tasks-only; legacy top-level `goal` is wrapped into a
+    one-entry batch), so no minimum count is enforced. The placeholder/
+    template checks below still run on every entry.
+
+    Duplicate goals are deliberately NOT rejected: identical-goal fan-outs
+    are a legitimate pattern (best-of-N / ensemble sampling), and blocking
+    them broke real workflows (post-merge audit of #81141).
+    """
+
+    for i, task in enumerate(task_list):
+        goal = str(task.get("goal", "")).strip()
+        normalized = " ".join(goal.lower().split())
+
+        if _PLACEHOLDER_GOAL_RE.match(normalized):
+            return (
+                f"Task {i} has a placeholder goal ({goal!r}). Replace it "
+                "with a specific, self-contained description of what the "
+                "subagent should accomplish."
+            )
+        marker = _TEMPLATE_MARKER_RE.search(goal)
+        if marker:
+            return (
+                f"Task {i} goal contains an unexpanded template marker "
+                f"({marker.group(0)!r}). Substitute the real value before "
+                "calling delegate_task — subagents cannot resolve "
+                "placeholders."
+            )
+        if len(goal) < _MIN_BATCH_GOAL_LEN and len(task_list) >= 2:
+            # Multi-task fan-outs with terse goals are usually unexpanded
+            # templates; a SINGLE task legitimately uses short goals
+            # ("Fix the tests"), so one-entry arrays keep the historical
+            # single-`goal` exemption.
+            return (
+                f"Task {i} goal is too short ({goal!r}). Write a specific, "
+                "self-contained goal of at least "
+                f"{_MIN_BATCH_GOAL_LEN} characters so the subagent knows "
+                "exactly what to do."
+            )
+    return None
 
 
 def delegate_task(
@@ -1581,13 +1798,79 @@ def delegate_task(
         # spawn loudly (#80450).
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
-    task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
-    if not err:
-        task_schemas, err = _coerce_task_schemas(task_list, output_schema)
-    if not err:
-        task_images, err = _coerce_task_images(task_list, images)
-    if err:
-        return tool_error(err)
+    recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+    if tasks_error:
+        return tool_error(tasks_error)
+    if recovered_tasks is not None:
+        tasks = recovered_tasks
+
+    # Small models frequently emit an empty tasks array ([]) alongside a
+    # single goal. Treat that as "no batch" instead of letting the batch
+    # quality gate below reject the goal-derived single task ("Batch mode
+    # requires at least 2 tasks") — the intent is unambiguous.
+    if isinstance(tasks, list) and not tasks:
+        tasks = None
+
+    if tasks and isinstance(tasks, list):
+        if len(tasks) > max_children:
+            return tool_error(
+                f"Too many tasks: {len(tasks)} provided, but "
+                f"max_concurrent_children is {max_children}. "
+                f"Either reduce the task count, split into multiple "
+                f"delegate_task calls, or increase "
+                f"delegation.max_concurrent_children in config.yaml."
+            )
+        task_list = tasks
+    elif goal and isinstance(goal, str) and goal.strip():
+        single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        if output_schema is not None:
+            single_task["output_schema"] = output_schema
+        task_list = [single_task]
+    else:
+        return tool_error(
+            "No tasks provided. Pass tasks=[{goal: '...', context: '...'}, "
+            "...] — one entry per subagent (a single task is a one-entry "
+            "array)."
+        )
+
+    if not task_list:
+        return tool_error("No tasks provided.")
+
+    # Validate each task has a goal
+    for i, task in enumerate(task_list):
+        if not isinstance(task, dict):
+            return tool_error(
+                f"Task {i} must be an object, got {type(task).__name__}."
+            )
+        if not task.get("goal", "").strip():
+            return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
+    # unexpanded multi-word template markers, 1-task batches) before any
+    # child is spawned.  The single-`goal` form is deliberately exempt —
+    # short goals are valid there.  Duplicate goals are allowed (best-of-N).
+    # Inspired by: MoonshotAI/kimi-code agent-swarm.md validation rules (MIT).
+    if tasks is not None and isinstance(tasks, list):
+        batch_error = _validate_batch_tasks(task_list)
+        if batch_error:
+            return tool_error(batch_error)
+
+    # T1-24: coerce/validate optional per-task output_schema up front so a
+    # malformed schema fails the whole call loudly instead of spawning
+    # children that can never satisfy their contract. Runs AFTER the
+    # existing goal checks; schema-less tasks resolve to None and take no
+    # new code paths downstream.
+    from tools.delegation_output_schema import coerce_output_schema
+
+    task_schemas: List[Optional[Dict[str, Any]]] = []
+    for i, task in enumerate(task_list):
+        raw_schema = task.get("output_schema")
+        if raw_schema is None and len(task_list) == 1 and output_schema is not None:
+            raw_schema = output_schema
+        coerced_schema, schema_err = coerce_output_schema(raw_schema)
+        if schema_err:
+            return tool_error(f"Task {i} output_schema invalid: {schema_err}")
+        task_schemas.append(coerced_schema)
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -2396,20 +2679,45 @@ def _build_top_level_description() -> str:
     top-level text stays static and duplication-free. If you add text
     here, check it is not already stated in a parameter description.
     """
+    try:
+        orchestration_available = _get_max_spawn_depth() >= 2 and _get_orchestrator_enabled()
+    except Exception:
+        orchestration_available = False
+
+    # The child-restrictions rule renders per config: on nesting-enabled
+    # installs the orchestrator clause is load-bearing; on depth-1/disabled
+    # installs (the default) it would describe an unreachable state — the
+    # role param already explains that 'orchestrator' is inert there.
+    # send_message is deliberately not named: it's gateway-internal
+    # vocabulary most sessions never see. The list below is the fail-safe
+    # superset; model_tools session-filters it to the tools the session
+    # actually has, dropping the whole line when none apply.
+    # Delegation capability is depth-derived (no role param): mention
+    # recursion only where it's actually available.
+    if orchestration_available:
+        restrictions_rule = (
+            "- Children cannot call clarify, memory, or cronjob.\n"
+            "- Children can themselves delegate while depth remains "
+            f"(max_spawn_depth={_get_max_spawn_depth()}); the runtime "
+            "derives this from depth automatically.\n"
+        )
+    else:
+        restrictions_rule = (
+            "- Children cannot call delegate_task, clarify, memory, or "
+            "cronjob.\n"
+        )
+
     return (
         "Spawn subagents in isolated contexts; each gets its own conversation, "
         "terminal session, and toolset, and only its final summary returns to "
-        "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
-        "(limits and nesting rules are in the parameter descriptions).\n\n"
+        "you. Pass every task in `tasks` — one entry spawns one subagent, "
+        "several run in parallel (limit in the tasks description).\n\n"
         "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
-        "poll; continue other work.\n\n"
-        "LIVE ORCHESTRATION: while children run, this tool also controls "
-        "them — action='list' (live children + ids), action='steer' "
-        "(subagent_id + message, redirect without stopping), action='stop' "
-        "(subagent_id, end early; partial result still returns). Steer when "
-        "a live transcript shows a child drifting.\n\n"
+        "transcript paths, and the completed result (one consolidated message, "
+        "results in task order) re-enters the conversation on its own. Do NOT "
+        "wait or poll; continue other work. While children run, `action` "
+        "(list/steer/stop) controls them live — steer when a transcript shows "
+        "a child drifting.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
@@ -2417,7 +2725,7 @@ def _build_top_level_description() -> str:
         "- A single tool call -> call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot ask questions\n"
         "- Durable work that must survive this session -> cronjob or "
-        "terminal(background=True, notify_on_complete=True); /stop, /new, or "
+        "terminal(background=True, notify=True); /stop, /new, or "
         "process exit discards running subagents.\n\n"
         "RULES:\n"
         "- Children know nothing of this conversation: pass everything needed "
@@ -2427,14 +2735,10 @@ def _build_top_level_description() -> str:
         "claiming \"uploaded successfully\" or \"file written\" may be wrong. "
         "For external side effects (uploads, remote writes, publishing), "
         "require a verifiable handle (URL, ID, absolute path) and verify it "
-        "yourself — fetch the URL, stat the file, read back the content — "
-        "before telling the user the operation succeeded.\n"
-        "- Leaf children (the default) cannot call delegate_task, clarify, "
-        "memory, send_message, or cronjob; orchestrators regain only "
-        "delegate_task.\n"
-        "- Children inherit the parent model and fallback chain unless pinned "
-        "globally via delegation.provider / delegation.model in config.yaml. "
-        "Results are returned as an array, one entry per task."
+        "yourself before telling the user the operation succeeded.\n"
+        + restrictions_rule +
+        "- Children inherit the parent model unless pinned via "
+        "delegation.provider / delegation.model in config.yaml."
     )
     return _run_batch(batch, background)
 
@@ -2513,6 +2817,28 @@ def _build_tasks_param_description() -> str:
         "is a one-entry array. Required when spawning."
     )
 
+
+def _build_role_param_description() -> str:
+    """Legacy helper — the `role` param is no longer advertised.
+
+    Delegation capability is depth-derived (see the role-resolution block in
+    _build_child_agent): a child may itself delegate iff
+    delegation.orchestrator_enabled and its depth < max_spawn_depth. The
+    handler still accepts role for wire compat (old transcripts, kanban
+    dispatcher) but ignores it. Kept because external callers import this
+    symbol; returns the depth story for any such use.
+    """
+    try:
+        max_depth = _get_max_spawn_depth()
+    except Exception:
+        max_depth = MAX_DEPTH
+    return (
+        "Legacy parameter, ignored: whether a child can delegate is derived "
+        f"from delegation config (max_spawn_depth={max_depth}), not declared "
+        "by the caller."
+    )
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
@@ -2523,12 +2849,6 @@ def _build_dynamic_schema_overrides() -> dict:
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
-
-    if not independent_completions:
-        tasks = overrides_params["properties"]["tasks"]
-        tasks["items"] = {**tasks["items"], "properties": {
-            k: v for k, v in tasks["items"]["properties"].items() if k != "group"
-        }}
 
     return {
         "description": _build_top_level_description(independent_completions=independent_completions),
@@ -2550,71 +2870,89 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
-            # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
-            # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
-            # runtime limit (delegation.max_concurrent_children) is enforced with a clear error in delegate_task().
+            # NOTE: the handler also accepts the legacy single-goal shape —
+            # top-level `goal` (string), `context` (string), `output_schema`
+            # (object) — wrapped into a one-entry batch at dispatch. Legacy,
+            # unadvertised (old transcripts/callers only); tasks=[...] is the
+            # only advertised shape. Do not re-add these to the schema.
             "tasks": {
                 "type": "array",
                 "minItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "goal": _p(
-                            "string",
-                            "What this subagent should accomplish. Be specific and self-contained — it knows "
-                            "nothing about your conversation history.",
-                        ),
-                        "context": _p(
-                            "string",
-                            "Background THIS child needs: file paths, error messages, constraints. Each child "
-                            "sees only its own context — repeat shared background in every task that needs it.",
-                        ),
-                        "output_schema": _p(
-                            "object",
-                            "Optional JSON Schema this child's final answer must validate against (told to the "
-                            "child up front; parent validates with one bounded correction retry; result gains "
-                            "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
-                            "as summary, never discarded). Keep it forgiving — require only fields you will read.",
-                        ),
-                        "images": _p(
-                            "array",
-                            "Optional images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
-                            "screenshot the user sent, a design mock, a chart. Vision-capable children receive the "
-                            "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
-                            "files do NOT belong here — put paths in 'context' instead.",
-                            items={"type": "string"},
-                        ),
-                        "group": _p(
-                            "string",
-                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
-                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
-                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
-                            "order execution; if B needs A's output, dispatch B after A returns.",
-                        ),
+                        "goal": {
+                            "type": "string",
+                            "description": (
+                                "What this subagent should accomplish. Be "
+                                "specific and self-contained — it knows "
+                                "nothing about your conversation history."
+                            ),
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": (
+                                "Background THIS child needs: file paths, "
+                                "error messages, constraints. Each child "
+                                "sees only its own context — repeat shared "
+                                "background in every task that needs it."
+                            ),
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "description": (
+                                "Optional JSON Schema this child's final "
+                                "answer must validate against (told to the "
+                                "child up front; parent validates with one "
+                                "bounded correction retry; result gains "
+                                "schema_valid, plus schema_errors on "
+                                "failure). Keep it forgiving — require only "
+                                "fields you will read."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
+                # No maxItems — the runtime limit is configurable via
+                # delegation.max_concurrent_children (default 3) and
+                # enforced with a clear error in delegate_task().
+                # NOTE: the handler also accepts a per-task `role` — legacy,
+                # ignored: delegation capability is depth-derived, not
+                # caller-declared. Unadvertised on purpose; do not re-add.
                 "description": "(rebuilt at get_definitions() time)",
             },
-            # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
-            # delegations always run in the background. Unadvertised; do not re-add.
-            "action": _p(
-                "string",
-                "Default 'spawn'. Live control of running children: "
-                "'list' = ids/goals/status/transcripts; 'steer' = queue "
-                "course-correction text into one child (subagent_id + "
-                "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
-            ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
-            "message": _p(
-                "string",
-                "For action='steer': the course correction, appended to "
-                "the child's next tool result mid-run. Be directive and specific.",
-            ),
+            # NOTE: the handler also accepts `background` (bool) — DEPRECATED,
+            # ignored: top-level delegations always run in the background.
+            # Deliberately unadvertised (old transcripts/callers only); do not
+            # re-add to the schema.
+            "action": {
+                "type": "string",
+                "enum": ["spawn", "list", "steer", "stop"],
+                "description": (
+                    "Default 'spawn'. Live control of running children: "
+                    "'list' = ids/goals/status/transcripts; 'steer' = queue "
+                    "course-correction text into one child (subagent_id + "
+                    "message) without stopping it; 'stop' = end one child "
+                    "early (subagent_id; partial result still returns). "
+                    "Control actions return immediately; goal/tasks are "
+                    "ignored unless spawning."
+                ),
+            },
+            "subagent_id": {
+                "type": "string",
+                "description": (
+                    "Target for action='steer'/'stop' (ids from the spawn "
+                    "response or action='list')."
+                ),
+            },
+            "message": {
+                "type": "string",
+                "description": (
+                    "For action='steer': the course correction, appended to "
+                    "the child's next tool result mid-run. Be directive and "
+                    "specific."
+                ),
+            },
         },
         "required": [],
     },

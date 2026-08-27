@@ -246,7 +246,8 @@ class MattermostAdapter(BasePlatformAdapter):
             "Mattermost: authenticated as @%s (%s) on %s", self._bot_username, self._bot_user_id, self._base_url)
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
-        self._wire_plugin_handlers(None)  # plugin-registered native handlers
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

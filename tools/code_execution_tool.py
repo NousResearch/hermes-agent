@@ -396,7 +396,145 @@ def _call(tool_name, args):
 '''
 
 
-# ---- Remote execution support (file-based RPC via terminal backend) ----
+# ---------------------------------------------------------------------------
+# RPC server (runs in a thread inside the parent process)
+# ---------------------------------------------------------------------------
+
+# Terminal parameters that must not be used from ephemeral sandbox scripts
+_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
+
+
+def _rpc_server_loop(
+    server_sock: socket.socket,
+    task_id: str,
+    tool_call_log: list,
+    tool_call_counter: list,   # mutable [int] so the thread can increment
+    max_tool_calls: int,
+    allowed_tools: frozenset,
+    stop_event: threading.Event,
+    rpc_token: str,
+):
+    """
+    Accept one client connection and dispatch tool-call requests until
+    the client disconnects or the call limit is reached.
+    """
+    from model_tools import handle_function_call
+
+    conn = None
+    try:
+        server_sock.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                conn, _ = server_sock.accept()
+                break
+            except socket.timeout:
+                continue
+        if conn is None:
+            return
+        conn.settimeout(300)
+
+        buf = b""
+        while True:
+            try:
+                chunk = conn.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+
+            # Process all complete newline-delimited messages in the buffer
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+
+                call_start = time.monotonic()
+                try:
+                    request = json.loads(line.decode())
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    resp = tool_error(f"Invalid RPC request: {exc}")
+                    conn.sendall((resp + "\n").encode())
+                    continue
+
+                if not rpc_token or not secrets.compare_digest(
+                    # Compare as bytes: compare_digest raises TypeError on a
+                    # str with non-ASCII characters, and the token comes from
+                    # sandbox-script-supplied JSON.
+                    str(request.get("token") or "").encode(), rpc_token.encode()
+                ):
+                    resp = tool_error("Unauthorized RPC request")
+                    conn.sendall((resp + "\n").encode())
+                    continue
+
+                tool_name = request.get("tool", "")
+                tool_args = request.get("args", {})
+
+                # Enforce the allow-list
+                if tool_name not in allowed_tools:
+                    available = ", ".join(sorted(allowed_tools))
+                    resp = tool_error(
+                        f"Tool '{tool_name}' is not available in execute_code. "
+                        f"Available: {available}"
+                    )
+                    conn.sendall((resp + "\n").encode())
+                    continue
+
+                # Enforce tool call limit
+                if tool_call_counter[0] >= max_tool_calls:
+                    resp = tool_error(
+                        f"Tool call limit reached ({max_tool_calls}). "
+                        "No more tool calls allowed in this execution."
+                    )
+                    conn.sendall((resp + "\n").encode())
+                    continue
+
+                # Strip forbidden terminal parameters
+                if tool_name == "terminal" and isinstance(tool_args, dict):
+                    for param in _TERMINAL_BLOCKED_PARAMS:
+                        tool_args.pop(param, None)
+
+                # Dispatch through the standard tool handler.
+                # Suppress stdout/stderr from internal tool handlers so
+                # their status prints don't leak into the CLI spinner.
+                try:
+                    with thread_scoped_silence():
+                        result = handle_function_call(
+                            tool_name, tool_args, task_id=task_id
+                        )
+                except Exception as exc:
+                    logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
+                    result = tool_error(str(exc))
+
+                tool_call_counter[0] += 1
+                call_duration = time.monotonic() - call_start
+
+                # Log for observability
+                args_preview = str(tool_args)[:80]
+                tool_call_log.append({
+                    "tool": tool_name,
+                    "args_preview": args_preview,
+                    "duration": round(call_duration, 2),
+                })
+
+                conn.sendall((result + "\n").encode())
+
+    except socket.timeout:
+        logger.debug("RPC listener socket timeout")
+    except OSError as e:
+        logger.debug("RPC listener socket error: %s", e, exc_info=True)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except OSError as e:
+                logger.debug("RPC conn close error: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Remote execution support (file-based RPC via terminal backend)
+# ---------------------------------------------------------------------------
 
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on

@@ -1351,7 +1351,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("Matrix: initial key share failed: %s", exc)
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
-        self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
+        # Plugin-registered native handlers (Matrix client — event callbacks).
+        self._wire_plugin_handlers(self._client)
         return True
 
     async def disconnect(self) -> None:

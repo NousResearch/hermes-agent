@@ -31,6 +31,7 @@ import {
 
 type FakeChildProcess = EventEmitter & {
   stdout: EventEmitter
+  stderr: EventEmitter
 }
 
 // A minimal stand-in for a spawned child process: an EventEmitter with a
@@ -39,6 +40,7 @@ type FakeChildProcess = EventEmitter & {
 function makeFakeChild(): FakeChildProcess {
   const child = new EventEmitter() as FakeChildProcess
   child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
 
   return child
 }
@@ -97,6 +99,21 @@ test('resolves with a HERMES_BACKEND_READY port (headless `serve`)', async () =>
   const p = waitForDashboardPort(child, 1000)
   child.stdout.emit('data', 'HERMES_BACKEND_READY port=43210\n')
   assert.equal(await p, 43210)
+})
+
+test('resolves when the Windows runtime announces readiness on stderr', async () => {
+  const child = makeFakeChild()
+  const p = waitForDashboardPort(child, 20)
+  child.stderr.emit('data', 'HERMES_BACKEND_READY port=43211\r\n')
+  assert.equal(await p, 43211)
+})
+
+test('parses a Windows stderr announcement split across chunks', async () => {
+  const child = makeFakeChild()
+  const p = waitForDashboardPort(child, 1000)
+  child.stderr.emit('data', 'HERMES_BACKEND_READY po')
+  child.stderr.emit('data', 'rt=43212\r\n')
+  assert.equal(await p, 43212)
 })
 
 test('parses the port even when the line arrives split across chunks', async () => {

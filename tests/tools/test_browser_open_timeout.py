@@ -110,19 +110,19 @@ class TestCommandTimeoutRecovery:
         process.wait.side_effect = [subprocess.TimeoutExpired("agent-browser", 1), -9, 0]
         supervisor_events = []
 
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "agent-browser")
-        monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _cmd: False)
-        monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
-        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda _: supervisor_events.append("ensure"))
-        monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _: supervisor_events.append("stop"))
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "agent-browser")
+        monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
+        monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda: None)
+        monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda _: supervisor_events.append("ensure"))
+        monkeypatch.setattr(bt, "_stop_cdp_supervisor", lambda _: supervisor_events.append("stop"))
         monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
-        monkeypatch.setattr("tools.browser_tool_lifecycle._write_owner_pid", lambda *_args: None)
+        monkeypatch.setattr(bt, "_write_owner_pid", lambda *_args: None)
         monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda value: value)
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
         monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
-        bt_session._run_browser_command(task_id, "click", ["@e1"], timeout=1)
+        bt._run_browser_command(task_id, "click", ["@e1"], timeout=1)
 
         assert task_id not in bt._last_active_session_key
         assert not (tmp_path / "agent-browser-stuck-session").exists()
@@ -134,11 +134,11 @@ class TestCommandTimeoutRecovery:
         assert replacement is not session_info
         assert replacement["session_name"] != "stuck-session"
         assert replacement["bb_session_id"] == "cloud-session-1"
-        assert bt_session._get_session_info(task_id) is replacement
+        assert bt._get_session_info(task_id) is replacement
 
         provider = Mock()
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
-        bt_lifecycle.cleanup_browser(task_id)
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: provider)
+        bt.cleanup_browser(task_id)
         provider.close_session.assert_called_once_with("cloud-session-1")
         assert supervisor_events == ["ensure", "stop", "stop"]
 
@@ -146,7 +146,7 @@ class TestCommandTimeoutRecovery:
         stale, replacement = {"session_name": "stale"}, {"session_name": "replacement"}
         bt._active_sessions["race"] = replacement
 
-        bt_session._discard_timed_out_browser_session("race", stale, str(tmp_path))
+        bt._discard_timed_out_browser_session("race", stale, str(tmp_path))
 
         assert bt._active_sessions["race"] is replacement
         assert tmp_path.exists()

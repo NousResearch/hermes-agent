@@ -19,15 +19,12 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.computer_use.backend import ActionResult, ComputerUseBackend
-from tools.computer_use.cua_backend_capture import _CaptureMixin
-from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
-from tools.computer_use.cua_backend_driver import (
-    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status, cua_driver_update_nudge,
-    resolve_cua_driver_cmd)
-from tools.computer_use.cua_backend_input import _InputMixin
-from tools.computer_use.cua_backend_parse import _action_result_from
-from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+from tools.computer_use.backend import (
+    ActionResult,
+    CaptureResult,
+    ComputerUseBackend,
+    UIElement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +247,41 @@ def _cua_configured_permission_mode() -> str:
     ``standard``. ``unrestricted`` is deliberately NOT a config value — it stays tied to the per-session YOLO
     toggle so a stale config line can never silently bypass approvals."""
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
-    return "bounded" if raw == "bounded" else "standard"
+    return raw if raw in {"standard", "bounded"} else "standard"
+
+
+def _cua_capability_manifest() -> Optional[str]:
+    """Path of the reviewed capability manifest for bounded mode, or None.
+
+    Reads ``computer_use.capability_manifest``.  Existence is validated by
+    ``_EmbeddedCuaDaemon`` so a missing file fails loudly at session start
+    instead of silently degrading the authorization story.
+    """
+    raw = _computer_use_cfg().get("capability_manifest")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _cua_grant_existing_profile() -> bool:
+    """True when the user pre-authorized existing-profile browser attachment.
+
+    Reads ``computer_use.grant_existing_profile`` (default False). This is
+    cua-driver's trusted-launcher grant. Hermes passes
+    ``--grant existing-profile`` when it launches the standard-mode runtime.
+    On macOS it also selects a private socket so the newly configured
+    CuaDriver.app runtime cannot collide with an already-running default
+    daemon. The setting never applies to bounded mode, where the reviewed
+    capability manifest owns authorization.
+
+    It DOES apply to unrestricted mode. An approval bypass (``--yolo``,
+    ``-z``) is consent to skip prompts, not consent to read an existing
+    browser profile's live pages, cookies, and storage, so the host-side
+    grant floor enforces this key even when the private unrestricted daemon
+    would answer the launch.
+    """
+    return bool(_computer_use_cfg().get("grant_existing_profile", False))
+
 
 def _manifest_is_mode_independent(path: str) -> bool:
     """True when this manifest may accompany any permission mode: v1/v2 declare ``mode: bounded`` and abort
@@ -2613,6 +2644,7 @@ class CuaDriverBackend(ComputerUseBackend):
         """Invalidate every capability minted by the replaced transport."""
         self._clear_active_target()
 
+    # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
         contract = cua_driver_runtime_contract_status()
         if not contract.get("ready"):
@@ -3085,7 +3117,58 @@ class CuaDriverBackend(ComputerUseBackend):
         # Strict live schema with no session property: a standalone native focus op, not a session-scoped input action.
         return self._action("bring_to_front", args, inject_session=False)
 
-    def set_agent_cursor_enabled(self, enabled: bool, *, cursor_id: Optional[str] = None) -> ActionResult:
+    # ── Pointer + display introspection ─────────────────────────────
+
+    def move_cursor(self, x: int, y: int) -> ActionResult:
+        """Move the agent-cursor *overlay* to a screen point. This is a
+        visual hint — it does NOT move the real OS pointer (cua-driver
+        explicitly avoids stealing pointer focus). The overlay glides
+        smoothly to the target, so consumers use it before a click to
+        give a visible "where the agent is going" cue."""
+        return self._action("move_cursor", {"x": int(x), "y": int(y)})
+
+    def get_cursor_position(self) -> Tuple[int, int]:
+        """Return the *real* OS cursor position in screen points
+        (origin top-left)."""
+        out = self._session.call_tool(
+            "get_cursor_position", {"session": self._session_id}
+        )
+        sc = out.get("structuredContent") or {}
+        return int(sc.get("x", 0)), int(sc.get("y", 0))
+
+    def get_screen_size(self) -> Dict[str, Any]:
+        """Return the logical size of the main display in points plus
+        its backing scale factor. Shape:
+        ``{width, height, backing_scale_factor}``."""
+        out = self._session.call_tool(
+            "get_screen_size", {"session": self._session_id}
+        )
+        return out.get("structuredContent") or {}
+
+    def zoom(self, *, window_id: int, x: float, y: float, w: float, h: float,
+             factor: float = 1.0, format: str = "jpeg",
+             quality: int = 85) -> Dict[str, Any]:
+        """Return a JPEG / PNG of a sub-region of a window, optionally
+        scaled. cua-driver supports zoom-to-rect for callers that need
+        a higher-resolution view of a specific element."""
+        return self._session.call_tool("zoom", {
+            "window_id": int(window_id),
+            "x": float(x), "y": float(y), "w": float(w), "h": float(h),
+            "factor": float(factor),
+            "format": format, "quality": int(quality),
+            "session": self._session_id,
+        })
+
+    # ── Agent cursor (overlay) ──────────────────────────────────────
+    #
+    # Sessions (start_session/end_session, wired in start/stop) own the
+    # cursor. These knobs tune its appearance + behavior per-session.
+    # All accept an optional `cursor_id` to address a specific cursor
+    # when the run drives multiple (rare); the default is this run's
+    # session id.
+
+    def set_agent_cursor_enabled(self, enabled: bool, *,
+                                 cursor_id: Optional[str] = None) -> ActionResult:
         """Toggle the agent cursor overlay's visibility for this run."""
         return self._action("set_agent_cursor_enabled",
                             {"enabled": bool(enabled), **({"cursor_id": cursor_id} if cursor_id else {})})

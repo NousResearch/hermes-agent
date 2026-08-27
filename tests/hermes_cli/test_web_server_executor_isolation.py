@@ -12,8 +12,6 @@ import concurrent.futures
 import threading
 
 import pytest
-import hermes_cli.web_server_gateway as _web_server_gateway
-import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 
 def _occupy_default_executor(loop: asyncio.AbstractEventLoop):
@@ -110,7 +108,7 @@ def test_status_route_survives_default_executor_starvation(monkeypatch):
     from hermes_cli import web_server
 
     monkeypatch.setattr(
-        _web_server_gateway,
+        web_server,
         "_collect_profile_gateway_topology_cached",
         lambda: {
             "profiles": ["default"],
@@ -119,7 +117,7 @@ def test_status_route_survives_default_executor_starvation(monkeypatch):
             "profile_platforms": {},
         },
     )
-    monkeypatch.setattr(_web_server_lifecycle, "_resolve_restart_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(web_server, "_resolve_restart_drain_timeout", lambda: 30.0)
     monkeypatch.setattr(web_server, "get_install_id", lambda: None)
 
     response = asyncio.run(

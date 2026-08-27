@@ -657,12 +657,131 @@ class BaseEnvironment(ABC):
         return shlex.quote(path)
 
     def _wrap_command(self, command: str, cwd: str) -> str:
-        """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers."""
-        return _wrap_command_script(
-            command,
-            passthrough_names=self._snapshot_excluded_passthrough_names(),
-            snapshot_ready=self._snapshot_ready,
-            **self._snapshot_script_kwargs(cwd))
+        """Build the full bash script that sources snapshot, cd's, runs command,
+        re-dumps env vars, and emits CWD markers."""
+        escaped = command.replace("'", "'\\''")
+
+        # Quote the snapshot path (see init_session — LocalEnvironment
+        # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
+        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        # Use atomic file replacement for env snapshot updates (issue #38249).
+        # Assemble into a per-writer-unique temp file, then mv to atomically
+        # replace the snapshot so concurrent source() calls never read a
+        # truncated/half-written file.  ``mktemp`` is used instead of
+        # ``$BASHPID``/``$$`` because macOS bash 3.2 lacks ``$BASHPID`` (it
+        # expands empty, collapsing every writer onto one temp name) and ``$$``
+        # is shared by ``&``-launched subshells.  Template shell-quoted
+        # (Windows/spaces); the allocated path lives in a shell variable.
+        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp = '"$__hermes_snap_tmp"'
+
+        parts = []
+        passthrough_names = self._snapshot_excluded_passthrough_names()
+
+        # A shared snapshot may contain the previous profile's value. Save
+        # the current process environment before sourcing it, then restore the
+        # current profile's value (or unset the name) immediately afterwards.
+        # Values stay in environment memory and never enter the shell command
+        # string, so secrets are not exposed through process arguments/logs.
+        saved_names: list[tuple[str, str, str]] = []
+        for name in passthrough_names:
+            marker = f"_HERMES_RUNTIME_PASSTHROUGH_{name}"
+            present = f"{marker}_PRESENT"
+            value = f"{marker}_VALUE"
+            saved_names.append((name, present, value))
+            parts.append(f"{present}=${{{name}+x}}")
+            parts.append(f"{value}=${{{name}-}}")
+
+        # Source snapshot (env vars from previous commands).
+        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
+        # Homebrew bash builds) sourcing a file containing ``declare -x``
+        # can emit the declarations to stdout, leaking ~60 lines of env
+        # vars into every tool response (issue #15459).  Linux bash is
+        # silent here, but the redirect is harmless.
+        if self._snapshot_ready:
+            parts.append(
+                f"source {_quoted_snap} >/dev/null 2>&1 || true"
+            )
+
+        for name, present, value in saved_names:
+            parts.append(
+                f'if [ "${present}" = x ]; then export {name}="${value}"; '
+                f'else unset {name}; fi'
+            )
+            parts.append(f"unset {present} {value}")
+
+        # Harness attribution: every tool subprocess advertises that it runs
+        # under Hermes via the cross-agent ``AI_AGENT`` standard (read by e.g.
+        # huggingface_hub's agent detection) plus the Hermes-specific
+        # ``HERMES_AGENT`` marker.  The value MUST equal our id in the public
+        # agent-harness registry (``hermes-agent`` — see huggingface.js
+        # ``agent-harnesses.ts``); standard-var matching is exact, so any other
+        # value is reported as "unknown".  Setting it here (rather than only in
+        # the host process env) is what carries the marker into REMOTE backends
+        # (Docker/SSH/Modal/Daytona/Singularity/Vercel), whose exec env is not
+        # inherited from the Hermes process.  ``${VAR:-default}`` semantics:
+        # never clobber an outer harness value that arrived via the inherited
+        # process env (Hermes running inside another agent's terminal).
+        parts.append(
+            'export AI_AGENT="${AI_AGENT:-hermes-agent}" '
+            'HERMES_AGENT="${HERMES_AGENT:-true}"'
+        )
+
+        # Non-interactive pager defaults: git log/diff/branch and similar
+        # pager-happy tools hang a captured (non-TTY writing to a pipe is
+        # fine, but PTY mode IS a TTY) or PTY-backed command waiting for `q`.
+        # GIT_PAGER=cat neutralizes git specifically; PAGER=cat catches the
+        # long tail (man, systemctl, psql, ...). ${VAR:-default} semantics:
+        # a user who exported their own pager in the session keeps it.
+        parts.append(
+            'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"'
+        )
+
+        # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
+        # ``$HOME`` so suffixes with spaces remain a single shell word.
+        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
+        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
+
+        # Run the actual command
+        parts.append(f"eval '{escaped}'")
+        parts.append("__hermes_ec=$?")
+        # Restrict Hermes metadata files without changing the user's command
+        # umask. Snapshot files may contain env-carried secrets.
+        parts.append("umask 077")
+
+        # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Chain mv on the export succeeding so a failed/partial dump never
+        # replaces a good snapshot; drop the temp on failure so it isn't
+        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # NOTE: the temp path is allocated with mktemp into a shell variable
+        # first — the redirection inside _export_dump_excluding_session_vars is
+        # attached to a brace group so the variable expands in the same shell
+        # that later expands the ``mv`` operand, keeping both consistent.
+        if self._snapshot_ready:
+            parts.append(
+                f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
+                f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+            )
+
+        # Emit the CWD stdout marker; all backends (including local, since
+        # PR #63255) parse it from output — no temp-file write needed.
+        # Use a distinct line for the marker. The leading \n ensures
+        # the marker starts on its own line even if the command doesn't
+        # end with a newline (e.g. printf 'exact'). We'll strip this
+        # injected newline in _extract_cwd_from_output.
+        parts.append(
+            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\""
+        )
+        parts.append("exit $__hermes_ec")
+
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Stdin heredoc embedding (for SDK backends)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:

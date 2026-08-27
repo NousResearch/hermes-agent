@@ -31,8 +31,20 @@ class TestCloudProviderRuntimeFallback:
 
         provider = Mock()
         provider.create_session.side_effect = RuntimeError("401 Unauthorized")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: None)
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: provider)
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+        calls = []
+
+        def local_without_real_profile(task_id, allow_real_profile=True):
+            calls.append((task_id, allow_real_profile))
+            return {
+                "session_name": "local-fallback",
+                "bb_session_id": None,
+                "cdp_url": None,
+                "features": {"local": True},
+            }
+
+        monkeypatch.setattr(browser_tool, "_create_local_session", local_without_real_profile)
 
         session = bt_session._get_session_info("task-1")
 
@@ -41,6 +53,7 @@ class TestCloudProviderRuntimeFallback:
         assert session["fallback_provider"] == "Mock"
         assert session["features"]["local"] is True
         assert session["cdp_url"] is None
+        assert calls == [("task-1", False)]
 
 
     def test_no_provider_uses_local_directly(self, monkeypatch):

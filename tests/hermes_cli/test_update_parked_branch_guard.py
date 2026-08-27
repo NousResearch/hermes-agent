@@ -395,6 +395,50 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
+def test_update_preserves_local_commits_on_target_branch_when_configured(
+    repo_pair, monkeypatch, capsys
+):
+    """The configured in-place strategy also protects a customized main.
+
+    A same-name target branch can carry maintained local commits just like a
+    feature branch. Divergence must merge origin/main instead of resetting the
+    checkout and silently discarding those commits.
+    """
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "local-main.txt").write_text("maintained Windows patch\n")
+    _git(repo_pair, "add", "local-main.txt")
+    _git(repo_pair, "commit", "-qm", "maintained main patch")
+    _patch_update_flow(monkeypatch, repo_pair)
+
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "updating it in place" in out
+    assert "resetting to match remote" not in out
+    assert _git(repo_pair, "branch", "--show-current").stdout.strip() == "main"
+    assert (repo_pair / "b.txt").exists()
+    assert (repo_pair / "local-main.txt").read_text() == "maintained Windows patch\n"
+    assert "maintained main patch" in _git(repo_pair, "log", "--oneline").stdout
+
+
 def test_in_place_merge_completes_shallow_history_before_merging(tmp_path):
     """A shallow custom checkout must fetch its ancestor before a merge.
 

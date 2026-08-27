@@ -65,14 +65,21 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
 sessions_router = APIRouter()
 router = APIRouter()
 
-# Late-bound web_server helpers (resolved at call time; cycle-safe, monkeypatch-transparent).
-_cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
-
-# ---------------------------------------------------------------------------
-# Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
-# ---------------------------------------------------------------------------
+# Late-bound web_server helpers (resolved at call time; cycle-safe,
+# monkeypatch-transparent).
+_cron_profile_home = late("_cron_profile_home")
+_disable_unselected_skills = late("_disable_unselected_skills")
+_fallback_profile_dicts = late("_fallback_profile_dicts")
+_hub_action_name = late("_hub_action_name")
+_open_session_db_at_path = late("_open_session_db_at_path")
+_profile_setup_command = late("_profile_setup_command")
+_profile_to_dict = late("_profile_to_dict")
+_resolve_profile_dir = late("_resolve_profile_dir")
+_spawn_hermes_action = late("_spawn_hermes_action")
+run_in_threadpool = late("run_in_threadpool")
+_strip_session_list_rows = late("_strip_session_list_rows")
+_write_profile_mcp_servers = late("_write_profile_mcp_servers")
+_write_profile_model = late("_write_profile_model")
 
 
 def _profile_to_dict(info) -> Dict[str, Any]:
@@ -648,7 +655,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles = profiles_mod.list_profiles()
+        profiles = await run_in_threadpool(profiles_mod.list_profiles)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")

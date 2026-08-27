@@ -67,9 +67,12 @@ def _capture_output(fn: Callable[[], object]) -> str:
         except ConsoleCommandError:
             raise
         except RuntimeError as exc:
-            # Fail-closed config write guards raise RuntimeError; surface it as a console error
-            # instead of killing the REPL / websocket session.
-            message, code = str(exc), 1
+            # Fail-closed config write guards raise RuntimeError (e.g.
+            # require_readable_config_before_write refusing an unparseable
+            # config.yaml). Convert to a console error instead of letting it
+            # escape execute() and kill the REPL / websocket session.
+            message = str(exc)
+            code = 1
     text = stdout.getvalue() + stderr.getvalue()
     if code:
         raise ConsoleCommandError(

@@ -83,6 +83,24 @@ def _patch_gateway_discovery(isolated_update_runtime):
     pass
 
 
+@pytest.fixture(autouse=True)
+def _isolate_unrelated_node_installs(request, monkeypatch):
+    """Keep cmd_update flow tests from running a real npm install.
+
+    Node-specific classes exercise the production helper directly and retain
+    their own mocks. The remaining tests cover branch, migration, and routing
+    behavior, so a live install only adds host-dependent latency and mutation.
+    """
+    node_test_classes = {
+        "TestCmdUpdateNpmLockfileCache",
+        "TestNodeRuntimeNpmResolution",
+        "TestUpdateNodeDependencies",
+    }
+    if request.node.cls and request.node.cls.__name__ in node_test_classes:
+        return
+    monkeypatch.setattr("hermes_cli.update_cmd._update_node_dependencies", lambda: [])
+
+
 class TestCmdUpdateNpmLockfileCache:
     @staticmethod
     def _cache_file(hermes_root, project_root):

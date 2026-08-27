@@ -143,11 +143,15 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
         app.router.add_post(self._webhook_path, self._handle_notification)
-        # Plugin-registered native routes; wired before AppRunner.setup() freezes the router.
+
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(app)
-        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
-        self._runner = await bind_listener(self, app, self._host, self._port, self._webhook_path)
+
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self._host, self._port)
+        await site.start()
         self._mark_connected()
         if self._runner is not None:
             logger.info("[msgraph_webhook] Listening on %s:%d%s", self._host, self._port, self._webhook_path)

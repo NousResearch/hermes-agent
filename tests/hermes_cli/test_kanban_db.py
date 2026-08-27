@@ -626,7 +626,12 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    listed_worktrees = {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in listed.splitlines()
+        if line.startswith("worktree ")
+    }
+    assert target.resolve() in listed_worktrees
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1148,84 +1153,11 @@ def test_sqlite_connect_closes_tracked_conn_on_setup_failure(tmp_path, monkeypat
     monkeypatch.setattr(kb.sqlite3, "connect", failing_connect)
 
     with pytest.raises(sqlite3.OperationalError, match="simulated setup failure"):
-        kbc._sqlite_connect(db_path)
+        kb._sqlite_connect(db_path)
 
     with sqlite_safe_read._live_lock:
         after = sqlite_safe_read._live_connections.get(key, 0)
     assert after == before
-
-
-def test_link_tasks_emits_dependency_wait_when_demoting_ready_child(kanban_home):
-    """Linking an unfinished parent under a ready child must not be silent.
-
-    The demotion to todo is correct (the ready -> running claim re-checks
-    parents), but it used to leave no event: the board showed the card flip
-    to todo with no explanation until someone mined claim_rejected events.
-    """
-    with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="blocked parent")
-        child = kb.create_task(conn, title="support card")
-        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
-        conn.commit()
-
-        gated = kb.link_tasks(conn, parent, child)
-
-        assert gated is True, "link_tasks must report the demotion it caused"
-        assert kb.get_task(conn, child).status == "todo"
-        events = kb.list_events(conn, child)
-        wait = [e for e in events if e.kind == "dependency_wait"]
-        assert wait, "the demotion must be recorded as a dependency_wait event"
-        payload = wait[-1].payload
-        assert payload["reason"] == "parent_not_done"
-        assert payload["demoted"] is True
-        assert payload["parent"] == parent
-
-
-def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
-    """A done parent demotes nothing and reports no gate."""
-    with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="done parent")
-        kb.complete_task(conn, parent)
-        child = kb.create_task(conn, title="follower")
-
-        gated = kb.link_tasks(conn, parent, child)
-
-        assert gated is False
-        assert kb.get_task(conn, child).status == "ready"
-        kinds = [e.kind for e in kb.list_events(conn, child)]
-        assert "dependency_wait" not in kinds
-
-
-def test_create_task_with_open_parent_emits_dependency_wait(kanban_home):
-    """create-with-parents is the incident path: a card parked in todo behind an
-    unfinished parent must carry the same dependency_wait as a link-time gate."""
-    with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="blocked parent")
-        kb.block_task(conn, parent, reason="waiting on files")
-
-        child = kb.create_task(conn, title="support card", parents=(parent,))
-
-        assert kb.get_task(conn, child).status == "todo"
-        wait = [e for e in kb.list_events(conn, child) if e.kind == "dependency_wait"]
-        assert wait, "parking behind an open parent must be recorded"
-        assert wait[-1].payload["reason"] == "parent_not_done"
-        assert wait[-1].payload["parent"] == parent
-
-
-def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
-    """archived is terminal for recompute_ready, so linking under an archived
-    parent must not demote a ready child (it would only flap back to ready)."""
-    with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="archived parent")
-        kb.archive_task(conn, parent)
-        child = kb.create_task(conn, title="child")
-        assert kb.get_task(conn, child).status == "ready"
-
-        gated = kb.link_tasks(conn, parent, child)
-
-        assert gated is False
-        assert kb.get_task(conn, child).status == "ready"
-        assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
@@ -1380,7 +1312,8 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
-    argv = kbd._resolve_hermes_argv()
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: None)
+    argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
 

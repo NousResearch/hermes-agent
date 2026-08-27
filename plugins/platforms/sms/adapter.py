@@ -137,10 +137,14 @@ class SmsAdapter(BasePlatformAdapter):
         self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, "/webhooks/twilio")
         self._http_session = _new_session(trust_env=gateway_trust_env())
         self._running = True
-        if self._runner is not None:
-            logger.info(
-                "[sms] Twilio webhook server listening on %s:%d, from: %s",
-                self._webhook_host, self._webhook_port, redact_phone(self._from_number))
+
+        logger.info(
+            "[sms] Twilio webhook server listening on %s:%d, from: %s",
+            self._webhook_host,
+            self._webhook_port,
+            redact_phone(self._from_number),
+        )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
 

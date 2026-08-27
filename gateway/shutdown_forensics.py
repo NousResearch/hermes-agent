@@ -17,8 +17,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
-import contextlib
+from gateway.restart import (
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+    resolve_systemd_timeout_stop_sec,
+)
+
 
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {
     int(getattr(signal, _name)): _name
@@ -187,13 +190,25 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
 
 
 def check_systemd_timing_alignment(
-    drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+    drain_timeout: float,
+    cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
 ) -> Optional[Dict[str, Any]]:
-    """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
-    (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
-    budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the
-    journal). ``None`` when aligned OR undeterminable (not under systemd, no ``systemctl``);
-    otherwise a dict with ``timeout_stop_sec``/``drain_timeout``/``expected_min``/``mismatch``.
+    """At startup, sanity-check that systemd's TimeoutStopSec covers stop.
+
+    When the gateway is run under a stale systemd unit file (e.g. the user
+    upgraded hermes-agent but never re-ran ``hermes setup`` to regenerate
+    the unit), ``TimeoutStopSec`` can be smaller than the full stop budget
+    (``restart_drain_timeout`` vs ``cron_drain_timeout`` + cleanup reserve,
+    plus headroom).  Result: SIGTERM arrives, the drain starts, and systemd
+    SIGKILLs the cgroup mid-drain — looks like a phantom kill in the journal
+    because the journal only logs ``code=killed status=9``.
+
+    Returns ``None`` when the alignment is fine OR we can't determine it
+    (not running under systemd, ``systemctl`` unavailable, etc.).  Returns
+    a dict with ``timeout_stop_sec`` + ``drain_timeout`` + ``mismatch``
+    bool when we have data to report.
+
+    Best-effort.  Never raises.
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
@@ -234,8 +249,25 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
                 else:
                     timeout_us = parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
-                    return timeout_us
-    return None
+                    break
+        if timeout_us is not None:
+            break
+
+    if timeout_us is None:
+        return None
+
+    timeout_stop_sec = timeout_us / 1_000_000.0
+    expected = float(
+        resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout)
+    )
+    return {
+        "unit": unit_name,
+        "timeout_stop_sec": timeout_stop_sec,
+        "drain_timeout": drain_timeout,
+        "cron_drain_timeout": cron_drain_timeout,
+        "expected_min": expected,
+        "mismatch": timeout_stop_sec < expected,
+    }
 
 
 def parse_systemd_duration_to_us(raw: str) -> Optional[int]:

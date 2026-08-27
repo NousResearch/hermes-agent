@@ -95,13 +95,10 @@ The `database:` section controls how Hermes opens its SQLite state database
 ```yaml
 database:
   # Journal mode for state.db: wal (default) or delete.
-  # Use delete on filesystems where WAL is unsafe (network mounts). On
-  # virtiofs/9p bind mounts (Docker Desktop, Podman on macOS, OrbStack)
-  # Hermes detects the mount and creates fresh databases in delete mode
-  # automatically. Note: an existing on-disk WAL database is never
+  # Use delete on filesystems where WAL is unsafe (network mounts, some
+  # virtiofs setups). Note: an existing on-disk WAL database is never
   # live-downgraded — Hermes keeps WAL and logs an error telling you the
-  # configured delete did not apply (or that the WAL database sits on a
-  # cross-VM mount). To convert an existing database, stop
+  # configured delete did not apply. To convert an existing database, stop
   # every process using it and run a one-time offline
   # `PRAGMA journal_mode=DELETE` on the file.
   journal_mode: wal

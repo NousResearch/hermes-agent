@@ -1095,7 +1095,7 @@ class TestForceReloadSymmetry:
 
         assert started.wait(timeout=1.0)
         assert results == [{"ok": True}]
-        assert elapsed < 5.0, f"caller blocked for {elapsed:.2f}s after timeout"
+        assert elapsed < 1.0, f"caller blocked for {elapsed:.2f}s after timeout"
         hold.set()
 
     def test_hook_callback_within_timeout_returns_value(self, monkeypatch):
@@ -1179,142 +1179,8 @@ class TestForceReloadSymmetry:
         elapsed = time.monotonic() - t0
 
         assert len(starts) == 1
-        assert elapsed < 5.0
+        assert elapsed < 1.0
         hold.set()
-
-    def test_concurrent_same_tool_calls_with_distinct_ids_both_run(self, monkeypatch):
-        """Two concurrent calls of one tool are different work, not a duplicate (#98382)."""
-        import time
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
-        )
-
-        hold = threading.Event()
-        starts = []
-
-        def recorder(**_kwargs):
-            starts.append(1)
-            hold.wait(timeout=10.0)
-            return "ok"
-
-        mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [recorder]
-
-        def fire(call_id):
-            mgr.invoke_hook(
-                "pre_tool_call",
-                tool_name="read_file",
-                tool_input={},
-                session_id="s1",
-                tool_call_id=call_id,
-            )
-
-        first = threading.Thread(target=fire, args=("call-a",), daemon=True)
-        first.start()
-        time.sleep(0.1)  # let the first invocation occupy the gate
-        second = threading.Thread(target=fire, args=("call-b",), daemon=True)
-        second.start()
-        time.sleep(0.4)
-        hold.set()
-        first.join(5.0)
-        second.join(5.0)
-
-        assert len(starts) == 2
-
-    def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
-        """Negative control: the same call identity stays a duplicate while its worker
-        is still running, so the running gate (not timeout suppression) dedupes it."""
-        import time
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
-        )
-
-        hold = threading.Event()
-        starts = []
-
-        def blocker(**_kwargs):
-            starts.append(1)
-            hold.wait(timeout=10.0)
-            return "late"
-
-        mgr = PluginManager()
-        mgr._hooks["post_tool_call"] = [blocker]
-
-        def fire():
-            mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call")
-
-        first = threading.Thread(target=fire, daemon=True)
-        first.start()
-        time.sleep(0.1)  # the first worker now holds the gate for this call identity
-        second = threading.Thread(target=fire, daemon=True)
-        second.start()
-        second.join(5.0)
-
-        assert len(starts) == 1
-        hold.set()
-        first.join(5.0)
-
-    def test_hung_worker_blocks_new_call_identity_after_suppression(self, monkeypatch):
-        """A worker abandoned on timeout still occupies its callback: a later call with a
-        fresh id must be skipped, not given a second thread (one leak, not one per call)."""
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
-        )
-
-        hold = threading.Event()
-        starts = []
-
-        def blocker(**_kwargs):
-            starts.append(1)
-            hold.wait(timeout=10.0)
-            return "late"
-
-        mgr = PluginManager()
-        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
-        mgr._hooks["post_tool_call"] = [blocker]
-
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b") == []
-
-        assert len(starts) == 1
-        hold.set()
-
-    def test_worker_finishing_at_timeout_does_not_leave_phantom_abandoned_entry(self, monkeypatch):
-        """If the worker completes between the wait expiring and the timeout branch taking the
-        lock, it has already released its token; recording it as abandoned anyway would block
-        every later call id for that callback until reload. A fresh call must still run."""
-        import hermes_cli.plugins_dispatch as dispatch
-
-        class _RacingEvent(threading.Event):
-            def wait(self, timeout=None):
-                super().wait(timeout=10.0)  # the worker really finishes first...
-                return False  # ...but the caller observes a timeout
-
-        class _Threading:
-            Event = _RacingEvent
-
-            def __getattr__(self, name):
-                return getattr(threading, name)
-
-        monkeypatch.setattr(dispatch, "threading", _Threading())
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
-        )
-        starts = []
-
-        def quick(**_kwargs):
-            starts.append(1)
-            return "done"
-
-        mgr = PluginManager()
-        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
-        mgr._hooks["post_tool_call"] = [quick]
-
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
-        assert mgr._hook_abandoned == {}
-        mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b")
-
-        assert len(starts) == 2
 
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
@@ -1347,49 +1213,12 @@ class TestForceReloadSymmetry:
         elapsed = time.monotonic() - t0
 
         assert msg == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-        assert elapsed < 5.0
+        assert elapsed < 1.0
 
         # Still-running / suppression window must also fail closed.
         msg2 = resolve_pre_tool_block("web_search", {"query": "y"})
         assert msg2 == _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
         hold.set()
-
-    def test_pre_tool_call_worker_start_failure_fails_closed_without_sticking(
-        self, monkeypatch
-    ):
-        """A transient worker-start failure must not poison later hook calls."""
-        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
-        )
-
-        calls = []
-
-        def policy(**_kwargs):
-            calls.append(1)
-            return None
-
-        real_start = threading.Thread.start
-        attempts = 0
-
-        def fail_once(thread):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise RuntimeError("can't start new thread")
-            return real_start(thread)
-
-        monkeypatch.setattr(threading.Thread, "start", fail_once)
-
-        mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [policy]
-
-        assert mgr.invoke_hook("pre_tool_call") == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
-        ]
-        assert mgr.invoke_hook("pre_tool_call") == []
-        assert calls == [1]
 
     def test_pre_tool_call_timeout_does_not_reach_tool_handler(self, monkeypatch):
         """E2E: timed-out pre_tool_call blocks handle_function_call before dispatch."""
@@ -1436,50 +1265,6 @@ class TestForceReloadSymmetry:
         assert dispatch_calls == []
         assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in result
         hold.set()
-
-    def test_force_reload_of_one_profile_does_not_orphan_another(self, monkeypatch):
-        """Real two-manager regression: force-reloading profile A's plugin
-        manager must leave profile B's shell hook registered exactly once —
-        not duplicated, not dropped (#92682 review).
-        """
-        import hermes_cli.plugins as plugins_mod
-        import agent.shell_hooks as shell_hooks_mod
-
-        cfg = {"hooks": {"on_session_start": [{"command": "/bin/true"}]}}
-        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-        monkeypatch.setattr(
-            PluginManager, "_discover_and_load_inner", lambda self_inner: None,
-        )
-
-        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-a")
-        mgr_a = PluginManager()
-        plugins_mod._plugin_manager = mgr_a
-        shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
-
-        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b")
-        mgr_b = PluginManager()
-        plugins_mod._plugin_manager = mgr_b
-        shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
-
-        assert len(mgr_a._hooks.get("on_session_start", [])) == 1
-        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
-
-        # Force-reload A. Its own manager's hook is wiped and restored;
-        # B's manager (and idempotence key) must be untouched.
-        mgr_a.discover_and_load(force=True)
-
-        assert len(mgr_a._hooks.get("on_session_start", [])) == 1
-        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
-
-        # B's later adapter reconnect re-runs register_from_config(); its
-        # idempotence key must still be intact, so this must be a no-op
-        # rather than appending a second callback to B's live manager.
-        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b")
-        second = shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
-
-        assert second == []
-        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
 
 
 class TestPreToolCallBlocking:

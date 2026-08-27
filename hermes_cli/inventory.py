@@ -36,23 +36,36 @@ class ConfigContext:
 
 
 def load_picker_context() -> ConfigContext:
-    """Load the disk-config snapshot every consumer needs."""
+    """Load the disk-config snapshot every consumer needs.
+
+    Replaces the inline 17-LOC config-slice that ``web_server.py`` and
+    ``tui_gateway/server.py`` (×2 sites) used to do.
+    """
     from hermes_cli.config import (
-        coerce_provider_id, get_compatible_custom_providers, load_config, stringify_provider_map,
+        coerce_provider_id,
+        get_compatible_custom_providers,
+        load_config,
+        stringify_provider_map,
     )
+
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        # PyYAML parses unquoted scalars as int (`provider: 2070`); keep strings so picker/options
-        # paths never call `.strip()` on an int.
+        # PyYAML parses unquoted scalars as int (`provider: 2070`). Keep these
+        # as strings so picker/options paths never call `.strip()` on an int.
         current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
         current_provider = coerce_provider_id(model_cfg.get("provider", ""))
         current_base_url = str(model_cfg.get("base_url", "") or "")
-    else:  # config.model can be a bare string in older configs
-        current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
+    else:
+        # config.model can be a bare string in older configs.
+        current_model = str(model_cfg) if model_cfg else ""
+        current_provider = ""
+        current_base_url = ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
-        current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],

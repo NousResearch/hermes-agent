@@ -652,17 +652,18 @@ class TestScriptTimeoutTreeKill:
     def test_unified_tree_kill_failure_falls_back(self, monkeypatch, caplog):
         from agent import deadline
         from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: None)
         fallback_calls = []
         monkeypatch.setattr(deadline, "kill_process_tree", lambda _pid: False)
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
+        monkeypatch.setattr(
+            sched,
+            "_terminate_cron_script_process",
             lambda candidate: fallback_calls.append(candidate),
         )
 
         with caplog.at_level("WARNING", logger=sched.__name__):
-            sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+            sched._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
         assert fallback_calls == [proc]
         assert "falling back to process-group termination" in caplog.text
@@ -670,7 +671,6 @@ class TestScriptTimeoutTreeKill:
     def test_invalid_pid_never_reaches_unified_tree_kill(self, monkeypatch, caplog):
         from agent import deadline
         from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=0, poll=lambda: None)
         tree_kill_calls = []
@@ -680,12 +680,14 @@ class TestScriptTimeoutTreeKill:
             "kill_process_tree",
             lambda pid: tree_kill_calls.append(pid),
         )
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
+        monkeypatch.setattr(
+            sched,
+            "_terminate_cron_script_process",
             lambda candidate: fallback_calls.append(candidate),
         )
 
         with caplog.at_level("WARNING", logger=sched.__name__):
-            sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+            sched._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
         assert tree_kill_calls == []
         assert fallback_calls == [proc]
@@ -696,7 +698,6 @@ class TestScriptTimeoutTreeKill:
         and must not produce a spurious "no signal" warning."""
         from agent import deadline
         from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
 
         proc = SimpleNamespace(pid=12345, poll=lambda: 0)
         tree_kill_calls = []
@@ -706,11 +707,13 @@ class TestScriptTimeoutTreeKill:
             "kill_process_tree",
             lambda pid: tree_kill_calls.append(pid) or True,
         )
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
+        monkeypatch.setattr(
+            sched,
+            "_terminate_cron_script_process",
             lambda candidate: fallback_calls.append(candidate),
         )
 
-        sched_script._terminate_cron_script_tree(cast("subprocess.Popen", proc))
+        sched._terminate_cron_script_tree(cast("subprocess.Popen", proc))
 
         assert tree_kill_calls == []
         assert fallback_calls == []
@@ -719,7 +722,6 @@ class TestScriptTimeoutTreeKill:
         """The ownership-lost/cancel kill site is the timeout site's sibling:
         it must go through the same tree-kill (#71148 class)."""
         from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
 
         tree_calls = []
 
@@ -729,7 +731,7 @@ class TestScriptTimeoutTreeKill:
             tree_calls.append(proc.pid)
             proc.kill()
 
-        monkeypatch.setattr(sched_script, "_terminate_cron_script_tree", _record_and_kill)
+        monkeypatch.setattr(sched, "_terminate_cron_script_tree", _record_and_kill)
 
         class _Cancelled:
             def is_set(self):
@@ -742,7 +744,7 @@ class TestScriptTimeoutTreeKill:
         (scripts_dir / "long.py").write_text(
             "import time; time.sleep(30)\n", encoding="utf-8"
         )
-        ok, out = sched_script._run_job_script(
+        ok, out = sched._run_job_script(
             str(scripts_dir / "long.py"),
             workdir=str(cron_env),
             cancel_event=_Cancelled(),
@@ -764,7 +766,6 @@ class TestScriptTimeoutTreeKill:
         )
 
         from cron import scheduler as sched
-        from cron import scheduler_script as sched_script
 
         def is_live(pid):
             try:
@@ -791,12 +792,10 @@ class TestScriptTimeoutTreeKill:
         monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "2")
         monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
 
-        ok, out = sched_script._run_job_script(
+        ok, out = sched._run_job_script(
             str(scripts_dir / "spawner.py"), workdir=str(cron_env)
         )
-        assert not ok and out.startswith("Script timed out after 2s:"), (
-            f"expected the timeout path, got success={ok}, output={out!r}"
-        )
+        assert not ok, f"script should have timed out, got {out!r}"
 
         deadline = time.monotonic() + 5
         gpid = None

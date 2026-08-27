@@ -104,7 +104,7 @@ function load(turnScript = () => '(pass)') {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__ga = { sendToGroupChat, recordGroupActivity, currentGroupActivity, groupActivityLabel, updateGroupChat, $groupChats, $groupActivity, GROUP_ACTIVITY_LIMIT };\n'
+      '\nglobalThis.__ga = { sendToGroupChat, recordGroupActivity, currentGroupActivity, groupActivityLabel, updateGroupChat, $groupChats, $groupActivity, $botAttention, GROUP_ACTIVITY_LIMIT };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -162,6 +162,40 @@ test('a failed member turn records failed instead of a phantom reply', async () 
 
   const events = feed(gc, 'Flaky')
   assert.equal(events.some(e => e.kind === 'failed' && e.member === 'builder'), true)
+})
+
+test('a failed member turn preserves and prefers its typed reason', async () => {
+  const gc = load(profile => {
+    if (profile === 'builder') {
+      const error = new Error('generic gateway failure')
+      error.data = { reason: 'provider_auth_or_access' }
+      throw error
+    }
+    return '(pass)'
+  })
+
+  gc.sendToGroupChat('Typed failure', MEMBERS, 'anyone around?')
+  await drain(gc, 'Typed failure')
+
+  const failed = feed(gc, 'Typed failure').find(e => e.kind === 'failed' && e.member === 'builder')
+  assert.equal(failed.reason, 'provider_auth_or_access')
+  assert.equal(Object.values(gc.$botAttention.get())[0]?.reason, 'provider_auth_or_access')
+})
+
+test('an untyped failed member turn keeps the message-classification fallback', async () => {
+  const gc = load(profile => {
+    if (profile === 'builder') {
+      throw new Error('No LLM provider configured')
+    }
+    return '(pass)'
+  })
+
+  gc.sendToGroupChat('Untyped failure', MEMBERS, 'anyone around?')
+  await drain(gc, 'Untyped failure')
+
+  const failed = feed(gc, 'Untyped failure').find(e => e.kind === 'failed' && e.member === 'builder')
+  assert.equal(failed.reason, undefined)
+  assert.equal(Object.values(gc.$botAttention.get())[0]?.reason, 'missing_config')
 })
 
 test('a newer send interrupts the previous run and records cancelled in the CURRENT epoch', async () => {

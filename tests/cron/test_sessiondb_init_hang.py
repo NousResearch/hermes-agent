@@ -412,10 +412,10 @@ class TestSessionDbInitAfterEarlyReturns:
         }
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire") as mock_db_cls, \
+             patch("hermes_state.SessionDB") as mock_db_cls, \
              patch(
                  "cron.scheduler._run_job_script_with_claim_heartbeat",
                  return_value=(True, '{"wakeAgent": false}'),

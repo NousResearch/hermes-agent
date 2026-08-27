@@ -506,35 +506,6 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     failure_streak INTEGER NOT NULL DEFAULT 0
 );
 
--- Monotonic conversation generation per routing peer (#96811).
---
--- A host-declared conversation key (X-Hermes-Session-Key / build_session_key)
--- is per-CHAT and outlives any single conversation on it, so the prompt-cache
--- affinity scope derived from it must be qualified by which conversation is
--- currently live. Deriving that from the session rows themselves
--- (COUNT/MAX over _RESET_END_REASONS boundaries) cannot prove non-reuse:
--- delete_session() and bulk pruning remove ended rows, so an aggregate can
--- return a pair it already emitted and hand a new conversation a retired
--- affinity identity.
---
--- This counter lives outside prunable session history and only ever
--- increments, once per boundary actually written, so a generation can never
--- be reused for a peer even if every session row behind it is deleted.
---
--- These rows are deliberately NEVER garbage-collected, including when every
--- session row for the peer is gone. Collecting one resets that peer to "no
--- generation", so its next boundary writes generation = 1 again and re-issues
--- a gwk_ scope a retired conversation already used — exactly the ABA this
--- table exists to close. Do not add it to delete_session()'s cascade or to any
--- prune sweep. One (TEXT, TEXT, INTEGER) row per routing peer is the intended,
--- bounded cost.
-CREATE TABLE IF NOT EXISTS conversation_generations (
-    source TEXT NOT NULL,
-    session_key TEXT NOT NULL,
-    generation INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (source, session_key)
-);
-
 -- Per-backend liveness heartbeat (#94895). Each serve / tui_gateway process
 -- registers a row at startup and refreshes ``last_heartbeat`` periodically.
 -- The startup orphan sweep (sessions.startup_orphan_reap) consults this

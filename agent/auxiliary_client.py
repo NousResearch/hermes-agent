@@ -5393,14 +5393,277 @@ def resolve_provider_client(
         # pre-filling it sends the image to a model that cannot accept one and the Portal 404s. Leave
         # ``model`` unset and let the Portal slot through; only an explicit caller model may override it.
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
-    req = _ResolveRequest(
-        provider, original_provider, model, async_mode, raw_codex,
-        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
-    )
-    branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
-    if branch is not None:
-        return branch(req)
-    # Named custom providers; an ImportError anywhere in the arm falls through to the built-ins.
+
+    def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
+        """Decide if a plain OpenAI client should be wrapped for Responses API.
+
+        Returns True when api_mode is explicitly "codex_responses", or when
+        auto-detection (api.openai.com + codex-family model) suggests it.
+        Already-wrapped clients (CodexAuxiliaryClient) are skipped.
+        """
+        if isinstance(client_obj, CodexAuxiliaryClient):
+            return False
+        if raw_codex:
+            return False
+        if provider == "actual":
+            return True
+        if api_mode == "codex_responses":
+            return True
+        # Auto-detect: api.openai.com + codex model name pattern
+        if api_mode and api_mode != "codex_responses":
+            return False  # explicit non-codex mode
+        if base_url_hostname(base_url_str) == "api.openai.com":
+            model_lower = (model_str or "").lower()
+            if "codex" in model_lower:
+                return True
+        return False
+
+    def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = "",
+                        api_key_str: str = ""):
+        """Wrap a plain OpenAI client in the correct transport adapter.
+
+        Handles two cases:
+        - ``CodexAuxiliaryClient`` when the endpoint needs the Responses API
+          (explicit ``api_mode=codex_responses`` or api.openai.com + codex
+          model name).
+        - ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic
+          Messages (explicit ``api_mode=anthropic_messages``, any ``/anthropic``
+          suffix, ``api.kimi.com/coding``, or ``api.anthropic.com``).
+
+        Clients that are already specialized wrappers pass through unchanged.
+        """
+        if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
+            logger.debug(
+                "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
+                "(api_mode=%s, model=%s, base_url=%s)",
+                api_mode or "auto-detected", final_model_str,
+                base_url_str[:60] if base_url_str else "")
+            return CodexAuxiliaryClient(client_obj, final_model_str)
+        # Anthropic-wire endpoints: rewrap plain OpenAI clients so
+        # chat.completions.create() is translated to /v1/messages.
+        return _maybe_wrap_anthropic(
+            client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+        )
+
+    # ── Auto: try all providers in priority order ────────────────────
+    if provider == "auto":
+        client, resolved, effective_provider = _resolve_auto_route(
+            main_runtime=main_runtime,
+            task=task,
+        )
+        if client is None:
+            return None, None
+        # When auto-detection lands on a non-OpenRouter provider (e.g. a
+        # local server), an OpenRouter-formatted model override like
+        # "google/gemini-3-flash-preview" won't work.  Drop it and use
+        # the provider's own default model instead.
+        if model and "/" in model and resolved and "/" not in resolved:
+            logger.debug(
+                "Dropping OpenRouter-format model %r for non-OpenRouter "
+                "auxiliary provider (using %r instead)", model, resolved)
+            model = None
+        final_model = model or resolved
+        routed_client, routed_model = (
+            _to_async_client(client, final_model, is_vision=is_vision)
+            if async_mode else (client, final_model)
+        )
+        _tag_effective_provider(routed_client, effective_provider)
+        return routed_client, routed_model
+
+    # ── OpenRouter ───────────────────────────────────────────
+    if provider == "openrouter":
+        client, default = _try_openrouter(
+            explicit_api_key=explicit_api_key,
+            model=model,
+        )
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: openrouter requested but %s",
+                _describe_openrouter_unavailable(model=model),
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Nous Portal (OAuth) ──────────────────────────────────────────
+    if provider == "nous":
+        # Detect vision tasks: caller flag (strict vision backend), explicit
+        # model override from _PROVIDER_VISION_MODELS, or a known vision id.
+        _is_vision = (
+            is_vision
+            or model in _PROVIDER_VISION_MODELS.values()
+            or (model or "").strip().lower() == "mimo-v2-omni"
+        )
+        client, default = _try_nous(vision=_is_vision)
+        if client is None:
+            logger.warning("resolve_provider_client: nous requested "
+                           "but Nous Portal not configured (run: hermes auth)")
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        # Dual-wire: anthropic/* → /v1/messages, everything else stays on
+        # /chat/completions. Derive from the catalog id (not a stale
+        # api_mode=chat_completions) so aux matches the main agent.
+        from hermes_cli.providers import nous_api_mode
+
+        portal_mode = nous_api_mode(final_model)
+        api_key_str = str(getattr(client, "api_key", "") or "")
+        base_url_str = str(getattr(client, "base_url", "") or "")
+        client = _maybe_wrap_anthropic(
+            client, final_model, api_key_str, base_url_str, portal_mode,
+        )
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
+    if provider == "openai-codex":
+        if not model:
+            logger.warning(
+                "resolve_provider_client: openai-codex requested without a "
+                "model; pass model explicitly (e.g. model.model in config.yaml "
+                "or auxiliary.<task>.model for per-task aux routing)."
+            )
+            return None, None
+        if raw_codex:
+            # Return the raw OpenAI client for callers that need direct
+            # access to responses.stream() (e.g., the main agent loop).
+            codex_token = _read_codex_access_token()
+            if not codex_token:
+                logger.warning("resolve_provider_client: openai-codex requested "
+                               "but no Codex OAuth token found (run: hermes model)")
+                return None, None
+            final_model = _normalize_resolved_model(model, provider)
+            raw_client = _create_openai_client(
+                api_key=codex_token,
+                base_url=_CODEX_AUX_BASE_URL,
+                default_headers=_codex_cloudflare_headers(codex_token),
+            )
+            return (raw_client, final_model)
+        # Standard path: wrap in CodexAuxiliaryClient adapter
+        client, default = _build_codex_client(model)
+        if client is None:
+            logger.warning("resolve_provider_client: openai-codex requested "
+                           "but no Codex OAuth token found (run: hermes model)")
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── xAI Grok OAuth (device code → Responses API) ───────────────
+    # Without this branch, an xai-oauth main provider falls through to the
+    # generic ``oauth_external`` arm below and returns ``(None, None)``,
+    # silently re-routing every auxiliary task (compression, web extract,
+    # session search, curator, etc.) to whatever Step-2 fallback the user
+    # has configured.  Users on xAI Grok OAuth would then see surprise
+    # OpenRouter / Nous bills for side tasks they thought were running on
+    # their xAI subscription.
+    if provider == "xai-oauth":
+        client, default = _build_xai_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: xai-oauth requested but no xAI "
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
+    if provider == "custom":
+        custom_base = ""
+        custom_key = ""
+        # Base passed to _wrap_if_needed for the Anthropic-wrap decision.  It
+        # normally equals custom_base, but anthropic_messages talks to the
+        # /anthropic surface directly, so it must keep the raw /anthropic base
+        # while the plain OpenAI client (created from custom_base below, and the
+        # OpenAI-wire fallback taken when the anthropic SDK is unavailable) still
+        # uses the /v1-rewritten base so it never lands on
+        # /anthropic/chat/completions.  Empty means "use custom_base". See #16254.
+        wrap_base = ""
+        if explicit_base_url:
+            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            if api_mode == "anthropic_messages":
+                wrap_base = (explicit_base_url or "").strip().rstrip("/")
+            custom_key = (
+                (explicit_api_key or "").strip()
+                or _scoped_key_env("OPENAI_API_KEY")
+                or _read_main_api_key_if_same_host(custom_base)
+                or "no-key-required"  # local servers don't need auth
+            )
+            if not custom_base:
+                logger.warning(
+                    "resolve_provider_client: explicit custom endpoint requested "
+                    "but base_url is empty"
+                )
+                return None, None
+        elif main_runtime:
+            # When main_runtime carries a concrete base_url + api_key for a
+            # named custom provider (custom:<name>), use it directly instead
+            # of re-resolving from the bare "custom" provider name.
+            # Re-resolution loses the provider name and falls back to
+            # OpenRouter or a wrong API-key provider — the main agent already
+            # solved this, we just need to reuse its answer. (#45472)
+            _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
+            _main_key = str(main_runtime.get("api_key") or "").strip()
+            if _main_base and _main_key:
+                custom_base = _main_base
+                custom_key = _main_key
+        if custom_base and custom_key:
+            final_model = _normalize_resolved_model(
+                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
+                provider,
+            )
+            extra = {}
+            _clean_base, _dq = _extract_url_query_params(custom_base)
+            if _dq:
+                extra["default_query"] = _dq
+            if base_url_host_matches(custom_base, "api.kimi.com"):
+                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            elif base_url_host_matches(custom_base, "githubcopilot.com"):
+                from hermes_cli.copilot_auth import copilot_request_headers
+                extra["default_headers"] = copilot_request_headers(
+                    is_agent_turn=True, is_vision=is_vision
+                )
+            elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(custom_base)
+            else:
+                # Fall back to profile.default_headers for providers that
+                # declare client-level attribution headers on their profile.
+                try:
+                    from providers import get_provider_profile as _gpf_custom
+                    _ph_custom = _gpf_custom(provider)
+                    if _ph_custom and _ph_custom.default_headers:
+                        extra["default_headers"] = dict(_ph_custom.default_headers)
+                except Exception:
+                    pass
+            _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            if _merged_custom:
+                extra["default_headers"] = _merged_custom
+            client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
+            client = _wrap_if_needed(client, final_model, wrap_base or custom_base, custom_key)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+        # Try custom first, then API-key providers (Codex excluded here:
+        # falling through to Codex with no model is a stale-constant trap).
+        for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):
+            client, default = try_fn()
+            if client is not None:
+                final_model = _normalize_resolved_model(model or default, provider)
+                _cbase = str(getattr(client, "base_url", "") or "")
+                # ``client.api_key`` may be a callable (Azure Foundry Entra
+                # bearer provider). Pass empty string for the wrapper-detection
+                # path — wrapping decisions are based on base_url + api_mode.
+                _raw_ckey = getattr(client, "api_key", "")
+                _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
+                client = _wrap_if_needed(client, final_model, _cbase, _ckey)
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+        logger.warning("resolve_provider_client: custom/main requested "
+                       "but no endpoint credentials found")
+        return None, None
+
+    # ── Named custom providers (config.yaml providers dict / custom_providers list) ───
     try:
         result = _resolve_named_custom_branch(req)
     except ImportError:

@@ -341,10 +341,66 @@ def get_read_block_error(path: str) -> Optional[str]:
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in _CREDENTIAL_FILE_NAMES):
-        reason = (
-            "is a Hermes credential store and cannot be read directly. Provider tools "
-            "consume these credentials through internal channels." + _DID_SUFFIX
+
+    # browser-profile/: real-profile browsing snapshot (browser.use_real_profile).
+    # A copy of the user's Cookies / Login Data / Web Data lives here — the same
+    # credential class as auth.json, so it gets the same directory-prefix read
+    # deny. Prefix (not a finite filename list) so future Chromium files are
+    # covered too.
+    for hd in hermes_dirs:
+        try:
+            browser_profile = (hd / "browser-profile").resolve()
+        except Exception:
+            continue
+        if resolved == browser_profile:
+            return (
+                f"Access denied: {path} is the Hermes real-profile browser "
+                "snapshot directory (copied cookies/logins) and cannot be read "
+                "directly. (Defense-in-depth — not a security boundary; the "
+                "terminal tool can still bypass.)"
+            )
+        try:
+            resolved.relative_to(browser_profile)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is inside the Hermes real-profile browser "
+            "snapshot (copied cookies/logins) and cannot be read directly. "
+            "(Defense-in-depth — not a security boundary; the terminal tool "
+            "can still bypass.)"
+        )
+
+    # Profile mode keeps sibling homes at <root>/profiles/<name>. The active
+    # profile and root checks above do not cover a different sibling, so block
+    # that structural path without relying on directory enumeration.
+    try:
+        profiles_root = (_hermes_root_path() / "profiles").resolve()
+        profile_relative = resolved.relative_to(profiles_root)
+    except (OSError, ValueError):
+        profile_relative = None
+    if (
+        profile_relative is not None
+        and len(profile_relative.parts) >= 2
+        and profile_relative.parts[1].lower() == "browser-profile"
+    ):
+        return (
+            f"Access denied: {path} is inside a Hermes profile's real-profile "
+            "browser snapshot (copied cookies/logins) and cannot be read "
+            "directly. (Defense-in-depth — not a security boundary; the "
+            "terminal tool can still bypass.)"
+        )
+
+    # Block common secret-bearing project-local .env files anywhere on disk.
+    # The agent helping a user with their project rarely needs to read raw
+    # .env contents — .env.example is the documented-shape substitute. The
+    # terminal tool can still ``cat .env``; this is defense-in-depth, not a
+    # boundary (see module docstring).
+    if resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
+        return (
+            f"Access denied: {path} is a secret-bearing environment file "
+            "and cannot be read to prevent credential leakage. "
+            "If you need to check the file structure, read .env.example instead. "
+            "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
         )
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:

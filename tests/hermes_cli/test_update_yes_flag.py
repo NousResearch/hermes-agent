@@ -34,6 +34,9 @@ def _no_live_hermes_processes(monkeypatch):
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
     monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._update_node_dependencies", lambda: []
+    )
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="1", dirty=False):

@@ -84,13 +84,17 @@ def _serve_skill_file(
         listing = {} if not list_available else {
             "available_files": _available_skill_files(skill_root),
             "hint": "Use one of the available file paths listed above"}
-        return _fail(f"File '{file_path}' not found in skill '{label}'.", **listing)
+        # skill_dir: identifies the serving skill for the manual-invocation gate
+        # (_manual_only_refusal); a miss still SERVES the directory listing.
+        return _fail(f"File '{file_path}' not found in skill '{label}'.",
+                     skill_dir=str(skill_root), **listing)
     try:
         content = _read_skill_text(target)
     except UnicodeDecodeError:
         return _json({
             "success": True, "name": label, "file": file_path, "is_binary": True,
-            "content": f"[Binary file: {target.name}, size: {target.stat().st_size} bytes]"})
+            "content": f"[Binary file: {target.name}, size: {target.stat().st_size} bytes]",
+            "skill_dir": str(skill_root)})
     except Exception as exc:
         if not read_error_prefix:
             raise
@@ -99,7 +103,11 @@ def _serve_skill_file(
         _mark_background_review_read(target)
     return _json({  # _source_path: internal, feeds the repeat-view dedup fingerprint
         "success": True, "name": label, "file": file_path, "content": content,
-        "file_type": target.suffix, "_source_path": str(target)})
+        "file_type": target.suffix, "_source_path": str(target),
+        # Internal: which skill served this, for the manual-invocation gate.
+        # Carried explicitly rather than derived from _source_path — see
+        # _manual_only_refusal.
+        "skill_dir": str(skill_root)})
 
 
 def _mark_background_review_read(path: Path) -> None:

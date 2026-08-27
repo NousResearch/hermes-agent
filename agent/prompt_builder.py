@@ -24,7 +24,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
-    skill_matches_environment_list, skill_matches_platform, skill_matches_platform_list,
+    skill_matches_environment_list, skill_is_manual_only, skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write
@@ -1158,7 +1158,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         # auto-match it. Command wrappers mirrored from the hub carry this flag
         # precisely because they must cost zero context. Explicit loads bypass
         # it, exactly like the environment gate above.
-        if frontmatter.get("disable-model-invocation") is True:
+        if skill_is_manual_only(frontmatter):
             return False, frontmatter, ""
 
         return True, frontmatter, extract_skill_description(frontmatter)

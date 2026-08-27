@@ -217,6 +217,35 @@ def skill_matches_environment_list(environments: Any) -> bool:
     return False
 
 
+# Values a human plausibly writes meaning "yes". YAML already gives us a real bool
+# for bare `true`, but a quoted `"true"` — or `yes`, or `1` — arrives as a string,
+# and a strict `is True` check silently treats those as "not set". For a gate whose
+# job is to HIDE a skill, that is the fail-open direction: the author asked for the
+# skill to be withheld from the model and it gets offered anyway, with nothing said.
+# Mirrors the tolerance `_coerce_capability_bool` already applies to config booleans.
+_MANUAL_ONLY_TRUE_TOKENS = frozenset({"true", "yes", "on", "1"})
+
+
+def skill_is_manual_only(frontmatter: Dict[str, Any]) -> bool:
+    """True when the skill declares ``disable-model-invocation``.
+
+    The skill stays registered and the user can still invoke it by name; only the
+    model-facing surfaces honour this. Anything unrecognised reads as *not* set,
+    because the flag is opt-in — but recognised spellings are accepted generously,
+    since the cost of over-accepting is a skill the model does not auto-load, while
+    the cost of under-accepting is a skill the author meant to withhold being offered.
+    """
+    raw = frontmatter.get("disable-model-invocation")
+    if isinstance(raw, bool):
+        return raw
+    # bool is a subclass of int, so this only sees real integers.
+    if isinstance(raw, int):
+        return raw == 1
+    if isinstance(raw, str):
+        return raw.strip().lower() in _MANUAL_ONLY_TRUE_TOKENS
+    return False
+
+
 def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     """True when ANY declared ``environments:`` tag is active (absent = all;
     unknown tags fail open). Offer-time filter only."""

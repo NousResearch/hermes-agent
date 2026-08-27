@@ -44,7 +44,7 @@ import {
   probeStartMarker,
   processStartMarker
 } from './backend-claim'
-import { dashboardFallbackArgs, sourceDeclaresServe, sourceDeclaresWsOnly } from './backend-command'
+import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
@@ -2354,51 +2354,11 @@ function backendSupportsServe(backend) {
   return supported
 }
 
-// Same pattern as backendSupportsServe, but for the `--ws-only` flag.
-// A runtime that knows `serve` but not `--ws-only` would reject the flag
-// as an unrecognized argument, so we gate it on source inspection.
-const _wsOnlySupportCache = new Map()
-
-function backendSupportsWsOnly(backend) {
-  if (!backend || !backend.root) {
-    // No source to check — assume supported (the flag is silently ignored
-    // by argparse on older runtimes only when it's not registered; a runtime
-    // without a source root is likely a dev checkout that has it).
-    return true
-  }
-
-  const key = `${backend.command}::${backend.root}`
-
-  if (_wsOnlySupportCache.has(key)) {
-    return _wsOnlySupportCache.get(key)
-  }
-
-  let supported = true
-
-  try {
-    const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
-    supported = sourceDeclaresWsOnly(src)
-  } catch {
-    supported = true // source unreadable — assume supported (the current runtime)
-  }
-
-  _wsOnlySupportCache.set(key, supported)
-  return supported
-}
-
 // Given a resolved backend whose args target `serve`, return the args the
 // runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes. Also strips
-// `--ws-only` when the runtime knows `serve` but not the flag.
+// rewritten to `dashboard --no-open` for older runtimes.
 function getBackendArgsForRuntime(backend) {
-  if (!backendSupportsServe(backend)) {
-    return dashboardFallbackArgs(backend.args)
-  }
-  // `serve` is supported — check whether `--ws-only` is too.
-  if (backend.args.includes('--ws-only') && !backendSupportsWsOnly(backend)) {
-    return backend.args.filter(a => a !== '--ws-only')
-  }
-  return backend.args
+  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -12023,9 +11983,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     }
   }
 
-  let token = crypto.randomBytes(32).toString('base64url')
-  // The slim --ws-only server may override this with its own announcement;
-  // `announcedToken` (from the ready sentinel) takes precedence when present.
+  const token = crypto.randomBytes(32).toString('base64url')
 
   // Same update mutual exclusion as the primary window's waitForLocalStart
   // (#73822): pool backends spawn from the same venv, so an ungated respawn
@@ -12052,14 +12010,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  // `--ws-only` is OPT-IN (HERMES_DESKTOP_WS_ONLY=1): the slim server has no
-  // HTTP routes, and the desktop's `hermes:api` REST plane still requires
-  // http — enabling it by default breaks every REST consumer (review F1 on
-  // PR #94245). Flips to default once the REST plane migrates (#94484 ph.3).
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
-  if (process.env.HERMES_DESKTOP_WS_ONLY === '1') {
-    backendArgs.push('--ws-only')
-  }
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
@@ -12152,15 +12103,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   })
 
   // Discover the ephemeral port the child bound to
-  const announced = await Promise.race([
+  const port = await Promise.race([
     waitForDashboardPortAnnouncement(child, { describeOutputTail: () => outputTail.describe(), readyFile }),
     startFailed
-  ]) as { port: number; token?: string }
-
-  const port = announced.port
-  // The slim --ws-only server emits its token on the ready line; the
-  // dashboard path resolves it separately via adoptServedDashboardToken.
-  const announcedToken = announced.token
+  ])
 
   if (readyFile) {
     fs.unlink(readyFile, () => {})
@@ -12168,48 +12114,28 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   entry.port = port
 
-  // The --ws-only server has no HTTP routes — skip waitForHermes when we
-  // have a direct token from the announcement. The dashboard path still
-  // needs HTTP to adopt the served token.
-  if (announcedToken) {
-    token = announcedToken
-  } else {
-    const baseUrl = `http://127.0.0.1:${port}`
-    await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  }
+  const baseUrl = `http://127.0.0.1:${port}`
+  await Promise.race([waitForHermes(baseUrl, token), startFailed])
   ready = true
 
-  let authToken
-  if (announcedToken) {
-    authToken = announcedToken
-  } else {
-    authToken = await adoptServedDashboardToken(`http://127.0.0.1:${port}`, token, {
-      childAlive: () => child.exitCode === null && !child.killed,
-      label: `Hermes backend for profile "${profile}"`,
-      rememberLog
-    })
-  }
+  const authToken = await adoptServedDashboardToken(baseUrl, token, {
+    childAlive: () => child.exitCode === null && !child.killed,
+    label: `Hermes backend for profile "${profile}"`,
+    rememberLog
+  })
 
   entry.token = authToken
 
   // Verify the WebSocket session token before declaring backend ready.
-  // The slim server listens on `/` (bare WS); the dashboard listens on
-  // `/api/ws`. Route accordingly.
-  const wsPath = announcedToken ? '/' : '/api/ws'
-  const wsUrl = `ws://127.0.0.1:${port}${wsPath}?token=${encodeURIComponent(authToken)}`
+  // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
+  const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
   const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
   if (!wsProbe.ok) {
     throw new Error(
-      `Hermes backend for profile "${profile}" WebSocket rejected the session token: ${wsProbe.reason}`
+      `Hermes backend for profile "${profile}" is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
     )
   }
-
-  // baseUrl feeds the `hermes:api` REST plane (fetchJson rejects non-http).
-  // A WS-only backend has no HTTP routes; expose the WS transport via wsUrl
-  // and mark it on the descriptor instead of overloading baseUrl (F1).
-  const baseUrl = `http://127.0.0.1:${port}`
-  const wsOnlyTransport = Boolean(announcedToken)
 
   return {
     baseUrl,
@@ -12219,7 +12145,6 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     token: authToken,
     profile,
     wsUrl,
-    wsOnlyTransport,
     logs: hermesLog.slice(-80),
     ...getWindowState()
   }
@@ -12431,11 +12356,7 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    // `--ws-only` opt-in — same gate as the pool spawn site above (F1).
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
-    if (process.env.HERMES_DESKTOP_WS_ONLY === '1') {
-      backendArgs.push('--ws-only')
-    }
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -12622,49 +12543,36 @@ async function startHermes() {
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
 
     // Discover the ephemeral port the child bound to
-    const announced = await Promise.race([
+    const port = await Promise.race([
       waitForDashboardPortAnnouncement(hermesProcess, {
         describeOutputTail: () => primaryOutputTail.describe(),
         readyFile
       }),
       backendStartFailed
-    ]) as { port: number; token?: string }
-
-    const port = announced.port
-    const announcedToken = announced.token
+    ])
 
     if (readyFile) {
       fs.unlink(readyFile, () => {})
     }
 
-    // The --ws-only server has no HTTP routes — skip waitForHermes when we
-    // have a direct token from the announcement. The dashboard path still
-    // needs HTTP to adopt the served token.
-    let authToken
-    if (announcedToken) {
-      authToken = announcedToken
-    } else {
-      const baseUrl = `http://127.0.0.1:${port}`
-      await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-      await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
-      authToken = await adoptServedDashboardToken(baseUrl, token, {
-        childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
-        rememberLog
-      })
-    }
+    const baseUrl = `http://127.0.0.1:${port}`
+    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendReady = true
     backendStartFailure = null
 
+    const authToken = await adoptServedDashboardToken(baseUrl, token, {
+      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
+      rememberLog
+    })
+
     // Verify the WebSocket session token before declaring backend ready.
-    // The slim server listens on `/` (bare WS); the dashboard listens on
-    // `/api/ws`. Route accordingly.
-    const wsPath = announcedToken ? '/' : '/api/ws'
-    const wsUrl = `ws://127.0.0.1:${port}${wsPath}?token=${encodeURIComponent(authToken)}`
+    const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
     const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
     if (!wsProbe.ok) {
       throw new Error(
-        `Local Hermes backend WebSocket rejected the session token: ${wsProbe.reason}`
+        `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
     }
 
@@ -12683,11 +12591,6 @@ async function startHermes() {
     // accumulated count of the resolved episode.
     bootstrapRepairAttempt = 0
 
-    // Same descriptor rule as spawnPoolBackend: baseUrl stays http for the
-    // REST plane; WS-only mode is flagged separately (F1).
-    const baseUrl = `http://127.0.0.1:${port}`
-    const wsOnlyTransport = Boolean(announcedToken)
-
     return {
       baseUrl,
       mode: 'local',
@@ -12695,7 +12598,6 @@ async function startHermes() {
       authMode: 'token',
       token: authToken,
       wsUrl,
-      wsOnlyTransport,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }

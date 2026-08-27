@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from tui_gateway import server
+from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
@@ -365,7 +366,6 @@ async def handle_ws(
         # (#60800). The skin payload is small (a dict of strings/arrays),
         # so the to_thread overhead is negligible.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
-        from tui_gateway.event_replay import EPOCH as _replay_epoch
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -379,12 +379,10 @@ async def handle_ws(
                         "skin": skin_payload,
                         "change_events": True,
                         "heartbeat": True,
-                        # Seq-namespace epoch: changes on every gateway boot.
-                        # A client whose stored epoch differs must reset its
-                        # per-session seq watermarks and reload state instead
-                        # of trusting replay (stale high watermarks from the
-                        # previous process would suppress live events).
-                        "epoch": _replay_epoch,
+                        # Replay-contract process identity: lets reconnecting
+                        # clients detect a backend restart and reset their
+                        # per-session seq watermarks (see event_replay).
+                        "replay_epoch": replay_epoch(),
                     },
                 },
             }

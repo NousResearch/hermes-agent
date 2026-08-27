@@ -2,26 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  dashboardFallbackArgs,
-  serveBackendArgs,
-  sourceDeclaresServe,
-  sourceDeclaresWsOnly
-} from './backend-command'
+import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
 
-test('serveBackendArgs builds a headless serve invocation WITHOUT --ws-only by default', () => {
-  // Opt-in until the desktop REST plane migrates to JSON-RPC (#94484 ph.3):
-  // the WS-only server has no HTTP routes and would break hermes:api.
+test('serveBackendArgs builds a headless serve invocation', () => {
   assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('serveBackendArgs pins a profile when provided', () => {
   assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
-})
-
-test('serveBackendArgs emits --ws-only only on explicit opt-in', () => {
-  assert.deepEqual(serveBackendArgs(undefined, { wsOnly: true }), ['serve', '--host', '127.0.0.1', '--port', '0', '--ws-only'])
-  assert.deepEqual(serveBackendArgs(undefined, { wsOnly: false }), ['serve', '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {
@@ -54,20 +42,6 @@ test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
   ])
 })
 
-test('dashboardFallbackArgs strips --ws-only when falling back to dashboard', () => {
-  const serve = ['-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', '0', '--ws-only']
-  assert.deepEqual(dashboardFallbackArgs(serve), [
-    '-m',
-    'hermes_cli.main',
-    'dashboard',
-    '--no-open',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    '0'
-  ])
-})
-
 test('dashboardFallbackArgs is a no-op (copy) when there is no serve token', () => {
   const args = ['-m', 'hermes_cli.main', 'dashboard', '--no-open']
   const out = dashboardFallbackArgs(args)
@@ -88,14 +62,4 @@ test('sourceDeclaresServe does not false-positive on the substring "server"', ()
   `
 
   assert.equal(sourceDeclaresServe(oldSource), false)
-})
-
-test('sourceDeclaresWsOnly detects the --ws-only flag registration', () => {
-  assert.equal(sourceDeclaresWsOnly('serve_parser.add_argument("--ws-only", dest="ws_only")'), true)
-  assert.equal(sourceDeclaresWsOnly("serve_parser.add_argument('--ws-only')"), true)
-})
-
-test('sourceDeclaresWsOnly returns false when the flag is absent', () => {
-  assert.equal(sourceDeclaresWsOnly('serve_parser.add_argument("--no-open")'), false)
-  assert.equal(sourceDeclaresWsOnly(''), false)
 })

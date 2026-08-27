@@ -22,6 +22,7 @@ if _os.environ.get("DRY_RUN") == "1":
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -44,6 +45,22 @@ OUTPUT_PATH = os.environ.get("PAPER_OUTPUT", "")
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE_DIR = SCRIPT_DIR / ".paper_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_SOURCE_REPO = SCRIPT_DIR.parent
+REPO_ROOT = Path(os.environ.get(
+    "KENSEI_REPO_ROOT",
+    str(_SOURCE_REPO if (_SOURCE_REPO / "tools" / "cronjob_tools.py").is_file()
+        else Path.home() / "repos" / "KenseiAgent"),
+)).resolve()
+
+_RAW_ARXIV_ID_RE = re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?$")
+_EXTERNAL_DIRECTIVE_PATTERNS = (
+    re.compile(
+        r"(?:^|[.!?]\s+)(?:please\s+)?(?:ignore|disregard|override)\s+"
+        r"(?:(?:all|any|the|your|previous|prior|above)\s+){0,3}"
+        r"(?:instructions?|rules?|guidelines?|(?:system|developer)\s+prompts?)\b",
+        re.IGNORECASE,
+    ),
+)
 
 MEMORY_GATE_ENABLED = os.environ.get("PAPER_MEMORY_GATE_ENABLED", "0") == "1"
 MEMORY_GATE_MODE = os.environ.get("PAPER_MEMORY_GATE_MODE", "observe").lower()
@@ -153,6 +170,35 @@ def parse_arxiv_id(text: str) -> str | None:
     if "/pdf/" in text:
         return text.split("/pdf/")[-1].split(".pdf")[0].split("v")[0]
     return None
+
+
+def _candidate_telemetry_id(raw_id: str, index: int) -> str:
+    """Return only a validated raw arXiv ID or an opaque fallback label."""
+    match = _RAW_ARXIV_ID_RE.fullmatch(raw_id.strip())
+    return match.group(1) if match else f"candidate-{index}"
+
+
+def _candidate_strings(candidate: dict) -> list[str]:
+    """Collect nested external strings with title/summary fields kept adjacent."""
+    values: list[str] = []
+    preferred_keys = ("title", "summary", "abstract")
+
+    def collect(value) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for key in preferred_keys:
+                if key in value:
+                    collect(value[key])
+            for key in sorted(value):
+                if key not in preferred_keys:
+                    collect(value[key])
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+
+    collect(candidate)
+    return values
 
 
 def tight_score(title: str, summary: str) -> int:
@@ -682,6 +728,53 @@ def apply_final_score(paper: dict) -> dict:
     return paper
 
 
+def quarantine_untrusted_candidates(candidates: list[dict]) -> tuple[list[dict], dict]:
+    """Remove candidates whose external fields trip Hermes' cron prompt scanner."""
+    repo_text = str(REPO_ROOT)
+    if repo_text not in sys.path:
+        sys.path.insert(0, repo_text)
+    from tools.cronjob_tools import _scan_cron_skill_assembled
+
+    kept: list[dict] = []
+    quarantined_ids: list[str] = []
+    for index, candidate in enumerate(candidates, start=1):
+        raw_id = str(candidate.get("arxiv_id") or "")
+        candidate_id = _candidate_telemetry_id(raw_id, index)
+        serialized = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+        cleaned, error = _scan_cron_skill_assembled(serialized)
+        candidate_strings = _candidate_strings(candidate)
+        candidate_text = " ".join(candidate_strings)
+        cleaned_text, text_error = _scan_cron_skill_assembled(candidate_text)
+        removed_invisible = cleaned != serialized or cleaned_text != candidate_text
+        external_directive = any(
+            pattern.search(text)
+            for text in (*candidate_strings, candidate_text)
+            for pattern in _EXTERNAL_DIRECTIVE_PATTERNS
+        )
+        error = error or text_error
+        if error or removed_invisible or external_directive:
+            quarantined_ids.append(candidate_id)
+            print(
+                f"  [SECURITY] Quarantined candidate {candidate_id}",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            kept.append(json.loads(cleaned))
+        except json.JSONDecodeError:
+            quarantined_ids.append(candidate_id)
+            print(
+                f"  [SECURITY] Quarantined malformed candidate {candidate_id}",
+                file=sys.stderr,
+            )
+
+    return kept, {
+        "scanned": len(candidates),
+        "quarantined": len(quarantined_ids),
+        "candidate_ids": quarantined_ids,
+    }
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -711,6 +804,10 @@ def main():
     candidates = [p for p in papers if p["action"] != "skip"]
     candidates = candidates[:MAX_CANDIDATES]
 
+    # External titles and abstracts are untrusted data. Quarantine only a
+    # matching candidate so one hostile paper cannot block the whole cron.
+    candidates, security_gate = quarantine_untrusted_candidates(candidates)
+
     # Optional memory-first gate: after truncation, before synthesis output.
     candidates, memory_gate = apply_memory_gate(candidates)
 
@@ -729,6 +826,7 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "total_fetched": len(papers),
         "candidates": candidates,
+        "security_gate": security_gate,
         "summary": {
             "write_now": actions.get("write_now", 0),
             "ask_first": actions.get("ask_first", 0),

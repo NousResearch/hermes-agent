@@ -453,8 +453,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
-  const threadRunning = useAuiState(s => s.thread.isRunning)
-
   const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
@@ -598,12 +596,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     weightedGroups,
     renderBudget,
     renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0,
-    // The active turn has to stay mounted regardless of size. Charging its
-    // growing weight to the history budget made this cut advance mid-stream:
-    // old rows unmounted, scrollHeight shrank, and the browser clamp looked
-    // like a user scroll-up to use-stick-to-bottom. Budget the history around
-    // the live turn instead, so token flushes cannot move the cut boundary.
-    threadRunning ? 1 : 0
+    // The newest turn is always exempt from the history render budget so its
+    // growing — then completed — weight never advances the cut boundary. A
+    // moving cut unmounts older rows, shrinks scrollHeight, and the browser
+    // clamp looks like a user scroll-up to use-stick-to-bottom.
+    1
   )
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this

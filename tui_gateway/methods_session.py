@@ -122,6 +122,7 @@ def _(rid, params: dict) -> dict:
     # + skeleton panel, then build the real AIAgent just after this response is
     # flushed.  This keeps startup responsive while still hydrating tools/skills
     # without requiring the user to submit a first prompt.
+    _notify_session_open(key, "tui")
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
@@ -563,6 +564,7 @@ def _(rid, params: dict) -> dict:
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
 
+            _notify_session_open(target, "tui")
             _schedule_resume_hydration(sid, target, db, close_db=owns_db)
             # The hydration worker now owns a profile-scoped handle and closes it
             # after the transcript read. The shared launch DB is process-owned.
@@ -656,6 +658,7 @@ def _(rid, params: dict) -> dict:
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
 
+            _notify_session_open(target, "tui")
             _schedule_agent_build(sid)
             _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
             auto_continue = _maybe_schedule_auto_continue(sid, record, target)
@@ -731,6 +734,7 @@ def _(rid, params: dict) -> dict:
                 # stored session row so switching chats does not inherit whatever
                 # global model another chat last selected.
                 stored_runtime_overrides = _stored_session_runtime_overrides(found)
+                _notify_session_open(target, "tui")
                 agent = _make_agent(
                     sid,
                     target,

@@ -2033,24 +2033,74 @@ class PluginContext:
         if mode not in ("queue", "steer", "interrupt"):
             return False
 
+        # Walkie persists an opaque host target as ``surface:token`` so a
+        # recipient process can select the owning router without inspecting
+        # plugin-private state (ADR-0002).  The host APIs themselves consume
+        # the raw exact-session token.  Accept both forms for compatibility,
+        # but only route a surface-qualified target to that exact surface.
+        effective_target = (
+            target_session if target_session is not None else session_key
+        )
+        target_surface = None
+        if isinstance(effective_target, str):
+            prefix, separator, raw_target = effective_target.partition(":")
+            if separator and prefix in {"cli", "tui", "gateway"} and raw_target:
+                target_surface = prefix
+                effective_target = raw_target
+
         cli = self._manager._cli_ref
         if cli is not None:
+            if target_surface not in (None, "cli"):
+                return False
             try:
                 return bool(
                     cli.inject_message(
                         content,
                         role=role,
                         mode=mode,
-                        target_session=target_session,
+                        target_session=effective_target,
                     )
                 )
             except Exception:
+                return False
+
+        # Preserve the manager-owned gateway seam for isolated plugin managers
+        # and older gateway hosts.  It is deliberately queue-only: steering and
+        # hard interrupts require a surface router that owns the live turn.
+        if (
+            self._manager.has_gateway_message_injector
+            and target_surface in (None, "gateway")
+        ):
+            if (
+                not effective_target
+                or mode != "queue"
+                or not self._gateway_injection_allowed()
+            ):
+                return False
+            plugin_id = self.manifest.key or self.manifest.name
+            msg = content if role == "user" else f"[{role}] {content}"
+            try:
+                return bool(
+                    self._manager.inject_gateway_message(
+                        session_key=effective_target,
+                        content=msg,
+                        plugin_id=plugin_id,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "inject_message: gateway scheduling failed for plugin %s",
+                    plugin_id,
+                    exc_info=True,
+                )
                 return False
 
         # No CLI attached (gateway, TUI/dashboard, headless serve): route via
         # the host-owned routers registered by each surface. Dashboard takes
         # precedence in serving processes, then the gateway.
         for surface in ("tui", "gateway"):
+            if target_surface is not None and surface != target_surface:
+                continue
             router = _INJECTION_ROUTERS.get(surface)
             if router is None:
                 continue
@@ -2063,13 +2113,34 @@ class PluginContext:
                     # session_key is the caller-facing exact-session token;
                     # the router contract calls it target_session.  Forward
                     # either so callers using the public keyword work.
-                    target_session=target_session if target_session is not None else session_key,
+                    target_session=effective_target,
                     plugin_id=plugin_id,
                 ):
                     return True
             except Exception:
                 return False
         return False
+
+    def _gateway_injection_allowed(self) -> bool:
+        """Return whether this plugin may trigger gateway session turns."""
+        try:
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config_readonly() or {}
+        except Exception:
+            return False
+
+        plugin_id = self.manifest.key or self.manifest.name
+        return (
+            cfg_get(
+                cfg,
+                "plugins",
+                "entries",
+                plugin_id,
+                "allow_gateway_injection",
+                default=False,
+            )
+            is True
+        )
 
     # -- user interaction (AskUserQuestion-style overlay) ----------------------
 

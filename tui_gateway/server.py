@@ -53,6 +53,14 @@ from tui_gateway.transport import (
 
 logger = logging.getLogger(__name__)
 
+
+def _notify_session_open(session_id: object, platform: object = "tui") -> bool:
+    """Public plugin lifecycle bridge used by session RPC handlers."""
+    from hermes_cli.plugins import notify_session_open
+
+    return notify_session_open(session_id, platform)
+
+
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"

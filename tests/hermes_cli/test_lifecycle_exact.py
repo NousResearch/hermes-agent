@@ -55,6 +55,33 @@ def _make_manager_with_hook(hook_name: str, callback) -> object:
     return M()
 
 
+class _ResumeDB:
+    """Small in-memory DB contract for the real TUI resume handler."""
+
+    def __init__(self, target: str) -> None:
+        self.target = target
+
+    def get_session(self, session_id: str):
+        if session_id == self.target:
+            return {"id": self.target, "message_count": 0}
+        return None
+
+    def get_session_by_title(self, _title: str):
+        return None
+
+    def resolve_resume_session_id(self, session_id: str) -> str:
+        return session_id
+
+    def reopen_session(self, _session_id: str) -> None:
+        return None
+
+    def get_resume_conversations(self, _session_id: str):
+        return [], []
+
+    def get_ancestor_display_prefix(self, _session_id: str):
+        return []
+
+
 class TestOnSessionOpen:
     def test_on_session_open_is_a_valid_hook(self):
         """on_session_open must be registered as a valid hook name."""
@@ -251,6 +278,107 @@ class TestHostOpenAcrossSurfaces:
             session = server._sessions.pop(sid, None)
             if session is not None:
                 server._teardown_session(session)
+
+    def test_tui_session_resume_opens_before_deferred_history_hydration(
+        self, monkeypatch, tmp_path
+    ):
+        from tui_gateway import server
+
+        target = "tui-resume-deferred-history-order-r4"
+        order: list[tuple[str, str]] = []
+        monkeypatch.setattr(server, "_get_db", lambda: _ResumeDB(target))
+        monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+        monkeypatch.setattr(server, "_lazy_resume_info", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(
+            server,
+            "_notify_session_open",
+            lambda session_id, _platform: order.append(("open", session_id)),
+        )
+        monkeypatch.setattr(
+            server,
+            "_schedule_resume_hydration",
+            lambda sid, *_args, **_kwargs: order.append(("hydrate", sid)),
+        )
+
+        response = server._methods["session.resume"](
+            "r4",
+            {"session_id": target, "defer_history": True},
+        )
+        assert "error" not in response
+        sid = response["result"]["session_id"]
+        try:
+            assert order == [("open", target), ("hydrate", sid)]
+        finally:
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._teardown_session(session)
+
+    def test_tui_session_resume_opens_before_deferred_agent_build(
+        self, monkeypatch, tmp_path
+    ):
+        from tui_gateway import server
+
+        target = "tui-resume-deferred-order-r3"
+        order: list[tuple[str, str]] = []
+        monkeypatch.setattr(server, "_get_db", lambda: _ResumeDB(target))
+        monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+        monkeypatch.setattr(server, "_lazy_resume_info", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(
+            server,
+            "_notify_session_open",
+            lambda session_id, _platform: order.append(("open", session_id)),
+        )
+        monkeypatch.setattr(
+            server,
+            "_schedule_agent_build",
+            lambda sid: order.append(("build", sid)),
+        )
+
+        response = server._methods["session.resume"](
+            "r3",
+            {"session_id": target},
+        )
+        assert "error" not in response
+        sid = response["result"]["session_id"]
+        try:
+            assert order == [("open", target), ("build", sid)]
+        finally:
+            session = server._sessions.pop(sid, None)
+            if session is not None:
+                server._teardown_session(session)
+
+    def test_tui_session_resume_opens_before_eager_agent_build(self, monkeypatch):
+        from tui_gateway import server
+
+        target = "tui-resume-eager-order-r3"
+        order: list[tuple[str, str]] = []
+        monkeypatch.setattr(server, "_get_db", lambda: _ResumeDB(target))
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(
+            server,
+            "_notify_session_open",
+            lambda session_id, _platform: order.append(("open", session_id)),
+        )
+
+        def _make_agent(_sid, _key, *, session_id=None, **_kwargs):
+            assert session_id is not None
+            order.append(("build", session_id))
+            return object()
+
+        monkeypatch.setattr(server, "_make_agent", _make_agent)
+        monkeypatch.setattr(server, "_init_session", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_session_info", lambda *_args, **_kwargs: {})
+
+        response = server._methods["session.resume"](
+            "r3",
+            {"session_id": target, "eager_build": True},
+        )
+        assert "error" not in response
+        assert order == [("open", target), ("build", target)]
 
     def test_gateway_constructor_opens_before_agent_creation(self, monkeypatch):
         import gateway.run as gateway_run

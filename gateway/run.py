@@ -2609,6 +2609,19 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _construct_agent_with_session_open(
+    constructor,
+    *,
+    session_id: object,
+    platform: object,
+):
+    """Emit the addressable-session boundary before agent construction."""
+    from hermes_cli.plugins import notify_session_open
+
+    notify_session_open(session_id, platform)
+    return constructor()
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -5662,43 +5675,49 @@ class TurnRunner:
 
         if agent is None:
             # Config changed or first message — create fresh agent
-            agent = ctx.AIAgent(
-                model=turn_route["model"],
-                **turn_route["runtime"],
-                **_checkpoint_agent_kwargs(ctx.user_config),
-                max_iterations=max_iterations,
-                quiet_mode=True,
-                verbose_logging=False,
-                enabled_toolsets=ctx.enabled_toolsets,
-                disabled_toolsets=ctx.disabled_toolsets,
-                ephemeral_system_prompt=combined_ephemeral or None,
-                prefill_messages=self._runner._prefill_messages or None,
-                reasoning_config=reasoning_config,
-                service_tier=self._runner._service_tier,
-                request_overrides=turn_route.get("request_overrides"),
-                providers_allowed=pr.get("only"),
-                providers_ignored=pr.get("ignore"),
-                providers_order=pr.get("order"),
-                provider_sort=pr.get("sort"),
-                provider_require_parameters=pr.get("require_parameters", False),
-                provider_data_collection=pr.get("data_collection"),
+            agent = _construct_agent_with_session_open(
+                lambda: ctx.AIAgent(
+                    model=turn_route["model"],
+                    **turn_route["runtime"],
+                    **_checkpoint_agent_kwargs(ctx.user_config),
+                    max_iterations=max_iterations,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    enabled_toolsets=ctx.enabled_toolsets,
+                    disabled_toolsets=ctx.disabled_toolsets,
+                    ephemeral_system_prompt=combined_ephemeral or None,
+                    prefill_messages=self._runner._prefill_messages or None,
+                    reasoning_config=reasoning_config,
+                    service_tier=self._runner._service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=pr.get("only"),
+                    providers_ignored=pr.get("ignore"),
+                    providers_order=pr.get("order"),
+                    provider_sort=pr.get("sort"),
+                    provider_require_parameters=pr.get("require_parameters", False),
+                    provider_data_collection=pr.get("data_collection"),
+                    session_id=ctx.session_id,
+                    platform=platform_key,
+                    user_id=ctx.source.user_id,
+                    user_id_alt=ctx.source.user_id_alt,
+                    user_name=ctx.source.user_name,
+                    chat_id=ctx.source.chat_id,
+                    chat_name=ctx.source.chat_name,
+                    chat_type=ctx.source.chat_type,
+                    thread_id=ctx.source.thread_id,
+                    gateway_session_key=ctx.session_key,
+                    session_db=getattr(
+                        self._runner._session_db, "_db", self._runner._session_db
+                    ),
+                    # Reload from disk — do not reuse the startup snapshot (#60955).
+                    fallback_model=self._runner._refresh_fallback_model(),
+                    skip_context_files=skip_context_files,
+                    # Keep the persona even with minimal context: soul identity is
+                    # a single small file, not part of the expensive walk.
+                    load_soul_identity=True,
+                ),
                 session_id=ctx.session_id,
                 platform=platform_key,
-                user_id=ctx.source.user_id,
-                user_id_alt=ctx.source.user_id_alt,
-                user_name=ctx.source.user_name,
-                chat_id=ctx.source.chat_id,
-                chat_name=ctx.source.chat_name,
-                chat_type=ctx.source.chat_type,
-                thread_id=ctx.source.thread_id,
-                gateway_session_key=ctx.session_key,
-                session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
-                # Reload from disk — do not reuse the startup snapshot (#60955).
-                fallback_model=self._runner._refresh_fallback_model(),
-                skip_context_files=skip_context_files,
-                # Keep the persona even with minimal context: soul identity is
-                # a single small file, not part of the expensive walk.
-                load_soul_identity=True,
             )
             if _cache_lock and _cache is not None:
                 with _cache_lock:
@@ -8909,7 +8928,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         entries = (cfg.get("plugins") or {}).get("entries") or {}
         entry = entries.get(plugin_id) or {}
-        return bool(entry.get("allow_gateway_injection", False))
+        return entry.get("allow_gateway_injection", False) is True
 
     def _resolve_route_adapter(self, entry: Any):
         """Return the live adapter serving the entry's stored route, or None.
@@ -18787,12 +18806,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler.
 
-        Two registrations are needed because PluginContext.inject_message
-        routes through the host-owned ``_INJECTION_ROUTERS`` module registry
-        (surface name -> router) and never reads the manager instance's
-        injector directly.  Registering only the manager injector (the
-        historical behaviour) left gateway plugin message injection dead:
-        inject_message always returned False on the gateway.
+        The manager-owned injector handles contexts bound to this gateway's
+        plugin manager.  The surface router preserves compatibility for
+        isolated managers in the same process.  Both seams must enforce the
+        same permission, queue-mode, target, and role contract.
         """
         from hermes_cli.plugins import get_plugin_manager, register_injection_router
 
@@ -18826,6 +18843,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from hermes_cli.plugins import get_plugin_manager
 
+        if mode != "queue" or not self._plugin_gateway_injection_allowed(plugin_id):
+            return False
+
         session_key = None
         if target_session is not None:
             if isinstance(target_session, str):
@@ -18834,10 +18854,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key = getattr(target_session, "session_key", None)
         if session_key is None:
             return False
+        message = content if role == "user" else f"[{role}] {content}"
         return bool(
             get_plugin_manager().inject_gateway_message(
                 session_key=session_key,
-                content=content,
+                content=message,
                 plugin_id=plugin_id,
             )
         )
@@ -18866,6 +18887,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         plugin_id: str,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop."""
+        if not self._plugin_gateway_injection_allowed(plugin_id):
+            return False
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
@@ -18938,8 +18961,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         entry = await self.async_session_store.lookup_by_session_key(session_key)
+        if entry is None:
+            # Exact lifecycle hooks expose the persisted session id, while the
+            # gateway routes by a longer platform/chat session key.  Accept the
+            # public persisted id and resolve it back to its current route; this
+            # also survives key-preserving transcript rotations.
+            entry = await self.async_session_store.lookup_by_session_id(session_key)
         if entry is None or entry.origin is None:
             return False
+        session_key = entry.session_key
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return False
 

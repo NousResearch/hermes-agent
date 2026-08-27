@@ -1618,6 +1618,26 @@ class SessionStore:
                         recovered_keys += 1
                         continue
 
+                    # A non-None recovery with the SAME session id is a successful
+                    # resume: _recover_session_from_db only returns non-None after
+                    # passing all safety gates (recoverable end reason, reset
+                    # boundary NOT EXISTS, source-scope match, active-profile
+                    # check, _should_reset). Keep the routing entry in place — it
+                    # is still valid, not a dead route. The `!=` guard above is
+                    # only for the compression-rotation case where a newer live
+                    # child session exists; a same-id recovery must NOT fall
+                    # through to the prune branch (#95957).
+                    if recovered_entry is not None:
+                        logger.warning(
+                            "gateway.session: keeping stale sessions.json entry "
+                            "%r -> %s (end_reason=%r); recovery succeeded with "
+                            "same session id",
+                            key, entry.session_id, row["end_reason"],
+                        )
+                        self._entries[key] = recovered_entry
+                        recovered_keys += 1
+                        continue
+
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",

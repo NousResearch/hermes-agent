@@ -104,6 +104,41 @@ class TestPruneStaleSessionsLocked:
         assert key in store._entries
         assert store._entries[key].session_id == "sid_parent"
 
+    def test_keeps_stale_entry_when_recovery_returns_same_session_id(self, tmp_path):
+        """A successful same-id recovery must NOT prune the routing entry.
+
+        When the startup sweep finds a stale entry whose session has ended in
+        state.db but ``_recover_session_from_db`` succeeds and returns the SAME
+        session id (proving the route is still resumable — the ``!=`` repoint
+        guard only exists for the compression-rotation child case), the entry
+        must be kept in place. The old code fell through to the prune branch
+        whenever the recovered id did not differ, deleting a perfectly valid
+        resumable mapping (#95957).
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning(
+            {"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}}
+        )
+        # Recovery returns the row for sid_parent itself — same id as the entry.
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_parent",
+            "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
+            "last_activity_at": (
+                datetime.now() - timedelta(hours=4)
+            ).timestamp(),
+        }
+        store = _make_store_with_db(tmp_path, db)  # default mode="none"
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        with patch.object(store, "_save") as mock_save:
+            store._prune_stale_sessions_locked()
+
+        # The successfully-recovered route must survive the sweep.
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_parent"
+        mock_save.assert_called_once()
+
+
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
         with patch("gateway.session.SessionStore._ensure_loaded"):

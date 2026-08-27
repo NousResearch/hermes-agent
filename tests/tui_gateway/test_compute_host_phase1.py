@@ -217,6 +217,88 @@ def test_supervisor_spawn_keeps_final_child_env_sanitized(tmp_path, monkeypatch)
         assert key not in child_env
 
 
+def test_supervisor_contextless_respawn_uses_captured_profile_owner(
+    tmp_path, monkeypatch
+):
+    """PROC-001: crash recovery must not depend on caller ContextVars."""
+    import tui_gateway.host_supervisor as supervisor_mod
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / ".env").write_text(
+        "OPENAI_API_KEY=source-provider\nCUSTOM_CAP=source-cap\n",
+        encoding="utf-8",
+    )
+    (target / ".env").write_text(
+        "OPENAI_API_KEY=target-provider\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setenv("OPENAI_API_KEY", "source-provider")
+    monkeypatch.setenv("CUSTOM_CAP", "source-cap")
+
+    captured: dict = {}
+
+    class _Proc:
+        pid = 4243
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+    class _NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    set_multiplex_active(True)
+    target_token = set_hermes_home_override(target)
+    try:
+        supervisor = HostSupervisor(
+            registry_path=tmp_path / "host-respawn.json",
+            argv=[sys.executable, "-c", ""],
+            expected_hermes_home=str(target),
+            autostart=False,
+        )
+    finally:
+        reset_hermes_home_override(target_token)
+
+    def _fake_popen(*args, **kwargs):
+        captured["env"] = dict(kwargs["env"])
+        supervisor._hello = {
+            "boot_id": "test",
+            "hermes_home": str(target),
+        }
+        supervisor._hello_event.set()
+        return _Proc()
+
+    monkeypatch.setattr(supervisor_mod, "_Thread", _NoopThread)
+    monkeypatch.setattr(supervisor_mod.subprocess, "Popen", _fake_popen)
+    try:
+        # Rotate the target credential after construction. The respawn must
+        # rebuild temporal authority from the captured owner identities rather
+        # than resurrecting the constructor's old value snapshot.
+        (target / ".env").write_text(
+            "OPENAI_API_KEY=rotated-target-provider\n",
+            encoding="utf-8",
+        )
+        # Models the wait thread after a crash: multiplex mode remains active,
+        # but the profile-home ContextVar was not copied into the new thread.
+        supervisor._spawn_locked(reason="contextless-respawn")
+    finally:
+        set_multiplex_active(False)
+
+    child_env = captured["env"]
+    assert child_env["HERMES_HOME"] == str(target)
+    assert child_env["OPENAI_API_KEY"] == "rotated-target-provider"
+    assert "CUSTOM_CAP" not in child_env
+
+
 def _make_compress_host_session(events: list) -> dict:
     class _Agent:
         model = "host-model"

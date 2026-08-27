@@ -2,9 +2,12 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from hermes_cli import active_sessions
 
@@ -240,3 +243,320 @@ def test_transfer_under_profile_home_override_targets_acquisition_registry(
     root_registry = root / "runtime" / "active_sessions.json"
     entries = active_sessions._read_entries(root_registry)
     assert [entry["session_id"] for entry in entries] == ["after"]
+
+
+def test_liveness_registry_corruption_fails_closed_without_overwrite(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    state_path.parent.mkdir(parents=True)
+    corrupt = "{not-json"
+    state_path.write_text(corrupt, encoding="utf-8")
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError):
+        with active_sessions.active_session_liveness_guard("session-1"):
+            pass
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError):
+        active_sessions.active_session_registry_snapshot()
+
+    assert state_path.read_text(encoding="utf-8") == corrupt
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError):
+        active_sessions.try_acquire_active_session(
+            session_id="desktop-1",
+            surface="desktop",
+            config={},
+            track_liveness=True,
+        )
+    assert state_path.read_text(encoding="utf-8") == corrupt
+
+    # The pre-existing concurrency-cap path remains available/fail-open, but
+    # must not erase evidence that strict liveness ownership is unknown.
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-1",
+        surface="cli",
+        config={"max_concurrent_sessions": 1},
+    )
+    assert lease is not None and message is None
+    assert lease.enabled is False
+    assert state_path.read_text(encoding="utf-8") == corrupt
+    lease.release()
+    assert state_path.read_text(encoding="utf-8") == corrupt
+
+
+def test_strict_registry_rejects_structurally_invalid_entries(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    base = {
+        "lease_id": "lease-1",
+        "session_id": "session-1",
+        "surface": "desktop",
+        "pid": os.getpid(),
+        "track_liveness": True,
+    }
+    invalid_entries = (
+        {key: value for key, value in base.items() if key != "lease_id"},
+        {**base, "lease_id": ""},
+        {key: value for key, value in base.items() if key != "session_id"},
+        {**base, "session_id": "  "},
+        {**base, "pid": 0},
+        {**base, "pid": 1.5},
+        {**base, "surface": 1},
+        {**base, "track_liveness": "yes"},
+        {**base, "metadata": []},
+        {**base, "process_start_time": "not-a-number"},
+        {**base, "process_start_time": "nan"},
+    )
+
+    for entry in invalid_entries:
+        active_sessions._write_entries(state_path, [entry])
+        original = state_path.read_text(encoding="utf-8")
+        with pytest.raises(active_sessions.ActiveSessionRegistryError):
+            with active_sessions.active_session_liveness_guard("session-1"):
+                pass
+        assert state_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "second_session_id",
+    ("session-a", "session-b"),
+    ids=("exact-duplicate", "conflicting-duplicate"),
+)
+def test_strict_registry_rejects_duplicate_lease_ids(
+    tmp_path, monkeypatch, second_session_id
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    active_sessions._write_entries(
+        state_path,
+        [
+            {
+                "lease_id": "duplicate-lease",
+                "session_id": "session-a",
+                "surface": "desktop",
+                "pid": os.getpid(),
+                "track_liveness": True,
+            },
+            {
+                "lease_id": "duplicate-lease",
+                "session_id": second_session_id,
+                "surface": "desktop",
+                "pid": os.getpid(),
+                "track_liveness": True,
+            },
+        ],
+    )
+    original = state_path.read_text(encoding="utf-8")
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError):
+        active_sessions.active_session_registry_snapshot()
+
+    assert state_path.read_text(encoding="utf-8") == original
+
+
+def test_cap_transfer_does_not_overwrite_registry_corruption(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-old",
+        surface="cli",
+        config={"max_concurrent_sessions": 1},
+    )
+    assert lease is not None and message is None
+
+    corrupt = "{not-json"
+    state_path.write_text(corrupt, encoding="utf-8")
+    assert not active_sessions.transfer_active_session(
+        lease,
+        session_id="cli-new",
+    )
+    assert lease.session_id == "cli-old"
+    assert state_path.read_text(encoding="utf-8") == corrupt
+
+    lease.release()
+    assert lease.released is True
+    assert state_path.read_text(encoding="utf-8") == corrupt
+
+
+def test_liveness_guard_rejects_unknown_pid_state(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    active_sessions._write_entries(
+        state_path,
+        [
+            {
+                "lease_id": "unknown-owner",
+                "session_id": "session-1",
+                "surface": "desktop",
+                "pid": 12345,
+                "track_liveness": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda _pid: (_ for _ in ()).throw(OSError("pid lookup unavailable")),
+    )
+
+    with pytest.raises(active_sessions.ActiveSessionRegistryError):
+        with active_sessions.active_session_liveness_guard("session-1"):
+            pass
+
+    original = state_path.read_text(encoding="utf-8")
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="cli-cap-session",
+        surface="cli",
+        config={"max_concurrent_sessions": 1},
+    )
+    assert lease is not None and message is None
+    assert lease.enabled is False
+    assert state_path.read_text(encoding="utf-8") == original
+
+
+def test_liveness_release_failure_is_retryable(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-1",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+    )
+    assert lease is not None and message is None
+
+    original_write = active_sessions._write_entries
+    monkeypatch.setattr(
+        active_sessions,
+        "_write_entries",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+    with pytest.raises(OSError, match="replace failed"):
+        lease.release()
+    assert lease.released is False
+
+    monkeypatch.setattr(active_sessions, "_write_entries", original_write)
+    lease.release()
+    assert lease.released is True
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_liveness_transfer_upserts_missing_entry_without_consuming_a_new_slot(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-old",
+        surface="desktop",
+        config={"max_concurrent_sessions": 1},
+        track_liveness=True,
+    )
+    assert lease is not None and message is None
+    (home / "runtime" / "active_sessions.json").unlink()
+
+    assert active_sessions.transfer_active_session(lease, session_id="session-new")
+    snapshot = active_sessions.active_session_registry_snapshot()
+    assert [(entry["lease_id"], entry["session_id"]) for entry in snapshot] == [
+        (lease.lease_id, "session-new")
+    ]
+
+    blocked, limit_message = active_sessions.try_acquire_active_session(
+        session_id="session-other",
+        surface="desktop",
+        config={"max_concurrent_sessions": 1},
+        track_liveness=True,
+    )
+    assert blocked is None
+    assert limit_message is not None
+    lease.release()
+
+
+def test_liveness_transfer_write_failure_keeps_old_id_for_retry(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-old",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+    )
+    assert lease is not None and message is None
+
+    original_write = active_sessions._write_entries
+    monkeypatch.setattr(
+        active_sessions,
+        "_write_entries",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+    with pytest.raises(OSError, match="replace failed"):
+        active_sessions.transfer_active_session(lease, session_id="session-new")
+    assert lease.session_id == "session-old"
+
+    monkeypatch.setattr(active_sessions, "_write_entries", original_write)
+    assert active_sessions.transfer_active_session(lease, session_id="session-new")
+    assert lease.session_id == "session-new"
+    lease.release()
+
+
+def test_release_wins_against_transfer_waiting_on_same_lease_lock(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-old",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+    )
+    assert lease is not None and message is None
+
+    release_wrote = threading.Event()
+    allow_release = threading.Event()
+    transfer_at_lock = threading.Event()
+    original_write = active_sessions._write_entries
+    original_enter = active_sessions._FileLock.__enter__
+
+    def _blocking_write(path, entries):
+        original_write(path, entries)
+        if threading.current_thread().name == "lease-release":
+            release_wrote.set()
+            assert allow_release.wait(timeout=5)
+
+    def _instrumented_enter(lock):
+        if threading.current_thread().name == "lease-transfer":
+            transfer_at_lock.set()
+        return original_enter(lock)
+
+    monkeypatch.setattr(active_sessions, "_write_entries", _blocking_write)
+    monkeypatch.setattr(active_sessions._FileLock, "__enter__", _instrumented_enter)
+    transfer_result: list[bool] = []
+    release_thread = threading.Thread(target=lease.release, name="lease-release")
+    transfer_thread = threading.Thread(
+        target=lambda: transfer_result.append(
+            active_sessions.transfer_active_session(lease, session_id="session-new")
+        ),
+        name="lease-transfer",
+    )
+
+    release_thread.start()
+    assert release_wrote.wait(timeout=5)
+    transfer_thread.start()
+    assert transfer_at_lock.wait(timeout=5)
+    allow_release.set()
+    release_thread.join(timeout=5)
+    transfer_thread.join(timeout=5)
+
+    assert not release_thread.is_alive()
+    assert not transfer_thread.is_alive()
+    assert transfer_result == [False]
+    assert lease.released is True
+    assert active_sessions.active_session_registry_snapshot() == []
+

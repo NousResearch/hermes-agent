@@ -58,6 +58,7 @@ import {
   SelectTrigger,
   SelectValue,
   Switch,
+  surfaceModelSwitchConfirm,
   Textarea,
   Tip,
   useQuery,
@@ -9807,6 +9808,29 @@ async function applyAdvancedConfig(bot, state) {
 
   const result = await requestForBot(bot, 'profiles.configure', payload)
   const merged = { ...applied, ...(result?.applied || {}) }
+
+  // #95293 remainder: the gateway now guards data-policy / expensive models
+  // on THIS surface too — `confirm_required` means the model section is
+  // PENDING the user's confirmation, not failed. Route it through the SAME
+  // shared confirm handler the core picker uses (one applier, no forked
+  // confirm logic per surface): the Confirm action resends ONLY the model
+  // section with `confirm_expensive_model: true`.
+  if (result?.confirm_required && payload.model && payload.provider) {
+    delete merged.model
+    surfaceModelSwitchConfirm({
+      confirmLabel: 'Confirm',
+      confirmMessage: result.confirm_message,
+      failureMessage: 'Model switch failed',
+      finish: () => queryClient.invalidateQueries({ queryKey: ROSTER_KEY }),
+      requestConfirmed: () =>
+        requestForBot(bot, 'profiles.configure', {
+          name: bot.name,
+          model: payload.model,
+          provider: payload.provider,
+          confirm_expensive_model: true
+        })
+    })
+  }
 
   return { ...result, ok: Object.values(merged).every(Boolean), applied: merged }
 }

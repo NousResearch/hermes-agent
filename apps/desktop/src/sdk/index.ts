@@ -1488,6 +1488,16 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
+/** THE confirm flow for guarded model switches — when a gateway model-switch
+ *  RPC answers `confirm_required` (data-policy / expensive-model guard),
+ *  route it through this shared applier instead of forking a per-surface
+ *  dialog: it shows the warning and resends with
+ *  `confirm_expensive_model: true` on Confirm (#95293). */
+export {
+  type GuardedModelSwitchResult,
+  surfaceModelSwitchConfirm,
+  type SurfaceModelSwitchConfirmOptions
+} from '@/lib/guarded-model-switch'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */

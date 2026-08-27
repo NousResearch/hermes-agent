@@ -62,6 +62,10 @@ BWRAP_USABLE = _bwrap_usable()
 needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
 
 MB = 1024 * 1024
+# Threads the uid may gain or lose between the preexec /proc scan and the
+# forks of the concurrent test (the parallel runner spawns sandboxes under
+# the same uid); the ceiling assertion tolerates this much movement.
+NPROC_DRIFT = 128
 
 
 @pytest.fixture
@@ -255,9 +259,11 @@ class TestLimitsIntegration:
         counts = dict(part.split("=") for part in result["output"].split())
         assert int(counts["failed"]) >= 1, counts
         # Host activity (the parallel test runner included) shifts the uid
-        # thread count between the preexec scan and the forks, so only the
-        # ceiling itself is asserted, not its exact position.
+        # thread count between the preexec scan and the forks, so the
+        # ceiling is asserted within NPROC_DRIFT of max_procs plus the
+        # wrapper allowance, not at an exact count.
         assert int(counts["started"]) < 300, counts
+        assert int(counts["started"]) <= 64 + WRAPPER_PROCESS_ALLOWANCE + NPROC_DRIFT, counts
 
     def test_max_procs_zero_disables_the_process_limit(self, make_env, fork_script):
         result = make_env(max_procs=0).execute(f"python3 {fork_script} concurrent 100")

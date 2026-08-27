@@ -234,7 +234,11 @@ class GatewayTurnMixin:
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        return self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+            getattr(event, "metadata", None),
+        )
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -1965,6 +1969,7 @@ class GatewayTurnMixin:
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                event_metadata=event.metadata,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
@@ -2438,6 +2443,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2494,7 +2500,9 @@ class GatewayTurnMixin:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(
+            source, event_message_id, event_metadata
+        )
         _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
@@ -2756,16 +2764,26 @@ class GatewayTurnMixin:
 
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
-        _relay_prospective_thread_id: Optional[str],
+        _relay_prospective_thread_id: Optional[str], event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Thread metadata for a progress-lane send; relay Discord auto-thread lane falls back to the reply anchor.
 
         The connector will auto-thread on the reply anchor (thread is born on its FIRST send), so
         carrying it routes progress / status bubbles into the same thread as the final reply."""
+        # Compatibility with the PR's pre-split helper signature:
+        # (source, progress_thread_id, reply_to_message_id, event_metadata).
+        if event_metadata is None and isinstance(_relay_prospective_thread_id, dict):
+            event_metadata = _relay_prospective_thread_id
+            event_message_id, _progress_thread_id = _progress_thread_id, event_message_id
+            _relay_prospective_thread_id = None
         if not _progress_thread_id:
-            metadata = None
+            metadata = self._thread_metadata_for_source(
+                source, event_message_id, event_metadata
+            ) if event_metadata else None
         elif _progress_thread_id == source.thread_id:
-            metadata = self._thread_metadata_for_source(source, event_message_id)
+            metadata = self._thread_metadata_for_source(
+                source, event_message_id, event_metadata
+            )
         else:
             metadata = self._thread_metadata_for_target(
                 source.platform, source.chat_id, _progress_thread_id,
@@ -2776,7 +2794,8 @@ class GatewayTurnMixin:
         return metadata
 
     def _run_agent_progress_threading(
-        self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool
+        self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[dict], Optional[str], Optional[dict]]:
         """Resolve where progress bubbles are threaded (platform-specific).
 
@@ -2814,7 +2833,8 @@ class GatewayTurnMixin:
         )
         _progress_metadata = _non_conversational_metadata(
             self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
+                source, event_message_id, _progress_thread_id,
+                _relay_prospective_thread_id, event_metadata,
             ),
             platform=source.platform,
         )
@@ -3452,6 +3472,7 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        next_event_metadata = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3479,6 +3500,7 @@ class GatewayTurnMixin:
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_event_metadata = getattr(pending_event, "metadata", None)
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3513,7 +3535,9 @@ class GatewayTurnMixin:
             source=next_source, session_id=session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-            channel_prompt=next_channel_prompt, message_type=next_message_type,
+            event_metadata=next_event_metadata,
+            channel_prompt=next_channel_prompt,
+            message_type=next_message_type,
         )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
@@ -3720,7 +3744,12 @@ class GatewayTurnMixin:
         ``turn_ctx`` (the one-slot holders shared with run_sync's executor thread are TurnContext
         defaults). Returns ``_status_thread_metadata``."""
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
-            self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
+            self._run_agent_progress_threading(
+                source,
+                event_message_id,
+                _native_slack_task_cards,
+                turn_ctx.event_metadata,
+            )
         )
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
@@ -3807,6 +3836,7 @@ class GatewayTurnMixin:
         source: SessionSource, session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
@@ -3819,7 +3849,7 @@ class GatewayTurnMixin:
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id,
+                event_message_id=event_message_id, event_metadata=event_metadata,
             )
 
         from run_agent import AIAgent
@@ -3830,6 +3860,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            event_metadata=event_metadata,
             channel_prompt=channel_prompt, moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,

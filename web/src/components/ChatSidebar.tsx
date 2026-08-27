@@ -67,6 +67,13 @@ interface SessionInfo {
 // path, mirroring the events feed's give-up contract.
 const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
 
+// Surfaced once when the redial budget is exhausted. Only this module may
+// clear it (on the next successful open), matching how the events feed
+// owns its own banner messages.
+const SIDE_CAR_GAVE_UP_MESSAGE =
+  "gateway sidecar disconnected — gave up after " +
+  `${SIDE_CAR_MAX_RECONNECT_ATTEMPTS} attempts, use Reconnect`;
+
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: 'idle',
   connecting: 'connecting',
@@ -123,6 +130,12 @@ export function ChatSidebar({
   const [version, setVersion] = useState(0)
   const gw = useMemo(() => new GatewayClient(), [])
   const feed = useMemo(() => new EventsFeedClient(), [])
+  // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
+  // must survive the [gw, version] effect re-runs a redial triggers, or the
+  // budget resets every attempt and never exhausts.
+  // Reset on a successful open and on scope switches.
+  const sidecarRedialAttemptRef = useRef(0)
+  const sidecarGaveUpRef = useRef(false)
 
   const [state, setState] = useState<ConnectionState>('idle')
   const [info, setInfo] = useState<SessionInfo>({})
@@ -180,6 +193,9 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
     setError(null)
+    // Fresh scope, fresh sidecar redial budget (#95951).
+    sidecarRedialAttemptRef.current = 0
+    sidecarGaveUpRef.current = false
     setVersion(v => v + 1)
   }, [scopeKey])
 
@@ -219,10 +235,15 @@ export function ChatSidebar({
     // the counter; unmount or a scope switch (version bump) cancels the
     // pending timer because this effect tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
-    let redialAttempt = 0;
     const offRedial = gw.onState((s) => {
       if (s === "open") {
-        redialAttempt = 0;
+        sidecarRedialAttemptRef.current = 0;
+        if (sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = false;
+          setError((current) =>
+            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+          );
+        }
         return;
       }
       if (s !== "closed" && s !== "error") {
@@ -231,11 +252,23 @@ export function ChatSidebar({
       if (cancelled || redialTimer) {
         return;
       }
-      if (redialAttempt >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
+      // The attempt counter lives in a ref: each redial rebuilds the client
+      // and re-runs this effect, so a closure-local counter would reset and
+      // the budget would never exhaust (#95951).
+      if (sidecarRedialAttemptRef.current >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
+        // Mirror the events feed's give-up contract: say so once, then the
+        // manual Reconnect affordance stays the only path. Cleared again if
+        // a later connection does open (manual reconnect followed by a
+        // within-budget drop).
+        if (!sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = true;
+          setError((current) => current ?? SIDE_CAR_GAVE_UP_MESSAGE);
+        }
         return;
       }
-      const delayMs = Math.min(250 * 2 ** redialAttempt, 3000);
-      redialAttempt += 1;
+      const attempt = sidecarRedialAttemptRef.current;
+      sidecarRedialAttemptRef.current += 1;
+      const delayMs = Math.min(250 * 2 ** attempt, 3000);
       redialTimer = setTimeout(() => {
         redialTimer = null;
         if (!cancelled) {

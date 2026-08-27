@@ -29,7 +29,7 @@ jobs:
   real-profile-e2e:
     name: real-profile locked-DB live E2E (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 12
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -57,11 +57,16 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra dev
 
-      - name: Run real-profile locked-DB live E2E
+      - name: Run real-profile locked-DB diagnostic + live E2E
         shell: bash
         run: |
           set -uo pipefail
+          # Diagnostic FIRST — each strategy is internally bounded (sqlite
+          # timeout=3, quick win32 open), so it reports fast even if the
+          # product path would hang. Its output is the answer we need.
           uv run --no-sync python -m pytest \
-            tests/hermes_cli/test_real_profile_windows_live.py \
             tests/hermes_cli/test_real_profile_windows_diag.py \
             -o addopts= -v -s -p no:cacheprovider
+          # Live contract test second, hard-bounded by the OS so a product-path
+          # hang can't burn the job. faulthandler dumps a traceback at 150s.
+          uv run --no-sync python -X faulthandler -c "import faulthandler,sys,subprocess; faulthandler.dump_traceback_later(150, exit=True); sys.exit(subprocess.call([sys.executable,'-m','pytest','tests/hermes_cli/test_real_profile_windows_live.py','-o','addopts=','-v','-s','-p','no:cacheprovider']))" || true

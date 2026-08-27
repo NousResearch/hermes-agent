@@ -1,4 +1,5 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
@@ -8,7 +9,7 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope } from './client'
+import { capabilityScoped, getApiRequestConnection, hermesApi, type ProfileScope, profileScoped } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
@@ -30,6 +31,18 @@ function sessionScopeQuery(scope?: ProfileScope): string {
   const profile = sessionScoped(scope).profile
 
   return profile ? `?profile=${encodeURIComponent(profile)}` : ''
+}
+
+/**
+ * The active registered gateway owns every row it returns, but its HTTP APIs
+ * correctly know nothing about this Desktop-local registry id. Preserve an
+ * explicit owner from a multi-source response; otherwise stamp the active
+ * non-local source so a later resume cannot fall back to a same-named local
+ * profile. Delegates to the canonical row-stamp helper so this stays the ONE
+ * write shape for connection_id on backend-returned rows.
+ */
+function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
+  return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
 }
 
 /**
@@ -59,6 +72,7 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await hermesApi<PaginatedSessions>({
+    ...profileScoped(),
     path:
       `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}`,
@@ -67,7 +81,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: pageWindow(result.sessions, limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
     offset: 0
   }
 }
@@ -100,6 +114,7 @@ export async function listAllProfileSessions(
     : ''
 
   const result = await hermesApi<PaginatedSessions>({
+    ...profileScoped(),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -108,7 +123,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: pageWindow(result.sessions, limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
     offset: 0
   }
 }
@@ -248,6 +263,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
   try {
     result = await hermesApi<SidebarSessionsResponse>({
+      ...profileScoped(),
       path: `/api/profiles/sessions/sidebar?${params.toString()}`,
       timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
     })
@@ -265,9 +281,9 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   }
 
   return {
-    recents: { ...result.recents, sessions: result.recents?.sessions ?? [] },
-    cron: { ...result.cron, sessions: result.cron?.sessions ?? [] },
-    messaging: { ...result.messaging, sessions: result.messaging?.sessions ?? [] },
+    recents: { ...result.recents, sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []) },
+    cron: { ...result.cron, sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []) },
+    messaging: { ...result.messaging, sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []) },
     errors: result.errors
   }
 }

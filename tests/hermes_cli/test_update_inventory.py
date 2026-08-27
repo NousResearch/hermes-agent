@@ -9,7 +9,11 @@ import hermes_cli.update_inventory as ui
 
 
 def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None):
-    record = {"pid": pid}
+    record = {
+        "pid": pid,
+        "kind": "hermes-gateway",
+        "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+    }
     if sha:
         record["code_sha"] = sha
     if version:
@@ -79,6 +83,17 @@ class TestCollectInventory:
     def test_dead_pids_excluded(self, fleet, monkeypatch):
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         plan = ui.collect_runtime_inventory()
+        assert plan.runtimes == []
+
+    def test_recycled_non_gateway_runtime_pid_is_excluded(self, fleet, monkeypatch):
+        """A stale state file must not classify an unrelated reused PID as Hermes."""
+        monkeypatch.setattr(
+            "gateway.status._read_process_cmdline",
+            lambda _pid: "C:\\Windows\\System32\\svchost.exe -k LocalService",
+        )
+
+        plan = ui.collect_runtime_inventory()
+
         assert plan.runtimes == []
 
     def test_pid_file_fallback_covers_unstamped_profiles(self, fleet, monkeypatch):

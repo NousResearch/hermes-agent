@@ -410,28 +410,6 @@ cron:
   failure_nudge_threshold: 3   # default; 0 disables the nudge
 ```
 
-### Automatic re-runs when the model was unreachable
-
-A recurring job whose run fails with a transient network or DNS error before
-a single model call was made — the classic case is a fire right after the
-computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
-out a whole period. The scheduler re-runs it automatically after **5, 15, and
-30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
-back to the normal schedule. Because zero API calls were made, the re-run is
-spend-neutral and cannot duplicate any side effect.
-
-While a re-run is pending, the interim failure notice is suppressed — you get
-the real result when a re-run succeeds, or a normal failure alert once the
-ladder is exhausted. Any run that reaches the model (success or failure)
-resets the ladder. One-shot jobs are excluded: their dispatch accounting is
-at-most-times and a consumed dispatch is never resurrected. Retries never
-fire past the schedule's own next occurrence when that comes sooner.
-
-```yaml
-cron:
-  retry_unreachable: false   # default true; disables the automatic re-runs
-```
-
 ### Failure incidents: acknowledge a known failure
 
 A recurring job that keeps failing with the *same* error pings you on every
@@ -441,7 +419,7 @@ ledger database as the execution history.
 
 ```bash
 hermes cron incidents                 # list incidents (newest activity first)
-hermes cron incidents --state alerted # filter: detected | alerted | resolved | closed
+hermes cron incidents --state alerted # filter: detected | alerted | closed
 hermes cron incidents ack <id>        # acknowledge — stop re-pinging
 ```
 
@@ -449,48 +427,16 @@ Acknowledging an incident silences the per-run failure ping for that exact
 signature only. Nothing else changes: the run history still records every
 failure, the failure streak keeps counting, and the moment the job starts
 failing with a *different* error a new incident is minted and alerts fire
-again.
-
-A successful run marks every open incident for that job `resolved`, so the
-list reflects current health rather than every failure the job ever had. If
-the job later fails with the *same* error, the resolved incident re-opens as
-`detected` and you are alerted again. Acknowledged (`closed`) incidents are
-the exception: a success leaves them alone, and a repeat stays silent.
+again. A successful run doesn't touch incidents — they are per-signature, not
+per-job.
 
 Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
-failure ping reached delivery) → `resolved` (the job ran OK afterwards;
-re-opens on a repeat) or `closed` (acknowledged; terminal for that
+failure ping reached delivery) → `closed` (acknowledged; terminal for that
 signature). Stored error text is secret-redacted and truncated before it is
 written.
 
 Recording is always on and costs nothing to ignore — no ping is ever
 suppressed until you explicitly `ack`.
-
-### Fleet health check: `hermes cron doctor`
-
-`hermes cron doctor` is a read-only health check over every active job. It
-prints grouped, per-job issues and exits `1` when anything actionable is
-found (`0` when healthy), so it works from a terminal, a watchdog script, or
-a CI-style smoke check:
-
-```bash
-hermes cron doctor
-```
-
-Checks per active job:
-
-- last run failed (`last_status` not ok, with the recorded error),
-- last delivery failed (the output was produced but never reached you),
-- `next_run_at` missing, or parked in the past beyond a 15-minute ticker
-  grace window — the "job is silently not firing" signal (scheduler dead,
-  gateway down, or a wedged fire-claim),
-- script missing, not a file, or resolving outside `HERMES_HOME/scripts`,
-- `no_agent` job with no script,
-- configured `workdir` that no longer exists.
-
-Doctor never mutates jobs or state — it only reports. Pair it with
-`hermes cron incidents` (durable failure records) and `hermes cron runs`
-(attempt ledger) when digging into a flagged job.
 
 ## Delivery options
 
@@ -652,14 +598,9 @@ Only the job's **own conversation** is ever touched:
   target a conversation. The global `mirror_delivery` flag alone never makes an
   explicitly-addressed chat continuable.
 
-Broadcast expansions (`all`) are never made continuable. A user-written bare
-platform name (`deliver: slack`) addresses that platform's home channel
-deliberately and follows the same rules as the home-channel fallback above.
-After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
-can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
-on a job to opt out of this thread-per-run behaviour.
-
-The mirror is written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+Broadcast / fan-out targets (`all`, bare-platform home channels) are never made
+continuable. The mirror is
+written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
 #### Flat, in-channel continuation (Slack)

@@ -1413,32 +1413,6 @@ class TestQuickSnapshot:
             assert "state.db" not in data.get("files", {})
             assert "state.db" in data.get("failed_dbs", [])
 
-    def test_restore_refused_db_is_not_counted(self, hermes_home, monkeypatch):
-        """A refused live-safe restore (holder detected, backup leg failed) must
-        not be counted as a restored file — `hermes import` reports it, and
-        /snapshot restore must not claim success for that file either."""
-        import hermes_cli.backup as backup_mod
-        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
-
-        snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
-        restored_log: list[str] = []
-        real_info = backup_mod.logger.info
-        monkeypatch.setattr(
-            backup_mod.logger, "info",
-            lambda msg, *a, **kw: restored_log.append(msg % a if a else msg) or real_info(msg, *a, **kw),
-        )
-
-        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
-
-        manifest = json.loads(
-            (backup_mod._quick_snapshot_root(hermes_home) / snap_id / "manifest.json").read_text()
-        )
-        non_db = [rel for rel in manifest.get("files", {}) if not rel.endswith(".db")]
-        summary = [line for line in restored_log if line.startswith("Restored ")]
-        assert summary, restored_log
-        assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
-
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
 

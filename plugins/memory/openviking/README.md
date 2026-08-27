@@ -81,38 +81,6 @@ Hermes also sends `User-Agent: openviking-memory-hermes/<version>` on
 OpenViking requests. This standard harness identifier contains the Hermes
 version, but no per-user identifier, and does not add a separate request.
 
-### Optional peer identity
-
-New connections use the OpenViking user's memory directory by default. Setup
-does not ask for a peer ID. Without a configured peer, Hermes sends neither
-`X-OpenViking-Actor-Peer` nor assistant-message `peer_id`.
-
-For separate assistant context, set the existing `agent` field in the active
-profile's `config.yaml`:
-
-```yaml
-memory:
-  openviking:
-    agent: work-assistant
-```
-
-Existing non-empty `OPENVIKING_AGENT`, YAML `agent`, and linked OpenViking
-`actor_peer_id` or legacy `agent_id` values retain their behavior. Resolution
-order remains environment, linked OpenViking config, then Hermes YAML. To use
-no peer, remove the peer value from each configured source and start a new
-Hermes session.
-
-Upgrades do not move or delete existing memories. Installations that relied
-on the old implicit `hermes` peer now use user memory for new writes. Without
-a peer ID, default OpenViking search covers user memory and existing peer
-memories under the same OpenViking user. Old peer memories stay at their
-existing paths and remain searchable. Ranking and result limits determine
-which memories are returned. Keep a peer ID if you need the narrower view.
-
-Set `agent: hermes` to restore peer-scoped writes. Memories written at user
-scope before this change stay there and remain searchable. This setting
-changes future writes, not the location of existing memories.
-
 ## Tools
 
 | Tool | Description |

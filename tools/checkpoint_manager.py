@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import shutil
-import stat as stat_mod
+import stat
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -136,13 +136,26 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
     return store / _PROJECTS_DIRNAME / f"{dir_hash}.json"
 
 
-def _read_json_dict(path: Path) -> Optional[Dict]:
-    """Parse ``path`` as a JSON object; None when missing, unreadable or not a dict."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _rmtree_writable(path: Path) -> None:
+    """Remove a checkpoint tree even when Git left read-only objects behind."""
+
+    def _on_error(func, target, exc_info):
+        for candidate in (os.path.dirname(target), target):
+            try:
+                os.chmod(candidate, stat.S_IRWXU)
+            except OSError:
+                pass
+        try:
+            func(target)
+        except OSError:
+            raise exc_info[1]
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+# ---------------------------------------------------------------------------
+# Git env
+# ---------------------------------------------------------------------------
 
 
 def _unlink_quiet(path: Path) -> None:
@@ -742,21 +755,48 @@ class CheckpointManager:
                 result["empty"] = True
         return result
 
-    def restore(self, working_dir: str, commit_hash: str, file_path: str = None,
-                safe: bool = False) -> Dict:
-        """Restore files to a checkpoint state.  ``safe=True`` (full-directory only) leaves files
-        the user hand-edited after Hermes' last write untouched (agent-write ledger); the result
-        then gains ``skipped_user_edits``, ``skipped_oversize`` (size cap kept them out of every
-        checkpoint) and, only when a delete failed, ``failed_deletes``."""
-        p, err = _locate(working_dir, commit_hash, file_path)
-        if err:
-            return err
-        abs_dir = p.abs_dir
-        ok, err = _commit_exists(p, commit_hash)
+    def restore(
+        self,
+        working_dir: str,
+        commit_hash: str,
+        file_path: str = None,
+        safe: bool = False,
+    ) -> Dict:
+        """Restore files to a checkpoint state.
+
+        With ``safe=True`` (full-directory restores only), files the user
+        hand-edited after Hermes' last write — per the agent-write ledger —
+        are left untouched, and only Hermes-authored changes are reverted.
+        The result gains ``skipped_user_edits`` listing the preserved paths,
+        ``skipped_oversize`` listing paths kept because the size cap excluded
+        them from every checkpoint, and — only when a delete failed —
+        ``failed_deletes`` listing paths that could not be removed.
+        """
+        hash_err = _validate_commit_hash(commit_hash)
+        if hash_err:
+            return {"success": False, "error": hash_err}
+
+        abs_dir = str(_normalize_path(working_dir))
+
+        if file_path:
+            path_err = _validate_file_path(file_path, abs_dir)
+            if path_err:
+                return {"success": False, "error": path_err}
+
+        store = _store_path(CHECKPOINT_BASE)
+
+        if not (store / "HEAD").exists():
+            return {"success": False, "error": "No checkpoints exist for this directory"}
+
+        ok, _, err = _run_git(
+            ["cat-file", "-t", commit_hash], store, abs_dir,
+        )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found", "debug": err or None}
 
         skipped_user_edits: List[str] = []
+        kept_oversize: List[str] = []
+        failed_deletes: List[str] = []
         restore_paths: Optional[List[str]] = None
         if safe and not file_path:
             plan = self.safe_restore_plan(abs_dir, commit_hash)
@@ -765,34 +805,87 @@ class CheckpointManager:
             if not plan.get("ledger_empty"):  # no agent-write history => classic full restore
                 restore_paths, skipped_user_edits = plan["restore"], plan["skipped"]
                 if not restore_paths:
-                    return _restore_ok(commit_hash, "nothing to restore (all changed files were user-edited)",
-                                       abs_dir, restored_files=[], skipped_user_edits=skipped_user_edits,
-                                       skipped_oversize=[])
+                    return {
+                        "success": True,
+                        "restored_to": commit_hash[:8],
+                        "reason": "nothing to restore (all changed files were user-edited)",
+                        "directory": abs_dir,
+                        "restored_files": [],
+                        "skipped_user_edits": skipped_user_edits,
+                        "skipped_oversize": [],
+                    }
 
         # Take a pre-rollback snapshot so you can undo the undo.
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
         targets = _SafeRestoreTargets(checkout=[file_path or "."])
         if restore_paths is not None:
-            targets = self._apply_safe_restore_deletes(p, commit_hash, restore_paths)
-        if targets.checkout:
-            ok, _, err = _run_git(["checkout", commit_hash, "--", *targets.checkout], p.store, abs_dir,
-                                  timeout=_GIT_TIMEOUT * 2, index_file=p.index_file)
-            if not ok:
-                return {"success": False, "error": f"Restore failed: {err}", "debug": err or None}
+            # Split into files present in the checkpoint (checkout) and
+            # Hermes-created files absent from it (delete to restore state).
+            checkout_targets: List[str] = []
+            delete_targets: List[str] = []
+            for rel in restore_paths:
+                ok_in_commit, _, _ = _run_git(
+                    ["cat-file", "-e", f"{commit_hash}:{rel}"],
+                    store, abs_dir, allowed_returncodes={1, 128},
+                )
+                if ok_in_commit:
+                    checkout_targets.append(rel)
+                elif self._exceeds_size_cap(Path(abs_dir) / rel):
+                    # Absent from the checkpoint because ``max_file_size_mb``
+                    # kept it out (_drop_oversize_from_index), not because
+                    # Hermes created it. Deleting it would not restore a prior
+                    # state — no checkpoint holds one — it would destroy the
+                    # only copy. The ledger records a content hash, not whether
+                    # a write created or modified the file, so an oversize path
+                    # cannot be proven agent-created; leaving it costs a stale
+                    # file, deleting it costs the file.
+                    kept_oversize.append(rel)
+                else:
+                    delete_targets.append(rel)
+            for rel in delete_targets:
+                try:
+                    target = Path(abs_dir) / rel
+                    if target.is_file() or target.is_symlink():
+                        target.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "Safe restore: could not remove %s: %s", rel, exc,
+                    )
+                    failed_deletes.append(rel)
+            if not checkout_targets:
+                ok, stdout, err = True, "", ""
+            else:
+                ok, stdout, err = _run_git(
+                    ["checkout", commit_hash, "--", *checkout_targets],
+                    store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                    index_file=index_file,
+                )
+        else:
+            ok, stdout, err = _run_git(
+                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                index_file=index_file,
+            )
 
         reason_out = _git_out(["log", "--format=%s", "-1", commit_hash], p.store, abs_dir) or "unknown"
         result = _restore_ok(commit_hash, reason_out, abs_dir)
         if file_path:
             result["file"] = file_path
         if restore_paths is not None:
-            # Report only what was actually acted on: a kept oversize path or a
-            # failed unlink left the file in place and must not read as "Restored".
-            not_restored = set(targets.kept_oversize) | set(targets.failed_deletes)
-            result.update(restored_files=[rel for rel in restore_paths if rel not in not_restored],
-                          skipped_user_edits=skipped_user_edits, skipped_oversize=targets.kept_oversize)
-            if targets.failed_deletes:
-                result["failed_deletes"] = targets.failed_deletes
+            # Only what was actually acted on. A kept oversize path was not
+            # restored (and a failed unlink left the file in place), and
+            # reporting either as restored is how the data loss above stayed
+            # silent: the user was told "Restored" for a file that had just
+            # been unlinked.
+            not_restored = set(kept_oversize) | set(failed_deletes)
+            result["restored_files"] = [
+                rel for rel in restore_paths if rel not in not_restored
+            ]
+            result["skipped_user_edits"] = skipped_user_edits
+            result["skipped_oversize"] = kept_oversize
+            if failed_deletes:
+                result["failed_deletes"] = failed_deletes
         return result
 
     def _apply_safe_restore_deletes(self, p: _ProjectRefs, commit_hash: str,
@@ -875,10 +968,14 @@ class CheckpointManager:
         return True
 
     def _exceeds_size_cap(self, path: Path) -> bool:
-        """Whether *path* is larger than ``max_file_size_mb`` (0 disables; unstattable => False).
-        The ONE predicate for both "excluded from the checkpoint" and "refused deletion at
-        restore" — a drifted threshold would delete a file with no copy."""
-        cap = self.max_file_size_mb * _MB
+        """Whether *path* is larger than ``max_file_size_mb``.
+
+        The same test :meth:`_drop_oversize_from_index` applies when building a
+        checkpoint, so "excluded from the checkpoint" and "refused deletion at
+        restore" agree on one definition. A cap of 0 disables it, and an
+        unstattable path is not claimed to be oversize.
+        """
+        cap = self.max_file_size_mb * 1024 * 1024
         if cap <= 0:
             return False
         try:
@@ -886,14 +983,25 @@ class CheckpointManager:
         except OSError:
             return False
 
-    def _drop_oversize_from_index(self, store: Path, working_dir: str, index_file: Path) -> None:
-        """Unstage files larger than ``max_file_size_mb`` (datasets, weights, videos)."""
+    def _drop_oversize_from_index(
+        self, store: Path, working_dir: str, index_file: Path,
+    ) -> None:
+        """Remove any staged file larger than ``max_file_size_mb`` from the index.
+
+        Lets the agent keep snapshotting source code while refusing to
+        swallow generated assets (datasets, model weights, logs, videos).
+        """
         if self.max_file_size_mb <= 0:
             return
         ok, stdout, _ = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
         abs_workdir = _normalize_path(working_dir)
-        # NUL-separated literal paths; whitespace is part of the file name.
-        oversize = [rel for rel in (stdout if ok else "").split("\x00") if rel and self._exceeds_size_cap(abs_workdir / rel)]
+        # Same predicate safe restore consults, called rather than restated:
+        # a threshold that drifted between the two would make a file both
+        # absent from the checkpoint and not recognised as capped at restore,
+        # which is precisely the deletion this change exists to prevent.
+        oversize = [
+            rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
+        ]
         if not oversize:
             return
         logger.debug("Checkpoint: dropping %d oversize file(s) (>%d MB) from index",
@@ -1021,14 +1129,137 @@ def _int_or_none(value) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _sweep(entries, result: Dict[str, int], delete) -> None:
-    """Shared orphan/stale sweep.  ``entries`` yields ``(item, gone, allowed, is_stale)`` where
-    ``is_stale`` is a thunk (may do I/O, so only evaluated for non-orphans); "orphan" wins."""
-    for item, gone, allowed, is_stale in entries:
+def prune_checkpoints(
+    retention_days: int = 7,
+    delete_orphans: bool = True,
+    checkpoint_base: Optional[Path] = None,
+    max_total_size_mb: int = 0,
+    orphan_allowlist: Optional[set] = None,
+) -> Dict[str, int]:
+    """Delete stale/orphan checkpoints and reclaim store space.
+
+    A project entry is deleted when either:
+
+    * ``delete_orphans=True`` and its ``workdir`` no longer exists on disk
+      (the original project was deleted / moved); OR
+    * its ``last_touch`` is older than ``retention_days`` days.
+
+    ``orphan_allowlist``, when not ``None``, restricts orphan deletion to
+    the given identities (v2 project ``_hash`` strings and/or pre-v2 shadow
+    repo paths as ``str``). This lets a caller that showed the user a
+    confirmation preview (built from ``store_status()``) bind the resulting
+    deletion to exactly what was displayed — a project that only becomes
+    orphaned *after* the preview (e.g. its workdir vanishes while the human
+    is answering the prompt) is skipped rather than swept up under the
+    earlier confirmation. Pass ``None`` (the default) to delete every
+    currently-orphaned project, e.g. for ``--force`` or unattended callers
+    that never show a preview.
+
+    Additionally, if ``max_total_size_mb > 0`` and the store exceeds that
+    after orphan/stale pruning, the oldest commit per remaining project is
+    dropped until the store is under the cap.
+
+    Legacy-archive dirs (``legacy-*``) older than ``retention_days`` are
+    also deleted.
+
+    Returns a dict with counts ``{"scanned", "deleted_orphan",
+    "deleted_stale", "errors", "bytes_freed"}``.
+
+    Never raises — maintenance must never block interactive startup.
+    """
+    base = checkpoint_base or CHECKPOINT_BASE
+    result = {
+        "scanned": 0,
+        "deleted_orphan": 0,
+        "deleted_stale": 0,
+        "errors": 0,
+        "bytes_freed": 0,
+    }
+    if not base.exists():
+        return result
+
+    size_before = _dir_size_bytes(base)
+
+    # --- Legacy pre-v2 per-project shadow repos (kept directly under base) ---
+    # Pre-v2 layout: ``base/<hash>/HEAD`` etc.  We treat these exactly as the
+    # v1 pruner did so behaviour is unchanged for anyone still on that layout
+    # or sitting on a mid-migration system.
+    cutoff = 0.0
+    if retention_days > 0:
+        cutoff = time.time() - retention_days * 86400
+
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name == _STORE_DIRNAME:
+            continue
+        if child.name.startswith(_LEGACY_PREFIX):
+            # Legacy archive: prune by dir mtime using same retention rule.
+            if retention_days <= 0:
+                continue
+            try:
+                m = child.stat().st_mtime
+            except OSError:
+                continue
+            if m >= cutoff:
+                continue
+            try:
+                size = _dir_size_bytes(child)
+                _rmtree_writable(child)
+                result["bytes_freed"] += size
+                result["deleted_stale"] += 1
+            except OSError as exc:
+                result["errors"] += 1
+                logger.warning("Failed to delete legacy archive %s: %s", child, exc)
+
+    # Pre-v2 per-project shadow repos.  Scanned via the same helper
+    # `store_status()` uses for its orphan preview, so a confirmation prompt
+    # built from that preview always matches what gets deleted here.
+    for repo in _pre_v2_shadow_repos(base):
+        child = repo["path"]
         result["scanned"] += 1
-        reason = "orphan" if gone and allowed else "stale" if is_stale() else None
-        if reason is not None:
-            delete(item, reason)
+        reason: Optional[str] = None
+        if (
+            delete_orphans
+            and not repo["marker_unreadable"]
+            and (
+                repo["workdir"] is None
+                # The frozen pre-v2 layout has no metadata channel to carry a
+                # recorded parent identity, so only the structural checks
+                # (parent present + populated / live mount point) apply here.
+                or _workdir_is_observably_gone(
+                    repo["workdir"], require_parent_identity=False,
+                )
+            )
+            and (orphan_allowlist is None or str(child) in orphan_allowlist)
+        ):
+            reason = "orphan"
+        if reason is None and retention_days > 0:
+            newest = 0.0
+            try:
+                for p in child.rglob("*"):
+                    try:
+                        mt = p.stat().st_mtime
+                        newest = max(newest, mt)
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+            if newest > 0 and newest < cutoff:
+                reason = "stale"
+        if reason is None:
+            continue
+        try:
+            size = _dir_size_bytes(child)
+            _rmtree_writable(child)
+            result["bytes_freed"] += size
+            if reason == "orphan":
+                result["deleted_orphan"] += 1
+            else:
+                result["deleted_stale"] += 1
+        except OSError as exc:
+            result["errors"] += 1
+            logger.warning("Failed to prune checkpoint repo %s: %s", child.name, exc)
 
 
 def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
@@ -1201,8 +1432,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
-        out.update(bytes_freed=size, deleted=True)
+        _rmtree_writable(base)
+        out["bytes_freed"] = size
+        out["deleted"] = True
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)
     return out
@@ -1214,6 +1446,14 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     out = {"bytes_freed": 0, "deleted": 0}
     if not base.exists():
         return out
-    for child in _legacy_archives(base):
-        _rmtree_counted(child, out, "deleted", "Could not delete legacy archive %s: %s", child)
+    for child in list(base.iterdir()):
+        if not child.is_dir() or not child.name.startswith(_LEGACY_PREFIX):
+            continue
+        try:
+            size = _dir_size_bytes(child)
+            _rmtree_writable(child)
+            out["bytes_freed"] += size
+            out["deleted"] += 1
+        except OSError as exc:
+            logger.warning("Could not delete legacy archive %s: %s", child, exc)
     return out

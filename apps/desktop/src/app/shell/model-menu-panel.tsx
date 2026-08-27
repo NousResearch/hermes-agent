@@ -24,7 +24,34 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
-  const { activeSessionId, controller } = useModelMenuController(props)
+  // Bind to THIS surface's SessionView (primary or tile) so each pane's menu
+  // shows/switches its own model — not the primary-only globals.
+  const view = useSessionView()
+  const activeSessionId = useStore(view.$runtimeId)
+  const currentFastMode = useStore(view.$fast)
+  const currentModel = useStore(view.$model)
+  const currentProvider = useStore(view.$provider)
+  const currentReasoningEffort = useStore(view.$reasoningEffort)
+  const modelPresets = useStore($modelPresets)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  const visibleModels = useStore($visibleModels)
+  const touchesPrimary = view.kind === 'primary'
+
+  // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
+  // dedupes, no second fetch). It must be a live subscription, not a cache
+  // peek: with no model in the session store yet, currentPickerSelection falls
+  // back to the catalog's reported current, and a non-reactive read would
+  // never repaint that fallback once the catalog resolved.
+  const modelOptions = useQuery({
+    queryKey: modelOptionsQueryKey(profile, activeSessionId),
+    queryFn: (): Promise<ModelOptionsResponse> =>
+      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
+  })
+
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's

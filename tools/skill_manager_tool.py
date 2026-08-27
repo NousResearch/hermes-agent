@@ -1339,16 +1339,64 @@ def skill_manage(
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _pre = _find_skill(name)
-        _ledger_before = _ledger.capture_before(
-            _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
-    for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
-        if missing(args[arg]):
-            return tool_error(message, success=False)
-    handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **args})
-    if isinstance(result, str):
-        return result  # tool_error JSON for argument-shape problems (patch)
+        _ledger_before_dir = _pre["path"] if _pre else None
+        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+    except Exception:
+        pass
+
+    if action == "create":
+        if not content:
+            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+        result = _create_skill(name, content, category)
+
+    elif action == "edit":
+        # Legacy alias for a full rewrite (kept for old transcripts/callers;
+        # no longer advertised in the schema — use patch with `content`).
+        if not content:
+            return tool_error("content is required for a full rewrite. Provide the full updated SKILL.md text.", success=False)
+        result = _edit_skill(name, content)
+
+    elif action == "patch":
+        # Two shapes: old_string/new_string = targeted replacement;
+        # content (alone) = full SKILL.md rewrite (absorbs the old 'edit').
+        if content and (old_string or new_string is not None):
+            return tool_error(
+                "Pass EITHER content (full SKILL.md rewrite) OR "
+                "old_string/new_string (targeted replacement), not both.",
+                success=False,
+            )
+        if content:
+            result = _edit_skill(name, content)
+        else:
+            if not old_string:
+                return tool_error(
+                    "patch needs old_string/new_string for a targeted "
+                    "replacement, or content for a full SKILL.md rewrite "
+                    "(read it first with skill_view()).",
+                    success=False,
+                )
+            if new_string is None:
+                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+
+    elif action == "delete":
+        result = _delete_skill(name, absorbed_into=absorbed_into)
+
+    elif action == "write_file":
+        if not file_path:
+            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+        if file_content is None:
+            return tool_error("file_content is required for 'write_file'.", success=False)
+        result = _write_file(name, file_path, file_content)
+
+    elif action == "remove_file":
+        if not file_path:
+            return tool_error("file_path is required for 'remove_file'.", success=False)
+        result = _remove_file(name, file_path)
+
+    else:
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+
     if result.get("success"):
         _record_success(
             action, name, result, file_path=file_path, absorbed_into=absorbed_into,
@@ -1386,79 +1434,90 @@ def _skill_manage_schema_overrides() -> dict:
 
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
-    # ONE advertised call shape (memory-tool pattern): the call IS an operations
-    # array. The legacy flat shape (top-level action/name/content/...) is still
-    # ACCEPTED for old transcripts and staged-write replay, but not advertised.
-    "description": _skill_manage_description("the profile's skills.create_dir"),
+    "description": (
+        "Create, update, or delete skills — your procedural memory for "
+        "recurring task types. Actions: create (full SKILL.md + optional "
+        f"category; lands in {display_hermes_home()}/skills/), patch "
+        "(old_string/new_string for a targeted fix — preferred; OR content "
+        "alone for a full SKILL.md rewrite), delete, write_file/remove_file "
+        "(supporting files). Existing skills are modified wherever they "
+        "live. Good skills: a self-contained trigger in the description's "
+        "first 57 chars ('Use when <trigger>. <one-line behavior>.'), "
+        "numbered steps with exact commands, pitfalls, verification (see "
+        "skill_view() for format). Confirm with the user before "
+        "create/delete."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "operations": {
-                "type": "array",
-                "description": "Ordered ops; each names its target skill.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Skill name (lowercase, hyphens/underscores, "
-                                "max 64 chars); an existing skill's name "
-                                "unless creating."
-                            )
-                        },
-                        "action": {
-                            "type": "string",
-                            "enum": ["create", "patch", "delete", "write_file", "remove_file"]
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": (
-                                "Full SKILL.md text (YAML frontmatter + "
-                                "markdown body) for create, or a full "
-                                "rewrite on patch."
-                            )
-                        },
-                        "category": {
-                            "type": "string",
-                            "description": "Optional category subdir for create (e.g. 'devops')."
-                        },
-                        # patch args: same fuzzy-matching semantics as the
-                        # `patch` tool — teach only skill-specific facts here.
-                        "old_string": {
-                            "type": "string",
-                            "description": "Text to find (patch; same matching semantics as the patch tool)."
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "Replacement (patch); empty string deletes the match."
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "patch: replace all occurrences (default false)."
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": (
-                                "Path RELATIVE to the skill's own directory, "
-                                "e.g. 'references/api.md' — no leading slash, "
-                                "never absolute. write_file/remove_file: "
-                                "required; first segment references/, "
-                                "templates/, scripts/, or assets/. patch: "
-                                "optional (default SKILL.md)."
-                            )
-                        },
-                        "file_content": {
-                            "type": "string",
-                            "description": "Content for write_file."
-                        }
-                    },
-                    "required": ["name", "action"]
-                }
+            "action": {
+                "type": "string",
+                "enum": ["create", "patch", "delete", "write_file", "remove_file"],
+                "description": "The action to perform."
             },
-            # Also accepted, never advertised: the legacy flat single-op fields, and
-            # `absorbed_into` on delete ops (curator-only vocabulary; the curator's
-            # prompt documents it and the delete guard's error re-teaches it).
+            "name": {
+                "type": "string",
+                "description": (
+                    "Skill name (lowercase, hyphens/underscores, max 64 chars). "
+                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
+                )
+            },
+            "content": {
+                "type": "string",
+                "description": (
+                    "Full SKILL.md content (YAML frontmatter + markdown body). "
+                    "Required for 'create'; on 'patch' it performs a full "
+                    "rewrite (major overhauls only — read the skill first with "
+                    "skill_view(), and don't combine with old_string)."
+                )
+            },
+            "old_string": {
+                "type": "string",
+                "description": (
+                    "Text to find in the file (required for 'patch'). Must be unique "
+                    "unless replace_all=true. Include enough surrounding context to "
+                    "ensure uniqueness."
+                )
+            },
+            "new_string": {
+                "type": "string",
+                "description": (
+                    "Replacement text (required for 'patch'); must differ from "
+                    "old_string. Can be empty string to delete the matched text."
+                )
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
+            },
+            "category": {
+                "type": "string",
+                "description": (
+                    "Optional category/domain for organizing the skill (e.g., 'devops', "
+                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
+                    "Only used with 'create'."
+                )
+            },
+            "file_path": {
+                "type": "string",
+                "description": (
+                    "Path to a supporting file within the skill directory. "
+                    "For 'write_file'/'remove_file': required, must be under references/, "
+                    "templates/, scripts/, or assets/. "
+                    "For 'patch': optional, defaults to SKILL.md if omitted."
+                )
+            },
+            "file_content": {
+                "type": "string",
+                "description": "Content for the file. Required for 'write_file'."
+            },
+            # NOTE: the handler also accepts `absorbed_into` on delete — the
+            # curator's consolidation pass declares merge-vs-prune intent with
+            # it. Deliberately NOT advertised in this schema: only curator
+            # sessions need it, the curator's own prompt documents it, and the
+            # curator-context delete guard's error re-teaches it on omission
+            # (_curator_consolidation_delete_guard). Keeping it out saves
+            # ~100 tokens on every call of every other session.
         },
         "required": ["operations"],
     },

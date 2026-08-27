@@ -22,8 +22,19 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, patchSessionTile, sessionTileDelegate } from '@/store/session-states'
+import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
+import {
+  requestForSessionProfile,
+  type SessionOwnerScope,
+  type SessionProfileRoute
+} from '@/store/session-request-router'
+import {
+  $sessionStates,
+  isSessionRemote,
+  patchSessionTile,
+  sessionTileDelegate,
+  sessionTileOwnerRoute
+} from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
@@ -259,7 +270,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       return { attachments: synced, sessionId: liveSessionId }
     },
-    [bindRecoveredRuntime, readState, requestGateway, scope.attachments]
+    [bindRecoveredRuntime, readState, requestSessionGateway, scope.attachments]
   )
 
   // The REAL submit pipeline with tile seams: session always exists, and the
@@ -275,7 +286,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     onRuntimeRecovered: bindRecoveredRuntime,
-    requestGateway,
+    requestGateway: requestSessionGateway,
     runtimeIdByStoredSessionIdRef,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.
@@ -343,14 +354,14 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         storedIdRef.current,
         liveId => requestSessionGateway('session.interrupt', { session_id: liveId }),
         {
-          requestGateway,
+          requestGateway: requestSessionGateway,
           onRecovered: bindRecoveredRuntime
         }
       )
     } catch (err) {
       notifyError(err, copy.stopFailed)
     }
-  }, [bindRecoveredRuntime, copy.stopFailed, requestGateway, update])
+  }, [bindRecoveredRuntime, copy.stopFailed, requestSessionGateway, update])
 
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
@@ -402,7 +413,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           storedIdRef.current,
           liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
           {
-            requestGateway,
+            requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
           }
         )
@@ -430,7 +441,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       return false
     },
-    [bindRecoveredRuntime, requestGateway]
+    [bindRecoveredRuntime, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
@@ -460,7 +471,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sourceText,
         rebindRowIds
       ),
-    [bindRecoveredRuntime, requestGateway]
+    [bindRecoveredRuntime, requestSessionGateway]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the

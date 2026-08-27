@@ -50,27 +50,6 @@ def _handoff_source() -> str:
     fixture runs a synthetic PowerShell step through ``Invoke-HermesStep`` to
     prove the drain cannot deadlock (#90455) -- so they are not update steps
     and the "must drive python.exe" rule does not apply to them. Each exits
-    before any venv/desktop machinery runs.
-
-    Scoped here rather than allow-listing a target, so the rule stays absolute
-    for every real step. The non-greedy match ends at the first closing brace
-    at the opening statement's indentation; inner braces are deeper.
-    """
-    return re.sub(
-        r"\n(?P<indent> *)if \(\$SelfTest\w+\) \{.*?\n(?P=indent)\}\n",
-        "\n",
-        _read(),
-        flags=re.S,
-    )
-
-
-def _handoff_source() -> str:
-    """The script with its ``-SelfTest*`` fixture blocks removed.
-
-    Those blocks exercise the hand-off machinery deliberately -- the pipe-drain
-    fixture runs a synthetic PowerShell step through ``Invoke-HermesStep`` to
-    prove the drain cannot deadlock (#90455) -- so they are not update steps
-    and the "must drive python.exe" rule does not apply to them. Each exits
     before any marker/venv/desktop machinery runs.
 
     Scoped here rather than allow-listing a target, so the rule stays absolute

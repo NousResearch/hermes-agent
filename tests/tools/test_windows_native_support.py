@@ -937,7 +937,8 @@ class TestWindowlessGatewayRestartSpec:
         import hermes_cli.gateway_windows as gw
 
         argv = ["/path/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
-        new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
+        with mock.patch.object(gw.sys, "platform", "linux"):
+            new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
         assert new_argv == argv
         assert cwd == ""
         assert env == {}

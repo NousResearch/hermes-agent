@@ -320,10 +320,15 @@ def select_preferred_transcript(candidates: list[MeetingArtifact]) -> MeetingArt
 async def download_transcript_text(
     client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, transcript: MeetingArtifact, *, encoding: str = "utf-8") -> str:
     suffix = Path(transcript.display_name or "transcript.vtt").suffix or ".txt"
-    with tempfile.TemporaryDirectory(prefix="teams-transcript-", ignore_cleanup_errors=True) as tmp_dir:
-        destination = Path(tmp_dir) / f"transcript{suffix}"
+    with tempfile.NamedTemporaryFile(prefix="teams-transcript-", suffix=suffix, delete=False) as handle:
+        destination = Path(handle.name)
+    try:
         # Graph's transcript /content endpoint rejects JSON content negotiation.
-        await _download_artifact(client, meeting_ref, transcript, destination, kind="transcript", headers={"Accept": "text/vtt"})
+        await client.download_to_file(
+            _transcript_download_path(meeting_ref, transcript),
+            destination,
+            headers={"Accept": "text/vtt"},
+        )
         text = destination.read_text(encoding=encoding).strip()
     if not text:
         raise TeamsMeetingArtifactNotFoundError(f"Transcript {transcript.artifact_id} for meeting {meeting_ref.meeting_id} was empty.")

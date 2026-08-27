@@ -166,7 +166,7 @@ def test_codex_turn_persists_each_message_exactly_once():
 
         if db is not None:
             db.close()
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp)
 
 
 class TestGatewayPersistedResolution:

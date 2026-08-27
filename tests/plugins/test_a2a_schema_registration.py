@@ -32,10 +32,10 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
 
     described = json.loads(
         tool_search.dispatch_tool_describe(
-            {"name": "a2a_call"},
+            {"names": ["a2a_call"]},
             current_tool_defs=definitions,
         )
-    )
+    )["tools"]["a2a_call"]
 
     assert described["description"]
     assert described["parameters"]["required"] == ["agent", "message"]

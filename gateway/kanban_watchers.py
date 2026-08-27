@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import sqlite3
 import time
 from contextvars import Context
 from pathlib import Path
@@ -35,6 +37,28 @@ from gateway.kanban_watchers_dispatcher import (
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+_LOCAL_PATH_RE = re.compile(
+    r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|"
+    r"[A-Za-z]:\\[^\s,;]+)"
+)
+
+
+def _safe_review_reason(value: Any, limit: int = 160) -> str:
+    """Return a mobile-friendly review reason safe for external delivery."""
+    from agent.redact import redact_sensitive_text
+
+    reason = redact_sensitive_text(
+        "" if value is None else str(value),
+        force=True,
+        redact_url_credentials=True,
+    )
+    reason = _LOCAL_PATH_RE.sub("[local path]", reason)
+    reason = " ".join(reason.split())
+    if len(reason) > limit:
+        reason = reason[: limit - 1].rstrip() + "…"
+    return reason
 
 
 def _resolve_auto_decompose_settings(
@@ -219,13 +243,26 @@ class GatewayKanbanWatchersMixin:
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
-        Per subscription, claims ``task_events`` newer than the stored cursor
-        (kinds in TERMINAL_KINDS), sends one message per event, then advances
-        the cursor. The subscription is removed only when the task is
-        ``archived``: ``done`` is reversible, so the cursor — not unsubscribing
-        — is the dedup mechanism (unsub-on-terminal dropped users when the
-        dispatcher respawned a crashed task). All SQLite work runs in a thread;
-        one tick's failure never stops the next.
+        For each subscription row, fetches ``task_events`` newer than the
+        stored cursor with kind in the terminal set (``completed``,
+        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
+        ``review_requested``, ``changes_requested``,
+        ``block_loop_detected``). Sends one
+        message per new event to ``(platform, chat_id, thread_id)``,
+        then advances the cursor. The subscription is removed only when the
+        task is ``archived``. A ``done`` task can be reopened for review or
+        continuation, so its subscription and origin-session ownership must
+        survive completion. Cursor advancement prevents old events replaying
+        when that happens.
+
+        Runs in the gateway event loop; all SQLite work is pushed to a
+        thread via ``asyncio.to_thread`` so the loop never blocks on the
+        WAL lock. Failures in one tick don't stop subsequent ticks.
+
+        **Multi-board:** iterates every board discovered on disk per
+        tick. Each gateway polls only subscriptions owned by profiles whose
+        adapters it hosts. The dispatch-owning gateway also handles legacy
+        subscriptions without a profile stamp.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -246,7 +283,41 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        sub_fail_counts: dict[tuple, int] = getattr(self, "_kanban_sub_fail_counts", {})
+        # "status" covers dashboard drag-drop and `_set_status_direct()`
+        # writes — surface those transitions to subscribers too.
+        # ``review_requested`` wakes the origin subscriber like a block does,
+        # but is not a block (see kanban_db.request_review); the task is not
+        # archived, so the subscription stays alive and later review
+        # cycles keep notifying.
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+        # Subscriptions are removed only when the task reaches the irreversible
+        # archived status. ``done`` is reversible in review/controller flows,
+        # so removing its subscription would silence a later reopen. We used
+        # to also unsub on any terminal
+        # event kind (gave_up / crashed / timed_out / blocked), but that
+        # silently dropped the user out of the loop whenever the dispatcher
+        # respawned the task: a worker that crashes, gets reclaimed, runs
+        # again, and crashes a second time would only notify on the first
+        # crash because the subscription was deleted after the first event.
+        # Same shape as the reblock-after-unblock cycle that PR #22941
+        # fixed for `blocked`. Keeping the subscription alive until the
+        # task is archived lets the cursor (advanced atomically by
+        # claim_unseen_events_for_sub) handle dedup, and any retry-loop
+        # event reaches the user.
+        # Per-subscription send-failure counter. Adapter.send raising
+        # means the chat is dead (deleted, bot kicked, etc.) — after N
+        # consecutive send failures the sub is dropped so we don't spin
+        # against a dead chat every 5 seconds forever.
+        # Raised from 3 to 12 (~60s at the 5s tick cadence): now that a
+        # reported SendResult(success=False) also lands here (see the
+        # delivery loop below), a transient Telegram/API outage of a few
+        # ticks must NOT permanently unsubscribe a live review-gate channel.
+        # A genuinely dead chat still drops, just ~60s later — a fine trade
+        # for an unattended gate where a false drop means silent work pileup.
+        MAX_SEND_FAILURES = 12
+        sub_fail_counts: dict[tuple, int] = getattr(
+            self, "_kanban_sub_fail_counts", {}
+        )
         self._kanban_sub_fail_counts = sub_fail_counts
         notifier_profile = getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
         self._kanban_notifier_profile = notifier_profile
@@ -327,6 +398,7 @@ class GatewayKanbanWatchersMixin:
                     # "Task X completed" and re-decomposes work that already
                     # exists on the board.
                     wake_handoff = ""
+                    wake_review_detail = ""
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -394,11 +466,36 @@ class GatewayKanbanWatchersMixin:
                             # first-class review lane. Wake the origin thread.
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
-                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                                summary = str(ev.payload["summary"])
+                                handoff = f"\n{summary[:200]}"
+                                # Carry the worker's handoff into the wake turn
+                                # like ``completed`` does: a reviewer woken with
+                                # a bare "ready for review" has to re-read the
+                                # board to learn what was implemented.
+                                lines = summary.strip().splitlines()
+                                wake_handoff = (
+                                    lines[0][:200] if lines else summary[:200]
+                                )
                             msg = (
                                 f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
                                 f" — {title}{handoff}"
                             )
+                        elif kind == "changes_requested":
+                            payload = ev.payload or {}
+                            reason = _safe_review_reason(payload.get("reason"))
+                            reviewer = _safe_review_reason(payload.get("reviewer"), 48)
+                            implementer = _safe_review_reason(payload.get("implementer"), 48)
+                            reason_text = reason or "reviewer feedback requires changes"
+                            provenance = ""
+                            if reviewer:
+                                provenance += f" — reviewer @{reviewer}"
+                            if implementer:
+                                provenance += f" → implementer @{implementer}"
+                            msg = (
+                                f"🛑 {board_tag}Kanban {sub['task_id']} review requested "
+                                f"changes/BLOCK: {reason_text}{provenance}"
+                            )
+                            wake_review_detail = reason_text
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
                             # recurrence limit and was routed to `triage` for a
@@ -562,7 +659,19 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status == "archived"
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        # Kinds that hand a decision back to the origin, so the
+                        # origin has to take a turn. ``review_requested`` (the
+                        # implementation is done and waits for a reviewer),
+                        # ``changes_requested`` (a reviewer BLOCKed and work
+                        # returns to the implementer) and ``block_loop_detected``
+                        # (routed to triage) belong here for the same reason
+                        # ``blocked`` does. ``status`` / ``archived`` /
+                        # ``unblocked`` stay out: bookkeeping.
+                        _WAKE_KINDS = (
+                            "completed", "gave_up", "crashed", "timed_out",
+                            "blocked", "review_requested", "changes_requested",
+                            "block_loop_detected",
+                        )
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                             if wake_agent
@@ -599,6 +708,9 @@ class GatewayKanbanWatchersMixin:
                             if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                             if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
                             if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                            if "review_requested" in _wake_kinds: _parts.append(t("gateway.kanban.wake.review_requested"))
+                            if "changes_requested" in _wake_kinds: _parts.append(t("gateway.kanban.wake.changes_requested"))
+                            if "block_loop_detected" in _wake_kinds: _parts.append(t("gateway.kanban.wake.block_loop_detected"))
                             _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                             _synth = t(
                                 "gateway.kanban.wake.message",
@@ -617,6 +729,11 @@ class GatewayKanbanWatchersMixin:
                                 _synth += "\n" + t(
                                     "gateway.kanban.wake.handoff",
                                     summary=wake_handoff,
+                                )
+                            if wake_review_detail:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.review_detail",
+                                    reason=wake_review_detail,
                                 )
                             _synth += "\n\n" + t(
                                 "gateway.kanban.wake.guidance"

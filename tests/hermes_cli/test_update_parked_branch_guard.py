@@ -395,6 +395,53 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
+def test_in_place_merge_completes_shallow_history_before_merging(tmp_path):
+    """A shallow custom checkout must fetch its ancestor before a merge.
+
+    Git otherwise reports unrelated histories even when both refs descend from
+    the same upstream commit.  The updater must repair that read-only history
+    gap before it creates a safety tag or starts the actual merge.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
+    (origin / "a.txt").write_text("base\n")
+    _git(origin, "add", "a.txt")
+    _git(origin, "commit", "-qm", "base")
+    _git(origin, "branch", "legacy")
+    (origin / "a.txt").write_text("main\n")
+    _git(origin, "commit", "-aqm", "main advance")
+
+    clone = tmp_path / "clone"
+    _git(
+        tmp_path,
+        "clone",
+        "-q",
+        "--depth=1",
+        "--branch",
+        "legacy",
+        origin.as_uri(),
+        str(clone),
+    )
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+    _git(clone, "checkout", "-qb", "old-feature")
+    _git(clone, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(clone, "fetch", "-q", "--depth=1", "origin", "main")
+
+    assert _git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    assert _git(clone, "merge-base", "HEAD", "origin/main", check=False).returncode != 0
+
+    ready, detail = update_cmd._ensure_in_place_merge_base(GIT, clone, "main")
+
+    assert ready is True
+    assert detail == ""
+    assert _git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+    assert _git(clone, "merge-base", "HEAD", "origin/main").returncode == 0
+
+
 def test_switch_branch_flag_overrides_in_place_strategy(
     repo_pair, monkeypatch, capsys
 ):

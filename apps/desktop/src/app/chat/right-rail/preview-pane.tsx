@@ -18,7 +18,16 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $previewServerRestart, failPreviewServerRestart, noteBrowserPage, type PreviewTarget } from '@/store/preview'
+import {
+  $browserPages,
+  $previewServerRestart,
+  commitBrowserTabLocation,
+  failPreviewServerRestart,
+  noteBrowserPage,
+  popOutBrowserTab,
+  type PreviewTarget
+} from '@/store/preview'
+import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
@@ -71,6 +80,20 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+}
+
+/** Electron throws if getURL/getTitle run before attach + dom-ready, or after
+ *  the guest has been removed. Optional chaining does not help — the method
+ *  exists, it just refuses. */
+function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
+  try {
+    return {
+      title: webview?.getTitle?.() ?? '',
+      url: webview?.getURL?.() || fallbackUrl
+    }
+  } catch {
+    return { title: '', url: fallbackUrl }
+  }
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -1016,8 +1039,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
     }
 
-    const syncHistory = () =>
-      setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
+    const syncHistory = () => {
+      try {
+        setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
+      } catch {
+        // Same attach / dom-ready rule as getURL.
+      }
+    }
 
     // Tell the strip what this Browser is showing, so its tab renames itself
     // like a tab anywhere else. Deliberately NOT written back into the tab's
@@ -1028,7 +1056,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         return
       }
 
-      noteBrowserPage(tabId, { title: webview.getTitle?.() ?? '', url: webview.getURL?.() || target.url })
+      noteBrowserPage(tabId, guestPage(webview, target.url))
     }
 
     const onNavigate = (event: Event) => {
@@ -1252,7 +1280,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onBack={goBack}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={() => void window.hermesDesktop?.openExternal(currentUrl)}
+            onOpenExternal={
+              !isBrowserWindow() && !canOpenBrowserWindow()
+                ? () => void window.hermesDesktop?.openExternal(currentUrl)
+                : undefined
+            }
+            onPopIn={isBrowserWindow() ? () => window.close() : undefined}
+            onPopOut={
+              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+            }
             onReload={reloadPreview}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}

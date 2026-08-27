@@ -175,7 +175,7 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
     with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
-        cua_backend_driver,
+        cua_backend,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
     ), patch.object(

@@ -141,7 +141,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
-        setChatFontFamilyFromConfig(config.desktop?.font_family)
 
         if (!canPublish()) {
           return

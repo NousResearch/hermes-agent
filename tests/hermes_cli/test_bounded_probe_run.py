@@ -92,6 +92,17 @@ def test_stdin_is_devnull_not_inherited():
     assert result.stdout.strip() == "''"
 
 
+def test_cwd_is_applied(tmp_path):
+    result = bounded_probe_run(
+        [_PY, "-c", "import os; print(os.getcwd())"],
+        timeout=30,
+        cwd=tmp_path,
+    )
+    assert result is not None
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(tmp_path)
+
+
 def test_bounded_git_probe_delegates_same_contract():
     """The historical git-probe wrapper keeps its exact contract on top of
     bounded_probe_run: stripped stdout on rc==0, '' on any failure."""

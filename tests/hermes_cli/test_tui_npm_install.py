@@ -70,7 +70,7 @@ def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
         '"node_modules/foo":{"version":"1.0.0","dev":true,"resolved":"https://x/foo.tgz"}'
         '}}'
     )
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is False
+    assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
 def test_install_when_version_differs_even_with_peer_drop(tmp_path: Path, main_mod) -> None:
@@ -82,7 +82,7 @@ def test_install_when_version_differs_even_with_peer_drop(tmp_path: Path, main_m
     (tmp_path / "node_modules" / ".package-lock.json").write_text(
         '{"packages":{"node_modules/foo":{"version":"1.0.0","dev":true}}}'
     )
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is True
+    assert main_mod._tui_need_npm_install(tmp_path) is True
 
 
 def test_no_install_when_lock_older_than_marker(tmp_path: Path, main_mod) -> None:
@@ -91,18 +91,18 @@ def test_no_install_when_lock_older_than_marker(tmp_path: Path, main_mod) -> Non
     (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
     os.utime(tmp_path / "package-lock.json", (100, 100))
     os.utime(tmp_path / "node_modules" / ".package-lock.json", (200, 200))
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is False
+    assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
 def test_need_install_when_marker_missing(tmp_path: Path, main_mod) -> None:
     _touch_ink(tmp_path)
     (tmp_path / "package-lock.json").write_text("{}")
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is True
+    assert main_mod._tui_need_npm_install(tmp_path) is True
 
 
 def test_no_install_without_lockfile_when_ink_present(tmp_path: Path, main_mod) -> None:
     _touch_ink(tmp_path)
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is False
+    assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
 # ── workspace-scoped comparison (#66978) ────────────────────────────
@@ -148,7 +148,7 @@ def test_no_install_when_only_other_workspace_deps_missing(tmp_path: Path, main_
         '"node_modules/foo":{"version":"1.0.0"}'
         "}}",
     )
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is False
+    assert main_mod._tui_need_npm_install(tui_dir) is False
 
 
 def test_need_install_when_ui_tui_dep_missing_in_workspace_layout(tmp_path: Path, main_mod) -> None:
@@ -165,7 +165,7 @@ def test_need_install_when_ui_tui_dep_missing_in_workspace_layout(tmp_path: Path
         '"node_modules/foo":{"version":"1.0.0"}'
         "}}",
     )
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
+    assert main_mod._tui_need_npm_install(tui_dir) is True
 
 
 def test_need_install_when_linked_workspace_dep_missing(tmp_path: Path, main_mod) -> None:
@@ -185,7 +185,7 @@ def test_need_install_when_linked_workspace_dep_missing(tmp_path: Path, main_mod
         '"ui-tui/packages/hermes-ink":{"dependencies":{"inkdep":"1.0.0"}}'
         "}}",
     )
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
+    assert main_mod._tui_need_npm_install(tui_dir) is True
 
 
 def test_need_install_when_closure_package_version_drifts(tmp_path: Path, main_mod) -> None:
@@ -201,7 +201,7 @@ def test_need_install_when_closure_package_version_drifts(tmp_path: Path, main_m
         '"node_modules/foo":{"version":"1.0.0"}'
         "}}",
     )
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
+    assert main_mod._tui_need_npm_install(tui_dir) is True
 
 
 def test_workspace_closure_includes_dev_deps_of_scoped_workspace(main_mod) -> None:
@@ -216,14 +216,14 @@ def test_workspace_closure_includes_dev_deps_of_scoped_workspace(main_mod) -> No
         "node_modules/esbuild": {},
         "node_modules/foo-dev-only": {},
     }
-    closure = main_tui_launch._npm_lock_workspace_closure(packages, "ui-tui")
+    closure = main_mod._npm_lock_workspace_closure(packages, "ui-tui")
     assert "node_modules/esbuild" in closure
     assert "node_modules/foo-dev-only" not in closure
 
 
 def test_workspace_closure_returns_none_when_start_absent(main_mod) -> None:
     """Missing workspace key → None so the caller falls back to full compare."""
-    assert main_tui_launch._npm_lock_workspace_closure({"node_modules/foo": {}}, "ui-tui") is None
+    assert main_mod._npm_lock_workspace_closure({"node_modules/foo": {}}, "ui-tui") is None
 
 
 def test_workspace_closure_includes_dev_deps_of_selected_child_workspace(main_mod) -> None:
@@ -240,10 +240,10 @@ def test_workspace_closure_includes_dev_deps_of_selected_child_workspace(main_mo
         "node_modules/child-dev-only": {},
     }
     # Only ui-tui selected (desktop): the child's dev dep is not installed.
-    desktop = main_tui_launch._npm_lock_workspace_closure(packages, {"ui-tui"})
+    desktop = main_mod._npm_lock_workspace_closure(packages, {"ui-tui"})
     assert "node_modules/child-dev-only" not in desktop
     # ui-tui + child selected (Termux): the child's dev dep is in the closure.
-    termux = main_tui_launch._npm_lock_workspace_closure(
+    termux = main_mod._npm_lock_workspace_closure(
         packages, {"ui-tui", "ui-tui/packages/hermes-ink"}
     )
     assert "node_modules/child-dev-only" in termux
@@ -276,23 +276,23 @@ def test_termux_install_catches_missing_child_workspace_dev_dep(
     (child / "package.json").write_text('{"name":"@hermes/ink"}')
 
     monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is False
+    assert main_mod._tui_need_npm_install(tui_dir) is False
 
     monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: True)
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
+    assert main_mod._tui_need_npm_install(tui_dir) is True
 
 
 def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
     """dist/entry.js present and no package-lock.json → prebuilt bundle, skip npm install."""
     _touch_tui_entry(tmp_path)
-    assert main_tui_launch._tui_need_npm_install(tmp_path) is False
+    assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
 def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path, main_mod) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "entry.tsx").write_text("console.log('src')")
 
-    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
+    assert main_mod._tui_need_rebuild(tmp_path) is True
 
 
 def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path, main_mod) -> None:
@@ -303,7 +303,7 @@ def test_no_rebuild_when_tui_bundle_newer_than_inputs(tmp_path: Path, main_mod) 
     os.utime(src / "entry.tsx", (100, 100))
     os.utime(tmp_path / "dist" / "entry.js", (200, 200))
 
-    assert main_tui_launch._tui_need_rebuild(tmp_path) is False
+    assert main_mod._tui_need_rebuild(tmp_path) is False
 
 
 def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> None:
@@ -314,7 +314,7 @@ def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> 
     os.utime(tmp_path / "dist" / "entry.js", (100, 100))
     os.utime(src / "entry.tsx", (200, 200))
 
-    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
+    assert main_mod._tui_need_rebuild(tmp_path) is True
 
 
 def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
@@ -322,8 +322,8 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
 ) -> None:
     _touch_tui_entry(tmp_path)
     monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
 
     def fail_run(*_args, **_kwargs):
@@ -331,7 +331,7 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
 
-    argv, cwd = main_tui_launch._make_tui_argv(tmp_path, tui_dev=False)
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
     assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
     assert cwd == tmp_path
@@ -342,8 +342,8 @@ def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
 ) -> None:
     _touch_tui_entry(tmp_path)
     monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
 
     def fail_run(*_args, **_kwargs):
@@ -351,7 +351,7 @@ def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
 
-    argv, cwd = main_tui_launch._make_tui_argv(tmp_path, tui_dev=False)
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
     assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
     assert cwd == tmp_path
@@ -369,8 +369,8 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
     (tmp_path / "package-lock.json").write_text("{}")
 
     monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -380,7 +380,7 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    main_tui_launch._make_tui_argv(tui_dir, tui_dev=False)
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
     install_cmd = calls[0][0][0]
     assert install_cmd[:7] == [
@@ -407,7 +407,7 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -417,7 +417,7 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    main_tui_launch._make_tui_argv(tui_dir, tui_dev=False)
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
     assert calls[0][0][0] == [
         "/bin/npm",
@@ -451,7 +451,7 @@ def test_make_tui_argv_npm_install_forces_include_dev(
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setenv("NODE_ENV", "production")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -461,7 +461,7 @@ def test_make_tui_argv_npm_install_forces_include_dev(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    main_tui_launch._make_tui_argv(tui_dir, tui_dev=False)
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
     install_cmd = calls[0][0][0]
     assert install_cmd[:2] == ["/bin/npm", "install"]
@@ -474,8 +474,8 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     _touch_tui_entry(tmp_path)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -485,7 +485,7 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    main_tui_launch._make_tui_argv(tmp_path, tui_dev=False)
+    main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
     assert calls
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
@@ -501,7 +501,7 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
     tsx.parent.mkdir(parents=True)
     tsx.write_text("")
 
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -511,7 +511,7 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
 
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    argv, cwd = main_tui_launch._make_tui_argv(tmp_path, tui_dev=True)
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=True)
 
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tmp_path
@@ -613,7 +613,7 @@ def test_need_npm_install_false_with_reduced_npm11_hidden_lockfile(
 
     # Must be False: real skew keys (resolved/integrity) match, declarative
     # omissions and extraneous are ignored, and the workspace link is skipped.
-    assert main_tui_launch._tui_need_npm_install(ws) is False
+    assert main_mod._tui_need_npm_install(ws) is False
 
 
 def test_need_npm_install_true_when_resolved_drifts(tmp_path: Path, main_mod) -> None:
@@ -652,7 +652,7 @@ def test_need_npm_install_true_when_resolved_drifts(tmp_path: Path, main_mod) ->
     )
 
     # resolved/integrity differ on both sides → must reinstall.
-    assert main_tui_launch._tui_need_npm_install(ws) is True
+    assert main_mod._tui_need_npm_install(ws) is True
 
 
 def test_need_npm_install_true_when_regular_pkg_missing(tmp_path: Path, main_mod) -> None:
@@ -693,7 +693,7 @@ def test_need_npm_install_true_when_regular_pkg_missing(tmp_path: Path, main_mod
         )
     )
 
-    assert main_tui_launch._tui_need_npm_install(ws) is True
+    assert main_mod._tui_need_npm_install(ws) is True
 
 
 def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:

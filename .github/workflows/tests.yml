@@ -14,15 +14,18 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
+    # Nous uses one 96-core runner for the whole suite. Forks use the standard
+    # runner and let the test harness derive bounded concurrency from its
+    # actual CPU count. There is no slicing.
     #
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-latest' }}
+    # Standard fork runners need more wall-clock time for the same isolated
+    # per-file suite; an observed fork run exceeded 45 minutes without a test
+    # failure. The upstream 96-core runner still completes far sooner.
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -102,7 +105,9 @@ jobs:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
           # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
+          # default is cpu_count*2. The explicit 96-worker tuning applies only
+          # to the 96-core Nous runner; forks leave this empty so the harness
+          # sizes itself for the standard runner instead of oversubscribing it.
           #
           # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
           # two repetitions for each value. See run 32549672063:
@@ -119,7 +124,7 @@ jobs:
           # across a 6x range. The suite has sufficient concurrency at this
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '96' || '' }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

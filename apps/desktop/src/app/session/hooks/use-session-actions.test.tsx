@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
+import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
@@ -15,15 +16,22 @@ import {
   getSession,
   type ProfileScope,
   type SessionInfo,
-  type SessionResumeResult,
+  type SessionResumeResponse,
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent } from '@/store/gateway'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $pinnedSessionIds } from '@/store/layout'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
+import {
+  $projectScope,
+  $projectTree,
+  $removedSessionIds,
+  $sessionMutationsInFlight,
+  ALL_PROJECTS
+} from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -40,10 +48,8 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $turnStartedAt,
-  _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
-  ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -66,8 +72,9 @@ import {
   setTurnStartedAt,
   setUnlistedSessionOwnerRows
 } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
-import { $sessionTiles } from '@/store/session-states'
+import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
+import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -96,7 +103,9 @@ vi.mock('@/store/profile', async importOriginal => ({
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  requestGatewayForAgent: vi.fn()
+  requestGatewayForAgent: vi.fn(),
+  requestGatewayForProfile: vi.fn(),
+  retainGatewayForAgent: vi.fn(async () => () => undefined)
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
@@ -109,6 +118,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
+  | 'archiveSession'
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
   | 'removeSession'
@@ -2278,7 +2288,43 @@ describe('resumeSession warm-cache mapping integrity', () => {
       .mockResolvedValue({ messages: [] } as never)
     vi.mocked(requestGatewayForAgent).mockReset()
     clearClarifyRequest()
+    vi.mocked(requestGatewayForProfile).mockReset()
+    setConnection(null)
     vi.restoreAllMocks()
+  })
+
+  it('pins an untagged row to the active registry connection instead of the same-named local profile', async () => {
+    setConnection({ connectionId: 'hermes01', mode: 'remote' } as never)
+    setSessions([storedSession({ id: 'remote-stored', profile: 'default' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'remote-stored' } as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: {},
+      messages: [],
+      resumed: 'remote-stored',
+      session_id: 'remote-runtime'
+    } as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({
+      info: {},
+      messages: [],
+      resumed: 'remote-stored',
+      session_id: 'wrong-local-runtime'
+    } as never)
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('remote-stored', true)
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'hermes01',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'remote-stored' })
+    )
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('pins metadata, transcript, resume, activate, and usage to the captured connection', async () => {
@@ -2290,21 +2336,43 @@ describe('resumeSession warm-cache mapping integrity', () => {
     }
 
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-warm', 'runtime-warm']])
+      current: new Map([
+        ['stored-warm', 'runtime-warm'],
+        ['stored-legacy', 'runtime-legacy']
+      ])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['runtime-warm', clientState('stored-warm')]])
+      current: new Map([
+        ['runtime-warm', clientState('stored-warm')],
+        ['runtime-legacy', clientState('stored-legacy')]
+      ])
     }
 
     // Same-name rows without a source tag are not authoritative for an
     // explicit owner. Metadata must be re-read from the captured connection.
-    setSessions([storedSession({ id: 'stored-warm', profile: 'default' })])
+    setSessions([
+      storedSession({ id: 'stored-warm', profile: 'default' }),
+      storedSession({ id: 'stored-legacy', profile: 'default' })
+    ])
     vi.mocked(getSession).mockImplementation(async id => storedSession({ id, profile: 'default' }))
     vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ messages: [], session_id: id }) as never)
     vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
       if (method === 'session.activate') {
-        throw new Error('Method not found')
+        if (params?.session_id === 'runtime-legacy') {
+          throw new Error('Method not found')
+        }
+
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-warm',
+          running: false,
+          session_id: 'runtime-warm',
+          session_key: 'stored-warm'
+        } as never
       }
 
       if (method === 'session.usage') {
@@ -2340,6 +2408,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
 
     await resume!('stored-warm', true, ownerRoute)
+    await resume!('stored-legacy', true, ownerRoute)
     await resume!('stored-cold', true, ownerRoute)
     await resume!('stored-cold', true, {
       connectionId: 'source-b',
@@ -2368,13 +2437,56 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ session_id: 'runtime-warm' })
     )
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'default', 'session.usage', {
-      session_id: 'runtime-warm'
+      session_id: 'runtime-legacy'
     })
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'source-a',
       'default',
       'session.resume',
       expect.objectContaining({ session_id: 'stored-cold' })
+    )
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
+  it('keeps a registry-tagged cached session on its owning connection without an explicit route', async () => {
+    setSessions([
+      storedSession({
+        connection_id: 'test-amnezia',
+        id: 'stored-registry',
+        profile: 'default'
+      })
+    ])
+    vi.mocked(getSession).mockImplementation(async id =>
+      storedSession({ connection_id: 'test-amnezia', id, profile: 'default' })
+    )
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-registry' } as never)
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [],
+          resumed: params?.session_id,
+          session_id: 'runtime-registry'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-registry', true)
+
+    const restScope = { connectionId: 'test-amnezia', profile: 'default' }
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-registry', restScope)
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'test-amnezia',
+      'default',
+      'session.resume',
+      expect.objectContaining({ session_id: 'stored-registry' })
     )
     expect(ambientRequest).not.toHaveBeenCalled()
   })
@@ -2799,6 +2911,217 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resumePromise
 
     expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
+  })
+
+  it('reads the terminal transcript after warm reconnect transport reattachment', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'long running prompt' }]
+      },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial before disconnect' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    let transportAttached = false
+    let attachedWhenTranscriptRead: boolean | null = null
+
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => {
+      attachedWhenTranscriptRead = transportAttached
+
+      return {
+        messages: [
+          { content: 'long running prompt', role: 'user', timestamp: 1 },
+          {
+            content: transportAttached ? 'complete answer persisted during disconnect' : 'partial before disconnect',
+            role: 'assistant',
+            timestamp: 2
+          }
+        ],
+        session_id: 'stored-A'
+      } as never
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        // The backend rebinds the session transport before returning this
+        // terminal snapshot. A transcript read issued earlier can miss the
+        // final persisted row and no live event will arrive to repair it.
+        transportAttached = true
+
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(attachedWhenTranscriptRead).toBe(true)
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(resumedState?.messages)).toContain('complete answer persisted during disconnect')
+    expect(JSON.stringify(resumedState?.messages)).not.toContain('partial before disconnect')
+  })
+
+  it('keeps a terminal live state when a running reconnect finishes during transcript hydration', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.awaitingResponse = true
+    state.turnLive = true
+    state.turnStartedAt = 1_700_000_123_000
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'long running prompt' }]
+      },
+      {
+        id: 'assistant-stream-rt-A',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial before terminal event' }],
+        pending: true
+      }
+    ]
+    state.streamId = 'assistant-stream-rt-A'
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          turn_started_at: 1_700_000_123,
+          inflight: {
+            user: 'long running prompt',
+            assistant: 'partial before terminal event',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
+    expect(sessionStateByRuntimeIdRef.current.get('rt-A')).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnLive: true
+    })
+
+    // The rebound transport delivers the terminal state while REST is still
+    // pending. Settle the same stream row the real terminal event owns; the
+    // later durable hydration may reconcile messages but cannot revive it.
+    const liveTerminalState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...liveTerminalState,
+      adoptedRunningTurn: false,
+      awaitingResponse: false,
+      busy: false,
+      messages: liveTerminalState.messages.map(message =>
+        message.id === 'assistant-stream-rt-A'
+          ? {
+              ...message,
+              parts: [{ type: 'text' as const, text: 'complete durable answer' }],
+              pending: false
+            }
+          : message
+      ),
+      streamId: null,
+      turnLive: false,
+      turnStartedAt: null
+    })
+
+    await act(async () => {
+      persisted.resolve({
+        messages: [
+          { content: 'long running prompt', role: 'user', timestamp: 1 },
+          { content: 'complete durable answer', role: 'assistant', timestamp: 2 }
+        ],
+        session_id: 'stored-A'
+      } as never)
+      await resumePromise
+    })
+
+    expect(JSON.stringify(resumedState?.messages)).toContain('complete durable answer')
+    expect(JSON.stringify(resumedState?.messages)).not.toContain('partial before terminal event')
+    expect(resumedState).toMatchObject({
+      adoptedRunningTurn: false,
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
   })
 
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {

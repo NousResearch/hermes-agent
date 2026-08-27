@@ -27,16 +27,21 @@ from agent.acp_openai_bridge import (
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
-from agent.file_safety import (
-    get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
+from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-# Stderr fingerprint of the deprecated `gh copilot` extension. Require BOTH the product name
-# AND a deprecation marker: the NEW `@github/copilot` CLI legitimately mentions "copilot-cli".
+
+# Stderr fingerprint of the deprecated `gh copilot` CLI extension
+# (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
+# We require BOTH the literal product name ("gh-copilot") AND a deprecation
+# marker, so generic stderr from the NEW `@github/copilot` CLI — whose repo
+# is github.com/github/copilot-cli and which legitimately mentions "copilot-cli"
+# in its own banners and error messages — doesn't get misclassified as the
+# deprecated extension.
 _DEPRECATION_REQUIRED = ("gh-copilot",)
 _DEPRECATION_MARKERS = ("has been deprecated", "no commands will be executed")
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
@@ -189,10 +194,19 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]], model: str | None = None, tools: list[dict[str, Any]] | None = None, tool_choice: Any = None,
 ) -> str:
-    # Deliberately no "requested model" line: the model is applied for real via ACP session/set_model;
-    # a prompt-text mention makes a substituted backend model FALSELY self-identify as the requested
-    # one. Copilot has no tools of its own that collide with Hermes', so forward the whole toolset.
-    sections: list[str] = [*_PROMPT_PREAMBLE, *_render_tool_bridge_sections(tools, tool_choice)]
+    sections: list[str] = [
+        "You are being used as the active ACP agent backend for Hermes.",
+        "Use ACP capabilities to complete tasks.",
+        "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+        "If no tool is needed, answer normally.",
+    ]
+    if model:
+        sections.append(f"Hermes requested model hint: {model}")
+
+    # Copilot has no tools of its own that would collide with Hermes', so it
+    # forwards the whole toolset (no allowlist).
+    sections.extend(_render_tool_bridge_sections(tools, tool_choice))
+
     transcript: list[str] = []
     for message in (m for m in messages if isinstance(m, dict)):
         role = str(message.get("role") or "unknown").strip().lower()
@@ -218,11 +232,9 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:
-    # Raw-string check BEFORE resolve(): resolving an NT-namespace path is the NTLM-leak trigger.
-    if nt_error := get_nt_namespace_error(path_text, verb=verb):
-        raise PermissionError(nt_error)
-    if not Path(path_text).is_absolute():
+def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
+    candidate = Path(path_text)
+    if not candidate.is_absolute():
         raise PermissionError("ACP file-system paths must be absolute.")
     resolved, root = Path(path_text).resolve(), Path(cwd).resolve()
     try:

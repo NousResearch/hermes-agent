@@ -35,17 +35,45 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
-# --- Terminal temp-cache pruning ---
-# get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
-# stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
-# and a once-per-process sweep covers CLI-only installs.
-TERMINAL_TEMP_MAX_AGE_HOURS = 72
-_terminal_temp_prune_lock = threading.Lock()
-_terminal_temp_pruned_once = False
-# Background artifacts come in triplets (hermes_bg_<id>.log/.pid/.exit). A live
-# server's .pid never changes mtime while its .log does, so age is judged per
-# GROUP (newest mtime sharing a stem) to keep pid/exit files of live sessions.
-_BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
+# The selected shell is cached so path translation stays consistent for the
+# whole environment.  In particular, WSL bash uses /mnt/<drive>, while Git
+# Bash uses /<drive>.
+_resolved_bash_path: str | None = None
+
+
+def _is_wsl_bash_path(path: str | None) -> bool:
+    """Return whether *path* is the Windows WSL launcher."""
+    if not _IS_WINDOWS or not path:
+        return False
+    system_root = (
+        os.environ.get("WINDIR")
+        or os.environ.get("SystemRoot")
+        or r"C:\Windows"
+    )
+    normalized = ntpath.normcase(ntpath.normpath(path))
+    candidates = {
+        ntpath.normcase(ntpath.normpath(
+            ntpath.join(system_root, "System32", "bash.exe")
+        )),
+        ntpath.normcase(ntpath.normpath(
+            ntpath.join(system_root, "Sysnative", "bash.exe")
+        )),
+    }
+    return normalized in candidates
+
+
+def _uses_wsl_bash() -> bool:
+    """Return whether the resolved local shell needs WSL path spelling."""
+    global _resolved_bash_path
+    if not _IS_WINDOWS:
+        return False
+    if _resolved_bash_path is None:
+        try:
+            _resolved_bash_path = _find_bash()
+        except (OSError, RuntimeError):
+            return False
+    return _is_wsl_bash_path(_resolved_bash_path)
+
 
 
 def _default_terminal_temp_dir() -> "Path | None":
@@ -141,20 +169,46 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
 
 
 def _windows_to_msys_path(cwd: str) -> str:
-    """Native ``C:\\Users\\x`` -> Git Bash ``/c/Users/x`` so ``builtin cd`` resolves
-    it. No-op off Windows / for non-drive paths."""
-    m = _IS_WINDOWS and cwd and re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
+    """Translate a native Windows path to the selected bash's POSIX form.
+
+    Git Bash uses ``/c/Users/x`` and WSL bash uses ``/mnt/c/Users/x`` so
+    ``builtin cd`` resolves the same host directory in either backend.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
     if not m:
         return cwd
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
-    return f"/{m.group(1).lower()}/{tail}"
+    root = "/mnt" if _uses_wsl_bash() else ""
+    return f"{root}/{drive}/{tail}" if tail else f"{root}/{drive}/"
 
 
 def _bash_safe_path(path: str) -> str:
-    """*path* safe to embed in a Git Bash script: ``C:\\Users\\x`` / ``C:/Users/x``
-    become ``/c/Users/x`` (MSYS argument conversion mangles ``C:/`` forms) and
-    leftover backslashes are normalized so bash does not eat ``\\U``. No-op off Windows."""
-    return _windows_to_msys_path(path).replace("\\", "/") if _IS_WINDOWS and path else path
+    """Return *path* in a form safe to embed in a bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` is converted to the selected
+    bash spelling via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the POSIX rewrite —
+    argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
 
 
 def _quote_bash_path(path: str) -> str:
@@ -757,6 +811,7 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
 
 def _find_bash() -> str:
     """Find bash for command execution."""
+    global _resolved_bash_path
     if not _IS_WINDOWS:
         return (shutil.which("bash")
                 or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
@@ -769,20 +824,160 @@ def _find_bash() -> str:
         if _bash_starts(candidate):
             if candidate != custom and custom and os.path.isfile(custom):
                 logger.warning(
-                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead", custom, candidate)
+                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    custom,
+                    candidate,
+                )
+            _resolved_bash_path = candidate
+            if _is_wsl_bash_path(candidate):
+                logger.warning(
+                    "Git Bash child-process probe failed; using WSL bash at %s "
+                    "with /mnt path mapping",
+                    candidate,
+                )
             return candidate
     if candidates:
         probe_details = "\n".join(
             detail for c in candidates if (detail := _bash_probe_details_cache.get(c)))
         if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(probe_details):
             raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
-        # Unknown failure class: return the first path so the caller sees the
-        # real bash error instead of a less useful "not found".
+
+        # Last resort for failures unrelated to the known MSYS/ASLR class:
+        # return the first path so the caller still sees the real bash error
+        # instead of the less useful "not found" message.
+        _resolved_bash_path = candidates[0]
         return candidates[0]
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location.")
+        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+    )
+
+
+_bash_starts_cache: dict[str, bool] = {}
+_bash_probe_details_cache: dict[str, str] = {}
+_mandatory_aslr_enabled_cache: "bool | None" = None
+
+_BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+
+def _looks_like_msys_spawn_failure(details: str) -> bool:
+    """Match Git-for-Windows child-launch failures associated with ASLR."""
+    lowered = details.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "dofork:",
+            "child_copy:",
+            "0xc0000142",
+            "0xc0000005",
+        )
+    )
+
+
+def _mandatory_aslr_enabled() -> "bool | None":
+    """Return Windows' system-wide ForceRelocateImages state when available."""
+    global _mandatory_aslr_enabled_cache
+    if _mandatory_aslr_enabled_cache is not None:
+        return _mandatory_aslr_enabled_cache
+
+    try:
+        powershell = shutil.which("powershell.exe") or "powershell.exe"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
+            ],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+            creationflags=windows_hide_flags(),
+        )
+        if result.returncode != 0:
+            return None
+        value = (result.stdout or "").strip().upper()
+        if value == "ON":
+            _mandatory_aslr_enabled_cache = True
+            return True
+        if value in {"OFF", "NOTSET"}:
+            _mandatory_aslr_enabled_cache = False
+            return False
+    except Exception as exc:
+        logger.debug("Could not query Windows Mandatory ASLR state: %s", exc)
+    return None
+
+
+def _git_root_from_bash(bash: str) -> str:
+    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
+    bin_dir = ntpath.dirname(ntpath.normpath(bash))
+    if ntpath.basename(bin_dir).lower() != "bin":
+        return ntpath.dirname(bin_dir)
+    parent = ntpath.dirname(bin_dir)
+    if ntpath.basename(parent).lower() == "usr":
+        return ntpath.dirname(parent)
+    return parent
+
+
+def _git_bash_aslr_help(bash: str, details: str = "") -> str:
+    """Build the targeted per-program Mandatory-ASLR remediation."""
+    git_root = _git_root_from_bash(bash)
+    escaped_root = git_root.replace("'", "''")
+    detail_line = f"\nGit Bash probe output: {details[:500]}" if details else ""
+    return (
+        f"Git Bash at {bash} cannot launch required MSYS child processes while "
+        "Windows Mandatory ASLR (ForceRelocateImages) is enabled, or its output "
+        f"matches that Git-for-Windows failure class.{detail_line}\n"
+        "Reinstalling Git will not change the Windows mitigation policy. Open "
+        "PowerShell as Administrator and run:\n"
+        f"$gitRoot = '{escaped_root}'\n"
+        'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
+        "-ErrorAction SilentlyContinue | ForEach-Object { "
+        "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
+        "Then restart Hermes. If the override is blocked or later re-applied, "
+        "ask your Windows administrator to allow this per-program exception."
+    )
+
+
+def _bash_starts(bash: str) -> bool:
+    """True if *bash* can launch external MSYS programs.
+
+    Uses ``--noprofile --norc`` so a broken login post-install
+    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
+    usable bash. The external ``true`` and ``cat`` calls are intentional:
+    a builtin-only ``exit 0`` probe misses Git-for-Windows fork/spawn failures
+    under system-wide Mandatory ASLR. Cached per path for the process lifetime.
+    """
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+
+    try:
+        # The Windows WSL launcher has a cold-start cost that is materially
+        # higher than Git Bash on some installations.  Keep the normal probe
+        # bounded while allowing the known local fallback to initialize.
+        probe_timeout = 30 if _is_wsl_bash_path(bash) else 15
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=probe_timeout,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            _bash_probe_details_cache[bash] = combined.strip()[:2000]
+            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+    except Exception as exc:
+        _bash_probe_details_cache[bash] = str(exc)[:2000]
+        logger.debug("bash probe error for %s: %s", bash, exc)
+        ok = False
+
+    _bash_starts_cache[bash] = ok
+    return ok
 
 
 _git_bash_bin_dirs_cache: "list[str] | None" = None
@@ -1098,6 +1293,10 @@ class LocalEnvironment(BaseEnvironment):
         return tuple(sorted(
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+
+    # Commands run on the Hermes host itself — controller-side platform
+    # behavior (macOS TCC pruning, etc.) legitimately applies here.
+    is_local = True
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

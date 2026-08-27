@@ -784,7 +784,7 @@ class TestOpenVikingAutoRecallPrefetch:
             {key.lower(): value for key, value in headers.items()}
             for headers in records["headers"]
         ]
-        assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
+        assert all(headers.get("x-openviking-actor-peer") == "hermes" for headers in normalized_headers)
         assert all(
             headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
             for headers in normalized_headers

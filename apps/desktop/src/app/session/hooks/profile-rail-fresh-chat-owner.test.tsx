@@ -318,7 +318,6 @@ function Harness({
     selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
-    holdSessionTranscriptView: cache.holdSessionTranscriptView,
     syncSessionStateToView: cache.syncSessionStateToView,
     updateSessionState: cache.updateSessionState
   })

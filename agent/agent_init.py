@@ -574,16 +574,19 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
 
-    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
-    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
-    from hermes_cli.anon_auth import pin_model_for_route
-    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
-
-    # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
-    # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
-    # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
-    # exceptions live in _provider_model_requires_responses_api.
-    _base_lower = str(agent.base_url or "").lower()
+    # GPT-5.x models usually require the Responses API path, but some
+    # providers have exceptions (for example Copilot's gpt-5-mini still
+    # uses chat completions). Also auto-upgrade for direct OpenAI URLs
+    # (api.openai.com) since all newer tool-calling models prefer
+    # Responses there. ACP runtimes are excluded: an ACP client handles
+    # its own routing and does not implement the Responses API surface.
+    # Keyed on the `acp://` scheme, not one vendor, so every ACP client
+    # is covered.
+    # When api_mode was explicitly provided, respect it — the user
+    # knows what their endpoint supports (#10473).
+    # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
+    # does NOT support the Responses API — skip the upgrade for Azure
+    # (openai.azure.com), even though it looks OpenAI-compatible.
     if (
         # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
         # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
@@ -596,7 +599,8 @@ def _finalize_routing(agent, api_mode, credential_pool):
         and agent.api_mode == "chat_completions"
         and not is_actual_route(agent.provider, agent.base_url)
         and agent.provider != "copilot-acp"
-        and not _base_lower.startswith(("acp://", "acp+tcp://"))
+        and not str(agent.base_url or "").lower().startswith("acp://")
+        and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
         and (
             agent._is_direct_openai_url()
@@ -1782,7 +1786,70 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
                 or _is_codex_spark_fn(agent.model, agent.provider)
             ),
         )
-    return threshold, notice_enabled
+    except Exception:
+        pass
+    compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    # Tail retention mode (compression.tail_mode). "lean" (default) keeps a
+    # clamped 2.5%/10K-25K verbatim tail with recovery-pointer machinery —
+    # continuity rides the upgraded summary (digests, anchor index, verbatim
+    # user messages, session_search pointers; recall-eval'd, see
+    # evals/compaction/results/). "legacy" restores the pre-#87326
+    # 0.20*threshold verbatim tail, which on big-window/raised-threshold
+    # setups hoards 100-240K tokens per compaction. Unknown values fall back
+    # to lean inside the compressor.
+    compression_tail_mode = str(_compression_cfg.get("tail_mode", "lean")).strip().lower()
+    # Minimum REAL (actionable) user messages guaranteed to survive in the
+    # uncompressed tail (compression.min_tail_user_messages).  Default 1
+    # preserves current behavior exactly — the existing single-user tail
+    # anchor.  Values > 1 extend the guarantee to the last N actionable
+    # user turns.  Booleans rejected (bool subclasses int), non-int-like
+    # values fall back to 1, floor at 1.
+    _raw_min_tail_users = _compression_cfg.get("min_tail_user_messages", 1)
+    if isinstance(_raw_min_tail_users, bool):
+        compression_min_tail_users = 1
+    elif isinstance(_raw_min_tail_users, int):
+        compression_min_tail_users = _raw_min_tail_users
+    elif isinstance(_raw_min_tail_users, float):
+        compression_min_tail_users = (
+            int(_raw_min_tail_users) if _raw_min_tail_users.is_integer() else 1
+        )
+    else:
+        try:
+            compression_min_tail_users = int(str(_raw_min_tail_users).strip())
+        except (TypeError, ValueError):
+            compression_min_tail_users = 1
+    if compression_min_tail_users < 1:
+        compression_min_tail_users = 1
+    # Cap on compression retry rounds before a turn gives up with "max
+    # compression attempts reached" (compression.max_attempts).  Hardcoding 3
+    # strands sessions that legitimately need more rounds — e.g. a restart
+    # history reload whose incompressible tool schemas keep the request
+    # estimate above the threshold even though the messages compress fine
+    # (the #62605 failure class).  Default 3 preserves current behavior, so
+    # an unset key is behavior-neutral; validated >= 1, hard-capped at 10,
+    # and any non-int-like value falls back to 3.  Booleans are rejected
+    # (bool subclasses int, so int(True) would silently become 1) and
+    # fractional floats are rejected rather than truncated — "4.7 attempts"
+    # is a config mistake, not a request for 4.
+    _raw_max_attempts = _compression_cfg.get("max_attempts", 3)
+    if isinstance(_raw_max_attempts, bool):
+        compression_max_attempts = 3
+    elif isinstance(_raw_max_attempts, int):
+        compression_max_attempts = _raw_max_attempts
+    elif isinstance(_raw_max_attempts, float):
+        compression_max_attempts = (
+            int(_raw_max_attempts) if _raw_max_attempts.is_integer() else 3
+        )
+    else:
+        try:
+            compression_max_attempts = int(str(_raw_max_attempts).strip())
+        except (TypeError, ValueError):
+            compression_max_attempts = 3
+    if compression_max_attempts < 1:
+        compression_max_attempts = 3
+    compression_max_attempts = min(compression_max_attempts, 10)
 
 
     # Opt-in proactive tool-result prune trigger (0 = disabled — the

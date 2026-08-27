@@ -10,6 +10,7 @@ import functools
 import importlib
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -27,6 +28,16 @@ _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
 # Logs keep more of the body than the model sees, but still a bounded amount.
 _MAX_LOGGED_ERROR_CHARS = 8192
 
+_TOOL_ERROR_ROLE_TAG_RE = re.compile(
+    r"</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>",
+    re.IGNORECASE,
+)
+_TOOL_ERROR_FENCE_OPEN_RE = re.compile(
+    r"^\s*```(?:json|xml|html|markdown)?\s*", re.MULTILINE
+)
+_TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r"\s*```\s*$", re.MULTILINE)
+_TOOL_ERROR_CDATA_RE = re.compile(r"<!\[CDATA\[.*?\]\]>", re.DOTALL)
+
 
 def _bound_error_text(text: str) -> str:
     """Bound an error body destined for model context; logs keep a longer prefix."""
@@ -36,6 +47,19 @@ def _bound_error_text(text: str) -> str:
         "tool error body truncated for context (%d chars): %s",
         len(text), text[:_MAX_LOGGED_ERROR_CHARS])
     return text[:_MAX_TOOL_ERROR_CHARS] + _TOOL_ERROR_TRUNCATION_MARKER
+
+
+def _sanitize_tool_error(error_msg: str) -> str:
+    """Strip framing tokens and cap errors without importing ``model_tools``."""
+    if not error_msg:
+        return "[TOOL_ERROR] "
+    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
+    sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    if len(sanitized) > _MAX_TOOL_ERROR_CHARS:
+        sanitized = sanitized[: _MAX_TOOL_ERROR_CHARS - 3] + "..."
+    return f"[TOOL_ERROR] {sanitized}"
 
 
 def _bound_json_error_result(result: str) -> str:
@@ -866,15 +890,11 @@ class ToolRegistry:
                 result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
-            # exc_info already renders the exception, so keep the message copy bounded.
-            logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))
-            # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
-            try:
-                from model_tools import _sanitize_tool_error
-                sanitized = _sanitize_tool_error(raw)
-            except Exception:
-                sanitized = raw  # defensive: never let the sanitizer block error propagation
+            # Handler exception text is untrusted and can be arbitrarily large. Bound it
+            # before logging so traceback rendering cannot bypass the log-size limit.
+            detail = _bound_error_text(f"{type(e).__name__}: {e}")
+            logger.error("Tool %s dispatch error: %s", name, detail)
+            sanitized = _sanitize_tool_error(f"Tool execution failed: {detail}")
             return tool_error(sanitized)
 
     # ---- Query helpers -----------------------------------------------

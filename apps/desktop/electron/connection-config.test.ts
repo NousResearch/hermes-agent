@@ -528,6 +528,14 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
     }),
     '/api/fs/download?path=%2Fsrv%2Freport.pdf'
   )
+  assert.equal(
+    pathForRegistryBackendRequest(
+      '/api/profiles/sessions/sidebar?recents_profile=research&recents_exclude=cron%2Cdesktop',
+      'research',
+      { remoteProfile: 'remote-research' }
+    ),
+    '/api/profiles/sessions/sidebar?recents_profile=remote-research&recents_exclude=cron%2Cdesktop'
+  )
 })
 
 // --- pathWithGlobalRemoteProfile ---

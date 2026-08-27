@@ -330,6 +330,71 @@ def cmd_setup(args) -> None:
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
         return
 
+    env_writes = {}
+
+    if schema:
+        print(f"\n  Configuring {name}:\n")
+
+        for field in schema:
+            key = field["key"]
+            desc = field.get("description", key)
+            default = field.get("default")
+            # Dynamic default: look up default from another field's value
+            default_from = field.get("default_from")
+            if default_from and isinstance(default_from, dict):
+                ref_field = default_from.get("field", "")
+                ref_map = default_from.get("map", {})
+                ref_value = provider_config.get(ref_field, "")
+                if ref_value and ref_value in ref_map:
+                    default = ref_map[ref_value]
+            is_secret = field.get("secret", False)
+            choices = field.get("choices")
+            env_var = field.get("env_var")
+            url = field.get("url")
+
+            # Skip fields whose "when" condition doesn't match
+            when = field.get("when")
+            if when and isinstance(when, dict):
+                if not all(provider_config.get(k) == v for k, v in when.items()):
+                    continue
+
+            if choices and not is_secret:
+                # Use curses picker for choice fields
+                choice_items = [(c, "") for c in choices]
+                current = provider_config.get(key, default)
+                current_idx = 0
+                if current and current in choices:
+                    current_idx = choices.index(current)
+                sel = _curses_select(f"  {desc}", choice_items, default=current_idx, cancel_returns=_CANCELLED)
+                if sel == _CANCELLED:
+                    _print_cancelled_setup()
+                    return
+                provider_config[key] = choices[sel]
+            elif is_secret:
+                # Prompt for secret
+                existing = os.environ.get(env_var, "") if env_var else ""
+                if existing:
+                    masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
+                    val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
+                else:
+                    hint = f"  Get yours at {url}" if url else ""
+                    if hint:
+                        print(hint)
+                    val = _prompt(desc, secret=True)
+                if val and env_var:
+                    env_writes[env_var] = val
+            else:
+                # Regular text prompt
+                current = provider_config.get(key)
+                effective_default = current or default
+                val = _prompt(desc, default=str(effective_default) if effective_default else None)
+                if val:
+                    provider_config[key] = val
+                    # Also write to .env if this field has an env_var
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = val
+
+    # Write activation key to config.yaml
     config["memory"]["provider"] = name
     save_config(config)
 
@@ -351,13 +416,37 @@ def cmd_setup(args) -> None:
 
 
 def _write_env_vars(
-    env_writes: dict, hermes_home: str | os.PathLike[str] | None = None) -> None:
+    env_writes: dict,
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> None:
     """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    ``save_env_value`` applies the shared gate (name regex, ``LD_PRELOAD``/``PYTHONPATH``/``HERMES_HOME``
-    denylist, CR/LF stripping, atomic 0o600 writes). ``ValueError`` is reported and skipped so one
-    bad key doesn't sink the batch; filesystem errors propagate. ``hermes_home`` is applied via the
-    context-local override, not ``os.environ``.
+    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    through the same input-validation gate as every other ``.env`` writer:
+    the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
+    ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
+    ``HERMES_HOME`` / etc.), CR/LF stripping on the value, and the atomic
+    0o600-from-creation write (no TOCTOU permission window). This function
+    previously wrote via ``Path.write_text`` directly, bypassing all of
+    that: a memory-provider plugin schema declaring ``env_var: "LD_PRELOAD"``
+    would land in ``.env`` verbatim and load via the ``env_loader.py``
+    ``.env`` -> ``os.environ`` chain on the next Hermes startup, and the
+    file existed at the default umask between the write and the later
+    ``chmod`` regardless of key legitimacy.
+
+    Validation failures (``ValueError`` from ``save_env_value`` — a
+    denylisted name or an identifier rejected by ``_ENV_VAR_NAME_RE``) are
+    surfaced and skipped rather than aborting the wizard, so a single bad
+    key from one schema field doesn't take down the rest of the batch.
+    Non-validation errors (filesystem failures, permission errors) are
+    intentionally NOT caught — those indicate the wizard cannot safely
+    persist any subsequent key either and should propagate.
+
+    ``hermes_home`` may be supplied by plugin ``post_setup`` hooks that
+    already received an explicit home directory (e.g. a non-default
+    profile). It is applied through the context-local Hermes home override
+    so ``save_env_value`` still owns the validation, sanitization, and
+    atomic-write path without mutating global ``os.environ``.
     """
     from hermes_cli.config import save_env_value
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

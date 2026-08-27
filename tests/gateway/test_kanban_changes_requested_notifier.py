@@ -3,8 +3,6 @@ import asyncio
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -20,7 +18,6 @@ class RecordingAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
-        event._gateway_accepted = True
 
 
 async def _run_one_tick(monkeypatch, runner):
@@ -46,7 +43,7 @@ def _runner(adapter):
 
 
 def _create_review_block(delivery_mode, *, reason="Tests need updates"):
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         task_id = kb.create_task(
             conn,
@@ -54,7 +51,7 @@ def _create_review_block(delivery_mode, *, reason="Tests need updates"):
             assignee="implementer",
             session_id="agent:main:telegram:thread:chat-1:topic-7",
         )
-        kbn.add_notify_sub(
+        kb.add_notify_sub(
             conn,
             task_id=task_id,
             platform="telegram",
@@ -81,9 +78,9 @@ def _create_review_block(delivery_mode, *, reason="Tests need updates"):
 
 
 def _unseen(task_id):
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
-        _, events = kbn.unseen_events_for_sub(
+        _, events = kb.unseen_events_for_sub(
             conn,
             task_id=task_id,
             platform="telegram",

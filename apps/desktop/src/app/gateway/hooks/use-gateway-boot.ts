@@ -6,8 +6,8 @@ import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
-import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -19,7 +19,6 @@ import {
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import {
   $gateway,
-  activeGateway,
   activeGatewayConnectionId,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
@@ -39,7 +38,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
-import { reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
+import { registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -47,9 +46,7 @@ import {
   isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
-import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
-import { loadPoolLimits } from '@/store/pool-limits'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   normalizeProfileKey,
@@ -61,7 +58,6 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
-  $gatewayState,
   $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
@@ -77,8 +73,8 @@ import {
   $sessionTiles,
   $workingSessionIds,
   foregroundSessionScopes,
-  forgetProfileOnlyRuntimeOwners,
   liveSessionScopes,
+  openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
@@ -142,23 +138,6 @@ const BOOT_RETRY_BASE_DELAY_MS = 2_000
 // existing catch/finally clear the guard and resume backoff. gateway.connect()
 // already has its own connect timeout.
 const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms)
-
-    promise.then(
-      value => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      err => {
-        clearTimeout(timer)
-        reject(err)
-      }
-    )
-  })
-}
 
 /** Registry identity whose runtimes died with the primary connection. */
 export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'connectionId' | 'mode'>): null | string {
@@ -384,6 +363,8 @@ export function useGatewayBoot({
           'Timed out reconnecting to Hermes backend'
         )
 
+        setPrimaryGatewayConnection(conn)
+
         if (cancelled) {
           return
         }
@@ -425,6 +406,11 @@ export function useGatewayBoot({
         resetTileRuntimeBindings(
           primaryRuntimeConnectionId(conn) ?? { liveConnectionIds: liveSecondaryConnectionIds() }
         )
+        // The status-stack poll guard latches session ids the OLD runtime
+        // reported gone (4001). A respawned backend re-mints runtimes, so
+        // those ids may be live again after re-resume — clear the latch with
+        // the same lifetime as the runtime bindings it shadows.
+        resetBackgroundPollingGuard()
         // Same staleness, other half: pre-reconnect busy flags are keyed by
         // those dead runtime ids and would never receive their terminal
         // busy:false — clear them or the sidebar running arc lies forever
@@ -606,14 +592,11 @@ export function useGatewayBoot({
         const ownsSwitch = () => !cancelled && switchToken !== null && isCurrentGatewaySwitch(switchToken)
         clearReconnectTimer()
         clearBootRetryTimer()
-        clearLivenessReprobeTimer()
-        livenessProbeFailures = 0
         bootRetryAttempt = 0
         reconnectAttempt = 0
         reconnectFailingSince = null
         escalated = false
         reauthNotified = false
-        primaryReauthError = null
 
         gateway.close()
         // The primary mode is changing, but registered v2 sources remain
@@ -640,6 +623,7 @@ export function useGatewayBoot({
         }
 
         publish(conn)
+        setPrimaryGatewayConnection(conn)
 
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
@@ -648,6 +632,10 @@ export function useGatewayBoot({
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
+
+        if (!ownsSwitch()) {
+          return
+        }
 
         await gateway.connect(wsUrl)
 
@@ -785,11 +773,6 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
-      onServerRequest: request => {
-        if (!callbacksRef.current.handleServerRequest(request)) {
-          request.fail(JSON_RPC_METHOD_NOT_FOUND, `Hermes Desktop cannot answer ${request.method}`)
-        }
-      },
       // The primary socket has no secondary entry to carry registry identity.
       // Electron's published active descriptor is authoritative after boot;
       // a true legacy primary has no connectionId and remains unqualified.
@@ -799,7 +782,6 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
-      onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only
@@ -894,9 +876,6 @@ export function useGatewayBoot({
       recordSessionEventScope(scopedEvent)
       callbacksRef.current.handleGatewayEvent(scopedEvent)
     })
-
-    // Secondary sockets reach the same handler through the registry's onServerRequest.
-    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.

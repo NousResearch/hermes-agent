@@ -1,13 +1,42 @@
-"""Durable delivery-obligation ledger for gateway final responses (rows in the shared ``state.db``;
-WAL, owner pid + process-start liveness, bounded retention) so a crash between finalize and
-platform ACK cannot lose a response silently. Checkpoints: record_obligation() 'pending' before
-any send | mark_attempting() 'attempting' right before the await | mark_delivered() 'delivered'
-only on SendResult.success | mark_failed() 'failed' on a definitive rejection. Crash semantics
-(never silently resend an ambiguous send): pending = never started, redeliver plainly; attempting
-= crashed mid-await, platform MAY have it, redeliver WITH a visible recovered marker; failed =
-rejected once, restart is a retry boundary, also marked; delivered = prune. Attempts are capped
-and stale rows expire, both -> 'abandoned' (kept briefly, then pruned). Everything is
-best-effort: ledger failures must never block a send; callers wrap every call in try/except.
+"""Durable delivery-obligation ledger for gateway final responses.
+
+A final agent response that was generated but not yet confirmed-delivered
+to the messaging platform is the one artifact the gateway can lose without
+a trace: the turn already burned its tokens, the text exists only in a
+Python local, and a crash / planned restart between finalize and platform
+ACK drops it silently (#58818, #41696, #63695).
+
+This module records a small durable row per outbound final response in the
+shared ``state.db`` (same file and conventions as
+``tools.async_delegation`` — WAL, owner pid + process-start-time liveness,
+bounded retention). The gateway writes three checkpoints around the send:
+
+    record_obligation()   state='pending'     before any send attempt
+    mark_attempting()     state='attempting'  immediately before the await
+    mark_delivered() /    state='delivered'   only on SendResult.success
+    mark_failed()         state='failed'      on a definitive rejection
+
+On startup, ``sweep_recoverable()`` claims rows whose owning process is
+dead and hands them to the gateway for redelivery. After a platform adapter
+reconnects without a process restart, ``sweep_failed_for_runtime()`` may claim
+only the same live process's explicitly allowlisted transient failures. Crash
+semantics are explicit about ambiguity (the contract review of the earlier
+delivery-outbox attempt, #61790, closed it for silently resending ambiguous
+sends):
+
+- ``pending``     — the send never started: redeliver plainly, no dup risk.
+- ``attempting``  — crashed mid-await: the platform MAY already have the
+  message. Redelivered WITH a visible recovered-reply marker so the
+  contract is honest at-least-once, never a silent duplicate.
+- ``failed``      — definitively rejected once; the restart is a natural
+  retry boundary. Also carries the marker.
+- ``delivered``   — nothing to do; retention prunes.
+
+Poison rows cannot spin: attempts are capped, stale rows expire, and both
+transition to ``abandoned`` (kept briefly for inspection, then pruned).
+
+Everything here is best-effort by design: ledger failures must never block
+or delay an actual send. Callers wrap every call in try/except.
 """
 
 from __future__ import annotations
@@ -137,6 +166,20 @@ def _runtime_retryable(last_error: Any) -> bool:
     text = str(last_error or "").strip().lower()
     return text in _RUNTIME_RETRYABLE_ERRORS or is_flood_error(text)
 
+# Runtime recovery uses a distinct marker because no gateway restart occurred.
+# Keep the ambiguity explicit: a network rejection normally means the platform
+# did not accept the message, but an acknowledgement can be lost independently.
+RECONNECTED_MARKER = (
+    "♻️ Recovered reply — the messaging platform reconnected after the original "
+    "delivery failed, so this may be a duplicate:\n\n"
+)
+
+# Runtime replay is deliberately fail-closed. Only errors whose send contract
+# proves they are transient reconnect failures belong here; permanent rejects
+# (blocked bot, bad auth, missing chat) must not be retried merely because an
+# adapter reconnected.
+_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+
 
 def _db_path():
     return get_hermes_home() / "state.db"
@@ -170,8 +213,18 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             adapter_profile TEXT
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
-        add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")
+    }
+    if "adapter_profile" not in columns:
+        try:
+            conn.execute(
+                "ALTER TABLE delivery_obligations ADD COLUMN adapter_profile TEXT"
+            )
+        except sqlite3.OperationalError as exc:
+            # Concurrent first-use connections can both observe the old schema.
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 
 def _transaction():
@@ -232,10 +285,20 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
     return hashlib.sha256(f"{session_key}|{message_ref}|{content}".encode("utf-8", "replace")).hexdigest()[:24]
 
 
-def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
+def record_obligation(
+    *,
+    obligation_id: str,
+    session_key: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    content: str,
+    adapter_profile: Optional[str] = None,
+) -> None:
     """Record a final response as owed to the platform (state='pending')."""
-    now, (pid, started) = time.time(), _owner_stamp()
+    now = time.time()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    pid, started = _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
@@ -243,8 +306,10 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at, adapter_profile)
                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
-            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+            (obligation_id, session_key, platform, str(chat_id),
+             str(thread_id) if thread_id else None, content, now, now,
+             pid, started, stored_profile),
+        )
     _prune()
 
 
@@ -263,9 +328,12 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
 def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     """Return an unsent runtime claim to ``failed`` without spending an attempt.
 
-    Runtime recovery claims before clearing ``resume_pending`` so two reconnect paths cannot send the
-    same row; if the flag cannot be cleared no send was attempted and the claim must not consume the
-    redelivery budget. Fail-closed to the exact current process instance and ``attempting`` state."""
+    Runtime recovery claims before clearing ``resume_pending`` so that two
+    reconnect paths cannot send the same row. If the session flag cannot be
+    cleared, no platform send was attempted and the claim must not consume the
+    bounded redelivery budget. Release is fail-closed to the exact current
+    process instance and the ``attempting`` state.
+    """
     pid, started = _owner_stamp()
     if started is None:
         return False
@@ -277,7 +345,9 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
                    updated_at=?, last_error=?
                WHERE obligation_id=? AND state='attempting'
                  AND owner_pid IS ? AND owner_started_at IS ?""",
-            (time.time(), error[:500] if error else None, obligation_id, pid, started))
+            (time.time(), error[:500] if error else None,
+             obligation_id, pid, started),
+        )
     return bool(cursor.rowcount)
 
 
@@ -290,53 +360,41 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
             (state, time.time(), error[:500] if error else None, obligation_id))
 
 
-def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
-                 needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> Dict[str, Any]:
-    """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
-    the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
-    ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
-    restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
-    released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
-    marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
-    return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
-            "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
-            **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
-            **({"runtime_recovery": True} if runtime else {}),
-            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
+def sweep_recoverable(
+    now: Optional[float] = None,
+    *,
+    deliverable_platforms: Optional[set] = None,
+    deliverable_targets: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    """Claim undelivered rows owned by dead processes; return them for
+    redelivery.
 
 
-def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
-                      deliverable_targets: Optional[set] = None) -> List[Dict[str, Any]]:
-    """Claim undelivered rows owned by dead processes; return them for redelivery.
+    ``deliverable_platforms`` (platform value strings) restricts claiming to
+    platforms the caller can actually send on this boot.  ``attempts`` is the
+    redelivery budget, so it must only be spent on a real send: a platform
+    that failed to connect would otherwise burn one attempt per boot and hit
+    the cap having never been sent once.  Rows for absent platforms are left
+    untouched for a later boot; the stale cutoff still bounds them.
 
-    Claiming atomically re-stamps the owner to THIS process and increments ``attempts`` (the UPDATE is
-    guarded on the previous owner stamp, so a second gateway racing the same sweep cannot double-claim).
-    Rows over the attempts cap or stale cutoff become 'abandoned'. ``deliverable_platforms`` restricts
-    claiming to platforms the caller can send on this boot: ``attempts`` is the redelivery budget and
-    must only be spent on a real send, else a platform that failed to connect burns one attempt per boot
-    and hits the cap having never been sent once (the stale cutoff still bounds untouched rows).
-    ``deliverable_targets`` further scopes multiplexed gateways by exact ``(platform, adapter_profile)``
-    so one connected bot cannot spend another disconnected bot's retry budget.
-
-    A flood-refused row still inside its wait is adopted (owner re-stamped, no attempt spent) and
-    returned flagged ``adopted`` with its ``not_before``: the caller clears its session's resume flag
-    like any other claimed row, since the answer is in the ledger, but must not send it; the flood
-    timer does once the wait has passed. A legacy row without ``adapter_profile`` is normalised to
-    ``'default'`` on claim or adoption (the caller only accepts such rows when it is not multiplexed),
-    because the runtime sweep matches profiles exactly and could otherwise never claim it."""
-    now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
+    ``deliverable_targets`` further scopes multiplexed gateways by exact
+    ``(platform, adapter_profile)`` identity, preventing one connected bot from
+    spending another disconnected bot's retry budget.
+    """
+    now = now if now is not None else time.time()
+    pid, started = _owner_stamp()
     claimed: List[Dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
-        for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+        for (oid, session_key, platform, chat_id, thread_id, content, state,
+             attempts, created_at, owner_pid, owner_started_at,
+             adapter_profile) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -364,8 +422,11 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
-            # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
-            # resend is seen as 'attempting' with no error by the next boot and gets the marker.
+            if (
+                deliverable_targets is not None
+                and (platform, adapter_profile) not in deliverable_targets
+            ):
+                continue
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
@@ -375,12 +436,122 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
                 (pid, started, now, 1 if flood_row else 0, 1 if flood_row else 0, oid, owner_pid, owner_pid))
             if cursor.rowcount:
-                # pending = never started, redeliver plainly; anything else (crashed mid-await, other
-                # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
-                # the marker.
-                claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                claimed.append({
+                    "obligation_id": oid,
+                    "session_key": session_key,
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "content": content,
+                    # pending = send never started, redeliver plainly;
+                    # attempting/failed = ambiguous or rejected, carry marker.
+                    "needs_marker": state != "pending",
+                    "profile": adapter_profile,
+                    "attempts": attempts + 1,
+                })
+    return claimed
+
+
+def sweep_failed_for_runtime(
+    platform: str,
+    now: Optional[float] = None,
+    *,
+    profile: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Claim this process's reconnect-retryable failed rows for one adapter.
+
+    ``profile`` scopes multiplexed gateways to the bot identity that actually
+    owned the failed send; ``None`` means the primary/default adapter. The
+    persisted adapter owner is independent of the routed session namespace.
+
+    Startup recovery intentionally ignores rows owned by a live gateway. That
+    protects concurrent processes, but it also means a final response rejected
+    with ``send_path_degraded`` remains stranded when only the platform adapter
+    reconnects. This runtime sweep closes that gap without weakening ownership:
+
+    - only rows stamped to this exact process instance are eligible;
+    - only explicitly allowlisted transient errors are eligible;
+    - attempts/staleness bounds match startup recovery;
+    - every update is guarded by the prior owner stamp and ``failed`` state.
+
+    Unowned rows and rows owned by another process are left untouched for the
+    normal startup/dead-owner sweep. Claimed rows always carry the reconnect
+    marker because the failed send's acknowledgement is not safe to infer.
+    """
+    now = now if now is not None else time.time()
+    pid, started = _owner_stamp()
+    if started is None:
+        # PID equality alone cannot distinguish this process from a stale row
+        # left by an earlier process incarnation after PID reuse. Runtime replay
+        # is optional recovery, so fail closed when the process fingerprint is
+        # unavailable; startup recovery remains the durable fallback.
+        return []
+    claimed: List[Dict[str, Any]] = []
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                      content, attempts, created_at, owner_pid,
+                      owner_started_at, last_error, adapter_profile
+               FROM delivery_obligations
+               WHERE state='failed' AND platform=?""",
+            (platform,),
+        ).fetchall()
+        for (
+            oid,
+            session_key,
+            row_platform,
+            chat_id,
+            thread_id,
+            content,
+            attempts,
+            created_at,
+            owner_pid,
+            owner_started_at,
+            last_error,
+            adapter_profile,
+        ) in rows:
+            expected_profile = (
+                "default" if not profile or profile == "default" else str(profile)
+            )
+            if adapter_profile != expected_profile:
+                continue
+            # Runtime reconnect recovery may act only on its own rows. Exact
+            # process-start matching prevents PID reuse from stealing work.
+            if owner_pid != pid or owner_started_at != started:
+                continue
+            if str(last_error or "").strip().lower() not in _RUNTIME_RETRYABLE_ERRORS:
+                continue
+            owner_guard = (oid, owner_pid, owner_started_at)
+            if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
+                conn.execute(
+                    """UPDATE delivery_obligations
+                       SET state='abandoned', updated_at=?
+                       WHERE obligation_id=? AND state='failed'
+                         AND owner_pid IS ? AND owner_started_at IS ?""",
+                    (now, *owner_guard),
+                )
+                continue
+            cursor = conn.execute(
+                """UPDATE delivery_obligations
+                   SET state='attempting', attempts=attempts+1, updated_at=?
+                   WHERE obligation_id=? AND state='failed'
+                     AND owner_pid IS ? AND owner_started_at IS ?""",
+                (now, *owner_guard),
+            )
+            if cursor.rowcount:
+                claimed.append({
+                    "obligation_id": oid,
+                    "session_key": session_key,
+                    "platform": row_platform,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "content": content,
+                    "needs_marker": True,
+                    "marker": RECONNECTED_MARKER,
+                    "profile": adapter_profile,
+                    "runtime_recovery": True,
+                    "attempts": attempts + 1,
+                })
     return claimed
 
 

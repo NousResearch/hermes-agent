@@ -802,6 +802,38 @@ def _is_gateway_runtime_lock_active_strict(lock_path: Path) -> bool:
         raise RuntimeError(f"gateway runtime lock probe failed: {exc}") from exc
 
 
+def _strict_path_exists(path: Path, label: str) -> bool:
+    try:
+        path.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RuntimeError(f"{label} metadata is not inspectable: {exc}") from exc
+
+
+def _is_gateway_runtime_lock_active_strict(lock_path: Path) -> bool:
+    """Probe ownership without treating access failures as absence."""
+    try:
+        handle = open(lock_path, "r+", encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RuntimeError(f"gateway runtime lock is not inspectable: {exc}") from exc
+    try:
+        if _try_acquire_file_lock(handle):
+            _release_file_lock(handle)
+            return False
+        return True
+    except OSError as exc:
+        raise RuntimeError(f"gateway runtime lock probe failed: {exc}") from exc
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
 def write_pid_file() -> None:
     """Write this process's PID record via O_CREAT|O_EXCL; a racing gateway's FileExistsError
     propagates for the caller to decide."""
@@ -1751,6 +1783,158 @@ def clear_planned_stop_marker() -> None:
         _get_planned_stop_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def get_running_pid(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> Optional[int]:
+    """Return the PID of a running gateway instance, or ``None``.
+
+    Checks the PID file and verifies the process is actually alive.
+    Cleans up stale PID files automatically.
+    """
+    resolved_pid_path = pid_path or _get_pid_path()
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
+    if not lock_active:
+        if pid_path is None:
+            runtime_pid = get_runtime_status_running_pid()
+            if runtime_pid is not None:
+                return runtime_pid
+        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+        return None
+
+    primary_record = _read_pid_record(resolved_pid_path)
+    fallback_record = _read_gateway_lock_record(resolved_lock_path)
+
+    for record in (primary_record, fallback_record):
+        pid = _pid_from_record(record)
+        if pid is None:
+            continue
+
+        if not _pid_exists(pid):
+            continue
+
+        recorded_start = record.get("start_time")
+        current_start = _get_process_start_time(pid)
+        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
+
+        if _record_matches_live_gateway_pid(record, pid):
+            return pid
+
+    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+    if pid_path is None:
+        runtime_pid = get_runtime_status_running_pid()
+        if runtime_pid is not None:
+            return runtime_pid
+    return None
+
+
+def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float]]:
+    """Return a verified process identity or fail on ambiguous runtime state."""
+    resolved_pid_path = Path(pid_path)
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    pid_exists = _strict_path_exists(resolved_pid_path, "gateway PID")
+    lock_exists = _strict_path_exists(resolved_lock_path, "gateway lock")
+    if not pid_exists and not lock_exists:
+        return None
+    if not lock_exists:
+        # No runtime lock can be owned. A stale PID file is not a live gateway.
+        return None
+    if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
+        # The lock probe is authoritative for absence. Stale or malformed files
+        # may remain after a crash, but no process currently owns this runtime.
+        return None
+    if not pid_exists:
+        raise RuntimeError("active gateway lock has no PID metadata")
+    pid_record = _read_pid_record(resolved_pid_path)
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    if not pid_record or not lock_record:
+        raise RuntimeError("gateway PID or lock metadata is malformed")
+    pid = _pid_from_record(pid_record)
+    if pid is None or pid <= 0 or _pid_from_record(lock_record) != pid:
+        raise RuntimeError("gateway PID and lock identities disagree")
+    if not _pid_exists(pid):
+        raise RuntimeError("gateway identity is not live")
+    current_start = _get_process_start_time(pid)
+    starts = (pid_record.get("start_time"), lock_record.get("start_time"))
+    if current_start is None or any(start is None for start in starts):
+        raise RuntimeError("gateway creation time is unavailable")
+    try:
+        current = float(current_start)
+        recorded = tuple(float(start) for start in starts)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("gateway creation time is malformed") from exc
+    if current <= 0 or any(start <= 0 or abs(start - current) > 0.001 for start in recorded):
+        raise RuntimeError("gateway process identity changed")
+    if not all(_record_matches_live_gateway_pid(record, pid) for record in (pid_record, lock_record)):
+        raise RuntimeError("runtime metadata does not identify a live gateway")
+    # Windows persists a centisecond fingerprint; SCM ownership checks need the
+    # exact psutil epoch timestamp. Re-read it only after the persisted identity
+    # has been validated, and prove it still rounds to that same fingerprint.
+    if _IS_WINDOWS:
+        try:
+            import psutil  # type: ignore
+
+            exact_create_time = float(psutil.Process(pid).create_time())
+        except Exception as exc:
+            raise RuntimeError("exact gateway creation time is unavailable") from exc
+        if int(round(exact_create_time * 100)) != int(current):
+            raise RuntimeError("gateway process identity changed")
+        return pid, exact_create_time
+    return pid, current
+
+
+def get_running_pid_cached(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+    ttl_seconds: float = _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS,
+) -> Optional[int]:
+    """Cached read-side wrapper for dashboard/status polling.
+
+    ``get_running_pid()`` probes the runtime lock by briefly opening and locking
+    ``gateway.lock``. That is the right authoritative check for control paths,
+    but high-frequency read-only HTTP polling can call it hundreds of times per
+    minute. Cache for a short window and invalidate on PID/lock/runtime-status
+    file changes so status endpoints do not churn file descriptors while still
+    noticing gateway start/stop transitions quickly.
+    """
+    if ttl_seconds <= 0:
+        return get_running_pid(pid_path, cleanup_stale=cleanup_stale)
+
+    resolved_pid_path = pid_path or _get_pid_path()
+    include_runtime_status = pid_path is None
+    signature = _running_pid_cache_signature(
+        resolved_pid_path,
+        include_runtime_status=include_runtime_status,
+    )
+    key = (str(resolved_pid_path), bool(cleanup_stale), include_runtime_status)
+    now = time.monotonic()
+
+    with _gateway_running_pid_cache_lock:
+        cached = _gateway_running_pid_cache.get(key)
+        if cached is not None:
+            cached_at, cached_signature, cached_pid = cached
+            if now - cached_at <= ttl_seconds and cached_signature == signature:
+                return cached_pid
+
+    pid = get_running_pid(pid_path, cleanup_stale=cleanup_stale)
+    refreshed_signature = _running_pid_cache_signature(
+        resolved_pid_path,
+        include_runtime_status=include_runtime_status,
+    )
+    with _gateway_running_pid_cache_lock:
+        _gateway_running_pid_cache[key] = (
+            time.monotonic(),
+            refreshed_signature,
+            pid,
+        )
+    return pid
+
 
 def is_gateway_running(
     pid_path: Optional[Path] = None,

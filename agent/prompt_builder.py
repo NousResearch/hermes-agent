@@ -532,14 +532,24 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 )
 
 
-# computer_use has no prompt block on purpose: its guidance lives in the tool
-# schema and each action result's verdict.
+# NOTE: computer_use guidance formerly injected a ~1.2K-token block into
+# every computer_use session's system prompt. That content now lives in
+# the tool's own schema description (workflow + background-first + safety)
+# and in each action result's verdict (the escalate ladder), so it is paid
+# for once per call in the schema rather than duplicated in the prompt.
 
-# Mid-turn steering (/steer). A steer is delivered as a standalone role:"user" message right after the newest
-# tool result (see steer_user_row / apply_pending_steer_to_tool_results) — the only role-alternation-safe slot
-# mid-turn — carrying the self-describing marker. That marker text is exactly the channel injection defenses
-# distrust, so a bare "User guidance:" line gets refused. STEER_CHANNEL_NOTE says to trust THIS marker only
-# (lookalikes stay untrusted) and only in the latest turn (replaying history replays actions).
+# ---------------------------------------------------------------------------
+# Mid-turn steering (/steer) — out-of-band user messages
+# ---------------------------------------------------------------------------
+# A steer is appended to the END of a tool result (the only role-alternation-
+# safe slot mid-turn), so it rides the exact channel injection defenses are
+# trained to distrust — a bare "User guidance:" line gets refused as suspected
+# prompt injection (observed in the wild). The bounded, self-describing marker
+# below attributes the text to the real user, and STEER_CHANNEL_NOTE tells the
+# model to trust THIS marker and only this one, so a lookalike buried in
+# tool/web/file output stays untrusted. The note also defines when a marker is
+# fresh: the marker remains in immutable conversation history after delivery,
+# so treating every historical occurrence as a new message can replay actions.
 STEER_MARKER_OPEN = (
     "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
@@ -1803,6 +1813,10 @@ def _build_skills_system_prompt_inner(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
     return result
 
+
+# =========================================================================
+# Context files (SOUL.md, AGENTS.md, .cursorrules)
+# =========================================================================
 
 def _truncate_content(
     content: str, filename: str, max_chars: Optional[int] = None, context_length: Optional[int] = None,

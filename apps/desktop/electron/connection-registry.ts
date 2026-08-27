@@ -223,6 +223,7 @@ export interface RegistryLocalRoute {
 }
 
 export interface ResolvedConnectionSshDescriptor {
+  effectiveConfigFingerprint?: string
   host?: string
   keyPath?: string
   port?: number
@@ -369,6 +370,85 @@ export function resolvedConnectionId(
   }
 
   return matchingConnectionId(registry, route, 'unique') ?? null
+}
+
+export interface ReuseMatchingPrimarySshBackendOptions {
+  connectionId: null | string | undefined
+  effectiveFingerprint: (source: RegistryConnection) => Promise<string>
+  ensurePrimary: () => Promise<ResolvedConnectionDescriptor>
+  profile: null | string | undefined
+  registry: ConnectionRegistry
+  source: RegistryConnection
+}
+
+/**
+ * Reuse the v1 window SSH backend only when its actual dialing identity matches
+ * the registry primary. Resolving that descriptor may boot the primary; a
+ * mismatch returns null without reusing it so the caller continues with its
+ * separately scoped registry backend. A matching descriptor is returned
+ * unchanged and the caller may re-stamp routing fields such as profile and
+ * connectionId. Guards run before either async dependency so secondary
+ * profiles and sources never bootstrap the primary.
+ */
+export async function reuseMatchingPrimarySshBackend({
+  connectionId,
+  effectiveFingerprint,
+  ensurePrimary,
+  profile,
+  registry,
+  source
+}: ReuseMatchingPrimarySshBackendOptions): Promise<null | ResolvedConnectionDescriptor> {
+  const id = String(connectionId ?? '').trim()
+  const profileKey = String(profile ?? '').trim() || 'default'
+
+  if (profileKey !== 'default' || !id || id !== registry.primary || source.id !== id || source.kind !== 'ssh') {
+    return null
+  }
+
+  let sourceFingerprint
+
+  try {
+    sourceFingerprint = String(await effectiveFingerprint(source)).trim()
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+
+    throw new Error(
+      `Could not resolve effective SSH config for connection "${source.label}" (${source.id}) via ssh -G: ${detail}`,
+      { cause }
+    )
+  }
+
+  const descriptor = await ensurePrimary()
+  const activeSsh = descriptor.mode === 'remote' && descriptor.remoteKind === 'ssh' ? descriptor.ssh : null
+  const rootProfile = (value: unknown) => String(value || '').trim() || 'default'
+
+  if (
+    !sourceFingerprint ||
+    !activeSsh ||
+    sourceFingerprint !== String(activeSsh.effectiveConfigFingerprint || '').trim() ||
+    String(source.remoteHermesPath || '').trim() !== String(activeSsh.remoteHermesPath || '').trim() ||
+    rootProfile(source.remoteProfile) !== rootProfile(activeSsh.remoteProfile)
+  ) {
+    return null
+  }
+
+  return descriptor
+}
+
+/**
+ * Whether a registry-scoped request names the already-running primary backend.
+ * Main uses this before opening a pooled registry backend so the registry's
+ * primary SSH/remote source cannot spawn a second isolated server for the same
+ * descriptor.
+ */
+export function registrySourceOwnsPrimaryBackend(
+  registry: ConnectionRegistry,
+  connectionId: null | string | undefined,
+  descriptor: ResolvedConnectionDescriptor
+): boolean {
+  const id = String(connectionId ?? '').trim()
+
+  return Boolean(id) && id === registry.primary && resolvedConnectionId(registry, descriptor) === id
 }
 
 function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
@@ -659,7 +739,8 @@ export function buildAgentRoster(
       connectionLabel: connection.label,
       profile,
       targetProfile: connection.remoteProfile || profile,
-      handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1)
+      handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1),
+      ...(profileMetadata ? { profileMetadata } : {})
     })
   }
 
@@ -1121,12 +1202,6 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
           clean.headers = storedHeaders
         }
 
-        const name = String(entry.name || '').trim()
-
-        if (kind === 'cloud' && name) {
-          clean.name = name
-        }
-
         const org = String(entry.org || '').trim()
 
         if (kind === 'cloud' && org) {
@@ -1143,14 +1218,6 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         const { mode: _mode, ...sshFields } = ssh
         Object.assign(clean, sshFields)
-
-        // normalizeSshConfig describes only the dial, so the token
-        // persistSshConnectionToken() adopted must be carried explicitly (as the
-        // remote/cloud branch does). Losing it on a cold read fails the
-        // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
-        if (entry.token !== undefined) {
-          clean.token = entry.token
-        }
       }
 
       connections.push(clean)

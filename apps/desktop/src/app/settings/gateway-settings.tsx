@@ -34,7 +34,6 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
-import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
@@ -223,10 +222,51 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
   }
 
+  // Opt-in OS-keychain encryption for stored gateway secrets. Read lazily via
+  // IPC (never touches the keychain); flipping it re-encodes stored secrets
+  // in the main process and can legitimately prompt for keychain access.
+  const [keychainEncryption, setKeychainEncryptionState] = useState(false)
+  const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getSecretStorageEncryption?.()
+      .then(res => {
+        if (!cancelled && res) {
+          setKeychainEncryptionState(res.on === true)
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const setKeychainEncryption = async (on: boolean) => {
+    setKeychainEncryptionBusy(true)
+    // Optimistic paint; the IPC result (or a failure rollback) gets the last word.
+    setKeychainEncryptionState(on)
+
+    try {
+      const res = await window.hermesDesktop.setSecretStorageEncryption(on)
+
+      setKeychainEncryptionState(res?.on === true)
+    } catch (err) {
+      setKeychainEncryptionState(!on)
+      notifyError(err, g.keychainEncryptionFailed)
+    } finally {
+      setKeychainEncryptionBusy(false)
+    }
+  }
+
   const acceptSavedConfig = (config: GatewaySettingsState) => {
     const normalized = normalizeGatewaySettingsState(config)
 
     setState(normalized)
+    setConnectedCloudUrl(savedCloudConnectionUrl(normalized))
   }
 
   // When set, the plain-text opt-in dialog is open; `apply` remembers whether
@@ -666,7 +706,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setSigningIn(true)
 
     try {
-      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
+      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl)
       const refreshed = await window.hermesDesktop.getConnectionConfig(null)
 
       if (seq !== signingSeq.current) {

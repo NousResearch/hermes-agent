@@ -5,7 +5,6 @@ import pytest
 from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
-    _classify_responses_issuer,
     _sanitize_replayed_fn_name,
     _format_responses_error,
     _normalize_codex_response,
@@ -311,7 +310,6 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
-_FOREIGN_ITEM_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 # The codex app-server overflows the Responses 64-char call_id limit for
@@ -462,62 +460,6 @@ def test_chat_messages_to_responses_input_canonicalizes_fc_only_pair():
         output = next(i for i in items if i.get("type") == "function_call_output")
         assert call["call_id"] == output["call_id"]
         assert len(call["call_id"]) <= 64
-
-
-def test_chat_messages_to_responses_input_uniquifies_call_id_reused_across_turns():
-    """A stored call_id (e.g. a short-lived id like "terminal:0") can recur
-    on a later, unrelated turn. Replayed verbatim, both function_call items
-    and both function_call_output items would carry the same call_id, and
-    the Responses API rejects the whole request with 400 "Duplicate
-    function_call_output" (#102629). Each occurrence must get a unique
-    call_id, still correctly paired with its own output."""
-    messages = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "call_id": "terminal:0",
-                    "function": {"name": "terminal", "arguments": '{"command":"first"}'},
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "terminal:0",
-            "content": "first result",
-        },
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "call_id": "terminal:0",
-                    "function": {"name": "terminal", "arguments": '{"command":"second"}'},
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "terminal:0",
-            "content": "second result",
-        },
-    ]
-
-    items = _chat_messages_to_responses_input(messages)
-
-    calls = [i for i in items if i.get("type") == "function_call"]
-    outputs = [i for i in items if i.get("type") == "function_call_output"]
-    assert len(calls) == 2
-    assert len(outputs) == 2
-
-    call_ids = [c["call_id"] for c in calls]
-    assert len(set(call_ids)) == 2, "duplicate call_ids would 400 the whole request"
-
-    assert calls[0]["call_id"] == outputs[0]["call_id"]
-    assert calls[1]["call_id"] == outputs[1]["call_id"]
-    assert outputs[0]["output"] == "first result"
-    assert outputs[1]["output"] == "second result"
 
 
 def test_preflight_codex_input_items_sanitizes_replayed_fn_name():

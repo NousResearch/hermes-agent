@@ -363,7 +363,10 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     replayed, so only the *trailing* messages are checked (a whole-history scan
     would make suppression sticky). Call ids resolve like ``_chat_messages_to_responses_input``.
     """
-    from agent.codex_responses_adapter import _canonical_call_id_from_fc, _split_responses_tool_id
+    from agent.codex_responses_adapter import (
+        _canonical_call_id_from_fc,
+        _split_responses_tool_id,
+    )
 
     def _pair_ids(raw: Any, explicit: Any = None) -> set:
         embedded_call_id, item_id = _split_responses_tool_id(raw)

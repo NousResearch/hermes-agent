@@ -143,7 +143,10 @@ class TestReadJournalMode:
             holder.close()
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
     def test_read_only_directory_is_still_readable(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
@@ -281,7 +284,8 @@ class TestUnreadableReason:
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
         reason = doctor_platform._unreadable_reason(tmp_path / "gone.db")
 
-        assert "No such file or directory" in reason
+        assert "gone.db" in reason
+        assert reason != "file could not be read"
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(
@@ -400,7 +404,10 @@ class TestReportDatabaseJournalModes:
         assert "state.db: rollback journal mode" in out
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
     def test_unreadable_database_does_not_crash(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db)

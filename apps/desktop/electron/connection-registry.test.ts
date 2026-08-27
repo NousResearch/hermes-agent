@@ -33,6 +33,7 @@ import {
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -122,6 +123,207 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('Work Laptop'), 'work-laptop')
   assert.equal(labelSlug('Spark Box #2'), 'spark-box-2')
   assert.equal(labelSlug('!!!'), 'connection')
+})
+
+test('registry SSH fingerprint failures name the connection and ssh -G step', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  const cause = new Error('spawn ssh ENOENT')
+
+  source.label = 'Build box'
+
+  await assert.rejects(
+    reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        throw cause
+      },
+      ensurePrimary: async () => ({ mode: 'remote', remoteKind: 'ssh' }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    error => {
+      assert.equal(
+        (error as Error).message,
+        `Could not resolve effective SSH config for connection "Build box" (${source.id}) via ssh -G: spawn ssh ENOENT`
+      )
+      assert.equal((error as Error).cause, cause)
+
+      return true
+    }
+  )
+})
+
+test('matching primary/default SSH route reuses the existing descriptor once', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)
+
+  const descriptor = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: {
+      effectiveConfigFingerprint: 'same-effective-config',
+      host: 'build-host',
+      keyPath: '~/.ssh/id_ed25519',
+      remoteProfile: 'default',
+      user: 'alice'
+    }
+  }
+
+  let ensureCalls = 0
+  let fingerprintCalls = 0
+
+  assert.equal(source?.kind, 'ssh')
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        fingerprintCalls += 1
+
+        return 'same-effective-config'
+      },
+      ensurePrimary: async () => {
+        ensureCalls += 1
+
+        return descriptor
+      },
+      profile: 'default',
+      registry,
+      source: source!
+    }),
+    descriptor
+  )
+  assert.equal(ensureCalls, 1)
+  assert.equal(fingerprintCalls, 1)
+})
+
+test('non-default or non-primary SSH routes do not resolve the primary backend', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+  let ensureCalls = 0
+
+  const opts = {
+    effectiveFingerprint: async () => 'same',
+    ensurePrimary: async () => {
+      ensureCalls += 1
+
+      return { mode: 'remote' as const, remoteKind: 'ssh' as const }
+    },
+    registry,
+    source
+  }
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({ ...opts, connectionId: registry.primary, profile: 'researcher' }),
+    null
+  )
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({ ...opts, connectionId: LOCAL_CONNECTION_ID, profile: 'default' }),
+    null
+  )
+  assert.equal(ensureCalls, 0)
+})
+
+test('primary SSH reuse rejects a descriptor with different effective dialing config', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => 'registry-config',
+      ensurePrimary: async () => ({
+        mode: 'remote',
+        remoteKind: 'ssh',
+        ssh: {
+          effectiveConfigFingerprint: 'active-config',
+          host: 'other-host',
+          remoteProfile: ''
+        }
+      }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    null
+  )
+})
+
+test('primary SSH reuse rejects a descriptor with a different remote Hermes path', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', remoteHermesPath: '/srv/hermes', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  assert.equal(
+    await reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => 'same-effective-config',
+      ensurePrimary: async () => ({
+        mode: 'remote',
+        remoteKind: 'ssh',
+        ssh: {
+          effectiveConfigFingerprint: 'same-effective-config',
+          host: 'build-host',
+          remoteHermesPath: '/opt/hermes',
+          remoteProfile: '',
+          user: 'alice'
+        }
+      }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    null
+  )
+})
+
+test('registry primary reuses a matching primary backend descriptor', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'hermes-vps',
+    launchMode: 'primary',
+    lastUsed: 'hermes-vps',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      { id: 'hermes-vps', kind: 'ssh', label: 'Hermes VPS', host: 'hermes-vps' }
+    ]
+  })
+
+  const descriptor = {
+    connectionId: 'hermes-vps',
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    ssh: { host: 'hermes-vps' }
+  }
+
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, 'hermes-vps', descriptor), true)
+  assert.equal(registrySourceOwnsPrimaryBackend(registry, LOCAL_CONNECTION_ID, descriptor), false)
 })
 
 test('resolvedConnectionId identifies local and migrated remote descriptors', () => {

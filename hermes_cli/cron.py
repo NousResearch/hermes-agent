@@ -302,26 +302,48 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
             print(f"    {record['error']}")
 
 
-_INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "resolved": Colors.GREEN,
-                          "closed": Colors.DIM}
+_INCIDENT_STATE_COLORS = {
+    "detected": Colors.RED,
+    "alerted": Colors.YELLOW,
+    "closed": Colors.GREEN,
+}
 
 
 def cron_incidents(args) -> int:
-    """List (``[--state <s>]``) or ``ack <id>`` durable cron failure incidents.
+    """List or acknowledge durable cron failure incidents.
 
-    Acking closes an incident so its failure ping stays silent until the error signature changes.
+    ``hermes cron incidents [--state <s>]`` lists incidents (the stored error
+    is redacted and truncated at write time, safe for terminal display);
+    ``hermes cron incidents ack <id>`` closes one so its failure ping stays
+    silent until the error signature changes.
     """
     from cron.incidents import ack_incident, list_incidents
+
     action = getattr(args, "incident_action", "list")
     if action == "ack":
         incident_id = getattr(args, "incident_id", None)
         if not incident_id:
-            print(color("✗ Incident ID required: hermes cron incidents ack <incident_id>", Colors.RED))
+            print(
+                color(
+                    "✗ Incident ID required: hermes cron incidents ack <incident_id>",
+                    Colors.RED,
+                )
+            )
             return 1
         if ack_incident(incident_id):
-            print(color(f"✓ Incident {incident_id} acknowledged (closed).", Colors.GREEN))
+            print(
+                color(
+                    f"✓ Incident {incident_id} acknowledged (closed).",
+                    Colors.GREEN,
+                )
+            )
         else:
-            print(color(f"Incident {incident_id} not found or already closed.", Colors.YELLOW))
+            print(
+                color(
+                    f"Incident {incident_id} not found or already closed.",
+                    Colors.YELLOW,
+                )
+            )
         return 0
 
     state = getattr(args, "state", None)
@@ -332,86 +354,50 @@ def cron_incidents(args) -> int:
             print(color(f"  (filtered by state '{state}')", Colors.DIM))
         return 0
 
-    _print_banner("Cron Failure Incidents")
+    print()
+    print(
+        color(
+            "┌─────────────────────────────────────────────────────────────────────────┐",
+            Colors.CYAN,
+        )
+    )
+    print(
+        color(
+            "│                         Cron Failure Incidents                          │",
+            Colors.CYAN,
+        )
+    )
+    print(
+        color(
+            "└─────────────────────────────────────────────────────────────────────────┘",
+            Colors.CYAN,
+        )
+    )
+    print()
     for inc in incidents:
-        state_display = color(inc["state"], _INCIDENT_STATE_COLORS.get(inc["state"], Colors.DIM))
+        state_display = color(
+            inc["state"], _INCIDENT_STATE_COLORS.get(inc["state"], Colors.DIM)
+        )
+        print(f"  {color(inc['id'], Colors.YELLOW)}  {state_display}")
+        print(f"    Job:        {inc['job_id']}")
+        print(f"    Type:       {inc.get('failure_type', 'unknown')}")
+        print(f"    First seen: {inc.get('first_seen_at', '?')}")
+        print(f"    Last seen:  {inc.get('last_seen_at', '?')}")
         error_text = re.sub(r"\s+", " ", inc.get("error") or "").strip()
         if len(error_text) > 160:
             error_text = error_text[:157].rstrip() + "..."
-        rows = [("Job", inc["job_id"]), ("Type", inc.get("failure_type", "unknown")),
-                ("First seen", inc.get("first_seen_at", "?")),
-                ("Last seen", inc.get("last_seen_at", "?")), ("Error", error_text),
-                ("Output", inc.get("output_file"))]
-        print(f"  {color(inc['id'], Colors.YELLOW)}  {state_display}")
-        for label, value in rows:
-            if label != "Output" or value:
-                print(f"    {label + ':':<12}{value}")
+        print(f"    Error:      {error_text}")
+        if inc.get("output_file"):
+            print(f"    Output:     {inc['output_file']}")
         print()
-    print(color(f"  {len(incidents)} incident(s)  |  ack one with: hermes cron incidents ack <id>",
-                Colors.DIM))
+    print(
+        color(
+            f"  {len(incidents)} incident(s)  |  ack one with: "
+            "hermes cron incidents ack <id>",
+            Colors.DIM,
+        )
+    )
     return 0
-
-
-_PERMISSION_HINT = ("  Hint: jobs.json may be owned by another user (e.g. rewritten by a root "
-                    "`docker exec hermes hermes cron ...`). Fix ownership to match the gateway "
-                    "user, and prefer `docker exec -u <uid>:<gid>`.")
-_FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFILE). The scheduler "
-                       "now retries with backoff and attempts fd reclamation, but if the leak "
-                       "persists, restart the gateway to recover scheduling.")
-
-
-def _print_ticker_health(pids: list) -> None:
-    """Report builtin-ticker liveness for a gateway process known to be alive.
-
-    The ticker THREAD can die silently or stay alive while every tick fails, so check both
-    the liveness heartbeat and the last-successful-tick marker before saying "will fire".
-    """
-    # See #32612, #32895.
-    from cron.jobs import (
-        get_ticker_heartbeat_age, get_ticker_last_error, get_ticker_success_age,
-        TICKER_INTERVAL_SECONDS)
-    from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
-    STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # ~3 missed iterations + slack (200s @ 60s)
-    hb_age = get_ticker_heartbeat_age()
-    ok_age = get_ticker_success_age()
-    pid_line = f"  PID: {', '.join(map(str, pids))}" if pids else None
-
-    def _warn(headline: str) -> None:
-        print(color(headline, Colors.YELLOW))
-        if pid_line:
-            print(pid_line)
-
-    if hb_age is None:
-        # Ticker never started (non-cron profile, gateway just started, or a config issue).
-        _warn("⚠ Gateway is running but the cron ticker has not reported a heartbeat.")
-        print("  Cron jobs will NOT fire until the ticker writes its first heartbeat.\n"
-              "  If the gateway just started, wait ~60s and re-run `hermes cron status`.\n"
-              "  If heartbeat never appears, restart: hermes gateway restart")
-    elif hb_age > STALE_AFTER:  # ticker thread is gone
-        _warn("⚠ Gateway is running but the cron ticker looks STALLED — "
-              f"no heartbeat for {int(hb_age)}s (expected every ~60s).")
-        print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-    elif ok_age is not None and ok_age > STALE_AFTER:  # loop alive but every tick fails
-        _warn("⚠ Gateway and cron ticker are running, but no tick has "
-              f"succeeded in {int(ok_age)}s — ticks may be failing.")
-        last_error = get_ticker_last_error()
-        if last_error:
-            # WHY ticks fail: root-rewritten jobs.json (PermissionError) or fd exhaustion.
-            # Show WHY ticks fail — e.g. a root-rewritten jobs.json (PermissionError) that silently locked
-            # out the ticker's uid for ~14h in the field (#68483), or fd exhaustion (EMFILE) that used to
-            # stall the scheduler invisibly (#87644).
-            print(color(f"  Last tick error: {last_error}", Colors.RED))
-            if "Permission denied" in last_error:
-                print(color(_PERMISSION_HINT, Colors.YELLOW))
-            elif _cron_is_fd_exhaustion_text(last_error):
-                print(color(_FD_EXHAUSTION_HINT, Colors.YELLOW))
-        print("  Check the gateway log for 'Cron tick error'.")
-    else:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        if pid_line:
-            print(pid_line)
-        if hb_age is not None:
-            print(f"  Ticker heartbeat: {int(hb_age)}s ago")
 
 
 def cron_status():
@@ -874,6 +860,9 @@ def cron_command(args):
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
         return 0
+
+    if subcmd == "incidents":
+        return cron_incidents(args)
 
     if subcmd == "notepad":
         return cron_notepad(args)

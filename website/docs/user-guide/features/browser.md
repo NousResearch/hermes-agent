@@ -69,10 +69,6 @@ Get your credentials at [browserbase.com](https://browserbase.com).
 The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
 :::
 
-:::note Selecting the provider
-The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
-:::
-
 ### Browser Use mode (default)
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.

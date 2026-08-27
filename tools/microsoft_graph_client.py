@@ -88,7 +88,21 @@ class MicrosoftGraphClient:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp_target = target.with_suffix(target.suffix + ".part")
 
-        async def perform(client: httpx.AsyncClient, request_headers: dict[str, str]):
+        attempt = 0
+        last_error: Exception | None = None
+
+        while attempt <= self.max_retries:
+            token = await self.token_provider.get_access_token(
+                force_refresh=attempt > 0 and self._should_refresh_token(last_error)
+            )
+            request_headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "*/*",
+                "User-Agent": self.user_agent,
+            }
+            if headers:
+                request_headers.update(headers)
+
             try:
                 async with client.stream("GET", url, headers=request_headers) as response:
                     if response.status_code >= 400:

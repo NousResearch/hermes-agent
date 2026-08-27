@@ -9,6 +9,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -1957,12 +1958,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
 
     expect(await handle!.submitText('continue remotely')).toBe(true)
-    expect(ambientRequest).toHaveBeenCalledWith(
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'hermes01',
+      'default',
       'prompt.submit',
       { session_id: 'runtime-remote', text: 'continue remotely' },
       1_800_000
     )
-    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('clears a leftover interrupted flag on a fresh submit (so the new turn streams)', async () => {

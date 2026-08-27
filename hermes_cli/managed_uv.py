@@ -78,35 +78,70 @@ def managed_python_env(
 def _macos_sign_managed_python(python: Path) -> bool:
     """Give a newly downloaded managed Python a stable macOS code identity.
 
-    python-build-standalone binaries are ad-hoc signed, so TCC sees a cdhash-only identity that
-    changes every runtime generation; an identifier-pinned designated requirement keeps it stable
-    without a Developer ID. Best effort: a missing/incompatible ``codesign`` must not block repair.
+    python-build-standalone binaries are ad-hoc signed, which leaves macOS
+    TCC with a cdhash-only identity that changes whenever Hermes provisions a
+    new runtime generation.  An identifier-pinned designated requirement
+    gives those generations a stable identity even when no Developer ID
+    certificate is available locally.
+
+    Signing is deliberately best effort.  Runtime repair exists to remove a
+    security vulnerability, so an unavailable or incompatible ``codesign``
+    must not prevent the fixed interpreter from being installed.
     """
     if platform.system() != "Darwin":
         return False
+
     codesign = shutil.which("codesign")
     if not codesign:
-        logger.info("macOS codesign is unavailable; using the downloaded Python signature")
+        logger.info(
+            "macOS codesign is unavailable; using the downloaded Python signature"
+        )
         return False
-    requirement = f'=designated => identifier "{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
+
+    requirement = (
+        "=designated => identifier "
+        f'"{_MACOS_MANAGED_PYTHON_IDENTIFIER}"'
+    )
     try:
-        sign = [
-            codesign, "--force", "--deep", "--sign", "-", "--timestamp=none",
-            "--identifier", _MACOS_MANAGED_PYTHON_IDENTIFIER,
-            "--requirements", requirement, str(python)]
-        verify = [codesign, "--verify", "--deep", "--strict", str(python)]
-        steps = (
-            (sign, "could not stably sign managed Python %s: %s", "codesign failed"),
-            (verify, "macOS signature verification failed for managed Python %s: %s",
-             "verification failed"))
-        for cmd, warning, fallback in steps:
-            result = subprocess.run(
-                cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        signed = subprocess.run(
+            [
+                codesign,
+                "--force",
+                "--deep",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                "--identifier",
+                _MACOS_MANAGED_PYTHON_IDENTIFIER,
+                "--requirements",
+                requirement,
+                str(python),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if signed.returncode != 0:
+            logger.warning(
+                "could not stably sign managed Python %s: %s",
+                python,
+                (signed.stderr or signed.stdout or "codesign failed").strip(),
             )
-            if result.returncode != 0:
-                logger.warning(
-                    warning, python, (result.stderr or result.stdout or fallback).strip())
-                return False
+            return False
+
+        verified = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(python)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if verified.returncode != 0:
+            logger.warning(
+                "macOS signature verification failed for managed Python %s: %s",
+                python,
+                (verified.stderr or verified.stdout or "verification failed").strip(),
+            )
+            return False
         return True
     except Exception as exc:
         logger.warning("could not sign managed Python %s: %s", python, exc)
@@ -420,10 +455,16 @@ def _attempt_install_generation(
     try:
         python.resolve().relative_to(generation.resolve())
     except (OSError, ValueError):
-        return reject("uv resolved Python outside the Hermes generation: %s", python)
-    # Sign before the candidate is probed or promoted so each immutable generation does not look
-    # like a new TCC principal on macOS. Non-fatal: the SQLite repair proceeds regardless.
+        logger.warning("uv resolved Python outside the Hermes generation: %s", python)
+        _remove_tree(generation, boundary=python_root)
+        return None
+
+    # Do this before the candidate is probed or promoted.  On macOS, the
+    # stable identifier prevents each immutable generation from looking like
+    # a new TCC principal.  Failure is non-fatal: the SQLite repair must still
+    # proceed when codesign is unavailable or rejects a particular artifact.
     _macos_sign_managed_python(python)
+
     candidate = probe_sqlite_runtime(python)
     if candidate is None:
         return reject("could not probe candidate Python runtime: %s", python)

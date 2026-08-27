@@ -34,8 +34,14 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# One year: semantically "unbounded" yet far below any platform time_t limit (#83220).
-MAX_SAFE_TIMEOUT_S = 31_536_000.0
+# Upper bound for any timeout handed to platform wait primitives.
+#
+# CPython converts ``threading.Lock.acquire(timeout=...)`` /
+# ``Thread.join(timeout=...)`` deadlines to an absolute timestamp; very large
+# relative timeouts can overflow the platform wait primitive and raise
+# ``OverflowError`` (#83220). One year is semantically "unbounded" for every
+# wait in this codebase, but Windows exposes a lower CPython primitive limit.
+MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX)
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0
@@ -57,10 +63,22 @@ class DeadlineExpired(TimeoutError):
 
 
 class SuspectableBackend(Protocol):
-    """A stateful backend (MCP connection, browser session, LSP client) ``run_bounded_*`` flags via
-    ``mark_suspect`` on timeout so the owner can health-check/recycle it before reuse. ``mark_suspect``
-    MUST be cheap, non-blocking, and must not acquire locks the guarded operation may hold — it runs
-    inline on the event loop / caller's thread while the wedged worker is still alive."""
+    """Phase 3a (#85125): a stateful backend the deadline layer can flag.
+
+    A timed-out stateful backend (MCP connection, browser session, LSP
+    client) may be left wedged by the abandoned half-finished operation.
+    ``run_bounded_*`` calls ``mark_suspect`` on timeout so the OWNER can
+    health-check or recycle the backend before reuse (``ensure_healthy``)
+    instead of returning a poisoned handle to the cache. Consumers adopt
+    incrementally (Phase 3b, one backend per PR), so the layer fails open:
+    backends without the protocol are simply never marked.
+
+    Adopter contract: ``mark_suspect`` MUST be cheap, non-blocking, and
+    must not acquire locks the guarded operation may hold. It runs inline —
+    on the event loop in the async flavor, and on the caller's thread in
+    the sync flavor while the wedged worker is still alive. Set a flag;
+    do the expensive health-check/recycle work in ``ensure_healthy``.
+    """
 
     def mark_suspect(self, reason: str) -> None: ...
 
@@ -68,7 +86,13 @@ class SuspectableBackend(Protocol):
 
 
 def _mark_backend_suspect(backend: object | None, label: str, timeout_s: float) -> None:
-    """Best-effort ``mark_suspect``; never raises, non-adopting backends tolerated."""
+    """Best-effort ``mark_suspect`` on a timed-out call's backend.
+
+    Never raises: adoption state must not be able to weaken the deadline
+    bound or corrupt the ``BoundedResult`` the caller is about to receive.
+    A non-adopting backend (no ``mark_suspect``) is tolerated silently —
+    Phase 3b lands per-backend, so absence is the norm during adoption.
+    """
     if backend is None:
         return
     try:
@@ -97,13 +121,25 @@ def _result(start: float, timeout_s: Optional[float], label: str, *, value: Any 
 
 
 def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
-    """Normalize a timeout: None/non-positive/non-numeric/NaN -> None (unbounded), else capped."""
+    """Normalize a timeout value for platform wait primitives.
+
+    * ``None`` stays ``None`` (unbounded).
+    * Non-positive values become ``None`` (unbounded) — matching the existing
+      ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` "0 disables the bound" convention.
+    * Values above :data:`MAX_SAFE_TIMEOUT_S` are capped so they can never
+      overflow the platform primitive inside ``Lock.acquire`` /
+      ``Thread.join`` (#83220).
+    * Non-numeric values are treated as unset (``None``) with a warning
+      rather than crashing the call path they were meant to protect.
+    """
     if timeout is None:
         return None
     try:
         value = float(timeout)
     except (TypeError, ValueError):
-        logger.warning("clamp_timeout: non-numeric timeout %r; treating as unbounded", timeout)
+        logger.warning(
+            "clamp_timeout: non-numeric timeout %r; treating as unbounded", timeout
+        )
         return None
     if value != value:  # NaN
         logger.warning("clamp_timeout: NaN timeout; treating as unbounded")
@@ -112,6 +148,7 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
 
 
 # --- Timeout resolution: config ``timeouts:`` > legacy env var > default ------
+
 
 
 def _timeouts_section() -> dict:
@@ -150,7 +187,9 @@ def resolve_timeout(key: str, *, default: Optional[float], env_var: Optional[str
                     return clamp_timeout(value)
             except (TypeError, ValueError):
                 pass
-        logger.warning("timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw)
+        logger.warning(
+            "timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw
+        )
 
     if env_var:
         env_raw = os.getenv(env_var, "").strip()
@@ -168,12 +207,6 @@ def resolve_timeout(key: str, *, default: Optional[float], env_var: Optional[str
 # second timer dumps all thread stacks when the loop provably failed to process the expiry.
 
 
-# --------------------------------------------------------------------------- Bounded execution — async
-# flavor. Generalizes plugins/platforms/telegram/adapter.py:_await_with_thread_deadline (the #63309 fix):
-# the deadline is driven by a daemon threading.Timer so a blocked event loop cannot disable it, and a second
-# timer dumps all thread stacks when the loop provably failed to process the expiry — the one piece of
-# information loop-blocked hangs otherwise never surface.
-# ---------------------------------------------------------------------------
 def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
     """Observe an abandoned task's outcome so it never logs 'never retrieved'."""
     try:
@@ -228,7 +261,14 @@ async def run_bounded_async(
     timeout_s = clamp_timeout(timeout)
     start = time.monotonic()
     if timeout_s is None:
-        return _result(start, None, label, value=await awaitable)
+        value = await awaitable
+        return BoundedResult(
+            timed_out=False,
+            value=value,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=None,
+            label=label,
+        )
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
@@ -259,16 +299,37 @@ async def run_bounded_async(
         if task in done:
             if not deadline.done():
                 deadline.cancel()
-            return _result(start, timeout_s, label, value=await task)
+            value = await task
+            return BoundedResult(
+                timed_out=False,
+                value=value,
+                elapsed_s=time.monotonic() - start,
+                timeout_s=timeout_s,
+                label=label,
+            )
 
         _abandon(task)
         if on_abandon is not None:
-            asyncio.ensure_future(_run_abandon_cleanup(on_abandon)).add_done_callback(_consume_abandoned)
-        # Deliberately INLINE on the loop: the mark must happen-before this result returns
-        # AND before the ensure_future'd on_abandon cleanup starts (next tick).
+            cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
+            cleanup.add_done_callback(_consume_abandoned)
+        # Phase 3a (#85125): the abandoned task may leave the backend
+        # half-wedged; flag it so the owner recycles before reuse.
+        # Deliberately INLINE on the loop (adopter contract: mark_suspect is
+        # cheap and non-blocking). Running it synchronously guarantees the
+        # mark happens-before this BoundedResult returns AND before the
+        # ensure_future'd on_abandon cleanup can start (next loop tick) — an
+        # offloaded mark would race both.
         _mark_backend_suspect(backend, label, timeout_s)
-        logger.warning("[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s)
-        return _result(start, timeout_s, label, timed_out=True)
+        logger.warning(
+            "[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s
+        )
+        return BoundedResult(
+            timed_out=True,
+            value=None,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=timeout_s,
+            label=label,
+        )
     finally:
         for t in timers:
             t.cancel()
@@ -278,6 +339,7 @@ async def run_bounded_async(
 
 
 # --- Bounded execution — sync flavor -------------------------------------------
+
 
 
 def run_bounded_sync(
@@ -298,7 +360,13 @@ def run_bounded_sync(
     timeout_s = clamp_timeout(timeout)
     start = time.monotonic()
     if timeout_s is None:
-        return _result(start, None, label, value=fn())
+        return BoundedResult(
+            timed_out=False,
+            value=fn(),
+            elapsed_s=time.monotonic() - start,
+            timeout_s=None,
+            label=label,
+        )
 
     box: dict[str, Any] = {}
     done = threading.Event()
@@ -312,29 +380,39 @@ def run_bounded_sync(
         finally:
             done.set()
 
-    threading.Thread(target=_worker, name=f"deadline-{label}", daemon=True).start()
-    deadline = start + timeout_s
-    while not done.is_set():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        done.wait(min(_BOUNDED_SYNC_WAIT_SLICE_S, remaining))
-
-    if not done.is_set():
-        logger.warning("[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s)
-        # Mark suspect BEFORE owner cleanup so a recycle in on_timeout never
-        # inherits a stale flag on the healed replacement.
+    thread = threading.Thread(target=_worker, name=f"deadline-{label}", daemon=True)
+    thread.start()
+    if not done.wait(timeout_s):
+        logger.warning(
+            "[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s
+        )
+        # Phase 3a (#85125), ordering: mark suspect BEFORE owner cleanup so a
+        # recycle/re-init in on_timeout never gets a stale flag on the healed
+        # replacement. The sync flavor runs the mark inline — the protocol
+        # contract requires mark_suspect to be cheap.
         _mark_backend_suspect(backend, label, timeout_s)
         if on_timeout is not None:
             try:
                 on_timeout()
             except Exception:
                 logger.debug("deadline on_timeout callback failed", exc_info=True)
-        return _result(start, timeout_s, label, timed_out=True)
+        return BoundedResult(
+            timed_out=True,
+            value=None,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=timeout_s,
+            label=label,
+        )
 
     if "exc" in box:
         raise box["exc"]
-    return _result(start, timeout_s, label, value=box.get("value"))
+    return BoundedResult(
+        timed_out=False,
+        value=box.get("value"),
+        elapsed_s=time.monotonic() - start,
+        timeout_s=timeout_s,
+        label=label,
+    )
 
 
 # --- Whole-tree process termination --------------------------------------------
@@ -398,6 +476,7 @@ def _process_tree_snapshot(pid: int, *, hard_kill: bool):
                 logger.debug("kill_process_tree: target already gone or resume refused", exc_info=True)
 
 
+
 def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     """Terminate ``pid`` and all its descendants, portably; True when anything was signalled.
 
@@ -421,24 +500,54 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0
         except Exception:
-            logger.debug("kill_process_tree: taskkill failed for pid %s", pid, exc_info=True)
+            logger.debug(
+                "kill_process_tree: taskkill failed for pid %s", pid, exc_info=True
+            )
             return False
 
     import signal as _signal
     if sig is None:
         sig = _signal.SIGKILL
 
-    with _process_tree_snapshot(int(pid), hard_kill=sig == _signal.SIGKILL) as descendants:
-        signalled = False
-        # Signal descendants while their ownership ancestry is still observable.
-        # Frozen hard-kill targets cannot fork during this bottom-up teardown.
-        for child in reversed(descendants):
-            try:
-                if child.is_running():
-                    child.send_signal(sig)
-                    signalled = True
-            except Exception:
-                continue
+    # Snapshot descendants while the parent is still alive — after it dies
+    # they reparent to init/subreaper and a parent walk finds nothing.
+    descendants: list = []
+    try:
+        import psutil
+
+        descendants = psutil.Process(int(pid)).children(recursive=True)
+    except Exception:
+        # Already gone, or psutil unavailable in a stripped env — the
+        # group-signal below still covers same-session descendants.
+        descendants = []
+
+    signalled = False
+    try:
+        # NOTE: getpgid→killpg has an inherent TOCTOU (pid could be reaped and
+        # recycled between the calls). All existing killpg sites share it; the
+        # psutil sweep below is identity-aware and does not.
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+    try:
+        if pgid is not None and pgid == pid:
+            # pid leads its own group: one syscall covers the whole group.
+            # (The == check guards against signalling the caller's own group
+            # when pid is not a leader.)
+            os.killpg(  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+                pgid, sig
+            )
+        else:
+            os.kill(pid, sig)
+        signalled = True
+    except ProcessLookupError:
+        pass
+    except (PermissionError, OSError):
+        logger.debug("kill_process_tree: signal failed for pid %s", pid, exc_info=True)
+
+    # Sweep the snapshot: reaches descendants outside the parent's group
+    # (their own setsid sessions) and the non-group-leader case.
+    for child in descendants:
         try:
             if child.is_running():  # identity-aware: recycled PIDs skipped
                 child.send_signal(sig)

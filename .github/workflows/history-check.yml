@@ -32,7 +32,36 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0 # full history both sides for merge-base
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: Fetch bounded base and PR histories
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          base_ref="${BASE_REF:-main}"
+          target_ref="refs/remotes/pull/${PR_NUMBER}/head"
+          history_depth=$(( ${PR_COMMITS:-0} + 64 ))
+          if (( history_depth < 256 )); then
+            history_depth=256
+          fi
+
+          git fetch \
+            --no-tags \
+            --no-recurse-submodules \
+            --filter=blob:none \
+            --deepen="${history_depth}" \
+            origin \
+            "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}" \
+            "+refs/pull/${PR_NUMBER}/head:${target_ref}"
+
+          git merge-base "origin/${base_ref}" "${target_ref}" >/dev/null
+          echo "HISTORY_BASE_REF=origin/${base_ref}" >> "$GITHUB_ENV"
+          echo "HISTORY_TARGET_REF=${target_ref}" >> "$GITHUB_ENV"
 
       - id: merge-base-check
         name: Reject PRs with no common ancestor on main
@@ -41,7 +70,9 @@ jobs:
           # commits share no ancestor.  We check both conditions explicitly
           # so the failure message is clear regardless of which signal fires
           # first.
-          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+          BASE_REF="${HISTORY_BASE_REF:-origin/main}"
+          TARGET_REF="${HISTORY_TARGET_REF:-HEAD}"
+          if ! BASE=$(git merge-base "$BASE_REF" "$TARGET_REF" 2>/dev/null) || [ -z "$BASE" ]; then
             STATUS='[{"source":"unrelated histories","results":[{"kind":"action_required","title":"Unrelated histories","summary":"This PR has no common ancestor with main.","detail":"","how_to_fix":"Rebase your changes onto current main:\n```\ngit fetch origin main\ngit checkout -b fix-branch origin/main\n# re-apply your changes (cherry-pick, copy files, etc.)\ngit push -f origin fix-branch\n```\n"}]}]'
             echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
             echo "review_status=${STATUS}" > review-status.json

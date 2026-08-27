@@ -383,6 +383,94 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     return {t.get("platform") for t in targets if t.get("platform")} & fronted
 
 
+def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> List[str]:
+    """Mode-specific guidance echoed in the create/update response.
+
+    The teaching that used to live in CRONJOB_SCHEMA parameter descriptions
+    (paid for on every API call of every session) is delivered here instead —
+    once, in the tool result, at the moment the model actually created a job
+    in that mode. Keep each note short and actionable; only fire notes for
+    modes the job actually uses.
+    """
+    notes: List[str] = []
+    if job.get("monitor_script") or job.get("monitor_url"):
+        notes.append(
+            "Monitor mode: the source runs first each tick and its output is "
+            "hashed as exact bytes — unchanged output suppresses the agent run "
+            "(silent no_change tick), changed output injects a MONITOR CHANGE "
+            "DETECTED diff into the prompt. The first tick always runs as "
+            "baseline. The source must emit STABLE output (no timestamps, no "
+            "random ordering) or every tick will look changed."
+        )
+    if job.get("no_agent"):
+        notes.append(
+            "no_agent mode: stdout is delivered verbatim; EMPTY stdout sends "
+            "nothing at all (watchdog pattern — script should stay quiet when "
+            "there is nothing to report). Non-zero exit or timeout sends an "
+            "error alert. prompt/skills are ignored."
+        )
+    _deliver = (user_deliver or "").strip().lower()
+    if _deliver:
+        if "all" in _deliver.split(","):
+            notes.append(
+                "deliver='all' resolves at fire time and never includes "
+                "bot-chat targets — channels connected later are picked up "
+                "automatically."
+            )
+        if _deliver.startswith("bot-chat:"):
+            notes.append(
+                "Targeting another profile's Bot Chat costs that bot an agent "
+                "turn per run."
+            )
+        # platform:chat_id with no thread segment loses topic targeting —
+        # warn once here instead of carrying the warning in the schema.
+        for target in _deliver.split(","):
+            parts = target.strip().split(":")
+            if (
+                len(parts) == 2
+                and parts[0] not in ("bot-chat", "sms")
+                and parts[1]
+                and not parts[1].startswith("#")
+            ):
+                notes.append(
+                    f"deliver target '{target.strip()}' has no :thread_id "
+                    "segment — on thread/topic platforms the delivery lands in "
+                    "the main chat, not a topic."
+                )
+                break
+    return notes
+
+
+def _split_monitor_arg(
+    monitor: Optional[str],
+    monitor_script: Optional[str],
+    monitor_url: Optional[str],
+) -> tuple:
+    """Resolve the model-facing ``monitor`` field into the stored pair.
+
+    The schema advertises ONE ``monitor`` field; the value's shape decides the
+    transport: ``http(s)://...`` is a URL source, anything else is a script
+    path (a legal script path can never start with a URL scheme). Jobs keep
+    storing ``monitor_script``/``monitor_url`` separately — this is an
+    interface merge, not a storage migration — and the legacy field names are
+    still accepted as aliases so older transcripts/replays keep working.
+
+    Returns ``(monitor_script, monitor_url)`` with update semantics:
+    ``None`` = leave unchanged, ``''`` = clear. Setting one source via
+    ``monitor`` clears the other, so switching transports in one call never
+    trips the mutual-exclusion invariant. An explicit ``monitor`` wins over
+    the legacy aliases.
+    """
+    if monitor is None:
+        return monitor_script, monitor_url
+    value = monitor.strip()
+    if not value:
+        return "", ""  # clear both sources
+    if value.lower().startswith(("http://", "https://")):
+        return "", value
+    return value, ""
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -676,6 +764,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if external_refs:
         result["context_from"] = external_refs
+    if isinstance(job.get("attach_to_session"), bool):
+        result["attach_to_session"] = job["attach_to_session"]
     return result
 
 
@@ -1507,7 +1597,11 @@ def cronjob(
                 if not script:
                     return tool_error(
                         "create with no_agent=True requires a script — "
-                        "the script is the job.",
+                        "the script is the job. In no_agent mode the LLM is "
+                        "skipped entirely: prompt and skills are ignored, "
+                        "non-empty stdout is delivered verbatim, empty stdout "
+                        "sends nothing (watchdog pattern), and a non-zero "
+                        "exit or timeout sends an error alert.",
                         success=False,
                     )
             elif not prompt and not canonical_skills:
@@ -1623,6 +1717,12 @@ def cronjob(
                 "message": _create_message,
                 **_gateway_liveness_notice(),
             }
+            # Mode-specific guidance rides in the create response (once, when
+            # relevant) instead of in the schema (every API call). See
+            # _mode_guidance_notes.
+            _notes = _mode_guidance_notes(job, _normalize_deliver_param(deliver))
+            if _notes:
+                _result["guidance"] = _notes
             return json.dumps(_result, indent=2)
 
         if normalized == "list":
@@ -1919,7 +2019,13 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            _upd_result: Dict[str, Any] = {"success": True, "job": _format_job(updated)}
+            # An update can switch a job into monitor / no_agent mode or
+            # change its delivery — echo the same mode guidance as create.
+            _upd_notes = _mode_guidance_notes(updated, _normalize_deliver_param(deliver))
+            if _upd_notes:
+                _upd_result["guidance"] = _upd_notes
+            return json.dumps(_upd_result, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1943,10 +2049,8 @@ def _cronjob_schema_overrides() -> dict:
 
 
 CRONJOB_SCHEMA = {
-    "name": "cronjob_manage",
+    "name": "cronjob",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
-
-'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT pinning it, so it keeps tracking future global changes — use after deliberately changing the default model.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -1972,8 +2076,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "schedule": {
                 "type": "string",
-                "type": "string",
-                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
             },
             "name": {
                 "type": "string",
@@ -1985,7 +2088,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), 'bot-chat' (inject the output into this profile's canonical Bot Chat as a real message — the bot reads it, acts on it, and responds in that chat; 'bot-chat:<profile>' targets another local profile's Bot Chat, costing that bot an agent turn per run), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all', 'bot-chat:research'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time (and never includes bot-chat targets), so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
             },
             "skills": {
                 "type": "array",
@@ -1994,7 +2097,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "script": {
                 "type": "string",
-                "description": _script_description("the profile HERMES_HOME")
+                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
             },
             "monitor": {
                 "type": "string",
@@ -2025,7 +2128,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
+                "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
         },
         "required": ["action"]
@@ -2059,23 +2162,42 @@ _HANDLER_FORWARDED_ARGS = (
 
 
 def _cronjob_handler(args, **kw):
-    """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
-    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
-    _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
+    """Model-tool dispatch for ``cronjob``.
+
+    Resolves the one model-facing ``monitor`` field into the stored
+    ``monitor_script``/``monitor_url`` pair (legacy field names still accepted
+    as aliases so older transcripts/replays keep working).
+    """
+    _mon_script, _mon_url = _split_monitor_arg(
+        args.get("monitor"), args.get("monitor_script"), args.get("monitor_url")
+    )
     return cronjob(
         action=args.get("action", ""),
         include_disabled=args.get("include_disabled", True),
+        skill=args.get("skill"),
+        skills=args.get("skills"),
+        # model / provider / base_url are intentionally NOT read from the
+        # agent's arguments: per-job inference pins are user-owned (dashboard,
+        # `hermes cron create/edit --model`, or hand-edited jobs). The agent
+        # must not be able to point unattended spend at a different model.
+        # Programmatic callers of cronjob() itself retain the parameters.
+        reason=args.get("reason"),
+        script=args.get("script"),
+        context_from=args.get("context_from"),
+        continuity=args.get("continuity"),
+        enabled_toolsets=args.get("enabled_toolsets"),
+        workdir=args.get("workdir"),
+        no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
-        paused=args.get("paused", False),
-        **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},
     )
 
 
 registry.register(
-    name="cronjob_manage",
+    name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
     handler=_cronjob_handler,

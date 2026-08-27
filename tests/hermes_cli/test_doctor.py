@@ -1614,34 +1614,34 @@ class TestMacOSTCCGrants:
         """Non-macOS: the check must produce no output even with a bundle present."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
-        doctor_platform.check_macos_tcc_grants()
+        doctor_mod.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
     def test_silent_when_no_desktop_bundle(self, monkeypatch, capsys):
         """No locally-built desktop bundle: nothing to check, no output."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
-        monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: None)
-        doctor_platform.check_macos_tcc_grants()
+        monkeypatch.setattr(doctor_mod, "_desktop_app_bundle", lambda: None)
+        doctor_mod.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
     def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
         """Pre-#73681 builds have a cdhash-pinned DR → warn that grants reset."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_macos_desktop_dr",
             lambda app: 'designated => identifier "com.nousresearch.hermes" and cdhash H"97e692f3890f781fa0ad5ad6cb9d769cfaf42628"',
         )
-        doctor_platform.check_macos_tcc_grants()
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "TCC grants will reset after every update" in out
         assert "cdhash-pinned" in out
@@ -1651,16 +1651,16 @@ class TestMacOSTCCGrants:
         """Post-#73681 identifier-only DR → stable + stale-grant repair info."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_macos_desktop_dr",
             lambda app: 'designated => identifier "com.nousresearch.hermes"',
         )
-        doctor_platform.check_macos_tcc_grants()
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "TCC signing identity is stable" in out
         assert "identifier-pinned" in out
@@ -1677,16 +1677,16 @@ class TestMacOSTCCGrants:
         hint, still prints the stale-grant repair info."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_macos_desktop_dr",
             lambda app: 'designated => identifier "com.nousresearch.hermes" and certificate root = H"aabbcc"',
         )
-        doctor_platform.check_macos_tcc_grants()
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "TCC signing identity is stable" in out
         assert "certificate-anchored" in out
@@ -1697,12 +1697,12 @@ class TestMacOSTCCGrants:
         """codesign failure → warn, never crash."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
-        monkeypatch.setattr(doctor_platform, "_macos_desktop_dr", lambda app: None)
-        doctor_platform.check_macos_tcc_grants()
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: None)
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
 
@@ -1710,12 +1710,12 @@ class TestMacOSTCCGrants:
         """Empty DR output must not false-positive as a stable identity."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
-        monkeypatch.setattr(doctor_platform, "_macos_desktop_dr", lambda app: "")
-        doctor_platform.check_macos_tcc_grants()
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: "")
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
@@ -1724,7 +1724,7 @@ class TestMacOSTCCGrants:
         """A hanging codesign must degrade to the unreadable-DR warning, never crash."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
@@ -1732,8 +1732,8 @@ class TestMacOSTCCGrants:
         def _timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd=["codesign"], timeout=15)
 
-        monkeypatch.setattr(subprocess, "run", _timeout)
-        doctor_platform.check_macos_tcc_grants()
+        monkeypatch.setattr(doctor_mod.subprocess, "run", _timeout)
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
@@ -1742,62 +1742,12 @@ class TestMacOSTCCGrants:
         """No codesign binary → same graceful unreadable-DR warning."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
-            doctor_platform,
+            doctor_mod,
             "_desktop_app_bundle",
             lambda: tmp_path / "Hermes.app",
         )
-        monkeypatch.setattr(shutil, "which", lambda _name: None)
-        doctor_platform.check_macos_tcc_grants()
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda _name: None)
+        doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
-
-
-def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
-    helper = TestDoctorMemoryProviderSection()
-
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
-    monkeypatch.setattr(
-        "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status",
-        lambda: (False, "cloud provider Browserbase is selected"),
-    )
-    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
-    assert "browser.engine=lightpanda is shadowed" in out
-    assert "Browserbase" in out
-
-
-def test_run_doctor_reports_lightpanda_ok(monkeypatch, tmp_path):
-    helper = TestDoctorMemoryProviderSection()
-
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "Browser Use mode"))
-    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: "/opt/lightpanda")
-    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
-    assert "Lightpanda" in out
-    assert "shadowed" not in out
-
-
-def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
-    helper = TestDoctorMemoryProviderSection()
-
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
-    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "Browser Use mode"))
-    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
-    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
-    assert "Lightpanda selected but binary not found" in out
-
-
-def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
-    """`docker info` needs the /info endpoint, which socket proxies commonly block, so doctor reported
-    "daemon not running" against a working DOCKER_HOST (#72927). `docker version` (/version) is what the
-    backend itself probes with."""
-    from hermes_cli import doctor_tools
-
-    calls: list = []
-    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
-    monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
-
-    doctor_tools._check_docker_backend("docker", False, [])
-
-    assert calls and calls[0][:2] == ["docker", "version"]

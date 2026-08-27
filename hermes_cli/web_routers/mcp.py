@@ -424,16 +424,24 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if undeclared_env:
         raise HTTPException(
             status_code=400,
-            detail=f"Catalog entry '{name}' does not declare environment variable(s): {', '.join(undeclared_env)}",
+            detail=(
+                f"Catalog entry '{name}' does not declare environment "
+                f"variable(s): {', '.join(undeclared_env)}"
+            ),
         )
-    # Validate the complete map before the first write so a mixed
-    # valid+invalid request cannot partially persist credentials.
+
+    # Validate the complete map before the first write. This preserves the
+    # existing writer/install flow while ensuring a mixed valid+invalid request
+    # cannot partially persist credentials.
+    from hermes_cli.config import validate_env_var_name_for_write
+
     try:
         for key in body.env:
             validate_env_var_name_for_write(key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Persist any supplied, declared env vars first.
     effective_profile = body.profile or profile
     if body.env:
         def _write_env():

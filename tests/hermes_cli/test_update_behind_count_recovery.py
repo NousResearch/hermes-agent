@@ -111,26 +111,34 @@ def _upstream_tip(sha):
 
 
 def test_check_via_rev_recovers_exact_count():
-    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=61) as compare:
+    with patch.object(
+        banner, "bounded_probe_run", return_value=_ls_remote_result(SHA_B)
+    ), patch.object(banner, "_github_compare_behind", return_value=61) as compare:
         assert banner._check_via_rev(SHA_A) == 61
     compare.assert_called_once_with(SHA_A, SHA_B)
 
 
 def test_check_via_rev_falls_back_to_sentinel_offline():
     """FAIL-BEFORE (class): this path returned a fabricated 1 via callers."""
-    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=None):
+    with patch.object(
+        banner, "bounded_probe_run", return_value=_ls_remote_result(SHA_B)
+    ), patch.object(banner, "_github_compare_behind", return_value=None):
         assert banner._check_via_rev(SHA_A) == banner.UPDATE_AVAILABLE_NO_COUNT
 
 
 def test_check_via_rev_up_to_date_short_circuits_compare():
-    with _upstream_tip(SHA_A), patch.object(banner, "_github_compare_behind") as compare:
+    with patch.object(
+        banner, "bounded_probe_run", return_value=_ls_remote_result(SHA_A)
+    ), patch.object(banner, "_github_compare_behind") as compare:
         assert banner._check_via_rev(SHA_A) == 0
     compare.assert_not_called()
 
 
 def test_check_via_rev_local_ahead_reports_up_to_date():
     """ahead_by == 0 with differing tips = local commits on top, not behind."""
-    with _upstream_tip(SHA_B), patch.object(banner, "_github_compare_behind", return_value=0):
+    with patch.object(
+        banner, "bounded_probe_run", return_value=_ls_remote_result(SHA_B)
+    ), patch.object(banner, "_github_compare_behind", return_value=0):
         assert banner._check_via_rev(SHA_A) == 0
 
 
@@ -163,9 +171,9 @@ def test_local_checkout_recovers_exact_count(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
-            patch.object(banner, "_github_branch_tip", return_value=SHA_B), \
-            patch.object(banner, "_github_compare_behind", return_value=61):
+    with patch.object(
+        banner, "bounded_probe_run", side_effect=_shallow_git(SHA_A, SHA_B)
+    ), patch.object(banner, "_github_compare_behind", return_value=61):
         assert banner._check_via_local_git(repo_dir) == 61
 
 
@@ -173,18 +181,22 @@ def test_local_checkout_offline_compare_keeps_honest_sentinel(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
-            patch.object(banner, "_github_branch_tip", return_value=SHA_B), \
-            patch.object(banner, "_github_compare_behind", return_value=None):
-        assert banner._check_via_local_git(repo_dir) == banner.UPDATE_AVAILABLE_NO_COUNT
+    with patch.object(
+        banner, "bounded_probe_run", side_effect=_shallow_git(SHA_A, SHA_B)
+    ), patch.object(banner, "_github_compare_behind", return_value=None):
+        assert (
+            banner._check_via_local_git(repo_dir)
+            == banner.UPDATE_AVAILABLE_NO_COUNT
+        )
 
 
 def test_shallow_local_ahead_is_up_to_date_without_compare(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch(
-        "hermes_cli.banner.subprocess.run",
+    with patch.object(
+        banner,
+        "bounded_probe_run",
         side_effect=_shallow_git(SHA_A, SHA_B, ancestor=True),
     ), patch.object(banner, "_github_compare_behind") as compare:
         assert banner._check_via_local_git(repo_dir) == 0
@@ -195,8 +207,8 @@ def test_shallow_checkout_equal_tips_up_to_date_without_compare(tmp_path):
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
 
-    with patch("hermes_cli.banner.subprocess.run", side_effect=_local_git(SHA_A)), \
-            patch.object(banner, "_github_branch_tip", return_value=SHA_A), \
-            patch.object(banner, "_github_compare_behind") as compare:
+    with patch.object(
+        banner, "bounded_probe_run", side_effect=_shallow_git(SHA_A, SHA_A)
+    ), patch.object(banner, "_github_compare_behind") as compare:
         assert banner._check_via_local_git(repo_dir) == 0
     compare.assert_not_called()

@@ -99,8 +99,9 @@ class UpdateReceipt:
         failed_units: list | None = None,
         incomplete: bool = False,
         phase_error: str = "",
+        fresh_recovery: dict[str, Any] | None = None,
     ) -> None:
-        self.data["gateway_restart"] = {
+        result: dict[str, Any] = {
             "restarted_services": list(restarted_services or []),
             "relaunched_profiles": list(relaunched_profiles or []),
             "externally_supervised_profiles": list(
@@ -111,6 +112,28 @@ class UpdateReceipt:
             "incomplete": bool(incomplete),
             "phase_error": phase_error,
         }
+        if fresh_recovery is not None:
+            # Conservative outcome vocabulary: "verified" is the only bucket
+            # allowed to claim supervisor coverage; "relaunch_attempted" means
+            # the relaunch exited 0 without independent supervisor
+            # observation. "skipped" preserves runtimes (manual gateways,
+            # serve/dashboard entries) the pass deliberately did not touch.
+            persisted: dict[str, Any] = {
+                key: [str(profile) for profile in fresh_recovery.get(key, [])]
+                for key in ("requested", "verified", "relaunch_attempted", "failed")
+            }
+            persisted["skipped"] = [
+                {
+                    "profile": str(entry.get("profile", "")),
+                    "kind": str(entry.get("kind", "")),
+                    "supervisor": str(entry.get("supervisor", "")),
+                    "reason": str(entry.get("reason", "")),
+                }
+                for entry in fresh_recovery.get("skipped", [])
+                if isinstance(entry, dict)
+            ]
+            result["fresh_recovery"] = persisted
+        self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
         self.data["outcome"] = outcome
@@ -320,7 +343,7 @@ def collect_fleet_versions(
         expected_sha = None
 
     try:
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
         from hermes_cli.profiles import (
             _get_default_hermes_home,
             _get_profiles_root,
@@ -382,13 +405,21 @@ def collect_fleet_versions(
                 pid = int(pid)
             except (TypeError, ValueError):
                 continue
-            if not _pid_exists(pid):
-                # Dead PID: a DOWN row only when this exact pid was alive at
-                # update start AND the record still claims a running state —
-                # "the restart phase stopped it and nothing came back."
-                # Everything else (clean stop, startup failure, stale record
-                # from a long-dead gateway) keeps the historical no-row
-                # behavior so the feature's rollout can't false-positive.
+            if not runtime_status_pid_is_live(record):
+                # Dead PID (or a live PID recycled by an unrelated process
+                # during the update's own churn — #93258): a DOWN row only
+                # when this exact pid was alive at update start AND the
+                # record still claims a running state — "the restart phase
+                # stopped it and nothing came back." Everything else (clean
+                # stop, startup failure, stale record from a long-dead
+                # gateway) keeps the historical no-row behavior so the
+                # feature's rollout can't false-positive.
+                #
+                # ``_pre_restart`` is a bare set of PIDs, not (pid, start_time)
+                # pairs, so a recycled PID from gateway A landing in B's stale
+                # record could still mislabel B as down if A's PID happened to
+                # be in the pre-restart snapshot — inherent to the snapshot's
+                # data model, not something this guard can fix on its own.
                 gw_state = record.get("gateway_state")
                 if (
                     pid in _pre_restart

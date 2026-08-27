@@ -586,12 +586,12 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
         return _fake_proc(cmd)
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
     # Avoid writing the real user config.
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert cli_main._desktop_macos_setup_tcc_identity(identity) is True
 
     out = capsys.readouterr().out
     assert "created, imported, and trusted self-signed identity" in out
@@ -645,11 +645,11 @@ def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failu
         return _fake_proc(cmd)
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity(identity) is True
+    assert cli_main._desktop_macos_setup_tcc_identity(identity) is True
 
     # Two pkcs12 exports (plain then -legacy) and two import attempts.
     pkcs12_calls = [c for c in calls if c[0] == "/usr/bin/openssl" and "pkcs12" in c]
@@ -678,7 +678,7 @@ def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
     assert "could not trust the certificate" in capsys.readouterr().out
 
 
@@ -701,7 +701,7 @@ def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, mo
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
     assert "not a VALID code-signing identity" in capsys.readouterr().out
 
 
@@ -724,11 +724,11 @@ def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkey
         return _fake_proc(cmd)
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
 
     out = capsys.readouterr().out
     assert "already valid in keychain" in out
@@ -766,11 +766,11 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
         return _fake_proc(cmd)
 
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
     monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
 
-    assert main_desktop._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
 
 
@@ -778,7 +778,7 @@ def test_setup_tcc_identity_non_macos_skips(tmp_path, monkeypatch, capsys):
     """On non-macOS the setup is a no-op failure (not a crash)."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
 
-    assert main_desktop._desktop_macos_setup_tcc_identity() is False
+    assert cli_main._desktop_macos_setup_tcc_identity() is False
     assert "macOS-only" in capsys.readouterr().out
 
 
@@ -789,8 +789,8 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    with patch("hermes_cli.main_desktop._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
-         patch("hermes_cli.main_web_build._run_npm_install_deterministic") as mock_install, \
+    with patch("hermes_cli.main._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
 
@@ -824,10 +824,11 @@ def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, mon
     app = exe.parents[2]
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
     )
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
     monkeypatch.setattr(
         cli_main.subprocess, "run",
         lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
@@ -857,9 +858,9 @@ def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_
     app = exe.parents[2]
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: None)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
     monkeypatch.setattr(
         cli_main.subprocess, "run",
         lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
@@ -905,13 +906,13 @@ def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path
         cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
     )
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
 
     def boom(*a, **kw):
         raise subprocess.CalledProcessError(1, ["codesign"])
 
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", boom)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
     assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
@@ -950,13 +951,13 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
         cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
     )
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_has_valid_real_signature", lambda a: False)
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_signing_identity", lambda: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
 
     def boom(*a, **kw):
         raise subprocess.CalledProcessError(1, ["codesign"])
 
-    monkeypatch.setattr(main_desktop, "_desktop_macos_local_codesign", boom)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
     assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls

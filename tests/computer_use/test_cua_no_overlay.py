@@ -234,13 +234,13 @@ class TestEmbeddedDaemonOverlayFlag:
         status = MagicMock(returncode=0)
 
         with patch.object(
-            cua_backend_driver,
+            cua_backend,
             "_resolve_mcp_invocation",
             return_value=("/usr/bin/cua-driver", ["mcp"]),
         ), patch.object(
             cua_backend, "_cua_no_overlay", return_value=True,
         ), patch.object(
-            cua_backend_driver, "_cua_driver_supports_no_overlay", return_value=True,
+            cua_backend, "_cua_driver_supports_no_overlay", return_value=True,
         ), patch.object(
             cua_backend.subprocess, "Popen", return_value=process,
         ) as popen, patch.object(

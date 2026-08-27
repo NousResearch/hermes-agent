@@ -372,6 +372,13 @@ def test_prompt_submit_unknown_session_logs_warning(caplog):
         "session-scoped RPC rejected" in rec.message and "gone-sid" in rec.message
         for rec in caplog.records
     )
+    # The method name must be in the line. Without it this warning cannot
+    # identify WHICH client call is looping on a stale runtime id — the gap
+    # that made a 5s `process.list` poll storm (18,614 rejections against one
+    # id) unattributable from the logs alone.
+    assert any(
+        "method=prompt.submit" in rec.message for rec in caplog.records
+    )
 
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
@@ -16527,6 +16534,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)

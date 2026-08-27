@@ -60,6 +60,9 @@ test('hideOwnedBotSessions sweeps room member sessions by id', async () => {
   const calls = []
   const context = {
     host: {
+      setPersistedSessionHidden: async (_route, options) => {
+        calls.push({ method: 'session.set_hidden', params: { session_id: options.sessionId, hidden: options.hidden } })
+      },
       request: async (method, params) => {
         calls.push({ method, params })
         return {}
@@ -117,7 +120,10 @@ test('remote group member sessions derive their immutable owner from persisted r
     }
   }
   const context = {
-    host: { request: async (method, params) => ambient.push({ method, params }) },
+    host: {
+      request: async (method, params) => ambient.push({ method, params }),
+      setPersistedSessionHidden: async (route, options) => routed.push({ route, options })
+    },
     $botMeta: { get: () => ({}) },
     $lastRoster: { get: () => [] },
     $groupChats: {
@@ -129,7 +135,11 @@ test('remote group member sessions derive their immutable owner from persisted r
       })
     },
     groupMemberKey: member => `${member.route.connectionId}::${member.name}`,
-    requestForBot: async (bot, method, params) => routed.push({ bot, method, params }),
+    botConnectionRoute: bot => bot.route || null,
+    backendTargetProfile: (route, fallback) => route?.targetProfile || fallback,
+    requestForBot: async () => {
+      throw new Error('gateway RPC must not be used')
+    },
     sweepBotProfileSessions: async () => undefined
   }
   const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
@@ -139,9 +149,9 @@ test('remote group member sessions derive their immutable owner from persisted r
 
   assert.equal(ambient.some(call => call.method === 'session.set_hidden'), false)
   assert.equal(routed.length, 1)
-  assert.equal(routed[0].bot.route.connectionId, 'source-a')
-  assert.equal(routed[0].bot.route.targetProfile, 'backend-worker')
-  assert.equal(routed[0].params.session_id, 'remote-room-1')
+  assert.equal(routed[0].route.connectionId, 'source-a')
+  assert.equal(routed[0].route.targetProfile, 'backend-worker')
+  assert.equal(routed[0].options.sessionId, 'remote-room-1')
 })
 
 test('same session id on two remote group owners never hides an ambient collision', async () => {
@@ -157,7 +167,10 @@ test('same session id on two remote group owners never hides an ambient collisio
   const ownerA = owner('source-a')
   const ownerB = owner('source-b')
   const context = {
-    host: { request: async (method, params) => ambient.push({ method, params }) },
+    host: {
+      request: async (method, params) => ambient.push({ method, params }),
+      setPersistedSessionHidden: async (route, options) => routed.push({ route, options })
+    },
     $botMeta: { get: () => ({}) },
     $lastRoster: { get: () => [] },
     $groupChats: {
@@ -167,7 +180,11 @@ test('same session id on two remote group owners never hides an ambient collisio
       })
     },
     groupMemberKey: member => `${member.route.connectionId}::${member.name}`,
-    requestForBot: async (bot, method, params) => routed.push({ bot, method, params }),
+    botConnectionRoute: bot => bot.route || null,
+    backendTargetProfile: (route, fallback) => route?.targetProfile || fallback,
+    requestForBot: async () => {
+      throw new Error('gateway RPC must not be used')
+    },
     sweepBotProfileSessions: async () => undefined
   }
   const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
@@ -176,8 +193,8 @@ test('same session id on two remote group owners never hides an ambient collisio
   await context.__h.hideOwnedBotSessions()
 
   assert.equal(ambient.some(call => call.method === 'session.set_hidden'), false)
-  assert.deepEqual(routed.map(call => call.bot.route.connectionId).sort(), ['source-a', 'source-b'])
-  assert.ok(routed.every(call => call.params.session_id === 'same-id'))
+  assert.deepEqual(routed.map(call => call.route.connectionId).sort(), ['source-a', 'source-b'])
+  assert.ok(routed.every(call => call.options.sessionId === 'same-id'))
 })
 
 test('malformed persisted owner for a source-qualified group session fails closed', async () => {
@@ -234,11 +251,25 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
     remy: [{ id: 'r-1', title: 'Agent Inbox', started_at: 1 }]
   }
   const context = {
-    host: { request: async () => ({}) },
+    host: {
+      request: async () => ({}),
+      listPersistedSessions: async (route, options) => {
+        calls.push({ bot: options.profile, method: 'persisted.list', params: options, route })
+        return { sessions: rowsByProfile[options.profile] || [] }
+      },
+      setPersistedSessionHidden: async (route, options) => {
+        calls.push({ bot: options.profile, method: 'persisted.set_hidden', params: options, route })
+      }
+    },
     $botMeta: { get: () => ({}) },
     $groupChats: { get: () => ({}) },
     $lastRoster: { get: () => [{ name: 'alpha' }, { name: 'remy', remoteSource: true, connectionId: 'mini' }] },
     PROFILE_SESSION_LIST_LIMIT: 200,
+    botConnectionRoute: bot =>
+      bot.remoteSource
+        ? { connectionId: bot.connectionId, mode: 'remote', profile: bot.name, targetProfile: bot.name }
+        : null,
+    backendTargetProfile: (route, fallback) => route?.targetProfile || fallback,
     requestForBot: async (bot, method, params) => {
       calls.push({ bot: bot.name, method, params })
       if (method === 'session.list') {
@@ -251,20 +282,20 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   vm.runInNewContext(section, context, { filename: 's.js' })
   await context.__h.sweepBotProfileSessions(nowSeconds)
 
-  const lists = calls.filter(c => c.method === 'session.list')
+  const lists = calls.filter(c => c.method === 'persisted.list')
   assert.deepEqual(lists.map(c => c.params.profile).sort(), ['alpha', 'remy'])
   // Visible-rows-only listing keeps the sweep idempotent.
   assert.ok(lists.every(c => !c.params.include_hidden))
 
-  const hidden = calls.filter(c => c.method === 'session.set_hidden')
+  const hidden = calls.filter(c => c.method === 'persisted.set_hidden')
   assert.deepEqual(
-    hidden.map(c => c.params.session_id).sort(),
+    hidden.map(c => c.params.sessionId).sort(),
     ['a-1', 'a-2', 'a-3', 'a-8', 'r-1'],
     'exact plumbing titles only — user-titled and brand-new rows stay visible'
   )
   assert.ok(hidden.every(c => c.params.hidden === true))
-  // Remote-source bots route through requestForBot with their own bot row.
-  assert.equal(hidden.find(c => c.params.session_id === 'r-1').bot, 'remy')
+  // Remote-source rows keep their immutable source owner on the REST route.
+  assert.equal(hidden.find(c => c.params.sessionId === 'r-1').route.connectionId, 'mini')
 })
 
 test('hideOwnedBotSessions chains the ownership sweep and survives its absence of context', async () => {

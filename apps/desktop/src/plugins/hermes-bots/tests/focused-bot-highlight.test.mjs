@@ -77,7 +77,12 @@ test('RoutinesPane scopes the Cronjobs tile to the focused chat owner', () => {
   const pane = source.slice(paneStart, paneStart + 1200)
 
   assert.match(pane, /const focusedOwner = focusedRosterOwner\(useValue\(\$focusedBotOwner\)\)/)
-  assert.match(pane, /const owner = resolveRoutineOwner\(\$lastRoster\.get\(\), focusedOwner, selected\)/)
+  // The roster read must be a SUBSCRIPTION, not a bare .get(): BotsHomeView
+  // owns the fetch and can hydrate after this pane mounted, so a bare snapshot
+  // pinned the tile on "unavailable" forever (#94483). Scoping intent is
+  // unchanged — it still keys off the focused owner, never the socket-home
+  // profile atom asserted against below.
+  assert.match(pane, /const owner = resolveRoutineOwner\(useValue\(\$lastRoster\), focusedOwner, selected\)/)
   assert.ok(!/useValue\(host\.state\.profile\)/.test(pane), 'the tile must not read the socket-home atom directly')
 })
 

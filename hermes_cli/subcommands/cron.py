@@ -210,15 +210,26 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     # cron incidents — durable failure incidents (list/ack)
     cron_incidents = cron_subparsers.add_parser(
-        "incidents", help="List or acknowledge durable cron failure incidents")
-    cron_incidents.add_argument("--state", choices=["detected", "alerted", "resolved", "closed"],
-        help="Filter incidents by lifecycle state")
+        "incidents", help="List or acknowledge durable cron failure incidents"
+    )
     cron_incidents.add_argument(
-        "incident_action", nargs="?", default="list", choices=["list", "ack"],
-        help="Action (default: list)")
-    cron_incidents.add_argument("incident_id", nargs="?", help="Incident ID to acknowledge (ack)")
+        "--state",
+        choices=["detected", "alerted", "closed"],
+        help="Filter incidents by lifecycle state",
+    )
+    cron_incidents.add_argument(
+        "incident_action",
+        nargs="?",
+        default="list",
+        choices=["list", "ack"],
+        help="Action (default: list)",
+    )
+    cron_incidents.add_argument(
+        "incident_id", nargs="?", help="Incident ID to acknowledge (ack)"
+    )
 
-    # notepad: per-job durable KV, injected into the job prompt each run.
+    # cron notepad — per-job durable KV scratchpad (injected into the job
+    # prompt each run; the running agent writes it via this CLI).
     cron_notepad = cron_subparsers.add_parser(
         "notepad", help="Read/write a job's durable notepad (persistent KV across runs)")
     cron_notepad.add_argument("job_id", help="Job ID the notepad belongs to")

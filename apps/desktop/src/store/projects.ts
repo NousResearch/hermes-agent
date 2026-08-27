@@ -419,11 +419,29 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
   }
 
   try {
-    const res = await gatewayRequestOn<ProjectTreePayload>(
-      gateway,
-      'projects.tree',
-      projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
-    )
+    let res: ProjectTreePayload
+
+    try {
+      res = await gatewayRequestOn<ProjectTreePayload>(
+        gateway,
+        'projects.tree',
+        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+      )
+    } catch (error) {
+      // A remote source switch can leave the first read RPC on a newly-opened
+      // socket without a response even though the gateway remains healthy.
+      // Retry once only while this exact gateway/profile is still foreground;
+      // missing-method and other authoritative failures stay visible as-is.
+      if (!isRetryableProjectTreeReadError(error) || !stillOnProjectsContext(context)) {
+        throw error
+      }
+
+      res = await gatewayRequestOn<ProjectTreePayload>(
+        gateway,
+        'projects.tree',
+        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+      )
+    }
 
     if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
       return

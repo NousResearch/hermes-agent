@@ -42,8 +42,12 @@ def launchd(monkeypatch):
 
     import hermes_cli.gateway as gateway_mod
 
-    monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway", raising=False)
-    monkeypatch.setattr(gateway_mod, "get_launchd_plist_path", lambda: state["plist"], raising=False)
+    monkeypatch.setattr(
+        gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway", raising=False
+    )
+    monkeypatch.setattr(
+        gateway_mod, "get_launchd_plist_path", lambda: state["plist"], raising=False
+    )
 
     def fake_restart():
         if state["restart_exc"] is not None:
@@ -54,7 +58,9 @@ def launchd(monkeypatch):
 
     def fake_run(*args, **kwargs):
         subprocess_calls.append(args[0] if args else [])
-        return subprocess.CompletedProcess(args=args[0] if args else [], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args[0] if args else [], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
     return calls, state, subprocess_calls
@@ -74,7 +80,9 @@ class TestLaunchdRestartAfterUpdate:
         """
         calls, state, subprocess_calls = launchd
 
-        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == (["ai.hermes.gateway"], [])
+        assert update_cmd._restart_launchd_gateway_after_update(
+            supervision_verify=False
+        ) == (["ai.hermes.gateway"], [])
         assert calls == ["restart"]
         # No `launchctl list` classification happens in this helper.
         assert subprocess_calls == []
@@ -86,7 +94,9 @@ class TestLaunchdRestartAfterUpdate:
             returncode=1, cmd=["launchctl", "kickstart"], stderr="kickstart refused"
         )
 
-        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], ["ai.hermes.gateway"])
+        assert update_cmd._restart_launchd_gateway_after_update(
+            supervision_verify=False
+        ) == ([], ["ai.hermes.gateway"])
         out = capsys.readouterr().out
         assert "Gateway restart failed" in out
         assert "kickstart refused" in out
@@ -104,7 +114,9 @@ class TestLaunchdRestartAfterUpdate:
         calls, state, _ = launchd
         state["restart_exc"] = exc
 
-        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], ["ai.hermes.gateway"])
+        assert update_cmd._restart_launchd_gateway_after_update(
+            supervision_verify=False
+        ) == ([], ["ai.hermes.gateway"])
         assert calls == []
         out = capsys.readouterr().out
         assert "Could not restart the gateway" in out
@@ -115,7 +127,9 @@ class TestLaunchdRestartAfterUpdate:
         calls, state, _ = launchd
         state["plist"] = _FakePlist(False)
 
-        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
+        assert update_cmd._restart_launchd_gateway_after_update(
+            supervision_verify=False
+        ) == ([], [])
         assert calls == []
         assert capsys.readouterr().out == ""
 
@@ -151,12 +165,17 @@ class TestServicePidSweepExclusion:
 
         monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway_mod, "is_macos", lambda: True)
-        monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(
+            gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway"
+        )
         monkeypatch.setattr(gateway_mod, "_launchd_domain", lambda: "gui/501")
 
         def fake_run(argv, **kwargs):
             if argv[:2] == ["launchctl", "list"]:
-                return subprocess.CompletedProcess(argv, state["list_rc"], stdout="", stderr="")
+                return subprocess.CompletedProcess(
+                    argv, state["list_rc"], stdout="", stderr=""
+                )
             if argv[:2] == ["launchctl", "print"]:
                 return subprocess.CompletedProcess(
                     argv, state["print_rc"], stdout=state["print_out"], stderr=""
@@ -180,7 +199,9 @@ class TestServicePidSweepExclusion:
         assert _get_service_pids() == set()
 
     def test_registered_but_not_running_has_no_pid_line(self, macos_launchd):
-        macos_launchd["print_out"] = _PRINT_OUTPUT_RUNNING.replace("\tpid = 59038\n", "")
+        macos_launchd["print_out"] = _PRINT_OUTPUT_RUNNING.replace(
+            "\tpid = 59038\n", ""
+        )
 
         from hermes_cli.gateway import _get_service_pids
 

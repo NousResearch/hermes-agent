@@ -153,41 +153,86 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     # Hermes runtime location
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
     "HERMES_CONFIG_PATH", "HERMES_ENV_PATH",
-    # MCP catalog trust root; package-manager wrappers may still set it in the process env.
+    # MCP catalog trust root. Package-manager wrappers may still provide this
+    # in the process environment; only generic persistence writes are blocked.
     "HERMES_OPTIONAL_MCPS",
-    # Local ACP subprocess selection (executable/argv authority).
+    # Local ACP subprocess selection. Existing operator/package-manager values
+    # remain readable; generic writers cannot acquire executable/argv authority.
     "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
-    # Security policy / approval-routing context — set via their dedicated controls only.
+    # Hermes security policy / approval-routing context. These remain available
+    # through their dedicated CLI/config/session controls, but a generic
+    # credential writer must not persist them for the next process startup.
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM",
+})
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
-    """Name used for env policy comparisons: Windows env names are case-insensitive, POSIX not.
-    The override keeps both semantics testable on any host."""
+    """Return the name used for environment policy comparisons.
+
+    Windows environment names are case-insensitive; POSIX names are not. The
+    explicit override keeps both semantics directly testable without pretending
+    the test interpreter is running on another host OS.
+    """
     windows = _IS_WINDOWS if is_windows is None else is_windows
     return key.upper() if windows else key
 
 
-def validate_env_var_name_for_write(key: str) -> None:
-    """Validate an env name before a generic persistence write (exposed for batch callers)."""
-    if not _ENV_VAR_NAME_RE.match(key):
-        raise ValueError(f"Invalid environment variable name: {key!r}")
+def _reject_denylisted_env_var(key: str) -> None:
+    """Raise if ``key`` is in :data:`_ENV_VAR_NAME_DENYLIST`.
+
+    Centralised so both the regular and "secure" env writers share the
+    same gate, and so the message is consistent for callers.
+    """
     if _env_var_policy_name(key) in _ENV_VAR_NAME_DENYLIST:
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
-            "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
-            "or Hermes runtime location and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
-            "cannot be persisted via the env writer. If you really need this, edit ~/.hermes/.env "
-            "directly.")
+            "Names that influence subprocess execution (LD_PRELOAD, "
+            "PYTHONPATH, PATH, EDITOR, ...) or Hermes runtime location "
+            "and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
+            "cannot be persisted via "
+            "the env writer. If you really need this, edit "
+            "~/.hermes/.env directly."
+        )
 
 
-# Serializes all config read/write paths and guards the module-level caches below. libyaml's
-# C extension is not thread-safe for concurrent safe_load() on one file, and tool threads
-# (approval, browser, setup flows) load/save config concurrently during long agent runs.
-# RLock because save_config internally calls read_raw_config.
+def validate_env_var_name_for_write(key: str) -> None:
+    """Validate an environment name before a generic persistence write.
+
+    Exposed separately from :func:`save_env_value` so batch-style callers can
+    validate their complete request before writing the first value.
+    """
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    _reject_denylisted_env_var(key)
+
+_LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
+# (path, mtime_ns, size) -> cached expanded config dict.
+# load_config() returns a deepcopy of the cached value when the file
+# hasn't changed since the last load, skipping yaml.safe_load +
+# _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
+# save_config() + migrate_config() write via atomic_yaml_write which
+# produces a fresh inode, so stat() sees a new mtime_ns and the next
+# load repopulates automatically — no explicit invalidation hook.
+# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
+# merged_value, env_ref_snapshot) — the managed-file signature is folded in so
+# editing the managed-scope config.yaml invalidates the cache (see
+# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
+# changes value (late .env load, in-process rotation — #58514).
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+# (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
+# _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
+# the user's on-disk values without defaults merged in.
+_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Serializes all config read/write paths. libyaml's C extension is not
+# thread-safe for concurrent safe_load() on the same file, and multiple
+# tool threads (approval.py, browser_tool.py, setup flows) hit
+# load_config / read_raw_config / save_config from different threads
+# during long agent runs. RLock (not Lock) because save_config internally
+# calls read_raw_config. Also covers mutation of the module-level cache
+# dicts above.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
@@ -3426,10 +3471,13 @@ def _quote_env_value(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = None) -> bool:
-    """True when a .env line assigns ``key`` — plain, ``export``-prefixed, or ``KEY = value``.
-    Must match exactly the shapes ``load_env()`` parses; otherwise a hand-added line is invisible
-    to save (duplicate appended) and remove (line survives -> the value resurrects on next load).
+def _env_line_defines_key(
+    line: str,
+    key: str,
+    *,
+    is_windows: Optional[bool] = None,
+) -> bool:
+    """True when a .env line assigns ``key`` — plain or ``export``-prefixed.
 
     ``load_env()`` accepts the bash-compatible ``export KEY=value`` form (#6659), so the writers must
     recognise the same shape.
@@ -3440,64 +3488,29 @@ def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = N
     assigned_key, separator, _value = stripped.partition("=")
     if not separator:
         return False
-    # load_env() strips whitespace around the parsed name, so `KEY = value` IS a live assignment. The
-    # writers must match the same shape, or a hand-edited spaced line is invisible to save (duplicate
-    # appended) and remove (line survives -> value resurrects on next load). #67488.
     return _env_var_policy_name(
-        assigned_key.strip(), is_windows=is_windows
+        assigned_key,
+        is_windows=is_windows,
     ) == _env_var_policy_name(key, is_windows=is_windows)
-
-
-def _publish_env_value(key: str, value: Optional[str]) -> None:
-    """Publish a just-persisted ``.env`` change to the live process.
-    Under a multiplexed gateway a routed profile's write must not land in the SHARED
-    ``os.environ`` where every profile sees it; the installed scope mapping is updated instead so
-    same-turn reads see the change. All other callers keep the legacy ``os.environ`` publish.
-
-    ``save_env_value`` / ``remove_env_value`` already target the right file (``get_env_path()`` honors the
-    profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
-    #77490, #88441.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope() if is_multiplex_active() else None
-    except Exception:
-        scope = None
-    target = scope if isinstance(scope, dict) else (None if scope is not None else os.environ)
-    if target is not None:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
-
-
-def _env_write_blocked(key: str, action: str) -> bool:
-    """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked.
-    Two distinct locks: ``is_managed()`` (package-manager install) and the managed *scope*
-    (administrator-pinned env key — the managed .env wins at load anyway)."""
-    if is_managed():
-        managed_error(f"{action} {key}")
-        return True
-
-    if managed_scope.is_env_managed(key):
-        print(
-            f"Cannot {action} {key}: it is managed by your administrator ({_managed_source('.env')}) "
-            f"and cannot be changed.", file=sys.stderr)
-        return True
-    return False
-
-
-def _managed_source(filename: str):
-    """``<managed dir>/<filename>`` for refusal messages, or a generic label without a managed dir."""
-    managed_dir = managed_scope.get_managed_dir()
-    return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
     if _env_write_blocked(key, "set"):
+        return
+    # Managed scope guard: a managed env key can't be set by the user — the
+    # managed .env wins at load anyway. Distinct from is_managed() above.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot set {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
         return
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")

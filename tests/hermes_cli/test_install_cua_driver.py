@@ -245,7 +245,7 @@ class TestInstallCuaDriverUpgrade:
         import subprocess
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 1
@@ -1130,7 +1130,7 @@ class TestInstallerTimeoutDrainIsBounded:
     """
 
     def test_drain_grace_is_short_relative_to_the_run_ceiling(self):
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         # This is a grace period for a pipe that a live process is holding
         # open, not a second budget for the install itself — the install is
@@ -1148,7 +1148,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -1185,7 +1185,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -1225,7 +1225,7 @@ class TestInstallerTimeoutDrainIsBounded:
         import psutil
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         child = MagicMock()
         child.kill.side_effect = psutil.AccessDenied(pid=999)
@@ -1270,7 +1270,7 @@ class TestInstallerTimeoutDrainIsBounded:
         """
         import subprocess
         from unittest.mock import MagicMock
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         parent = MagicMock()
         parent.children.return_value = []
@@ -1679,7 +1679,7 @@ class TestUnattendedRefreshPreflights:
              system="Linux"):
         from unittest.mock import MagicMock
 
-        from hermes_cli import tools_config_cua as tools_config
+        from hermes_cli import tools_config
 
         proc = MagicMock()
         proc.communicate.return_value = ("ok", None)

@@ -4511,13 +4511,283 @@ class BasePlatformAdapter(ABC):
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
                 if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
-                        event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
-                    event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
-                    record_delivery=_record_delivery)
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    logger.info(
+                        "[%s] Sending response (%d chars) to %s",
+                        delivery_adapter.name,
+                        len(text_content),
+                        event.source.chat_id,
+                    )
+                    _reply_anchor = _reply_anchor_for_event(event)
+                    # Delivery-obligation ledger: durably record the final
+                    # response BEFORE the send attempt so a gateway crash
+                    # between finalize and platform ACK can redeliver it on
+                    # the next boot instead of silently losing the turn's
+                    # output (#58818). Best-effort at every step — ledger
+                    # trouble must never block or delay the actual send.
+                    # Slash-command and ephemeral replies are cheap to
+                    # regenerate and are not recorded.
+                    _obligation_id = None
+                    if not is_ephemeral_response and not str(
+                        event.text or ""
+                    ).lstrip().startswith(("/", self.typed_command_prefix or "!")):
+                        try:
+                            from gateway.delivery_ledger import (
+                                compute_obligation_id,
+                                ledger_enabled,
+                                mark_attempting,
+                                record_obligation,
+                            )
+
+                            if await asyncio.to_thread(ledger_enabled):
+                                _obligation_id = compute_obligation_id(
+                                    session_key,
+                                    str(getattr(event, "message_id", "") or ""),
+                                    text_content,
+                                )
+                                await asyncio.to_thread(
+                                    record_obligation,
+                                    obligation_id=_obligation_id,
+                                    session_key=session_key,
+                                    platform=str(
+                                        getattr(event.source.platform, "value",
+                                                event.source.platform)
+                                    ),
+                                    chat_id=event.source.chat_id,
+                                    thread_id=getattr(event.source, "thread_id", None),
+                                    content=text_content,
+                                    adapter_profile=getattr(
+                                        delivery_adapter, "_owner_profile", None
+                                    ),
+                                )
+                                await asyncio.to_thread(mark_attempting, _obligation_id)
+                        except Exception:
+                            logger.debug("delivery ledger record failed", exc_info=True)
+                            _obligation_id = None
+                    result = await delivery_adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=text_content,
+                        reply_to=_reply_anchor,
+                        metadata=_final_thread_metadata,
+                    )
+                    _record_delivery(result)
+                    if _obligation_id is not None:
+                        try:
+                            from gateway.delivery_ledger import (
+                                mark_delivered,
+                                mark_failed,
+                            )
+
+                            if getattr(result, "success", False):
+                                await asyncio.to_thread(mark_delivered, _obligation_id)
+                            else:
+                                _delivery_error = str(
+                                    getattr(result, "error", "") or ""
+                                )
+                                await asyncio.to_thread(
+                                    mark_failed,
+                                    _obligation_id,
+                                    _delivery_error,
+                                )
+                                # A replacement can finish reconnecting before
+                                # this in-flight failure reaches mark_failed. In
+                                # that ordering the watcher's sweep found no row.
+                                # Signal a second transactional sweep only when a
+                                # new live adapter is already installed; atomic
+                                # claiming makes concurrent signals idempotent.
+                                if _delivery_error == "send_path_degraded":
+                                    _live_adapter = self._final_delivery_adapter(
+                                        event.source
+                                    )
+                                    _runtime_redeliver = getattr(
+                                        getattr(self, "gateway_runner", None),
+                                        "_redeliver_failed_obligations_for_platform",
+                                        None,
+                                    )
+                                    if (
+                                        _live_adapter is not delivery_adapter
+                                        and callable(_runtime_redeliver)
+                                    ):
+                                        await _runtime_redeliver(
+                                            event.source.platform,
+                                            profile=getattr(
+                                                delivery_adapter,
+                                                "_owner_profile",
+                                                None,
+                                            ),
+                                        )
+                        except Exception:
+                            logger.debug(
+                                "delivery ledger update failed", exc_info=True
+                            )
+
+                    # Schedule auto-deletion on the adapter that owns the new
+                    # message ID, which may be the reconnect replacement.
+                    if (
+                        _ephemeral_ttl
+                        and _ephemeral_ttl > 0
+                        and result.success
+                        and result.message_id
+                    ):
+                        delivery_adapter._schedule_ephemeral_delete(
+                            chat_id=event.source.chat_id,
+                            message_id=result.message_id,
+                            ttl_seconds=_ephemeral_ttl,
+                        )
+
+                # Human-like pacing delay between text and media
+                human_delay = self._get_human_delay()
+
+                # Send extracted images as native attachments
+                if images:
+                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
+                    try:
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=images,
+                            metadata=_final_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
+
+                # Send extracted media files — route by file type
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+                # Partition images out of media_files + local_files so they
+                # can be sent as a single batch (Signal RPC). When
+                # ``[[as_document]]`` was set on the original response, image
+                # files skip the photo path and route to send_document below
+                # so they're delivered with original bytes (no Telegram
+                # sendPhoto recompression).
+                from urllib.parse import quote as _quote
+                _image_paths: list = []
+                _non_image_media: list = []
+                for media_path, is_voice in media_files:
+                    _ext = Path(media_path).suffix.lower()
+                    if (_ext in _IMAGE_EXTS
+                            and not is_voice
+                            and not force_document_attachments):
+                        _image_paths.append(media_path)
+                    else:
+                        _non_image_media.append((media_path, is_voice))
+                _non_image_local: list = []
+                for file_path in local_files:
+                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                            and not force_document_attachments):
+                        _image_paths.append(file_path)
+                    else:
+                        _non_image_local.append(file_path)
+
+                if _image_paths:
+                    try:
+                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=_batch,
+                            metadata=_final_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
+                if _non_image_media:
+                    logger.info(
+                        "[%s] Delivering %d non-image MEDIA attachment(s)",
+                        self.name,
+                        len(_non_image_media),
+                    )
+                for media_path, is_voice in _non_image_media:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        ext = Path(media_path).suffix.lower()
+                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+                            media_result = await self.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=media_path,
+                                metadata=_final_thread_metadata,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            logger.info(
+                                "[%s] Sending video attachment (%s) to %s",
+                                self.name,
+                                ext,
+                                event.source.chat_id,
+                            )
+                            media_result = await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=media_path,
+                                metadata=_final_thread_metadata,
+                            )
+                        else:
+                            media_result = await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                                metadata=_final_thread_metadata,
+                            )
+
+                        if not media_result.success:
+                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id,
+                                media_path,
+                                is_voice=is_voice,
+                                metadata=_final_thread_metadata,
+                            )
+                    except Exception as media_err:
+                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
+
+                # Send auto-detected local non-image files as native attachments
+                for file_path in _non_image_local:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
+                    try:
+                        ext = Path(file_path).suffix.lower()
+                        if ext in _VIDEO_EXTS:
+                            file_result = await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=file_path,
+                                metadata=_final_thread_metadata,
+                            )
+                        else:
+                            file_result = await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=file_path,
+                                metadata=_final_thread_metadata,
+                            )
+                        if not file_result.success:
+                            logger.warning(
+                                "[%s] Failed to send local file (%s): %s",
+                                self.name,
+                                ext,
+                                file_result.error,
+                            )
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id,
+                                file_path,
+                                metadata=_final_thread_metadata,
+                            )
+                    except Exception as file_err:
+                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                # A3 (#29346): if a non-empty response produced nothing
+                # deliverable, fail loudly rather than dropping it in silence.
+                _anything_delivered = (
+                    delivery_attempted or _tts_caption_delivered
+                    or images or local_files or media_files
+                )
+                if not _anything_delivered and _response_pre_extract.strip():
+                    logger.error(
+                        "[%s] response_delivery_dropped: non-empty response "
+                        "(%d chars) produced no delivered message or attachment "
+                        "for %s (empty after extract, recovery yielded nothing).",
+                        self.name, len(_response_pre_extract), event.source.chat_id,
+                    )
+
+            # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

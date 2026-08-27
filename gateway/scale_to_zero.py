@@ -133,13 +133,10 @@ def self_suspend_available(environ: Optional[dict] = None) -> bool:
     return bool(_env_str(environ, FLY_APP_NAME_ENV) and _env_str(environ, FLY_MACHINE_ID_ENV)
                 and os.path.exists(FLY_API_SOCKET))
 
-
-def brokered_sleep_url(environ: Optional[dict] = None) -> Optional[str]:
-    """The NAS sleep endpoint to POST, or None when this backend has no broker.
-
-    Validated here rather than at POST time: a malformed value would otherwise let
-    the watcher mark draining, hold the re-dial and flip the connector before
-    urllib rejected it, quiescing for a suspend that could never happen.
+    True iff the Fly-injected machine identity is present AND the local Machines
+    API socket exists. Off-Fly (local dev, Azure ACA, tests) this is False and
+    the watcher skips the quiesce entirely: the platform owns the freeze, so
+    the gateway stays connected until it lands.
     """
     env = environ if environ is not None else os.environ
     url = str(env.get(SLEEP_URL_ENV, "")).strip()

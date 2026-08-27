@@ -6,9 +6,30 @@ OpenAI function-calling schema; vision models get SOM captures (numbered overlay
 tree) and click by index, non-vision models use the AX tree alone. Model-facing guidance
 lives in the schema description and each action result's `verdict`.
 
-Modules: `tool.py` (handler, approval gate, response shaping), `backend.py` (abstract
-`ComputerUseBackend` + result dataclasses), `cua_backend.py` (default MCP-over-stdio
-backend + `cua_backend_parse`/`_session`/`_daemon` siblings), `schema.py` (byte-frozen).
+Unlike #4562's Anthropic-native `computer_20251124` tool, the schema here is
+a plain OpenAI function-calling schema that every tool-capable model can
+drive. Vision models get SOM (set-of-mark) captures — a screenshot with
+numbered overlays on every interactable element plus the AX tree — so they
+click by element index instead of pixel coordinates. Non-vision models can
+drive via the AX tree alone.
+
+Wiring
+------
+* `tool.py`       — registers the `computer_use` tool via tools.registry.
+* `backend.py`    — abstract `ComputerUseBackend`; swappable implementation.
+* `cua_backend.py`— default backend; speaks MCP over stdio to `cua-driver`.
+* `schema.py`     — shared schema + docstring for the generic `computer_use`
+                    tool. Model-agnostic.
+* `capture.py`    — screenshot post-processing (PNG coercion, sizing, SOM
+                    overlay if the backend did not).
+
+The outer integration points (multimodal tool-result plumbing, screenshot
+eviction in the Anthropic adapter, image-aware token estimation, approval
+hook, and the skill) live alongside this package. See
+agent/anthropic_adapter.py for the salvaged hunks from PR #4562. Model-facing
+guidance (workflow, background-first, the escalate ladder, safety) lives in
+the tool's schema description and each action result's `verdict`, not a
+separate system-prompt block.
 """
 
 

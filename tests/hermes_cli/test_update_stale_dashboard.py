@@ -111,7 +111,7 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         return []
 
     with patch(
-        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        "hermes_cli.main._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
@@ -130,7 +130,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
         return []
 
     with patch(
-        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        "hermes_cli.main._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_not_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=False)

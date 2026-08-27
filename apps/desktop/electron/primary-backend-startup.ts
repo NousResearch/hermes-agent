@@ -23,6 +23,15 @@ interface ResolvedPrimaryRemote {
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
   source?: string
+  ssh?: {
+    effectiveConfigFingerprint?: string
+    host?: string
+    keyPath?: string
+    port?: number
+    remoteHermesPath?: string
+    remoteProfile?: string
+    user?: string
+  }
   token: unknown
   wsUrl: string
 }
@@ -46,6 +55,7 @@ export function createPrimaryRemoteConnection<State extends object>(
     remoteKind: remote.remoteKind,
     remoteHermesVersion: remote.remoteHermesVersion,
     ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
+    ...(remote.ssh ? { ssh: remote.ssh } : {}),
     token: remote.token,
     wsUrl: remote.wsUrl,
     logs,

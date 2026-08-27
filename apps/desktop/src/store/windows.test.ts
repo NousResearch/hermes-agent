@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  canOpenBrowserWindow,
   canOpenNewWindow,
   canOpenSessionWindow,
   isPeerInstanceWindow,
+  openBrowserInNewWindow,
   openNewWindow,
   openSessionInNewWindow
 } from './windows'

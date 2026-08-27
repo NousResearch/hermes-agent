@@ -10,6 +10,7 @@ import type { ReadableAtom } from 'nanostores'
 import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
 import { registerPaneCloser, removeTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import type { MenuKit } from '@/components/ui/actions-menu'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import type { TileDock } from '@/store/session-states'

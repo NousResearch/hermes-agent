@@ -30,9 +30,9 @@ When Tool Search activates for a turn, the model sees three new tools in
 place of the deferred ones:
 
 ```
-tool_search(queries, limit?)   search the deferred-tool catalog (one or more queries)
-tool_describe(names)           load the full schemas for one or more tools
-tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
+tool_search(queries, limit?)   — search the deferred-tool catalog (one or more queries)
+tool_describe(names)           — load the full schemas for one or more tools
+tool_call(name, arguments)     — invoke a deferred tool
 ```
 
 `calls` takes one entry per invocation; a single local call is an array of
@@ -53,8 +53,7 @@ Model: tool_search(["create a github issue", "send a slack message"])
 Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
   → { tools: { mcp_github_create_issue: { parameters: { ... } },
                mcp_slack_post_message: { parameters: { ... } } } }
-Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
-                             arguments: { title: "...", body: "..." } }] })
+Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
   → { ok: true, issue_number: 42 }
 ```
 
@@ -232,21 +231,10 @@ to any progressive-disclosure design, not specific to this implementation:
   finds that server's tools even when a tool's own name doesn't carry
   the service), description, and parameter names, with Snowball
   stemming (English) applied to both the index and the query so
-  morphological variants match ("issues" finds `create_issue`). A tool is
-  a result only if it contains the query's rarest token (the one in the
-  fewest tool documents, so the word that names the intent: `gmail`,
-  `github`, `incident`, not `send` or `create`). A query whose rarest
-  token appears in no tool returns an empty group with the connected
-  sources and a retry hint, instead of `limit` tools that share one
-  common word.
-- **Relevance floor:** a tool must match at least half of a query's
-  *answerable* terms (terms present anywhere in the catalog) before it
-  is offered — sharing one incidental word with a long query is not a
-  match. A hunt for a capability that doesn't exist returns no results
-  instead of a plausible-looking list the model rephrases against
-  forever. The floor only engages from four answerable terms up, so
-  short queries like "list issues" keep full recall, and an exact
-  tool-name query always matches.
+  morphological variants match ("issues" finds `create_issue`). Falls
+  back to a literal substring match on the tool name when no query
+  token matches any document (e.g. searching `"hub"` where the token is
+  `github`).
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

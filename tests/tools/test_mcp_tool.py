@@ -1546,14 +1546,17 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
 
-        assert result["ProgramFiles"] == r"C:\Program Files"
-        assert result["ProgramData"] == r"C:\ProgramData"
-        assert result["ProgramW6432"] == r"C:\Program Files"
-        assert result["LOCALAPPDATA"].endswith("Local")
-        assert result["APPDATA"].endswith("Roaming")
-        assert result["USERPROFILE"] == r"C:\Users\alice"
-        assert "GITHUB_TOKEN" not in result
-        assert "OPENAI_API_KEY" not in result
+        # Windows normalizes os.environ keys to uppercase.  Compare through a
+        # normalized view so this assertion exercises the allowlist itself.
+        normalized = {key.upper(): value for key, value in result.items()}
+        assert normalized["PROGRAMFILES"] == r"C:\Program Files"
+        assert normalized["PROGRAMDATA"] == r"C:\ProgramData"
+        assert normalized["PROGRAMW6432"] == r"C:\Program Files"
+        assert normalized["LOCALAPPDATA"].endswith("Local")
+        assert normalized["APPDATA"].endswith("Roaming")
+        assert normalized["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in normalized
+        assert "OPENAI_API_KEY" not in normalized
 
 
 # ---------------------------------------------------------------------------

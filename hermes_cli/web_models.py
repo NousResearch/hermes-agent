@@ -247,9 +247,15 @@ class SessionImport(BaseModel):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
-    hidden: Optional[bool] = None  # also used by cross-profile reconciliation
-    pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
-    # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.
+    # Generic visibility flag. This is also used by process-light cross-profile
+    # reconciliation, where the primary backend opens the owner's state.db.
+    hidden: Optional[bool] = None
+    # Durable "keep" flag mirrored from the Desktop sidebar's pins; pinned
+    # sessions are exempt from the sessions.auto_archive stale sweep.
+    pinned: Optional[bool] = None
+    # Read-state watermark toggle (sessions.last_read_at): True marks the
+    # session explicitly unread, False marks it read up to now. Mirrored from
+    # the Desktop sidebar's "Mark as unread"/"Mark as read". None = leave alone.
     unread: Optional[bool] = None
     profile: Optional[str] = None  # session owned by another profile (opens its state.db)
 

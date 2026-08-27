@@ -87,6 +87,9 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
 def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        hermes_gateway, "find_windows_gateway_services", lambda **_k: []
+    )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
 
@@ -96,6 +99,9 @@ def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
 def test_pause_still_cold_starts_when_autostart_and_no_desktop_owner(monkeypatch):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        hermes_gateway, "find_windows_gateway_services", lambda **_k: []
+    )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
 

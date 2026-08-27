@@ -648,7 +648,7 @@ class TestGitEnvIsolation:
         env = _git_env(
             store, str(work), index_file=store / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        assert Path(env["GIT_INDEX_FILE"]) == store / "indexes" / "abc"
 
         # ~ in the work tree is expanded.
         tilde_work = fake_home / "work"

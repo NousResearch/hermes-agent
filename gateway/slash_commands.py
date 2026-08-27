@@ -2225,15 +2225,38 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.rollback.invalid_number", max=len(checkpoints))
             target_hash = checkpoints[idx]["hash"]
         result = mgr.restore(cwd, target_hash, safe=not restore_all)
-        if not result["success"]:
-            return t("gateway.rollback.restore_failed", error=result["error"])
-        msg = t("gateway.rollback.restored", hash=result["restored_to"], reason=result["reason"])
-        for result_key, i18n_key in _ROLLBACK_SKIP_LINES:
-            files = result.get(result_key) or []
-            if files:
-                more = f" (+{len(files) - 5})" if len(files) > 5 else ""
-                msg += "\n" + t(i18n_key, files=", ".join(files[:5]) + more)
-        return msg
+        if result["success"]:
+            msg = t(
+                "gateway.rollback.restored",
+                hash=result["restored_to"],
+                reason=result["reason"],
+            )
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_user_edits",
+                    files=shown + more,
+                )
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5})" if len(oversize) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_oversize",
+                    files=shown + more,
+                )
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5})" if len(failed) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.failed_deletes",
+                    files=shown + more,
+                )
+            return msg
+        return t("gateway.rollback.restore_failed", error=result["error"])
 
     async def _handle_diff_command(self, event: MessageEvent) -> str:
         """Handle /diff — show git changes in the working directory.  Diff body is truncated hard

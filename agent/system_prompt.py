@@ -51,18 +51,19 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
 _GATE_WORDS = {**dict.fromkeys(("true", "always", "yes", "on"), True), **dict.fromkeys(("false", "never", "no", "off"), False)}
 
 
-def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
-    """Resolve a config gate: True/"true"-ish -> on, False/"false"-ish -> off,
-    list -> case-insensitive model-substring match, anything else ("auto") ->
-    match against *default_models*."""
-    if setting is True or setting is False:
-        return setting
-    if isinstance(setting, str) and setting.lower() in _GATE_WORDS:
-        return _GATE_WORDS[setting.lower()]
-    model_lower = (model or "").lower()
-    if isinstance(setting, list):
-        return any(p.lower() in model_lower for p in setting if isinstance(p, str))
-    return any(p in model_lower for p in default_models)
+def _ra():
+    """Lazy reference to the ``run_agent`` module.
+
+    Helpers like ``load_soul_md``, ``build_environment_hints``,
+    ``build_context_files_prompt``,
+    ``build_skills_system_prompt`` and ``get_toolset_for_tool`` are
+    imported into ``run_agent``'s namespace.  Many tests
+    ``patch("run_agent.load_soul_md", ...)``; if we imported them
+    directly here those patches would not reach us.  Looking them up
+    through ``run_agent`` on every call preserves the patch contract.
+    """
+    import run_agent
+    return run_agent
 
 
 def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> str:
@@ -404,17 +405,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     return " ".join(g for g in tool_guidance if g) or None
 
 
-    # Computer-use — goes in as its own block rather than being merged into
-    # tool_guidance because the content is multi-paragraph. The guidance is
-    # rendered for the host platform so Windows/Linux hosts don't see
-    # macOS-only wording (Mac, Space, cmd+s).
-    if "computer_use" in agent.valid_tool_names:
-        from agent.prompt_builder import computer_use_guidance
-        stable_parts.append(computer_use_guidance())
-
-    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
-    if nous_subscription_prompt:
-        stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

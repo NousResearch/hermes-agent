@@ -72,7 +72,7 @@ function restModelOptions(
   explicitOnly: boolean,
   refresh: boolean,
   profile?: null | string
-): Promise<ModelOptionsResult> {
+): Promise<ModelOptionsResponse> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
   const profileKey = (profile ?? '').trim()
 
@@ -86,7 +86,7 @@ export async function requestModelOptions({
   refresh = false,
   request,
   sessionId
-}: ModelOptionsRequest): Promise<ModelOptionsResult> {
+}: ModelOptionsRequest): Promise<ModelOptionsResponse> {
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
@@ -114,7 +114,7 @@ export async function requestModelOptions({
     let gatewayOptions: ModelOptionsResult | undefined
 
     try {
-      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
+      gatewayOptions = await dispatch<ModelOptionsResponse>('model.options', params)
     } catch (error) {
       gatewayError = error
     }
@@ -123,14 +123,12 @@ export async function requestModelOptions({
       return gatewayOptions
     }
 
-    // An owner-routed dispatcher can name a different registry connection than
-    // the ambient REST client. Never recover that request through ambient REST:
-    // profile names are not unique across sources, so doing so can cache B's
-    // catalog under A's tile. Ambient gateway requests retain the compatibility
-    // recovery used by older backends with incomplete model.options responses.
-    if (!request) {
-      try {
-        const restOptions = await restModelOptions(explicitOnly, refresh, profile)
+    // A connected Desktop gateway can occasionally return only the current
+    // provider/model (or an empty provider list) while its authenticated REST
+    // catalog is already populated. Recover through the same profile-scoped
+    // endpoint Settings uses, but keep the live session selection authoritative.
+    try {
+      const restOptions = await restModelOptions(explicitOnly, refresh, profile)
 
         if (hasSelectableModels(restOptions)) {
           return {

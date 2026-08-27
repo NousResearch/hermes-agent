@@ -522,9 +522,11 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 
 
 def bounded_probe_run(
-    argv: Sequence[str], *, timeout: float, errors: str = "replace",
-    env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
-    raise_on_spawn_failure: bool = False,
+    argv: Sequence[str],
+    *,
+    timeout: float,
+    errors: str = "replace",
+    cwd: str | os.PathLike[str] | None = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
@@ -543,9 +545,16 @@ def bounded_probe_run(
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
         proc = subprocess.Popen(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors=errors,
-            env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
+            list(argv),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors=errors,
+            cwd=cwd,
+            **_popen_kwargs,
+        )
     except Exception:
         if raise_on_spawn_failure:
             raise

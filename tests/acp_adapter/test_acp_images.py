@@ -39,6 +39,7 @@ def test_text_only_acp_blocks_stay_string_for_legacy_prompt_path():
 def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     attached = tmp_path / "notes.md"
     attached.write_text("# Notes\n\nAttached file body", encoding="utf-8")
+    expected_body = attached.read_bytes().decode("utf-8")
 
     content = _content_blocks_to_openai_user_content([
         TextContentBlock(type="text", text="Please read this file"),
@@ -55,7 +56,7 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
         "Please read this file\n"
         "[Attached file: Project notes (notes.md)]\n"
         f"URI: {attached.as_uri()}\n\n"
-        "# Notes\n\nAttached file body"
+        f"{expected_body}"
     )
 
 
@@ -75,7 +76,6 @@ _ONE_PX_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000a49444154789c6300010000000500010d0a2db40000000049454e44ae426082"
 )
-
 
 
 

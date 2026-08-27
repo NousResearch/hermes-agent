@@ -102,6 +102,20 @@ class ProfileGatewayProcess:
     create_time: float = 0.0
 
 
+@dataclass(frozen=True)
+class WindowsGatewayService:
+    """A real Windows service supervising a profile gateway process tree."""
+
+    name: str
+    profile: str
+    service_pid: int
+    gateway_pid: int
+    descendant_pids: frozenset[int]
+    descendant_identities: tuple[tuple[int, float], ...]
+    service_create_time: float = 0.0
+    gateway_create_time: float = 0.0
+
+
 def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -760,7 +774,11 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     return pids
 
 
-def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: bool = False) -> list[ProfileGatewayProcess]:
+def find_profile_gateway_processes(
+    exclude_pids: set | None = None,
+    *,
+    strict: bool = False,
+) -> list[ProfileGatewayProcess]:
     """Return running gateway PIDs mapped to Hermes profiles via PID files."""
     _exclude = set(exclude_pids or set())
     processes: list[ProfileGatewayProcess] = []
@@ -790,22 +808,38 @@ def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: b
                 create_time = 0.0
         except Exception as exc:
             if strict:
-                raise RuntimeError(f"Could not inspect gateway PID for profile {profile.name}") from exc
+                raise RuntimeError(
+                    f"Could not inspect gateway PID for profile {profile.name}"
+                ) from exc
             continue
         if pid is None or pid <= 0 or pid in _exclude or pid in seen:
             continue
         seen.add(pid)
-        processes.append(ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid, create_time=create_time))
+        processes.append(
+            ProfileGatewayProcess(
+                profile=profile.name,
+                path=profile.path,
+                pid=pid,
+                create_time=create_time,
+            )
+        )
     return processes
 
 
 def find_windows_gateway_services(
-    *, psutil_module=None, profile_processes: list[ProfileGatewayProcess] | None = None
+    *,
+    psutil_module=None,
+    profile_processes: list[ProfileGatewayProcess] | None = None,
 ) -> list[WindowsGatewayService]:
-    """Profile gateways supervised by real Windows services. Service-logon processes may hide their
-    command lines, so identity = Hermes's own PID file + a parent chain ending at a running SCM service
-    PID. The whole service subtree is returned so the Desktop preflight exempts exactly what the
-    updater stops through the SCM."""
+    """Find profile gateways supervised by real Windows services.
+
+    Service-logon processes can deny the interactive Desktop access to their
+    command lines. The updater can still identify them without guessing: a
+    validated profile gateway PID comes from Hermes's own PID file, and its
+    parent chain terminates at a running SCM service PID. The complete service
+    subtree is returned so the Desktop preflight exempts only processes the CLI
+    updater will stop through the Service Control Manager.
+    """
     if sys.platform != "win32":
         return []
     try:
@@ -814,10 +848,12 @@ def find_windows_gateway_services(
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
         service_names_by_pid: dict[int, set[str]] = {}
-        indeterminate_services_by_pid: dict[int, list[tuple[str, object]]] = {}
         for service in psutil_module.win_service_iter():
             try:
-                if all(callable(getattr(service, field, None)) for field in ("name", "status", "pid")):
+                if all(
+                    callable(getattr(service, field, None))
+                    for field in ("name", "status", "pid")
+                ):
                     service_name = str(service.name() or "")
                     service_status = service.status()
                     service_pid = int(service.pid() or 0)
@@ -827,7 +863,8 @@ def find_windows_gateway_services(
                     service_status = data.get("status")
                     service_pid = int(data.get("pid") or 0)
             except FileNotFoundError:
-                # Deleted between enumeration and inspection.
+                # The service was deleted between enumeration and inspection;
+                # it cannot still supervise a live gateway tree.
                 continue
             except Exception as exc:
                 raise RuntimeError("SCM service inspection failed") from exc
@@ -836,11 +873,13 @@ def find_windows_gateway_services(
             if service_status == "stopped":
                 continue
             if service_status != "running":
-                if service_pid > 0:
-                    indeterminate_services_by_pid.setdefault(service_pid, []).append((service_name, service_status))
-                continue
+                raise RuntimeError(
+                    f"SCM service {service_name} has indeterminate status: {service_status}"
+                )
             if service_pid <= 0:
-                raise RuntimeError(f"Running SCM service {service_name} has no valid process ID")
+                raise RuntimeError(
+                    f"Running SCM service {service_name} has no valid process ID"
+                )
             service_names_by_pid.setdefault(service_pid, set()).add(service_name)
     except Exception as exc:
         raise RuntimeError("SCM service enumeration failed") from exc
@@ -850,21 +889,29 @@ def find_windows_gateway_services(
         try:
             gateway_process = psutil_module.Process(int(profile_process.pid))
             gateway_create_time = float(gateway_process.create_time())
-            if profile_process.create_time <= 0 or abs(gateway_create_time - profile_process.create_time) > 0.001:
+            if profile_process.create_time <= 0 or abs(
+                gateway_create_time - profile_process.create_time
+            ) > 0.001:
                 raise RuntimeError("Gateway process identity changed during SCM discovery")
             ancestor_pids = [int(parent.pid) for parent in gateway_process.parents()]
-            for pid in ancestor_pids:
-                indeterminate_services = indeterminate_services_by_pid.get(pid, [])
-                if indeterminate_services:
-                    service_name, service_status = indeterminate_services[0]
-                    raise RuntimeError(f"SCM service {service_name} has indeterminate status: {service_status}")
-            shared_service_pids = [pid for pid in ancestor_pids if len(service_names_by_pid.get(pid, set())) > 1]
+            shared_service_pids = [
+                pid
+                for pid in ancestor_pids
+                if len(service_names_by_pid.get(pid, set())) > 1
+            ]
             if shared_service_pids:
                 raise RuntimeError(
                     "Gateway ownership is ambiguous under shared SCM host PID(s): "
                     + ", ".join(str(pid) for pid in shared_service_pids)
                 )
-            service_pid = next((pid for pid in ancestor_pids if len(service_names_by_pid.get(pid, set())) == 1), None)
+            service_pid = next(
+                (
+                    pid
+                    for pid in ancestor_pids
+                    if len(service_names_by_pid.get(pid, set())) == 1
+                ),
+                None,
+            )
             if service_pid is None:
                 continue
             service_name = next(iter(service_names_by_pid[service_pid]))
@@ -875,7 +922,10 @@ def find_windows_gateway_services(
             if int(profile_process.pid) not in descendants:
                 continue
             descendant_identities = tuple(
-                sorted((int(child.pid), float(child.create_time())) for child in descendant_processes)
+                sorted(
+                    (int(child.pid), float(child.create_time()))
+                    for child in descendant_processes
+                )
             )
             found[service_name] = WindowsGatewayService(
                 name=service_name,
@@ -890,7 +940,10 @@ def find_windows_gateway_services(
         except RuntimeError:
             raise
         except Exception as exc:
-            raise RuntimeError(f"Could not determine SCM ownership for gateway profile {profile_process.profile}") from exc
+            raise RuntimeError(
+                "Could not determine SCM ownership for gateway profile "
+                f"{profile_process.profile}"
+            ) from exc
     return [found[name] for name in sorted(found)]
 
 

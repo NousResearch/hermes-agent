@@ -82,8 +82,40 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
-# Stateless catalog reads (rebuilt from the current tool-defs on every call) — parallel-safe.
+# Read-only bridge lookups: dispatch_tool_search / dispatch_tool_describe are
+# stateless catalog reads (the catalog is rebuilt from the current tool-defs
+# list on every call), so a batch of them can run concurrently.
 _PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
+
+
+def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
+    try:
+        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        return underlying, underlying_args
+    except Exception:
+        return tool_name, function_args
+
+
+def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
+    """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
 
 def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
@@ -196,15 +228,68 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             _close_parallel()
             _extend_sequential([tool_call])
             continue
-        _name, scoped_paths, is_writer = admission
-        if any(
-            (is_writer or existing_is_writer) and _paths_overlap(scoped_path, existing)
-            for scoped_path in scoped_paths
-            for existing, existing_is_writer in reserved_paths
+
+        try:
+            function_args = json.loads(tool_call.function.arguments)
+        except Exception:
+            _raw = tool_call.function.arguments
+            logging.debug(
+                "Could not parse args for %s — treating as sequential barrier; raw=%s",
+                tool_name,
+                _raw[:200] if isinstance(_raw, str) else repr(_raw)[:200],
+            )
+            _add_sequential(tool_call)
+            continue
+        if not isinstance(function_args, dict):
+            logging.debug(
+                "Non-dict args for %s (%s) — treating as sequential barrier",
+                tool_name,
+                type(function_args).__name__,
+            )
+            _add_sequential(tool_call)
+            continue
+
+        # Bridge unwrap: admission is decided on the UNDERLYING tool, not on
+        # the literal wrapper name the model emitted. Read-only bridge
+        # lookups (tool_search / tool_describe) are parallel-safe as-is.
+        effective_name, effective_args = _peel_bridge_call(tool_name, function_args)
+
+        if effective_name in _NEVER_PARALLEL_TOOLS:
+            _add_sequential(tool_call)
+            continue
+
+        if effective_name in _PATH_SCOPED_TOOLS:
+            scoped_paths = _extract_parallel_scope_paths(
+                effective_name, effective_args, execution_cwd=execution_cwd
+            )
+            if not scoped_paths:
+                _add_sequential(tool_call)
+                continue
+            is_writer = effective_name in _PATH_SCOPED_WRITERS
+            if any(
+                (is_writer or existing_is_writer)
+                and _paths_overlap(scoped_path, existing)
+                for scoped_path in scoped_paths
+                for existing, existing_is_writer in reserved_paths
+            ):
+                # Same-subtree conflict inside this run: close it so this
+                # call starts a fresh run AFTER the conflicting one lands.
+                # Reader↔reader overlap never conflicts — concurrent reads
+                # of the same subtree commute.
+                _close_parallel()
+            reserved_paths.extend((p, is_writer) for p in scoped_paths)
+            current.append(tool_call)
+            continue
+
+        if (
+            effective_name in _PARALLEL_SAFE_TOOLS
+            or effective_name in _PARALLEL_SAFE_BRIDGE_LOOKUPS
+            or _is_mcp_tool_parallel_safe(effective_name)
         ):
-            _close_parallel()
-        reserved_paths.extend((p, is_writer) for p in scoped_paths)
-        current.append(tool_call)
+            current.append(tool_call)
+            continue
+
+        _add_sequential(tool_call)
 
     _close_parallel()
     return segments

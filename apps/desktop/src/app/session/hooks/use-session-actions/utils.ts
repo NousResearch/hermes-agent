@@ -5,6 +5,7 @@ import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
+import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -1359,6 +1360,10 @@ function buildOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+
   return session
 }
 
@@ -1407,7 +1412,6 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
-  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
@@ -1622,17 +1626,6 @@ export async function resolveSessionProfile(storedSessionId: null | string): Pro
 export async function resolveSessionOwner(storedSessionId: null | string): Promise<SessionOwnerScope> {
   if (!storedSessionId) {
     return undefined
-  }
-
-  const owner = resolveSessionRpcOwner({
-    routingSessionId: storedSessionId,
-    tileOwnerRoute: sessionTileOwnerRoute,
-    sessionOwnerHint: getSessionOwnerHint,
-    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
-  })
-
-  if (owner) {
-    return owner
   }
 
   const row = await resolveStoredSession(storedSessionId)

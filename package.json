@@ -36,11 +36,12 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "typescript-eslint": "8.64.0",
+    "eslint": "10.8.0",
     "eslint-plugin-perfectionist": "5.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0"
+    "globals": "17.7.0",
+    "typescript-eslint": "8.64.0"
   },
   "overrides": {
     "lodash": "4.18.1",
@@ -67,7 +68,7 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.6": true,
+    "electron@41.10.4": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true

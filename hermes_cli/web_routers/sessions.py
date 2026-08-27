@@ -638,15 +638,28 @@ _RENAME_FLAG_SETTERS = (
 
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update ``title`` (empty clears) and/or the flags; ``pinned`` exempts from
-    the auto-archive sweep, ``unread=False`` marks read up to now."""
-    flags = [flag for flag, _ in _RENAME_FLAG_SETTERS]
+    """Update a session: rename, archive, hide, pin, and/or mark read/unread.
 
-    def _update(db):
-        sid = _resolve_session_id(db, session_id)
+    ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
+    restores the session; ``hidden`` controls generic list visibility;
+    ``pinned`` sets the durable keep flag (exempts the
+    session from the auto-archive sweep); ``unread`` toggles the read-state
+    watermark (True = explicitly unread, False = read up to now — see
+    ``SessionDB.set_session_read``). Any field may be omitted. ``profile``
+    targets another profile's session.
+    """
+    db = _open_session_db_for_profile(body.profile, read_only=False)
+    try:
+        sid = db.resolve_session_id(session_id)
         if not sid:
-            raise HTTPException(status_code=404, detail=_NOT_FOUND)
-        if body.title is None and all(getattr(body, f) is None for f in flags):
+            raise HTTPException(status_code=404, detail="Session not found")
+        if (
+            body.title is None
+            and body.archived is None
+            and body.hidden is None
+            and body.pinned is None
+            and body.unread is None
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', and/or 'unread'.",
@@ -657,13 +670,23 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
-        result = {"ok": True, "title": None}
-        for flag, setter in _RENAME_FLAG_SETTERS:
-            value = getattr(body, flag)
-            if value is not None:
-                setter(db, sid, value)
-                result[flag] = bool(value)
-        result["title"] = db.get_session_title(sid) or ""
+        if body.archived is not None:
+            db.set_session_archived(sid, body.archived)
+        if body.hidden is not None:
+            db.set_session_hidden(sid, body.hidden)
+        if body.pinned is not None:
+            db.set_session_pinned(sid, body.pinned)
+        if body.unread is not None:
+            db.set_session_read(sid, read=not body.unread)
+        result = {"ok": True, "title": db.get_session_title(sid) or ""}
+        if body.archived is not None:
+            result["archived"] = bool(body.archived)
+        if body.hidden is not None:
+            result["hidden"] = bool(body.hidden)
+        if body.pinned is not None:
+            result["pinned"] = bool(body.pinned)
+        if body.unread is not None:
+            result["unread"] = bool(body.unread)
         return result
 
     return _with_db(body.profile, _update, read_only=False)

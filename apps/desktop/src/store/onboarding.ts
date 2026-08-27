@@ -392,15 +392,11 @@ async function completeWithModelConfirm(
           provider: defaults.providerSlug,
           model: defaults.defaultModel
         },
-        ctx.profile,
+        undefined,
         // Headless automated flow: nothing is mounted to click a guard
         // prompt, so fail with the message instead of hanging.
         { skipConfirmPrompt: true }
       )
-
-      if (generation !== flowGeneration) {
-        return
-      }
 
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {

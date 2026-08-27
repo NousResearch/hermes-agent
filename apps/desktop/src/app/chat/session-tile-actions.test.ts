@@ -9,9 +9,9 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
-const { $activeSessionId } = await import('@/store/session')
+const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
 const { $sessionTiles, setSessionTileDelegate } = await import('@/store/session-states')
-const { useSessionTileActions } = await import('./session-tile-actions')
+const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
@@ -67,6 +67,7 @@ describe('session tile optimistic owner metadata', () => {
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
     $activeSessionId.set('foreground-runtime')
+    setSessions([])
     $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
@@ -92,6 +93,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
 
   afterEach(() => {
     $activeSessionId.set(null)
+    setSessions([])
     $sessionTiles.set([])
     requestGatewayMock.mockReset()
     vi.restoreAllMocks()

@@ -24,6 +24,7 @@ import {
   dismissBackgroundProcess,
   groupStatusItems,
   refreshBackgroundProcesses,
+  resetBackgroundPollingGuard,
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
@@ -138,6 +139,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // call sites in use-gateway-boot.ts and store/gateway.ts).
   useEffect(() => {
     if (sessionId) {
+      // Opening/rebinding a session is a fresh runtime binding: clear any
+      // gone-latch left by a previous runtime under this id so the poll below
+      // is allowed to run again (see resetBackgroundPollingGuard).
+      resetBackgroundPollingGuard(sessionId)
       void refreshBackgroundProcesses(sessionId)
       void refreshSessionControl(sessionId)
     }

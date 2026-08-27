@@ -25,6 +25,7 @@ import { useModelControls } from './use-model-controls'
 const setGlobalModel = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
+const dismissNotification = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
@@ -377,7 +378,7 @@ describe('useModelControls', () => {
       confirm_expensive_model: true,
       key: 'model',
       session_id: 'session-1',
-      value: 'muse-spark-1.2-contributor --provider opencode-go'
+      value: 'muse-spark-1.2-contributor --provider opencode-go --global'
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')

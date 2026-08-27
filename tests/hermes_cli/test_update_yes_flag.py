@@ -18,19 +18,25 @@ from hermes_cli.main import cmd_update
 
 
 @pytest.fixture(autouse=True)
-def _isolate_update(isolated_update_runtime, monkeypatch):
-    import shutil
-    from hermes_cli import managed_uv, update_cmd
+def _no_live_hermes_processes(monkeypatch):
+    """Keep mocked update flows independent of the developer's live install."""
+    from hermes_cli import main as hermes_main
+    import hermes_cli.gateway as hermes_gateway
 
-    monkeypatch.setattr(managed_uv, "resolve_uv", lambda **kw: shutil.which("uv"))
-    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kw: shutil.which("uv"))
-    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kw: None)
-    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
+    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
+    )
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
 
 
-def _make_run_side_effect(
-    branch="main", verify_ok=True, commit_count="1", dirty=False
-):
+def _make_run_side_effect(branch="main", verify_ok=True, commit_count="1", dirty=False):
     """Minimal subprocess.run side_effect for the update flow."""
 
     def side_effect(cmd, **kwargs):
@@ -139,9 +145,11 @@ class TestUpdateYesConfigMigration:
         # "Non-interactive session" branch instead of prompting.
         import sys as _sys
 
-        with patch("builtins.input", return_value="n") as mock_input, patch.object(
-            _sys.stdin, "isatty", return_value=True
-        ), patch.object(_sys.stdout, "isatty", return_value=True):
+        with (
+            patch("builtins.input", return_value="n") as mock_input,
+            patch.object(_sys.stdin, "isatty", return_value=True),
+            patch.object(_sys.stdout, "isatty", return_value=True),
+        ):
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
@@ -151,7 +159,6 @@ class TestUpdateYesConfigMigration:
 
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
-
 
 
 class TestUnicodeDecodeErrorInUpdatePrompts:
@@ -190,11 +197,13 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
 
         import sys as _sys
 
-        with patch(
-            "builtins.input",
-            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
-        ), patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
-            _sys.stdout, "isatty", return_value=True
+        with (
+            patch(
+                "builtins.input",
+                side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+            ),
+            patch.object(_sys.stdin, "isatty", return_value=True),
+            patch.object(_sys.stdout, "isatty", return_value=True),
         ):
             cmd_update(args)  # must not raise
 
@@ -202,7 +211,9 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
         assert "hermes config migrate" in out
         mock_migrate.assert_not_called()
 
-    def test_stash_restore_unicode_decode_error_falls_through_to_skip(self, tmp_path, capsys):
+    def test_stash_restore_unicode_decode_error_falls_through_to_skip(
+        self, tmp_path, capsys
+    ):
         from hermes_cli.update_cmd import _restore_stashed_changes
 
         with patch(
@@ -210,7 +221,11 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
             side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
         ):
             result = _restore_stashed_changes(
-                ["git"], tmp_path, "stash@{0}", prompt_user=True, input_fn=None,
+                ["git"],
+                tmp_path,
+                "stash@{0}",
+                prompt_user=True,
+                input_fn=None,
             )  # must not raise
 
         assert result is False
@@ -225,7 +240,11 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
 
         with patch("builtins.input", side_effect=EOFError()):
             result = _restore_stashed_changes(
-                ["git"], tmp_path, "stash@{0}", prompt_user=True, input_fn=None,
+                ["git"],
+                tmp_path,
+                "stash@{0}",
+                prompt_user=True,
+                input_fn=None,
             )  # must not raise
 
         assert result is False
@@ -235,15 +254,16 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
     ):
         from hermes_cli.update_cmd import _sync_with_upstream_if_needed
 
-        with patch(
-            "hermes_cli.update_cmd._has_upstream_remote", return_value=False
-        ), patch(
-            "hermes_cli.update_cmd._should_skip_upstream_prompt", return_value=False
-        ), patch(
-            "hermes_cli.update_cmd._add_upstream_remote"
-        ) as mock_add, patch(
-            "builtins.input",
-            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+        with (
+            patch("hermes_cli.update_cmd._has_upstream_remote", return_value=False),
+            patch(
+                "hermes_cli.update_cmd._should_skip_upstream_prompt", return_value=False
+            ),
+            patch("hermes_cli.update_cmd._add_upstream_remote") as mock_add,
+            patch(
+                "builtins.input",
+                side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+            ),
         ):
             _sync_with_upstream_if_needed(["git"], tmp_path)  # must not raise
 

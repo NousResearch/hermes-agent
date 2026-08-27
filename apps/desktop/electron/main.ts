@@ -31,6 +31,7 @@ import {
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
+import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
   type BackendOutputTail,
@@ -55,9 +56,7 @@ import {
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
-import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -83,7 +82,7 @@ import {
   buildBrowserWindowUrl
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
-import { applyConnectionChange } from './connection-apply'
+import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -129,12 +128,15 @@ import {
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
+  parseBackendScopeKey,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
+  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -225,8 +227,27 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
+  assertManagedUpdatePreflightClear,
+  executeManagedRemoteUpdate,
+  fenceManagedSshBootstrapPublication,
+  ManagedConnectionUpdateGate,
+  managedSshRecoveryScopes,
+  managedSshScopeRole,
+  managedSshTokenPersistencePlan,
+  recoverManagedSshScopes,
+  refusedManagedSshUpdate,
+  type RemoteUpdateTarget,
+  runManagedSshUpdate,
+  validateCorrelationId,
+  waitForManagedRemoteClearance,
+  waitForManagedSshBootstrapFence,
+  waitForManagedUpdateOperations
+} from './managed-ssh-update'
+import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
+import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
+  oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
@@ -243,6 +264,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -290,7 +312,8 @@ import {
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
-  spliceRegistrySessionRows
+  spliceRegistrySessionRows,
+  tagRegistrySessionResponse
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -305,7 +328,21 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
-import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import {
+  applyRemoteRequestHeaders,
+  createRegistryGatewayWsUrlHandler,
+  createRemoteWsHeaderStore
+} from './remote-ws-headers'
+import { missingRendererAssets } from './renderer-bundle'
+import { loadRendererLoadErrorPage } from './renderer-load-error-page'
+import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import {
+  classifyStoredSecret,
+  readSecretStoragePolicy,
+  SECRET_STORAGE_POLICY_FILE,
+  type SecretStoragePolicy,
+  writeSecretStoragePolicy
+} from './secret-storage-policy'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -319,6 +356,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { installStdioEpipeGuard } from './stdio-epipe-guard'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
@@ -368,6 +406,7 @@ import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
+import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -385,7 +424,13 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
-import { connectWindowsRemote, detectRemotePlatform, helper } from './windows-remote-lifecycle'
+import {
+  connectWindowsRemote,
+  detectRemotePlatform,
+  helper,
+  probeWindowsRemote,
+  terminateOwnedWindowsDashboardForUpdate
+} from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -1635,6 +1680,7 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 let remoteHeaderRulesInstalled = false
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
+const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
 let nativeThemeListenerInstalled = false
@@ -1806,6 +1852,7 @@ function rememberLog(chunk) {
 }
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
+installStdioEpipeGuard()
 
 // A rejected loadURL leaves a blank window and, unhandled, no trace anywhere
 // the user can send us. `label` names the surface so the log says which one.
@@ -6752,65 +6799,6 @@ function getAppIconPath() {
   }
 }
 
-// One-time modal for plugins importing pre-decomposition module paths (see
-// electron/plugin-compat-notice.ts). The backend writes the report during plugin
-// discovery; we show each distinct report exactly once and remember the dismissal
-// in userData so the user is never nagged twice about the same set of plugins.
-let pluginCompatNoticeShown = false
-
-async function showPluginCompatNoticeOnce() {
-  if (pluginCompatNoticeShown) {
-    return
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  let notice
-
-  try {
-    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'))
-  } catch (err) {
-    rememberLog(`[plugins] compat notice check failed: ${err.message}`)
-
-    return
-  }
-
-  if (!notice) {
-    return
-  }
-
-  pluginCompatNoticeShown = true
-  rememberLog(`[plugins] compat notice shown (${notice.key})`)
-
-  try {
-    // 'OK' is the default and cancel so a stray Enter/Escape never navigates;
-    // 'Open Plugins' rides the existing deep-link channel (hermes://open/…),
-    // which the renderer already maps to its hash router.
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      title: notice.title,
-      message: notice.message,
-      detail: notice.detail,
-      buttons: ['Open Plugins', 'OK'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true
-    })
-
-    if (response === 0) {
-      handleDeepLink(`${HERMES_PROTOCOL}://open/skills?tab=plugins`)
-    }
-  } finally {
-    try {
-      recordPluginCompatDismissed(app.getPath('userData'), notice.key)
-    } catch (err) {
-      rememberLog(`[plugins] could not persist compat notice dismissal: ${err.message}`)
-    }
-  }
-}
-
 function sendOpenUpdatesRequested() {
   // The renderer mounts its open-updates listener in the same effect pass that
   // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
@@ -9417,6 +9405,12 @@ function readDesktopConnectionsRegistry() {
     registry = normalizeRegistry(null)
   }
 
+  if (registry?.quarantined?.length) {
+    rememberLog(
+      `[connections] ${registry.quarantined.length} malformed registry entr${registry.quarantined.length === 1 ? 'y was' : 'ies were'} quarantined (kept under "quarantined" in connections.json); healthy connections loaded normally.`
+    )
+  }
+
   // Heal v1 -> v2 drift: the v1 global route names a remote this registry has
   // never heard of, so the live descriptor resolves to no connectionId and the
   // launch pick sends the window somewhere else. Persist so the repair is a
@@ -10016,7 +10010,7 @@ async function buildRemoteConnection(
 
       throw gatewayTicketFailure(
         error,
-        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
+        oauthTicketFailureAuthMessage(hasNativeSession(baseUrl)),
         'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }
@@ -10249,6 +10243,176 @@ function clearManagedSshRecovery(connectionId, correlationId) {
 }
 
 const sshBootstrapCoordinator = createBootstrapCoordinator()
+
+const managedConnectionUpdates = new Map<string, Promise<any>>()
+const managedConnectionRecoveries = new Map<string, Promise<void>>()
+const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
+let managedUpdateQuitWait: Promise<void> | null = null
+let managedUpdateQuitWaitDone = false
+
+function assertCanMutateManagedPrimaryRouting() {
+  const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
+
+  const ids = new Set([
+    ...managedConnectionUpdates.keys(),
+    ...managedConnectionRecoveries.keys(),
+    ...managedPrimaryRestoreOwners.keys(),
+    ...durableIds
+  ])
+
+  if (ids.size > 0) {
+    const error: any = new Error(
+      `Primary connection routing cannot change while managed SSH update recovery is pending for ${[...ids].join(', ')}.`
+    )
+
+    error.code = 'managed-update-in-progress'
+    throw error
+  }
+}
+
+function readManagedSshRecoveryRecords(): any[] {
+  try {
+    const stat = fs.lstatSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
+
+    if (!stat.isFile() || stat.isSymbolicLink() || !tightenSecretFileMode(DESKTOP_MANAGED_SSH_RECOVERY_PATH)) {
+      throw new Error('Managed SSH recovery journal is not a safe owner-only file.')
+    }
+
+    const payload = JSON.parse(fs.readFileSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH, 'utf8'))
+
+    if (payload?.version !== 1 || !Array.isArray(payload.records)) {
+      throw new Error('Managed SSH recovery journal has an unsupported shape.')
+    }
+
+    const valid = payload.records.every(record => {
+      if (
+        !record ||
+        typeof record !== 'object' ||
+        typeof record.connectionId !== 'string' ||
+        record.source?.kind !== 'ssh' ||
+        record.source?.id !== record.connectionId ||
+        !['prepared', 'launching'].includes(record.phase) ||
+        !Array.isArray(record.scopes) ||
+        record.scopes.length > 256
+      ) {
+        return false
+      }
+
+      try {
+        validateCorrelationId(record.correlationId)
+      } catch {
+        return false
+      }
+
+      const scopesValid = record.scopes.every(
+        scope =>
+          scope &&
+          typeof scope === 'object' &&
+          typeof scope.key === 'string' &&
+          scope.key.length <= 256 &&
+          typeof scope.profile === 'string' &&
+          scope.profile.length > 0 &&
+          scope.profile.length <= 128 &&
+          ['legacy', 'primary', 'registry'].includes(scope.kind) &&
+          (scope.kind === 'primary' || scope.key.length > 0)
+      )
+
+      const identities = record.scopes.map(scope => `${scope.kind}\0${scope.key}\0${scope.profile}`)
+
+      return (
+        scopesValid &&
+        new Set(identities).size === identities.length &&
+        record.scopes.filter(scope => scope.kind === 'primary').length <= 1
+      )
+    })
+
+    if (!valid) {
+      throw new Error('Managed SSH recovery journal contains an invalid record.')
+    }
+
+    return payload.records
+  } catch (cause: any) {
+    if (cause?.code === 'ENOENT') {
+      return []
+    }
+
+    const error: any = new Error(
+      'Managed SSH recovery state is unreadable or malformed; refusing connection startup and edits.'
+    )
+
+    error.code = 'managed-update-recovery-unavailable'
+    error.cause = cause
+    throw error
+  }
+}
+
+function writeManagedSshRecoveryRecords(records) {
+  fs.mkdirSync(path.dirname(DESKTOP_MANAGED_SSH_RECOVERY_PATH), { recursive: true })
+  writeSecretFileAtomic(
+    DESKTOP_MANAGED_SSH_RECOVERY_PATH,
+    JSON.stringify({ version: 1, records, updatedAt: new Date().toISOString() }, null, 2)
+  )
+}
+
+function persistManagedSshRecovery(source, correlationId, scopes) {
+  const prefix = backendScopePrefix(source.id)
+  const recoveryScopes = managedSshRecoveryScopes(scopes, prefix)
+
+  const records = readManagedSshRecoveryRecords().filter(record => record.connectionId !== source.id)
+  records.push({
+    connectionId: source.id,
+    correlationId: validateCorrelationId(correlationId),
+    createdAt: new Date().toISOString(),
+    phase: 'prepared',
+    scopes: recoveryScopes,
+    // Registry secrets are already safeStorage envelopes. Persist the exact
+    // connection snapshot so crash recovery does not silently switch hosts or
+    // credentials after a Settings edit.
+    source
+  })
+  writeManagedSshRecoveryRecords(records)
+}
+
+function markManagedSshRecoveryLaunching(connectionId, correlationId) {
+  const records = readManagedSshRecoveryRecords()
+
+  const index = records.findIndex(
+    record => record.connectionId === connectionId && record.correlationId === correlationId
+  )
+
+  if (index < 0) {
+    throw new Error('Managed SSH recovery record disappeared before remote update launch.')
+  }
+
+  records[index] = { ...records[index], phase: 'launching' }
+  writeManagedSshRecoveryRecords(records)
+}
+
+function clearManagedSshRecovery(connectionId, correlationId) {
+  const records = readManagedSshRecoveryRecords()
+
+  const remaining = records.filter(
+    record => record.connectionId !== connectionId || record.correlationId !== correlationId
+  )
+
+  if (remaining.length === records.length) {
+    return
+  }
+
+  if (remaining.length > 0) {
+    writeManagedSshRecoveryRecords(remaining)
+  } else {
+    try {
+      fs.unlinkSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        throw error
+      }
+    }
+  }
+}
+
+const sshBootstrapCoordinator = createBootstrapCoordinator()
 const sshTeardowns = createSshTeardownTracker()
 
 function sshScopeKey(profile) {
@@ -10295,24 +10459,22 @@ async function teardownSshConnection(profile) {
   // alone leaves the backend at pid 1 holding state.db (#91668).
   // Windows remotes use a different lifecycle (connectWindowsRemote) and
   // are left to a follow-up; POSIX is the leak that OOM'd gateways.
-  await sshTeardowns.track(state.ssh, () =>
-    teardownSshState(
-      {
-        ...state,
-        ownershipId: state.ownershipId || sshOwnershipKey(profile)
-      },
-      {
-        cleanupRemote:
-          state.remotePlatform === 'Windows'
-            ? async () => {
-                // connectWindowsRemote does not share POSIX lock/kill. Stay
-                // silent on the kill path, but leave a log so quit is not a
-                // mysterious no-op on Windows remotes.
-                sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
-              }
-            : remoteLifecycle.disconnect
-      }
-    )
+  await teardownSshState(
+    {
+      ...state,
+      ownershipId: state.ownershipId || sshOwnershipKey(profile)
+    },
+    {
+      cleanupRemote:
+        state.remotePlatform === 'Windows'
+          ? async () => {
+              // connectWindowsRemote does not share POSIX lock/kill. Stay
+              // silent on the kill path, but leave a log so quit is not a
+              // mysterious no-op on Windows remotes.
+              sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
+            }
+          : remoteLifecycle.disconnect
+    }
   )
 }
 
@@ -10363,22 +10525,47 @@ function activeSshTerminalTarget(webContentsId?: number) {
     return null
   }
 
-  const scope = v1SshTerminalPoolKey(route, profile)
+  const scope = route.connectionId
+    ? backendScopeKey(route.connectionId, profile)
+    : sshScopeKey(route.source === 'profile' ? profile : null)
 
   const state = sshConnections.get(scope)
 
   return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
 }
 
+async function ensureTerminalBackend(webContentsId: number) {
+  const windowRoute = windowConnectionRoutes.get(webContentsId)
+
+  if (windowRoute?.registryScoped && windowRoute.connectionId) {
+    return ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)
+  }
+
+  return ensureBackend(windowRoute?.profile ?? primaryProfileKey())
+}
+
 // Loopback reach for the browser pane. Scoped to the SSH connection that
 // authorized it: a different host (or none) must never inherit live forwards
 // into somebody else's machine.
-const previewReach = new PreviewReachRegistry()
-let previewReachScope: null | string = null
+const previewReachByWebContents = new Map<number, { registry: PreviewReachRegistry; scope: string }>()
 
-async function resetPreviewReach() {
-  previewReachScope = null
-  await previewReach.closeAll()
+async function resetPreviewReach(webContentsId?: number) {
+  if (typeof webContentsId === 'number') {
+    const current = previewReachByWebContents.get(webContentsId)
+
+    previewReachByWebContents.delete(webContentsId)
+
+    if (current) {
+      await current.registry.closeAll()
+    }
+
+    return
+  }
+
+  const open = [...previewReachByWebContents.values()]
+
+  previewReachByWebContents.clear()
+  await Promise.allSettled(open.map(entry => entry.registry.closeAll()))
 }
 
 /**
@@ -10389,25 +10576,33 @@ async function resetPreviewReach() {
  * remote with no tunnel to borrow. Callers must not treat an unchanged URL as
  * failure; the pane explains an unreachable one on its own.
  */
-async function reachablePreviewUrl(rawUrl: string): Promise<string> {
-  const target = activeSshTerminalTarget()
+async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promise<string> {
+  let target = activeSshTerminalTarget(webContentsId)
+
+  if (target === 'pending') {
+    await ensureTerminalBackend(webContentsId).catch(() => undefined)
+    target = activeSshTerminalTarget(webContentsId)
+  }
 
   if (!target || target === 'pending') {
-    // No SSH transport behind this gateway; nothing to forward through.
-    await resetPreviewReach()
+    // No SSH transport behind this renderer's gateway. Another window's
+    // forward must never be reused for this preview.
+    await resetPreviewReach(webContentsId)
 
     return rawUrl
   }
 
   const { scope, ssh } = target as { scope: string; ssh: any }
+  let reach = previewReachByWebContents.get(webContentsId)
 
-  if (previewReachScope !== scope) {
-    await resetPreviewReach()
-    previewReachScope = scope
+  if (!reach || reach.scope !== scope) {
+    await resetPreviewReach(webContentsId)
+    reach = { registry: new PreviewReachRegistry(), scope }
+    previewReachByWebContents.set(webContentsId, reach)
   }
 
   try {
-    const rewritten = await previewReach.resolve(rawUrl, {
+    const rewritten = await reach.registry.resolve(rawUrl, {
       cancel: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       forward: (localPort, remotePort, remoteHost) => ssh.forward(localPort, remotePort, remoteHost),
       isCurrent: () => sshConnections.get(scope)?.ssh === ssh,
@@ -10417,15 +10612,13 @@ async function reachablePreviewUrl(rawUrl: string): Promise<string> {
 
     return rewritten || rawUrl
   } catch (error: any) {
-    // A failed forward is a preview problem, not a session problem: log it and
-    // let the original URL through so the pane shows its own explanation.
     sshRememberLog(`preview reach failed for ${rawUrl}: ${error?.message || error}`)
 
     return rawUrl
   }
 }
 
-function effectiveSshConfigFingerprint(sshConfig) {
+async function effectiveSshConfigFingerprint(sshConfig) {
   const ssh =
     process.platform === 'win32'
       ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
@@ -10517,7 +10710,6 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
   }
 
   if (sshConnections.get(scope)?.ssh === ssh) {
-    sshIsolatedKeepalives.stop(scope)
     sshConnections.delete(scope)
   }
 
@@ -10678,7 +10870,6 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
-      sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })
     },
     rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
   })
@@ -10830,11 +11021,22 @@ async function resolveRemoteBackend(profile, options: { poolKey?: string; primar
   let connection
 
   if (route.kind === 'ssh') {
+    if (route.connectionId) {
+      managedConnectionUpdateGate.assertCanDial(route.connectionId)
+    }
+
     connection = await bootstrapSshConnection(
       route.source === 'profile' ? profile : null,
       route.ssh,
       decryptDesktopSecret(route.token),
-      route.source
+      route.source,
+      undefined,
+      {
+        managedScope: options.primary ? 'primary' : options.poolKey ? 'pool' : 'transient',
+        poolKey: options.poolKey || '',
+        primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
+        registryConnectionId: route.connectionId || ''
+      }
     )
   } else {
     const token =
@@ -11410,14 +11612,7 @@ async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?:
 // a genuinely-local child when the v1 mode says remote; non-local connections
 // pool under the composite key from backendScopeKey() and reuse the same pool
 // entry lifecycle (LRU, idle reaper, touch) as per-profile local backends.
-async function ensureRegistryBackend(
-  connectionId,
-  profile,
-  managedUpdateCorrelation = '',
-  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
-) {
-  const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
-  const passive = Boolean(opts.passive)
+async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrelation = '') {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
@@ -11474,7 +11669,7 @@ async function ensureRegistryBackend(
   const primary = await reuseMatchingPrimarySshBackend({
     connectionId: id,
     effectiveFingerprint: resolveRegistryEffectiveFingerprint,
-    ensurePrimary: () => ensureBackend(profile, { passive, spawnPriority }),
+    ensurePrimary: () => ensureBackend(profile),
     profile,
     registry,
     source
@@ -11495,14 +11690,13 @@ async function ensureRegistryBackend(
   // Desktop window starts two isolated servers whose transient runtime ids
   // are not interchangeable.
   if (id === registry.primary && source.kind !== 'local' && source.kind !== 'ssh') {
-    const primaryDescriptor = await ensureBackend(profile, { passive })
+    const primaryDescriptor = await ensureBackend(profile)
 
     if (registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)) {
       return {
         ...primaryDescriptor,
         profile: profileKey,
-        connectionId: id,
-        sharedRemote: true
+        connectionId: id
       }
     }
   }
@@ -11591,10 +11785,7 @@ async function ensureRegistryBackend(
   const existing = backendPool.get(key)
 
   if (existing) {
-    if (!passive) {
-      existing.lastActiveAt = Date.now()
-    }
-
+    existing.lastActiveAt = Date.now()
     const connectionPromise = existing.connectionPromise
 
     // A remote process can die while its local SSH forward stays LISTENing.
@@ -11606,7 +11797,7 @@ async function ensureRegistryBackend(
         connectionPromise,
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
-        reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
+        reconnect: () => ensureRegistryBackend(id, profile),
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -12090,7 +12281,6 @@ async function drainManagedSshScope(scope) {
       }
 
       if (state && sshConnections.get(scope.key) === state) {
-        sshIsolatedKeepalives.stop(scope.key)
         sshConnections.delete(scope.key)
       }
     }
@@ -12943,7 +13133,7 @@ async function runHermesStart() {
         // both for an already-saved remote and after first-run remote Apply.
         attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
-        return resolveRemoteBackend(primaryProfile)
+        return resolveRemoteBackend(primaryProfile, { primary: true })
       },
       waitForDecision: waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
@@ -13458,6 +13648,87 @@ function spawnSecondaryWindow({
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
+}
+
+// Popped-out in-app Browser: same webview + address bar as a docked Browser
+// tab, in its own OS window. One window per tab id (re-open focuses); closing
+// it tells the other renderers so they can dock the tab again.
+const browserWindows = createSessionWindowRegistry()
+
+function notifyBrowserPopoutClosed(tabId) {
+  if (typeof tabId !== 'string' || !tabId) {
+    return
+  }
+
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (!other.isDestroyed()) {
+      other.webContents.send('hermes:browser-popout:closed', tabId)
+    }
+  }
+}
+
+function spawnBrowserWindow(tabId) {
+  const icon = getAppIconPath()
+
+  const win = new BrowserWindow({
+    width: BROWSER_WINDOW_WIDTH,
+    height: BROWSER_WINDOW_HEIGHT,
+    minWidth: BROWSER_WINDOW_MIN_WIDTH,
+    minHeight: BROWSER_WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    ...chatWindowSurfaceOptions(),
+    icon,
+    show: false,
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  translucencyBackedWindows.add(win)
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  wireWindowReveal(win)
+
+  win.on('enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  attachRendererConsoleCapture(win, 'browser-window', rememberLog)
+
+  installWindowRendererLifecycle(win, {
+    kind: 'browser',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
+  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
+
+  loadWindowUrl(
+    win,
+    buildBrowserWindowUrl(tabId, {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Browser window'
+  )
+
+  return win
+}
+
+function createBrowserWindow(tabId) {
+  return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -14807,7 +15078,12 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => {
-  const connection = await ensureBackend(profile)
+  // Coalesce concurrent renderer dials for one profile scope (#90812): the
+  // renderer-side reconnect lock is per-window, so two windows waking at once
+  // both land here. The claim key mirrors ensureBackend()'s own profile
+  // normalization so every spelling of the primary coalesces onto one dial.
+  const profileKey = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const connection = await backendDialClaims.run(backendScopeKey(null, profileKey), () => ensureBackend(profile))
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
 
   return connectionId ? { ...connection, connectionId } : connection
@@ -14821,9 +15097,38 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
-  const connection = await ensureRegistryBackend(id, profile)
+  // Same single-owner claim as 'hermes:connection', keyed by the composite
+  // (connectionId, profile) scope (#90812): concurrent registry dials for one
+  // scope share the first spawn instead of bootstrapping duplicate remotes.
+  const connection = await backendDialClaims.run(backendScopeKey(id, profile), () => ensureRegistryBackend(id, profile))
 
   return { ...connection, connectionId: id, registryScoped: true }
+})
+
+const windowConnectionRoutes = new WindowConnectionRouteRegistry()
+const windowConnectionRouteOwners = new Set<number>()
+
+ipcMain.on('hermes:connection:active-route', (event, route) => {
+  const id = event.sender.id
+  const previous = windowConnectionRoutes.get(id)
+  const next = windowConnectionRoutes.set(id, route)
+
+  if (
+    previous?.connectionId !== next?.connectionId ||
+    previous?.profile !== next?.profile ||
+    previous?.registryScoped !== next?.registryScoped
+  ) {
+    void resetPreviewReach(id)
+  }
+
+  if (!windowConnectionRouteOwners.has(id)) {
+    windowConnectionRouteOwners.add(id)
+    event.sender.once('destroyed', () => {
+      windowConnectionRoutes.delete(id)
+      windowConnectionRouteOwners.delete(id)
+      void resetPreviewReach(id)
+    })
+  }
 })
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
@@ -15334,6 +15639,7 @@ ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
+  assertCanMutateManagedPrimaryRouting()
   const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
   writeDesktopConnectionsRegistry(registry)
 
@@ -15777,9 +16083,8 @@ ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => req
 // Fan out `hermes update` to every eligible registered connection at once.
 // Cloud entries are excluded (platform-managed); each dispatch reports
 // independently so one dead LAN box can't wedge the batch. Local reuses the
-// app's own update pipeline; remote/ssh POST the backend's own
-// /api/hermes/update endpoint (the dashboard updater), which runs
-// `hermes update` on THAT machine.
+// app's own update pipeline; Desktop-managed SSH uses the transactional
+// drain/update/restore lifecycle; URL remotes POST their backend updater.
 ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
   const registry = readDesktopConnectionsRegistry()
 
@@ -15810,6 +16115,18 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
             const result: any = await applyUpdates({})
 
             return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+          }
+
+          if (connection.kind === 'ssh') {
+            const result = await requestManagedSshUpdate(connection.id)
+
+            return {
+              ...base,
+              ok: result.ok,
+              detail: result.message,
+              managed: result,
+              ...(result.ok ? {} : { error: result.error || result.outcome })
+            }
           }
 
           const descriptor: any = await ensureRegistryBackend(connection.id, null)
@@ -15922,10 +16239,6 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
   const strategy = resolveLoginStrategy(statusBody, { providers })
 
-  if (!authIsCurrent()) {
-    throw new NativeAuthChangedError()
-  }
-
   if (strategy === 'native') {
     try {
       const tokens = await runNativeLogin(baseUrl, {
@@ -15973,13 +16286,11 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  await clearOauthSession(baseUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
-  // Clear before awaiting cookie I/O: a pending login/refresh cannot restore
-  // logout, and a later login must not be erased when cookie clearing settles.
-  nativeAccessTokenCoordinator.clearTokens(baseUrl)
-  await clearOauthSession(baseUrl)
+  _clearNativeTokens(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
@@ -16025,6 +16336,7 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+  assertCanMutateManagedPrimaryRouting()
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
   const config = coerceDesktopConnectionConfig(payload, previousConfig)
@@ -16467,12 +16779,16 @@ async function dispatchRegistryApiRequest(
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
-  return fetchJsonForBackend(connection, requestPath, {
+  const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
+
+  return (request?.method || 'GET').toUpperCase() === 'GET'
+    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+    : response
 }
 
 function registryConnectionKind(connectionId) {
@@ -17307,7 +17623,7 @@ ipcMain.handle('hermes:stop-find-in-page', event => {
 
 // The renderer can't know whether a loopback URL is reachable — only main
 // knows which transport backs this gateway. Ask before loading one.
-ipcMain.handle('hermes:preview:reach', async (_event, url) => reachablePreviewUrl(String(url || '')))
+ipcMain.handle('hermes:preview:reach', async (event, url) => reachablePreviewUrl(event.sender.id, String(url || '')))
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {
@@ -17409,7 +17725,7 @@ const terminalIpc = registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
-  ensureBackend: () => ensureBackend(primaryProfileKey()),
+  ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
   getSshConnectionState: scope => sshConnections.get(scope)
 })
 
@@ -18187,6 +18503,28 @@ app.on('before-quit', event => {
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
 
+  if (!backendQuitTeardownDone) {
+    event.preventDefault()
+
+    if (!managedUpdateQuitWait) {
+      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
+        ...managedConnectionUpdates.values(),
+        ...managedConnectionRecoveries.values()
+      ]).finally(() => {
+        managedUpdateQuitWaitDone = true
+        app.quit()
+      })
+    }
+
+    return
+  }
+
+  // A prevented first quit leaves the renderer alive while teardown runs.
+  // Seal the SSH coordinator before touching connections so reconnect
+  // callbacks cannot recreate a backend for a registration whose app is
+  // already quitting (#91668).
+  sshBootstrapCoordinator.shutdown()
+
   const backendNeedsWait = backendQuitNeedsWait({
     connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
     poolPending: poolStopper.hasPending(),
@@ -18205,6 +18543,21 @@ app.on('before-quit', event => {
 
   if (quitTeardown.begin(teardownTasks)) {
     event.preventDefault()
+    const scopes = [...sshConnections.keys()]
+
+    const pending = Promise.allSettled([
+      ...scopes.map(scope => teardownSshConnection(scope || null)),
+      ...sshBootstrapCoordinator.promises()
+    ])
+
+    // cleanupStale waits up to 5s for the owned pid to exit (50 * 100ms).
+    // The previous 4s race could close SSH first and leave serve --isolated
+    // reparented to pid 1.
+    void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 6_000))]).then(async () => {
+      await sshBootstrapCoordinator.forceCleanupAll()
+      sshQuitTeardownDone = true
+      app.quit()
+    })
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).

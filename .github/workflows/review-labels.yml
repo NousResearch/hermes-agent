@@ -52,13 +52,23 @@ jobs:
     name: Review label gate
     if: inputs.ci_review || inputs.mcp_catalog || inputs.supply_chain
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     outputs:
       ci_reviewed: ${{ steps.label-check.outputs.ci_reviewed }}
       review_status: ${{ steps.build-status.outputs.review_status }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Fetch review-status helper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p scripts/ci
+          gh api \
+            -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${REPO}/contents/scripts/ci/emit_review_status.py?ref=${REF}" \
+            > scripts/ci/emit_review_status.py
 
       - name: Check ci-reviewed label
         id: label-check

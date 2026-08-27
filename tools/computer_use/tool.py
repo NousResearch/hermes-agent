@@ -350,11 +350,18 @@ def _xy(args: Dict[str, Any]) -> Dict[str, Any]:
     """Click semantics: a coordinate only counts when its x is set (a bare y is not a point)."""
     return dict(x=coord[0], y=coord[1]) if (coord := args.get("coordinate")) and coord[0] is not None else dict(x=None, y=None)
 
-def _scroll_xy(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Scroll semantics: axes are independent — ``coordinate=[null, 100]`` scrolls at y=100 with x unset."""
-    coord = args.get("coordinate") or (None, None)
-    return dict(x=coord[0] if coord and coord[0] is not None else None,
-                y=coord[1] if coord and coord[1] is not None else None)
+    if action == "capture":
+        mode = str(args.get("mode", "som"))
+        if mode not in {"som", "vision", "ax"}:
+            return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
+        capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
+        if args.get("pid") is not None or args.get("window_id") is not None:
+            capture_kwargs.update({
+                "pid": args.get("pid"),
+                "window_id": args.get("window_id"),
+            })
+        cap = backend.capture(**capture_kwargs)
+        return _capture_response(cap)
 
 def _do_click(backend, action, args, button=None, count=1, **delivery):
     return backend.click(element=args.get("element"), **_xy(args), button=button or args.get("button") or "left",
@@ -455,16 +462,35 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
     if res.effect == "unverifiable":
-        return {"decision": "verify_fresh_state", "hint": ("Input was delivered but not confirmed. Re-capture and check the "
-                "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
+        return {
+            "decision": "verify_fresh_state",
+            "hint": (
+                "Input was delivered but not confirmed. Re-capture and check "
+                "the result BEFORE any retry — do not repeat the input on an "
+                "escalation recommendation alone."
+            ),
+        }
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
-        return {"decision": "escalate", **({"recommended": res.escalation.get("recommended")}
-                                           if isinstance(res.escalation, dict) else {}), "hint": (
-            "The input likely did not land. Climb one rung following `recommended`: 'px' → re-issue by coordinate; "
-            "'foreground' (or a failed pixel click) → re-issue with delivery_mode='foreground' (separate approval). "
-            "Do not predict the rung from the app being Electron/Chromium — react to this signal.")}
-    return {"decision": "verify_fresh_state",  # transport success without semantic proof is not proof of effect
-            "hint": "Transport succeeded but the effect is unproven. Re-capture and confirm before continuing."}
+        decision: Dict[str, Any] = {"decision": "escalate"}
+        if isinstance(res.escalation, dict):
+            decision["recommended"] = res.escalation.get("recommended")
+        decision["hint"] = (
+            "The input likely did not land. Climb one rung following "
+            "`recommended`: 'px' → re-issue by coordinate; 'page' → the typed "
+            "cua_browser_* route; 'foreground' (or a failed pixel click) → "
+            "re-issue with delivery_mode='foreground' (separate approval). Do "
+            "not predict the rung from the app being Electron/Chromium — react "
+            "to this signal."
+        )
+        return decision
+    # Transport success without semantic proof is not proof of effect.
+    return {
+        "decision": "verify_fresh_state",
+        "hint": (
+            "Transport succeeded but the effect is unproven. Re-capture and "
+            "confirm before continuing."
+        ),
+    }
 
 def _present(**fields: Any) -> Dict[str, Any]:
     return {k: v for k, v in fields.items() if v}  # only the truthy optional fields, in the given order
@@ -480,9 +506,61 @@ def _action_payload(res: ActionResult) -> Dict[str, Any]:
 def _text_response(res: ActionResult) -> str:
     return json.dumps(_action_payload(res))
 
-# AX `elements` cap: dense UIs publish 500+ nodes (one capture would exhaust context); the full tree spills to a file.
+
+# Window classes of browsers whose page content the typed cua_browser_* route
+# can drive with trusted input and ZERO focus steal. When background text
+# delivery is refused for one of these surfaces, the driver's only hint is
+# "foreground" (it doesn't know Hermes has a typed page route), so the model
+# flashes the user's window to front for every keystroke batch. The hint below
+# offers the no-flash rung first; foreground remains valid for browser chrome,
+# native dialogs, and anything the typed route can't bind exactly.
+_TYPED_BROWSER_WINDOW_CLASSES = {
+    "chrome_widgetwin_1",   # Chrome, Edge, Brave, Electron-embedded Chromium
+    "mozillawindowclass",   # Firefox
+}
+
+
+def _enrich_escalation(res: ActionResult) -> Optional[Dict[str, Any]]:
+    """Return the driver's escalation dict, adding a typed-page alternative.
+
+    Purely additive: never changes the driver's `recommended` rung, only
+    appends `alternative`/`alternative_hint` when the refused target is a
+    known browser window class and the refused event is page-directed input
+    (typing/keys into page content). The model can then try the
+    `cua_browser_*` route — trusted input, no window flash — before a
+    foreground escalation, per the documented ladder ordering.
+    """
+    escalation = res.escalation
+    if not isinstance(escalation, dict):
+        return escalation
+    if escalation.get("recommended") != "foreground":
+        return escalation
+    meta = res.meta or {}
+    target_class = str(meta.get("target_class") or "").lower()
+    if target_class not in _TYPED_BROWSER_WINDOW_CLASSES:
+        return escalation
+    if meta.get("event_kind") not in {"text_input", "key_press"}:
+        return escalation
+    enriched = dict(escalation)
+    enriched["alternative"] = "page"
+    enriched["alternative_hint"] = (
+        "target is a browser window: if the input goes into PAGE content "
+        "(not browser chrome or a native dialog), the typed cua_browser_* "
+        "route can deliver it without any window flash — bind with "
+        "cua_browser_state (exact pid/window_id), then cua_browser_type. "
+        "Use foreground only for chrome/native surfaces or if typed binding "
+        "is unavailable."
+    )
+    return enriched
+
+
+# Fixed cap for the AX `elements` array surfaced in a capture response. Dense
+# UIs (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes,
+# which would exhaust session context after a single capture. The full,
+# untruncated tree is always written to an `elements_file` spill (see
+# _capture_lost_detail) so nothing is lost — read_file/search_files it when the
+# target isn't in the surfaced window.
 _DEFAULT_MAX_ELEMENTS = 100
-# Some providers reject images below 8x8 before the model sees the result; such captures fall back to text.
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 # Some AX trees (Discord/Slack via UIA, Electron chat clients) expose ENTIRE message bodies as labels; uncapped
 # they blew the tool-result budget and leaked private chat text. Labels identify a control, not text extraction.
@@ -557,16 +635,27 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
                            screenshot_path=_persist_capture_image(cap) if has_image else None,
                            dims_omitted=dims if too_small else None, has_image=has_image)
 
-def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
-    """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
-    summary names indices the model can't find."""
-    notes = (
-        v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
-                                           f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
-        v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
-        v.cap.note,
-        v.elements_file and (f"full element tree with untruncated labels saved to {v.elements_file} — "
-                             "read_file/search_files it if you need dropped label text or elements beyond the cap"),
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+    total_elements = len(cap.elements)
+    visible_elements = cap.elements[:max_elements]
+    truncated_elements = max(0, total_elements - len(visible_elements))
+    image_dimensions = _image_dimensions_from_b64(cap.png_b64 or "") if cap.png_b64 else None
+    response_width = image_dimensions[0] if image_dimensions else cap.width
+    response_height = image_dimensions[1] if image_dimensions else cap.height
+    bounds_note = _bounds_space_note(visible_elements, response_width, response_height)
+    bounds_scale = _bounds_scale(visible_elements, response_width, response_height)
+    if bounds_note and bounds_scale:
+        bounds_note += (
+            f"; estimated scale ~{bounds_scale}x (screenshot position x "
+            f"{bounds_scale} ≈ native coordinate)"
+        )
+    # When the in-context response drops detail (capped labels / capped element
+    # array), spill the complete tree to a cache file so the model can read or
+    # grep the full text on demand instead of losing it entirely.
+    elements_file = (
+        _spill_elements_to_file(cap)
+        if _capture_lost_detail(cap, visible_elements, truncated_elements)
+        else None
     )
     image_too_small = bool(
         image_dimensions
@@ -583,8 +672,8 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
 
     # Index only what's actually surfaced in the response — otherwise the
     # human-readable summary references element indices the model cannot
-    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
-    # 40-line index window).
+    # find in the JSON `elements` array (the surfaced window is capped at
+    # _DEFAULT_MAX_ELEMENTS; the full tree spills to elements_file).
     element_index = _format_elements(visible_elements)
     summary_lines = [
         f"capture mode={cap.mode} {response_width}x{response_height}"
@@ -652,8 +741,9 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
             if truncated_elements:
                 summary_lines.append(
                     f"  (response truncated to {len(visible_elements)} of "
-                    f"{total_elements} elements; raise max_elements or pass "
-                    "app= to narrow)"
+                    f"{total_elements} elements; the full tree is in "
+                    "elements_file — read_file/search_files it, or pass app= "
+                    "to narrow scope)"
                 )
             payload = {
                 "mode": cap.mode,
@@ -707,7 +797,7 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
     if truncated_elements:
         summary_lines.append(
             f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
-            f"raise max_elements or pass app= to narrow)"
+            "the full tree is in elements_file — read_file/search_files it, or pass app= to narrow scope)"
         )
     summary = "\n".join(summary_lines)
     payload: Dict[str, Any] = {

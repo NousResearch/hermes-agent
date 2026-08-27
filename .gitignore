@@ -274,6 +274,11 @@ RELEASE_v*.md
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
 
+# Generated beside the TypeScript plugin entrypoints by ad-hoc tsc runs.
+# Tracking these shadows the canonical .tsx modules and duplicates plugin IDs.
+apps/desktop/src/plugins/accent/plugin.js
+apps/desktop/src/plugins/kanban/plugin.js
+
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's

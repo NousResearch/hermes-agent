@@ -1,7 +1,29 @@
 """Stale git lock-file and aborted-fetch pack-debris recovery for update/check paths.
 
-A killed ``git fetch`` can leave ``.git/shallow.lock`` behind (every later fetch fails with "Unable to
-create '.../shallow.lock': File exists") and ``tmp_pack_*`` files git itself never cleans up."""
+A crashed or killed ``git fetch`` on a shallow clone can leave
+``.git/shallow.lock`` behind. Every later fetch then fails with::
+
+    fatal: Unable to create '/path/.git/shallow.lock': File exists.
+
+This wedges ``hermes update --check`` (hard failure) and silently degrades the
+passive banner check in :mod:`hermes_cli.banner` (the fetch is swallowed, the
+stale refs are compared, and the user can be told an update is available when
+the checkout already contains the remote tip). Git does not self-heal these
+lock files — they persist until a human removes them.
+
+This module provides two small, defensive helpers used by the update paths:
+
+* :func:`clear_stale_git_locks` — remove abandoned ``.git`` lock files (with
+  an age + git-process guard so a live fetch is never yanked).
+* :func:`clear_stale_tmp_packs` — remove aborted-fetch ``tmp_pack_*`` /
+  ``tmp_idx_*`` debris from ``.git/objects/pack``. On flaky lines every
+  timed-out fetch leaves one behind; unchecked they accumulated to 6 GB /
+  hundreds of files over 9 days and eventually corrupted the pack directory
+  outright, permanently wedging the update check (#93732).
+* :func:`is_ancestor_of_head` — ask whether a remote tip is already contained
+  in HEAD. Used by the shallow-clone update check to avoid reporting a false
+  "update available" when local cherry-picks sit on top of the remote tip.
+"""
 
 from __future__ import annotations
 
@@ -65,43 +87,65 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     return removed
 
 
-def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
-    """Remove abandoned ``.git`` lock files under ``repo_root``; returns the removed paths.
+# Aborted-fetch pack debris younger than this is presumed live (a fetch may
+# be writing it right now) and is never removed. A healthy fetch completes in
+# minutes; the same 10-minute bar the lock sweep uses is comfortably safe.
+STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
 
-    Removes only when older than the age floor AND no git process is running. Never raises: a lock we cannot
-    stat/unlink is skipped (it may have been re-created between the age check and the unlink; skipping is safe).
+# Temp-file prefixes git writes into .git/objects/pack during a transfer and
+# renames away on success. Anything left with these names after a fetch died
+# is garbage by definition — git itself never reuses or cleans them.
+_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_")
+
+
+def clear_stale_tmp_packs(
+    repo_root: Path, *, min_age_seconds: Optional[int] = None
+) -> List[str]:
+    """Remove aborted-fetch temp pack files under ``.git/objects/pack``.
+
+    Every ``git fetch`` that dies mid-transfer (timeout, HTTP 429, dropped
+    connection) leaves a ``tmp_pack_*`` (and sometimes ``tmp_idx_*``) file
+    behind, and git never cleans them up. On a flaky line the banner's
+    background update check produces several per day; observed in the wild
+    at hundreds of files / 6 GB after 9 days, after which the pack directory
+    corrupted outright and every fetch failed permanently (#93732).
+
+    Same safety contract as :func:`clear_stale_git_locks`: only files older
+    than the age floor, never while a git process is running, never raises.
+    Returns the removed paths.
     """
-    git_dir = Path(repo_root) / ".git"
-    return _sweep_stale(
-        git_dir, lambda: [git_dir / name for name in LOCK_NAMES],
-        min_age_seconds=min_age_seconds, default_age=STALE_LOCK_MIN_AGE_SECONDS,
-        skip_msg="git process running; skipping stale-lock sweep",
-        log_removed=lambda p, _size: logger.info("Removed stale git lock %s", p),
-    )
-
-
-def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
-    """Remove aborted-fetch temp pack files under ``.git/objects/pack``; same contract as clear_stale_git_locks."""
     pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+    if not pack_dir.is_dir():
+        return []
 
-    def _candidates():
-        try:
-            return [e for e in pack_dir.iterdir() if e.name.startswith(_TMP_PACK_PREFIXES)]
-        except OSError:
-            return []
+    if _git_proc_running():
+        logger.debug("git process running; skipping tmp-pack sweep")
+        return []
 
-    return _sweep_stale(
-        pack_dir, _candidates,
-        min_age_seconds=min_age_seconds, default_age=STALE_TMP_PACK_MIN_AGE_SECONDS,
-        skip_msg="git process running; skipping tmp-pack sweep",
-        log_removed=lambda p, size: logger.info("Removed aborted-fetch pack debris %s (%d bytes)", p, size),
+    cutoff = time.time() - (
+        min_age_seconds if min_age_seconds is not None else STALE_TMP_PACK_MIN_AGE_SECONDS
     )
+    removed: List[str] = []
+    try:
+        entries = list(pack_dir.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        name = entry.name
+        if not name.startswith(_TMP_PACK_PREFIXES):
+            continue
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                size = entry.stat().st_size
+                entry.unlink()
+                removed.append(str(entry))
+                logger.info(
+                    "Removed aborted-fetch pack debris %s (%d bytes)", entry, size
+                )
+        except OSError:
+            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
+    return removed
 
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
 
 def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
     """True when ``rev`` is an ancestor of (or equal to) HEAD.

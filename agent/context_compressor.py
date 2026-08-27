@@ -2193,8 +2193,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def tail_token_budget(self) -> int:
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
-                # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                self._tail_token_budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                # Lean mode (#compaction-v2): the verbatim tail is a small
+                # recency window, not a context hoard — the upgraded summary
+                # (verbatim user messages, constraints section, recovery
+                # pointers) carries continuity instead. 2.5% of the window,
+                # clamped to [LEAN_TAIL_FLOOR_TOKENS, LEAN_TAIL_CAP_TOKENS],
+                # so a 1M-window model keeps ~25K instead of ~100-145K.
+                self._tail_token_budget = max(
+                    LEAN_TAIL_FLOOR_TOKENS,
+                    min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)),
+                )
             else:
                 self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
         return self._tail_token_budget
@@ -2616,15 +2624,42 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(context_length, self.threshold_percent, self.max_tokens)
         self._apply_threshold_tokens_cap()
-        # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
+        # Recalculate token budgets for the new context length so the
+        # compressor stays calibrated after a model switch (e.g. 200K → 32K).
+        # Reset to None and let the tail_token_budget property recompute
+        # through the MODE-AWARE path: assigning the legacy formula here
+        # directly silently reverted lean mode to the 0.20×threshold hoard
+        # on every mid-session model switch.
         self._tail_token_budget = None
         _ = self.tail_token_budget  # eager recompute, same timing as before
-        self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
-        # Old usage cannot price a new model. Clear it without arming the post-compaction
-        # latch: the next response supplies usage or enables the usage-less fallback.
-        self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
-        self._reset_real_usage_pairing()
-        # Strikes were judged against the previous threshold; void them durably too.
+        self.max_summary_tokens = min(
+            int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+        )
+
+        # Reset cross-call calibration state captured under the PREVIOUS model.
+        # These fields encode "the provider proved this prompt fit" / "preflight
+        # can be deferred" decisions that are only valid for the model that
+        # produced them. Carrying them across a switch to a smaller-context
+        # model would let should_defer_preflight_to_real_usage() suppress a
+        # preflight compression the new model actually needs — the exact
+        # oversized-send-after-switch failure in #23767. The new model's first
+        # response repopulates them via update_from_response(). Setting
+        # last_prompt_tokens to 0 (NOT -1) is deliberate: 0 is the documented
+        # "no real usage yet -> use the rough estimate" state, so the post-
+        # response should_compress path falls back to estimate_request_tokens_rough
+        # rather than skipping compression. -1 is a different sentinel
+        # (#36718, "compression just ran, await real usage") and must not be set here.
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        self.last_real_prompt_tokens = 0
+        self.last_rough_tokens_when_real_prompt_fit = 0
+        self.last_compression_rough_tokens = 0
+        self._pending_request_rough_tokens = 0
+        self.awaiting_real_usage_after_compression = False
+        # Strikes were judged against the PREVIOUS threshold; a recomputed
+        # trigger invalidates them. Keep the durable copy in sync so a
+        # restart doesn't resurrect strikes this recalibration just voided.
         self._record_ineffective_compression_verdict(0)
         self._prellm_skip_count = 0
         if runtime_changed:
@@ -2723,22 +2758,41 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return floored
 
     def __init__(
-        self, model: str, threshold_percent: float = 0.50, protect_first_n: int = 3, protect_last_n: int = 20,
-        summary_target_ratio: float = 0.20, quiet_mode: bool = False, summary_model_override: str = None,
-        base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
-        api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
-        model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
-        proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
-        proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        self,
+        model: str,
+        threshold_percent: float = 0.50,
+        protect_first_n: int = 3,
+        protect_last_n: int = 20,
+        summary_target_ratio: float = 0.20,
+        quiet_mode: bool = False,
+        summary_model_override: str = None,
+        base_url: str = "",
+        api_key: str = "",
+        config_context_length: int | None = None,
+        provider: str = "",
+        api_mode: str = "",
+        abort_on_summary_failure: bool = False,
+        max_tokens: int | None = None,
+        model_thresholds: dict[str, float] | None = None,
+        threshold_tokens_cap: Any = None,
+        proactive_prune_tokens: int = 0,
+        proactive_prune_min_result_chars: int = 8000,
+        proactive_prune_min_reclaim_tokens: int = 4096,
+        min_tail_user_messages: int = 1,
+        tail_mode: str = "lean",
     ):
-        self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
-        # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.provider = provider
+        self.api_mode = api_mode
+        # Lean tail mode (#compaction-v2): "lean" = small clamped recency
+        # tail + verbatim-user-message summary section + recovery pointers;
+        # "legacy" = 0.20*window tail (shipping behavior).
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
-        # Per-model context_length overrides live in custom_providers; without them deferred
-        # resolution falls back to the hardcoded family catalog (#83324).
-        self.custom_providers = custom_providers or None
-        # Per-model overrides (longest substring match wins); floor applied on top.
+        # Per-model threshold overrides (longest substring match wins).
+        # Stored as a plain dict; resolved in _resolve_threshold(), then the
+        # small-context floor is applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
         self._config_threshold_percent = threshold_percent
@@ -2876,6 +2930,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # strictly better than discarding context for a transient blip
         # (#29559, #25585). Independent of abort_on_summary_failure.
         self._last_summary_network_failure: bool = False
+        # Set when summary generation ultimately fails due to the provider
+        # returning empty or whitespace content (HTTP 200 null body / degraded proxy
+        # channel). Like network/auth failures, compress() must ABORT and preserve
+        # the session unchanged instead of destroying the middle window for a
+        # deterministic placeholder (#94448). Independent of abort_on_summary_failure.
+        self._last_summary_empty_content_failure: bool = False
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
         # succeeded.  Silent recovery would hide the broken config.
@@ -3887,8 +3947,69 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
 
-    def _augment_summary_lean(self, summary: str, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
+    def _build_chunk_digests(self, turns: List[Dict[str, Any]]) -> str:
+        """Map-reduce the compacted region into identifier-preserving digests.
+
+        Splits the region into ``_LEAN_DIGEST_CHUNK_CHARS`` chunks (capped at
+        ``_LEAN_DIGEST_MAX_CHUNKS`` — beyond that, earliest chunks are merged
+        coarser) and digests each with the compression LLM. Any chunk failure
+        degrades to a placeholder naming the message range; the whole call
+        never raises. Chunks run sequentially on the same transport as the
+        main summary.
+        """
+        text = _serialize_turns_for_digest(
+            turns, getattr(self, "_lean_pristine_tools", None),
+        )
+        if not text:
+            return ""
+        chunk_size = _LEAN_DIGEST_CHUNK_CHARS
+        n_chunks = max(1, (len(text) + chunk_size - 1) // chunk_size)
+        if n_chunks > _LEAN_DIGEST_MAX_CHUNKS:
+            chunk_size = (len(text) + _LEAN_DIGEST_MAX_CHUNKS - 1) // _LEAN_DIGEST_MAX_CHUNKS
+            n_chunks = _LEAN_DIGEST_MAX_CHUNKS
+        digests: list[str] = []
+        for ci in range(n_chunks):
+            segment = text[ci * chunk_size:(ci + 1) * chunk_size]
+            if not segment.strip():
+                continue
+            try:
+                from agent.auxiliary_client import call_llm
+
+                resp = call_llm(
+                    messages=[{
+                        "role": "user",
+                        "content": _LEAN_DIGEST_PROMPT.format(segment=segment),
+                    }],
+                    task="compression",
+                    max_tokens=_LEAN_DIGEST_MAX_TOKENS,
+                )
+                body = (
+                    resp.choices[0].message.content
+                    if hasattr(resp, "choices") else str(resp)
+                ) or ""
+                from agent.agent_runtime_helpers import strip_think_blocks
+
+                body = strip_think_blocks(None, body).strip()
+            except Exception as exc:
+                logger.warning("lean chunk digest %d/%d failed: %s", ci + 1, n_chunks, exc)
+                body = f"[digest unavailable for segment {ci + 1}/{n_chunks} — recover via session_search]"
+            digests.append(f"### Segment {ci + 1}/{n_chunks}\n{body}")
+        if not digests:
+            return ""
+        return (
+            "\n\n" + _LEAN_DIGESTS_HEADING + "\n"
+            + "\n\n".join(digests)
+        )
+
+    def _augment_summary_lean(
+        self, summary: str, turns_to_summarize: List[Dict[str, Any]],
+    ) -> str:
+        """Append the deterministic lean-mode sections to a generated summary.
+
+        Both the LLM path and the static fallback route through this, so the
+        verbatim user messages and the recovery pointer never depend on the
+        summarizer's cooperation. No-op in legacy mode.
+        """
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
         for heading, build in (
@@ -4232,21 +4353,356 @@ Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_secti
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
-    def _on_summary_failure(
-        self, e: Exception, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str], memory_context: str,
-    ) -> Optional[str]:
-        """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
-        # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
-        # RuntimeErrors are transient and must get the main-model retry below first.
-        # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
-        # from a configured provider (``_validate_llm_response`` empty-``choices``/``None``, or our
-        # empty-``content`` guard above) — a transient/proxy fault that should fall back to the main model
-        # first, exactly like the transport errors handled below. Only (1) belongs in the long no-provider
-        # cooldown; (2) and every other exception flow into the generic fallback logic so they get a
-        # main-model retry before any cooldown. (#11978, #11914)
-        if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
-            self._record_compression_failure_cooldown(_SUMMARY_FAILURE_COOLDOWN_SECONDS, "no auxiliary LLM provider configured")
-            self._last_summary_error = "no auxiliary LLM provider configured"
+        if self._previous_summary:
+            # Iterative update: preserve existing info, add new progress.
+            # Bound the previous-summary block with the same aggregate cap as
+            # the serialized new turns: a normal summary is far below the cap
+            # (the output side is held to a ~10K-token ceiling), but a
+            # pathological handoff rehydrated from a persisted session can be
+            # arbitrarily large — the iterative prompt (previous summary +
+            # new turns) must stay bounded too.
+            _bounded_previous_summary = self._bound_summary_input(
+                self._previous_summary
+            )
+            prompt = f"""{_summarizer_preamble}
+
+You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
+
+PREVIOUS SUMMARY:
+{_bounded_previous_summary}
+
+NEW TURNS TO INCORPORATE:
+{content_to_summarize}{_memory_section}
+
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+
+{_template_sections}"""
+        else:
+            # First compaction: summarize from scratch
+            prompt = f"""{_summarizer_preamble}
+
+Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
+
+TURNS TO SUMMARIZE:
+{content_to_summarize}{_memory_section}
+
+Use this exact structure:
+
+{_template_sections}"""
+
+        # Inject focus topic guidance when the user provides one via /compress <focus>.
+        # This goes at the end of the prompt so it takes precedence.
+        if focus_topic:
+            prompt += f"""
+
+FOCUS TOPIC: "{focus_topic}"
+This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+
+        try:
+            call_kwargs = {
+                "task": "compression",
+                "main_runtime": {
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "api_key": self.api_key,
+                    "api_mode": self.api_mode,
+                },
+                "messages": [{"role": "user", "content": prompt}],
+                # NO max_tokens: the output cap must never truncate a summary.
+                # ``summary_budget`` is prompt-level guidance only ("Target ~N
+                # tokens" above). Most OpenAI-compatible wires already omit the
+                # param (see _build_call_kwargs), but the Anthropic Messages
+                # wire and NVIDIA NIM forward it — a hard cap there cut
+                # summaries mid-section (thinking models burn the cap on
+                # reasoning first), producing truncated/thinking-only
+                # summaries and compaction loops. Omitting lets the adapter
+                # fall back to the model's native output ceiling.
+                # timeout resolved from auxiliary.compression.timeout config by call_llm
+            }
+            if self.summary_model:
+                call_kwargs["model"] = self.summary_model
+            _aux_provider = ""
+            _aux_model = self.summary_model or ""
+            _aux_context = None
+            try:
+                from agent.auxiliary_client import _resolve_task_provider_model
+
+                _resolved_provider, _resolved_model, _, _, _ = _resolve_task_provider_model(
+                    "compression",
+                    model=(self.summary_model or ""),
+                )
+                _aux_provider = _resolved_provider or ""
+                _aux_model = _resolved_model or _aux_model or self.model or ""
+                if _aux_model == self.model:
+                    _aux_context = self.context_length
+            except Exception:
+                pass
+            # Compression is atomic: protect the in-flight summary call from a
+            # mid-turn gateway interrupt. Without this, an incoming user message
+            # aborts the summary and compression falls back to a degraded static
+            # marker, losing the real handoff (#23975). Re-entrant: a main-model
+            # retry (_generate_summary recursion) re-enters harmlessly.
+            _aux_call_start = time.monotonic()
+            try:
+                with aux_interrupt_protection():
+                    response = call_llm(**call_kwargs)
+            finally:
+                self._record_aux_compression_call(
+                    prompt_messages=call_kwargs["messages"],
+                    # Current main intentionally omits max_tokens from the aux
+                    # call (summary_budget is prompt-level guidance only) —
+                    # use .get() so the telemetry hook never breaks the call.
+                    max_tokens=call_kwargs.get("max_tokens"),
+                    duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
+                    aux_provider=_aux_provider,
+                    aux_model=_aux_model,
+                    effective_aux_context=_aux_context,
+                )
+            # ``_validate_llm_response`` only guarantees ``choices[0].message``
+            # exists, not that it's an object with ``.content``. Some
+            # OpenAI-compatible proxies / local backends return a dict- or
+            # str-shaped message; coerce defensively instead of crashing.
+            if isinstance(response, dict):
+                choices = response.get("choices") or [{}]
+                message = choices[0].get("message") if isinstance(choices[0], dict) else getattr(choices[0], "message", None)
+            else:
+                message = response.choices[0].message
+            if isinstance(message, dict):
+                content = message.get("content")
+            else:
+                content = getattr(message, "content", message)
+            # Handle cases where content is not a string (e.g., dict from llama.cpp)
+            if not isinstance(content, str):
+                content = str(content) if content else ""
+            # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels)
+            # return a well-formed HTTP 200 with an empty or whitespace-only
+            # ``content`` instead of an error or empty ``choices``. That payload
+            # passes ``_validate_llm_response`` (a ``message`` exists), so it
+            # reaches here and would otherwise be stored as a prefix-only
+            # summary with no body — silently wiping the compacted turns and
+            # making the model forget the in-progress task (#11978, #11914).
+            # Treat empty content as a failure so it routes through the same
+            # main-model fallback + cooldown machinery as a transport error,
+            # rather than replacing real context with an empty summary.
+            if not content.strip():
+                raise RuntimeError(
+                    "Context compression LLM returned empty content "
+                    f"(provider={self.provider or 'auto'} "
+                    f"model={self.summary_model or self.model})"
+                )
+            # Strip reasoning blocks the summarizer model may have emitted
+            # (<think>...</think> etc. from thinking models like MiniMax,
+            # DeepSeek, QwQ). Without this the trace is stored in
+            # _previous_summary, injected into the conversation, AND fed back
+            # into every subsequent iterative-update prompt — compounding
+            # token bloat across compactions. Mirrors title_generator.py.
+            from agent.agent_runtime_helpers import strip_think_blocks
+            stripped = strip_think_blocks(None, content).strip()
+            if stripped:
+                content = stripped
+            # Redact the summary output as well — the summarizer LLM may
+            # ignore prompt instructions and echo back secrets verbatim.
+            summary = _redact_compaction_text(content.strip())
+            # P2 ghost-skill defense (#32106): deterministically restore any
+            # [SKILL_PRUNED: ...] marker the summarizer paraphrased away.
+            summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
+            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
+            summary = self._augment_summary_lean(summary, turns_to_summarize)
+            self._validate_summary_user_provenance(summary, has_user_turn)
+            # Store for iterative updates on next compaction
+            self._previous_summary = summary
+            self._clear_compression_failure_cooldown()
+            self._summary_model_fallen_back = False
+            self._last_summary_error = None
+            self._last_summary_auth_failure = False
+            self._last_summary_network_failure = False
+            self._last_summary_empty_content_failure = False
+            return self._with_summary_prefix(summary)
+        except Exception as e:
+            # ``call_llm`` raises ``RuntimeError`` for two very different cases:
+            #   1. No provider configured ("No LLM provider configured ...") —
+            #      a permanent misconfiguration, long cooldown is correct.
+            #   2. An empty/invalid response from a configured provider
+            #      (``_validate_llm_response`` empty-``choices``/``None``, or our
+            #      empty-``content`` guard above) — a transient/proxy fault that
+            #      should fall back to the main model first, exactly like the
+            #      transport errors handled below.
+            # Only (1) belongs in the long no-provider cooldown; (2) and every
+            # other exception flow into the generic fallback logic so they get
+            # a main-model retry before any cooldown. (#11978, #11914)
+            if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
+                # No provider configured — long cooldown, unlikely to self-resolve
+                self._record_compression_failure_cooldown(
+                    _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+                    "no auxiliary LLM provider configured",
+                )
+                self._last_summary_error = "no auxiliary LLM provider configured"
+                logger.warning("Context compression: no provider available for "
+                                "summary. Middle turns will be dropped without summary "
+                                "for %d seconds.",
+                                _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+                return None
+            # If the summary model is different from the main model and the
+            # error looks permanent (model not found, 503, 404), fall back to
+            # using the main model instead of entering cooldown that leaves
+            # context growing unbounded.  (#8620 sub-issue 4)
+            _status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            _err_str = str(e).lower()
+            _is_model_not_found = (
+                _status in {404, 503}
+                or "model_not_found" in _err_str
+                or "does not exist" in _err_str
+                or "no available channel" in _err_str
+            )
+            _is_timeout = (
+                _status in {408, 429, 502, 504}
+                or "timeout" in _err_str
+                or "timed out" in _err_str
+            )
+            # Non-JSON / malformed-body responses from misconfigured providers
+            # or proxies (e.g. an HTML 502 page returned with
+            # ``Content-Type: application/json``) bubble up as
+            # ``json.JSONDecodeError`` from the OpenAI SDK's ``response.json()``,
+            # or as a wrapping ``APIResponseValidationError`` whose message
+            # carries the substring "expecting value".  Treat these like a
+            # transient provider failure: one retry on the main model, then a
+            # short cooldown.  Issue #22244.
+            _is_json_decode = (
+                isinstance(e, json.JSONDecodeError)
+                or "expecting value" in _err_str
+            )
+            # httpcore / httpx streaming premature-close errors surface as
+            # ConnectionError subclasses or plain Exception with characteristic
+            # substrings ("incomplete chunked read", "peer closed connection",
+            # "response ended prematurely", "unexpected eof").  These are
+            # transient network events; treat them like a timeout so we fall
+            # back to the main model instead of entering a 60-second cooldown.
+            # See issue #18458.
+            _is_streaming_closed = _is_connection_error(e)
+            # Provider returned HTTP 200 with empty or whitespace body (e.g.
+            # degraded proxy channel / upstream provider fault; #94448).
+            _is_empty_content = isinstance(e, RuntimeError) and (
+                "empty content" in _err_str
+                # Sibling terminal "no usable response" shapes from the
+                # auxiliary boundary's _validate_llm_response (#7264): a None
+                # response or a malformed/missing choices[0].message — same
+                # degraded-provider class (#94448).
+                or "llm returned none response" in _err_str
+                or "llm returned invalid response" in _err_str
+            )
+            # Authentication, permission, and exhausted-quota failures are NOT
+            # transient or fixable by retrying the same request. Flag them so
+            # compress() preserves the session instead of rotating into a
+            # degraded child with a placeholder summary. We still allow the
+            # one-shot fallback to the MAIN model below when the failure came
+            # from a distinct auxiliary summary_model; only a failure on the
+            # main model — or a fallback that also access/quota-fails — makes
+            # the abort stick.
+            _is_access_or_quota_error = _is_summary_access_or_quota_error(e)
+            if _is_access_or_quota_error:
+                # Keep the established field name for caller compatibility;
+                # it now represents the broader terminal access/quota class.
+                self._last_summary_auth_failure = True
+            if _is_json_decode and not _is_model_not_found and not _is_timeout:
+                logger.error(
+                    "Context compression failed: auxiliary LLM returned a "
+                    "non-JSON response. provider=%s summary_model=%s "
+                    "main_model=%s base_url=%s err=%s",
+                    self.provider or "auto",
+                    self.summary_model or "(main)",
+                    self.model,
+                    self.base_url or "default",
+                    e,
+                )
+            if (
+                (_is_model_not_found or _is_timeout or _is_json_decode or _is_streaming_closed or _is_empty_content)
+                and self.summary_model
+                and self.summary_model != self.model
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                if _is_json_decode:
+                    _reason = "returned invalid JSON"
+                elif _is_empty_content:
+                    _reason = "returned empty content"
+                elif _is_model_not_found:
+                    _reason = "unavailable"
+                elif _is_streaming_closed:
+                    _reason = "closed stream prematurely"
+                else:
+                    _reason = "timed out"
+                self._fallback_to_main_for_compression(e, _reason)
+                return self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=focus_topic,
+                    memory_context=memory_context,
+                )  # retry immediately
+
+            # Unknown-error best-effort retry on main model.  Losing N turns of
+            # context is almost always worse than one extra summary attempt, so
+            # if we haven't already fallen back and the summary model differs
+            # from the main model, try once more on main before entering
+            # cooldown.  Errors that DID match _is_model_not_found above are
+            # already handled by the fast-path retry; this branch catches
+            # everything else (400s, provider-specific "no route" strings,
+            # aggregator rejections, etc.) where auto-retry is still safer
+            # than dropping the turns.
+            if (
+                self.summary_model
+                and self.summary_model != self.model
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                self._fallback_to_main_for_compression(e, "failed")
+                return self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=focus_topic,
+                    memory_context=memory_context,
+                )
+
+            # Transient errors (timeout, rate limit, network, JSON decode,
+            # streaming premature-close) — shorter cooldown for JSON decode and
+            # streaming-closed since those conditions can self-resolve quickly.
+            # Timeout-class failures escalate with consecutive occurrences:
+            # a session whose transcript structurally exceeds what the
+            # summary route can produce within its deadline will fail the
+            # same way every time, and re-burning the full timeout every
+            # 60s turns each subsequent turn into a multi-minute stall
+            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # resets the streak via _clear_compression_failure_cooldown().
+            # Timeout takes precedence over the streaming-closed short rung:
+            # a "timed out" error also matches _is_connection_error, but a
+            # deadline exhaustion is the structural repeat-offender class,
+            # not a transient mid-stream drop.
+            if _is_timeout:
+                self._consecutive_timeout_failures = (
+                    getattr(self, "_consecutive_timeout_failures", 0) + 1
+                )
+                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
+                    min(self._consecutive_timeout_failures,
+                        len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+                ]
+            elif _is_json_decode or _is_streaming_closed or _is_empty_content:
+                _transient_cooldown = 30
+            else:
+                _transient_cooldown = 60
+            err_text = str(e).strip() or e.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._record_compression_failure_cooldown(_transient_cooldown, err_text)
+            self._last_summary_error = err_text
+            # A terminal connection/network failure or empty-content response
+            # from a degraded provider (we reach this branch only after any
+            # main-model fallback has already been tried or is unavailable).
+            # Flag it so compress() ABORTS and preserves the session unchanged
+            # instead of destroying the middle window for a placeholder
+            # marker — retrying once the provider recovers is strictly better
+            # than dropping context (#29559, #25585, #94448). Mirrors the
+            # auth-failure carve-out; independent of abort_on_summary_failure.
+            if _is_streaming_closed:
+                self._last_summary_network_failure = True
+            elif _is_empty_content:
+                self._last_summary_empty_content_failure = True
             logger.warning(
                 "Context compression: no provider available for summary. Middle turns will be dropped without "
                 "summary for %d seconds.",
@@ -5188,8 +5644,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_aborted = False
         self._last_compress_refused_would_grow = False
         self._last_compression_made_progress = False
-        # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
-        # reset would fall through to the destructive static fallback (#29559). Success clears them.
+        # NOTE: do NOT reset _last_summary_auth_failure,
+        # _last_summary_network_failure, or _last_summary_empty_content_failure
+        # here.  These flags are set by _generate_summary() on a terminal
+        # failure and are already cleared on a successful summary.  Resetting them eagerly defeats the cooldown
+        # protection: _generate_summary() returns None from the cooldown
+        # early-return without re-asserting these flags, so the abort guard
+        # below would see False and fall through to the destructive
+        # static-fallback — the exact data-loss #29559 describes.  Letting them
+        # persist across compress() calls is safe because a successful summary
+        # always clears both.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
         # Manual /compress bypasses the failure cooldown and the structural no-op backoff (#93022).
@@ -5216,6 +5680,20 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+
+        # Lean mode: snapshot pristine tool contents BEFORE Phase-1 pruning so
+        # the chunk digests summarize what actually happened, not the pruned
+        # stubs (#compaction-v2). Bounded per entry to keep memory sane.
+        if getattr(self, "tail_mode", "lean") == "lean":
+            self._lean_pristine_tools = {
+                str(m.get("tool_call_id") or ""): (m.get("content") or "")[:80_000]
+                for m in messages
+                if m.get("role") == "tool" and isinstance(m.get("content"), str)
+                and len(m.get("content") or "") > 400
+            }
+        else:
+            self._lean_pristine_tools = {}
+
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -5245,7 +5723,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         turns_to_summarize = messages[compress_start:compress_end]
-        # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
+        # Lean mode: demote stale tool results INSIDE the tail so the small
+        # budget binds without the tool-group alignment floor hoarding old
+        # output (#compaction-v2). Runs before summary generation so the
+        # recovery stubs are already in place if the summary aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
@@ -5292,7 +5773,151 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not summary and self._abort_on_summary_failure(
                 telemetry, compress_end - compress_start, scan.previous_summary_before,
             ):
-                return messages
+                feasibility_skip = True
+                self._last_feasibility_skip = True
+                self._prellm_skip_count += 1
+                telemetry["prellm_skip_count"] = self._prellm_skip_count
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression: middle section (%d tokens at indices "
+                        "%d-%d) is below %.0f%% of threshold (%d tokens) — "
+                        "skipping LLM summarization, proceeding with "
+                        "deterministic message dropping. prellm_skip_count=%d",
+                        middle_tokens, compress_start, compress_end,
+                        _FEASIBILITY_SKIP_MIDDLE_FRACTION * 100,
+                        self.threshold_tokens, self._prellm_skip_count,
+                    )
+
+        if feasibility_skip:
+            summary = None  # No LLM call; Phase 4 inserts the deterministic fallback
+        else:
+            # Deriving the auto focus topic scans recent user turns — only pay
+            # for it when a summary will actually be generated.
+            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+            try:
+                summary = self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=summary_focus_topic,
+                    memory_context=memory_context,
+                )
+            except AuxiliaryExplicitCancellation:
+                # Explicit cancellation is a true no-op. Restore state mutated by
+                # the resume/handoff self-heal scan before the exception escapes to
+                # the outer transaction, which restores the transcript and lease.
+                self._previous_summary = _previous_summary_before_scan
+                self._summary_has_user_turn = _summary_has_user_turn_before_scan
+                raise
+
+        # If summary generation failed, behavior splits on
+        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
+        #   True  → ABORT compression entirely. Return messages unchanged
+        #           and set _last_compress_aborted=True so callers can warn
+        #           the user and stop the auto-compress retry loop.
+        #   False → Fall through to the default fallback path below: insert
+        #           a deterministic "summary unavailable" handoff and drop
+        #           the middle window.  Records _last_summary_fallback_used /
+        #           _last_summary_dropped_count for gateway hygiene to
+        #           surface a warning.
+        # Default is False (historical behavior).
+        #
+        # EXCEPTION — terminal access/quota, transient network failures, and
+        # empty-content provider degradation always abort. Missing credentials,
+        # 401/402/403 access failures, confirmed non-resetting quota exhaustion,
+        # and HTTP 200 empty responses from degraded channels cannot be repaired
+        # by immediately generating a static placeholder. In all of these cases,
+        # rotating into a child session with a placeholder summary degrades the
+        # conversation for zero benefit. Preserve it unchanged until access or
+        # provider health is restored (#29559, #25585, #94448).
+        if not summary and not feasibility_skip and (
+            self.abort_on_summary_failure
+            or self._last_summary_auth_failure
+            or self._last_summary_network_failure
+            or self._last_summary_empty_content_failure
+        ):
+            n_skipped = compress_end - compress_start
+            self._last_summary_dropped_count = 0  # nothing actually dropped
+            self._last_summary_fallback_used = False
+            self._last_compress_aborted = True
+            if self._last_summary_auth_failure:
+                telemetry["failure_class"] = "summary_auth_failure"
+            elif self._last_summary_network_failure:
+                telemetry["failure_class"] = "summary_network_failure"
+            elif self._last_summary_empty_content_failure:
+                telemetry["failure_class"] = "summary_empty_content_failure"
+            else:
+                telemetry["failure_class"] = "summary_generation_aborted"
+            # Roll back the self-heal rehydration so this aborted attempt is a
+            # true no-op: the next attempt must re-run the full first-compaction
+            # scan instead of narrow-rescanning against a half-populated state
+            # and discarding a legitimately rehydrated fossil (#57835).
+            self._previous_summary = _previous_summary_before_scan
+            if not self.quiet_mode:
+                if self._last_summary_auth_failure:
+                    logger.warning(
+                        "Summary generation failed with a terminal access or "
+                        "quota error — aborting compression. %d message(s) "
+                        "preserved unchanged; the session was NOT rotated. "
+                        "Check the provider credential, permission, quota, or "
+                        "inference endpoint, then retry with /compress or "
+                        "start fresh with /new.",
+                        n_skipped,
+                    )
+                elif self._last_summary_network_failure:
+                    logger.warning(
+                        "Summary generation failed with a network/connection "
+                        "error — aborting compression. %d message(s) preserved "
+                        "unchanged; the session was NOT rotated. This is "
+                        "transient: retry with /compress once connectivity "
+                        "recovers, or continue the conversation as-is.",
+                        n_skipped,
+                    )
+                elif self._last_summary_empty_content_failure:
+                    logger.warning(
+                        "Summary generation failed (LLM returned empty content) — "
+                        "aborting compression. %d message(s) preserved unchanged; "
+                        "the session was NOT rotated. This indicates upstream provider "
+                        "degradation: retry with /compress once the provider recovers, "
+                        "or continue the conversation as-is.",
+                        n_skipped,
+                    )
+                else:
+                    logger.warning(
+                        "Summary generation failed — aborting compression "
+                        "(compression.abort_on_summary_failure=true). "
+                        "%d message(s) preserved unchanged. Conversation is "
+                        "frozen until the next /compress or /new.",
+                        n_skipped,
+                    )
+            return messages
+
+        # Phase 4: Assemble compressed message list
+        compressed = []
+        for i in range(compress_start):
+            # An earlier compaction handoff in the protected head (common
+            # after resume / in-place compaction) must not be carried forward
+            # verbatim — it is already rehydrated into _previous_summary and
+            # _generate_summary() emits the updated replacement below.
+            # _strip_context_summary_handoff_message() handles both shapes:
+            # standalone handoffs strip to None (dropped), merged handoffs
+            # unwrap to their genuine prior-tail content (preserved). Do NOT
+            # short-circuit on summary_indices here: a merged handoff carries
+            # real user content that a blanket skip would silently delete.
+            msg = _fresh_compaction_message_copy(messages[i])
+            if i == 0 and msg.get("role") == "system":
+                existing = msg.get("content")
+                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
+                if _compression_note not in _content_text_for_contains(existing):
+                    msg["content"] = _append_text_to_content(
+                        existing,
+                        "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
+                    )
+            stripped = self._strip_context_summary_handoff_message(msg)
+            if stripped is not None:
+                compressed.append(stripped)
+
+        # If LLM summary failed, insert a deterministic fallback so the model
+        # gets at least locally recoverable continuity anchors instead of a
+        # content-free "N messages were removed" marker.
         if not summary:
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,

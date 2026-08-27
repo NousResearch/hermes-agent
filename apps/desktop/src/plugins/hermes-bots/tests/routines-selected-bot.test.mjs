@@ -10,6 +10,14 @@ import vm from 'node:vm'
 // left $selectedBot pointed at whichever bot was active before the plugin was
 // disabled. bindProfileSync() reseeds $selectedBot from the store's CURRENT
 // value before attaching the listener, so every register() starts in sync.
+//
+// #94516 regression: the same ladder must not dead-end the Routines pane.
+// The SDK's focusedSessionOwner store fails closed to null whenever the
+// focused session has no unique bot owner (normal chat, ambiguous owner
+// hints) — the common case while the user browses the Bots pane. The pane
+// must fall back to the bot the user clicked in the roster (the previously
+// working scope) instead of pinning every bot on the "Cronjobs are
+// unavailable until this agent appears in the roster." placeholder.
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
@@ -126,16 +134,29 @@ test('unit: an authoritative focused owner missing from the roster fails closed'
   assert.equal(resolveRoutineOwner(roster, focusedOwner, 'source-a::default'), null)
 })
 
-test('unit: an authoritative null focused owner disables routines instead of using selection', () => {
+test('regression #94516: a null focused owner falls back to the roster-clicked bot', () => {
+  // The focused session has no bot owner (a normal chat, or ambiguous owner
+  // hints — the SDK fails closed to null), but the user just clicked a bot in
+  // the populated roster. The Routines pane must scope to THAT bot instead of
+  // pinning every agent on the unavailable placeholder (#94516).
   const { resolveRoutineOwner } = load({ focusedSessionOwnerSupported: true }).__api
-  const roster = [{
-    connectionId: 'source-a',
-    name: 'default',
-    remoteSource: true,
-    sourceScoped: true
-  }]
+  const roster = [
+    { connectionId: 'source-a', name: 'default', remoteSource: true, sourceScoped: true },
+    { connectionId: 'source-a', name: 'blog-writer', remoteSource: true, sourceScoped: true }
+  ]
 
-  assert.equal(resolveRoutineOwner(roster, null, 'source-a::default'), null)
+  assert.equal(resolveRoutineOwner(roster, null, 'source-a::blog-writer'), roster[1])
+})
+
+test('regression #94516: a null focused owner with no matching selection still fails closed', () => {
+  // No focused owner AND the selection has no roster row: there is nothing to
+  // scope cron reads/mutations to, so the pane keeps its fail-closed state.
+  const { resolveRoutineOwner } = load({ focusedSessionOwnerSupported: true }).__api
+  const roster = [
+    { connectionId: 'source-a', name: 'default', remoteSource: true, sourceScoped: true }
+  ]
+
+  assert.equal(resolveRoutineOwner(roster, null, 'source-a::missing'), null)
 })
 
 test('unit: a legacy SDK without focused owner support may use selection', () => {

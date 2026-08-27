@@ -675,8 +675,42 @@ class CLICommandsMixin:
         target_hash = self._resolve_checkpoint_ref(args[1 if is_diff else 0], checkpoints)
         if not target_hash:
             return
-        if is_diff:
-            self._rollback_diff(mgr, cwd, target_hash)
+
+        # Check for file-level restore: /rollback <N> <file>
+        file_path = args[1] if len(args) > 1 else None
+
+        result = mgr.restore(
+            cwd, target_hash, file_path=file_path,
+            safe=not restore_all and not file_path,
+        )
+        if result["success"]:
+            if file_path:
+                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+            else:
+                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+                print(f"  ↷ Kept your hand-edits: {shown}{more}")
+                print("  Use /rollback <N> --all to restore those too.")
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5} more)" if len(oversize) > 5 else ""
+                print(f"  ↷ Kept (too large for checkpoints, no stored copy to revert to): {shown}{more}")
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5} more)" if len(failed) > 5 else ""
+                print(f"  ⚠️ Could not remove (left in place): {shown}{more}")
+            print("  A pre-rollback snapshot was saved automatically.")
+
+            # Also undo the last conversation turn so the agent's context
+            # matches the restored filesystem state
+            if self.conversation_history:
+                self.undo_last(prefill=False)
+                print("  Chat turn undone to match restored file state.")
         else:
             file_path = args[1] if len(args) > 1 else None
             self._rollback_restore(mgr, cwd, target_hash, file_path, restore_all)
@@ -831,10 +865,93 @@ class CLICommandsMixin:
             label = s.get("label") or ""
             print(f"  {i:3}  {s['id']:<35} {s.get('file_count', 0):>5} {size_str:>10} {label}")
 
-    def _snapshot_create(self, parts) -> None:
-        from hermes_cli.backup import create_quick_snapshot
-        snap_id = create_quick_snapshot(label=" ".join(parts[2:]) if len(parts) > 2 else None)
-        print(f"  Snapshot created: {snap_id}" if snap_id else "  No state files found to snapshot.")
+        elif subcmd == "create":
+            label = " ".join(parts[2:]) if len(parts) > 2 else None
+            snap_id = create_quick_snapshot(label=label)
+            if snap_id:
+                print(f"  Snapshot created: {snap_id}")
+            else:
+                print("  No state files found to snapshot.")
+
+        elif subcmd in {"restore", "rewind"}:
+            if len(parts) < 3:
+                print("  Usage: /snapshot restore <snapshot-id>")
+                # Show hint with most recent snapshot
+                snaps = list_quick_snapshots(limit=1)
+                if snaps:
+                    print(f"  Most recent: {snaps[0]['id']}")
+                return
+            snap_id = parts[2]
+            # Allow restore by number (1-indexed)
+            try:
+                idx = int(snap_id)
+                snaps = list_quick_snapshots()
+                if 1 <= idx <= len(snaps):
+                    snap_id = snaps[idx - 1]["id"]
+                else:
+                    print(f"  Invalid snapshot number. Use 1-{len(snaps)}.")
+                    return
+            except ValueError:
+                pass
+
+            # Close our local SessionDB connection before restore so the
+            # backup-API restore doesn't contend with a live connection to
+            # state.db from this same process (issue #65942).
+            local_session_db = getattr(self, "_session_db", None)
+            if local_session_db is not None:
+                try:
+                    local_session_db.close()
+                    self._session_db = None
+                except Exception:
+                    pass
+
+            if restore_quick_snapshot(snap_id):
+                print(f"  Restored state from: {snap_id}")
+                print(
+                    "  Restart recommended for gateway/dashboard processes "
+                    "to pick up state.db changes."
+                )
+            else:
+                print(f"  Snapshot not found: {snap_id}")
+
+        elif subcmd == "prune":
+            keep = 20
+            if len(parts) > 2:
+                try:
+                    keep = int(parts[2])
+                except ValueError:
+                    print("  Usage: /snapshot prune [keep-count]")
+                    return
+            deleted = prune_quick_snapshots(keep=keep)
+            print(f"  Pruned {deleted} old snapshot(s) (keeping {keep}).")
+
+        else:
+            print(f"  Unknown subcommand: {subcmd}")
+            print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
+
+    def _handle_export_command(self, command: str):
+        """Handle /export — export a profile to a shareable .tar.gz archive.
+
+        Syntax:
+            /export                       — export the active profile
+            /export <profile>             — export a named profile
+            /export [profile] -o <path>   — choose the output path
+        """
+        from hermes_cli.profiles import export_profile, get_active_profile_name
+
+        parts = command.split()[1:]
+        output = None
+        if "-o" in parts:
+            idx = parts.index("-o")
+            if idx + 1 >= len(parts):
+                print("  Usage: /export [profile] [-o output.tar.gz]")
+                return
+            output = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+        name = parts[0] if parts else (get_active_profile_name() or "default")
+        if not output:
+            output = f"{name}.tar.gz"
 
     def _snapshot_restore(self, parts) -> None:
         from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot

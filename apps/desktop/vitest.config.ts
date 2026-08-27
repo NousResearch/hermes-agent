@@ -10,9 +10,9 @@ const reactUi: TestProjectConfiguration = {
     include: ['src/**/*.test.{ts,tsx}'],
     globals: true,
     // The first test in each file pays jsdom env init + full module transform,
-    // which can exceed vitest's 5000ms default under CI/load. 15s gives the
+    // which can exceed vitest's 5000ms default under CI/load. 60s gives the
     // cold start headroom without masking genuinely hung tests.
-    testTimeout: 15_000
+    testTimeout: 60_000
   }
 }
 

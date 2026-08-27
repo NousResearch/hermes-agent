@@ -2,7 +2,6 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { $desktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
@@ -13,12 +12,9 @@ import {
 import {
   activeGateway,
   closeSecondaryGateways,
-  disposeSecondariesForConnection,
   ensureGatewayForAgent,
-  ensureGatewayForProfile,
   isActivePrimary,
-  requestGatewayForAgent,
-  retainGatewayForAgent
+  requestGatewayForAgent
 } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import {
@@ -27,13 +23,32 @@ import {
   endGatewaySwitch,
   recoverActiveSourceAfterFailedGatewaySwitch
 } from '@/store/gateway-switch'
-import { $notifications, clearNotifications, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
-import { $connection, $currentCwd, $gatewayState } from '@/store/session'
+import {
+  $activeSessionId,
+  $awaitingResponse,
+  $busy,
+  $connection,
+  $currentCwd,
+  $gatewayState,
+  $selectedStoredSessionId,
+  $sessionsLoading,
+  getConfiguredDefaultProjectDir,
+  setActiveSessionId,
+  setSelectedStoredSessionId
+} from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+
+import { deferred } from '../../../test/deferred'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
+
+vi.mock(import('@/store/notifications'), async importOriginal => ({
+  ...(await importOriginal()),
+  notifyError: vi.fn()
+}))
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -274,6 +289,7 @@ beforeEach(() => {
   FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
   powerResume = null
+  vi.mocked(notifyError).mockReset()
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -311,6 +327,11 @@ afterEach(() => {
   $connection.set(null)
   $profiles.set([])
   $sessionTiles.set([])
+  _resetConnectionsForTests()
+  $connectionsRegistry.set(null)
+  setActiveSessionId(null)
+  setSelectedStoredSessionId(null)
+  endGatewaySwitch()
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -1338,6 +1359,69 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
+  it('a getConnection() that hangs on INITIAL boot rejects on its own after the reconnect-attempt timeout, not only when main eventually gives up (#93454)', async () => {
+    // boot()'s getConnection() had no bound of its own — only main's own
+    // eventual timeout (e.g. waitForHermes, ~45s) ever settled it. A wedge
+    // that main never resolves (not even a rejection) must not hang
+    // "Starting Hermes…" forever; the renderer needs to own its own bound
+    // here too, same as attemptReconnect() and softSwitch().
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeNull()
+
+    // Advance past the shared backend-boot budget (45s) — the
+    // stalled await must reject on its own so boot()'s catch runs instead of
+    // waiting indefinitely on main.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('softSwitch(): a getConnection() that hangs on a connection-apply switch does not latch $gatewaySwitching forever (#93454)', async () => {
+    // Repro: main applies a new connection (onConnectionApplied), softSwitch()
+    // re-dials via getConnection(), and the IPC round-trip wedges. Without an
+    // internal timeout, the try block never settles, so the `finally` that
+    // clears $gatewaySwitching never runs — the switch UI stays frozen until
+    // the app is restarted.
+    const desktop = fakeDesktop()
+    const originalGetConnection = desktop.getConnection
+    let callCount = 0
+
+    desktop.getConnection = vi.fn((profile?: null | string) => {
+      callCount += 1
+
+      // Initial boot succeeds; the switch triggered below hangs indefinitely.
+      return callCount === 1 ? originalGetConnection(profile) : new Promise(() => undefined)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect($gatewaySwitching.get()).toBe(true)
+
+    // Advance past the shared backend-boot budget (45s) — the
+    // stalled await must reject so the `finally` clears $gatewaySwitching
+    // instead of latching the switch UI frozen forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
+    expect($gatewaySwitching.get()).toBe(false)
+  })
+
   it('rebinds Bot tabs owned by the restarted primary without touching another gateway', async () => {
     render(<Harness />)
     await flushAsync()
@@ -1366,6 +1450,31 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect(primaryBot).not.toHaveProperty('runtimeId')
     expect(secondaryBot).toMatchObject({ runtimeId: 'runtime-secondary-live' })
+  })
+
+  it('FIX: a successful reconnect retires the focused composer busy latch (#93059)', async () => {
+    // Backend respawned mid-turn (auto-update, sleep/wake): the focused
+    // composer's draft latches never get their terminal busy:false, and Send
+    // silently no-ops behind the busy guard until restart (#93059).
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    // A turn was mid-flight when the backend went away.
+    act(() => {
+      $busy.set(true)
+      $awaitingResponse.set(true)
+    })
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await flushAsync()
+
+    // The respawned backend answers the next dial.
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($busy.get()).toBe(false)
+    expect($awaitingResponse.get()).toBe(false)
   })
 
   it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {

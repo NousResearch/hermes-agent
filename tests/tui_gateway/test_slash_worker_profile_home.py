@@ -27,12 +27,15 @@ def test_slash_worker_accepts_profile_home():
                 profile_home="/home/luke/.hermes/profiles/work"
             )
 
-            # Verify Popen was called
-            assert mock_popen.called
+            worker_calls = [
+                call
+                for call in mock_popen.call_args_list
+                if call.args and "tui_gateway.slash_worker" in call.args[0]
+            ]
+            assert len(worker_calls) == 1
 
-            # Check that HERMES_HOME was set in the environment
-            call_kwargs = mock_popen.call_args[1]
+            # Check the worker process rather than unrelated subprocess probes.
+            call_kwargs = worker_calls[0].kwargs
             assert "env" in call_kwargs
             assert call_kwargs["env"]["HERMES_HOME"] == "/home/luke/.hermes/profiles/work"
-
 

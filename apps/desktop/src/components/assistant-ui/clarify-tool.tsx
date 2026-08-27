@@ -40,7 +40,6 @@ import {
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
 import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
@@ -478,9 +477,22 @@ function ClarifyToolSinglePending({
       setSubmitting(true)
 
       try {
-        // The response frame goes back over the socket the request arrived on —
-        // the owner backend by construction (#91684's class cannot recur).
-        respondToServerRequest(matchingRequest.requestId, { answer })
+        // Route through the session's OWNER (tile route → hint → tagged row);
+        // legacy ambient is allowed only when it is provably the sole backend.
+        // The ambient socket follows foreground focus, so after a profile / Bot
+        // Chat switch it can point at a backend that never held this clarify —
+        // and the owner stays blocked (#91684 client half, like approval.respond).
+        await requestForOwnedSession<{ ok?: boolean }>(
+          matchingRequest.sessionId,
+          // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
+          // call shape gateway.request callers assert on.
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'clarify.respond',
+          {
+            request_id: matchingRequest.requestId,
+            answer
+          }
+        )
         triggerHaptic('submit')
         onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
@@ -1029,14 +1041,23 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       // server-side, so every earlier lock must already be accepted when it
       // lands — a reordered burst could complete the batch with a missing
       // answer.
+      //
+      // Each lock rides the session's OWNER socket, not the ambient one: a
+      // profile / Bot Chat switch re-points ambient at a backend that never
+      // held this batch, which would leave the owner blocked.
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          answer: answer ?? '',
-          question_id: question.qid,
-          request_id: request.requestId
-        })
+        await requestForOwnedSession<{ ok?: boolean }>(
+          request.sessionId,
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'clarify.respond',
+          {
+            answer: answer ?? '',
+            question_id: question.qid,
+            request_id: request.requestId
+          }
+        )
       }
 
       triggerHaptic('submit')
@@ -1076,7 +1097,16 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     clearClarifyRequest(request.requestId, request.sessionId)
 
     try {
-      await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
+      if (gateway) {
+        // Owner-routed like the locks above — a skip sent to the wrong backend
+        // is a silent no-op that leaves the agent waiting out its timeout.
+        await requestForOwnedSession(
+          request.sessionId,
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'clarify.respond',
+          { answer: '', request_id: request.requestId }
+        )
+      }
     } catch {
       // The tool times out on its own; a failed skip must never block the UI.
     }

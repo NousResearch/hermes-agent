@@ -648,6 +648,12 @@ async function pidIsOurDashboard(
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
+  // Defense in depth (#95532): a skew sentinel is foreign/corrupt state, not
+  // an ownership record — never reap or remove anything based on it.
+  if (isLockfileSkew(lock)) {
+    return
+  }
+
   if (
     pidAlive &&
     lock &&
@@ -732,12 +738,9 @@ async function disconnect(ssh, ownershipId) {
 
 function buildOwnedStaleTerminationCommand(lock, ownershipId) {
   const pid = Number(lock.pid)
-  // expandRemotePath() output is already a shell-quoted fragment; embed it
-  // raw so $HOME expands at assignment. Double-quoting stores the quote
-  // characters in the variable and every identity match below REFUSEs.
-  const expectedPath = expandRemotePath(lock.hermesPath)
-  const expectedHome = lock.hermesHome ? expandRemotePath(lock.hermesHome) : "''"
-  const expectedToken = expandRemotePath(spawnTokenPath(ownershipId, lock.spawnNonce))
+  const expectedPath = shq(expandRemotePath(lock.hermesPath))
+  const expectedHome = lock.hermesHome ? shq(expandRemotePath(lock.hermesHome)) : "''"
+  const expectedToken = shq(expandRemotePath(spawnTokenPath(ownershipId, lock.spawnNonce)))
   const nonce = shq(lock.spawnNonce)
   const profile = shq(lock.profile || '')
   const command = `$(ps -ww -o command= -p ${pid} 2>/dev/null || true)`
@@ -892,9 +895,7 @@ finally:
 // the marker check, spawns the backend, and publishes its initial lockfile.
 // Python keeps the descriptor close-on-exec by default and passes it explicitly
 // only to the intended outer shell; each detached child closes it before
-// execing Hermes. mutexPath is expandRemotePath() output — a complete shell
-// word ("$HOME"'/…' or '/abs/…') embedded raw so $HOME expands remotely; a
-// second shq() would hand python the quote characters as part of the path.
+// execing Hermes.
 function withRemoteUpdateMutex(command, mutexPath) {
   const script = `
 import fcntl,os,subprocess,sys
@@ -912,7 +913,7 @@ finally:
 sys.exit(result.returncode if result is not None else 1)
 `.trim()
 
-  return `python3 -c ${shq(script)} ${mutexPath} ${shq(command)}`
+  return `python3 -c ${shq(script)} ${shq(mutexPath)} ${shq(command)}`
 }
 
 /**
@@ -1085,11 +1086,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   return withRemoteUpdateMutex(
     `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
-      // reservation/lockPath/ownerPath are expandRemotePath() output — already
-      // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
-      // expands $HOME; shq() here would store the quote characters literally
-      // and every mkdir/cat against the variable fails forever.
-      `reservation=${reservation}; lock=${lockPath}; owner_file=${ownerPath}; ` +
+      `reservation=${shq(reservation)}; lock=${shq(lockPath)}; owner_file=${shq(ownerPath)}; ` +
       `reservation_nonce=${shq(reservationNonce)}; ` +
       `i=0; while ! mkdir "$reservation" 2>/dev/null; do ` +
       `owner_data=$(cat "$owner_file" 2>/dev/null || true); owner_pid=${'${owner_data%%:*}'}; ` +
@@ -1104,11 +1101,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +
       `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
-      // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
-      // on Ubuntu), which aborts the whole script on it with "Bad
-      // substitution" AFTER the child was spawned, orphaning the backend and
-      // skipping the lockfile publication. Substitute with sed instead.
-      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/__PID__/\${child}/"); ` +
+      `lock_json=${shq(metadata)}; lock_json=\${lock_json//__PID__/$child}; ` +
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `echo "$child"`,
@@ -1170,15 +1163,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
 
 async function spawnRemoteDashboard(
   ssh,
-  {
-    hermesPath,
-    profile,
-    token,
-    ownershipId,
-    hermesHome = '~/.hermes',
-    guestOnboarding = false,
-    assertInstallClear = async () => {}
-  }
+  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
@@ -1248,7 +1233,6 @@ async function spawnRemoteDashboard(
         tokenFilePath,
         logPath,
         hermesHome,
-        guestOnboarding,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1466,7 +1450,15 @@ async function connect(deps) {
       lock.hermesHome === hermesHome
 
     if (reusable) {
+      const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))
+
+      if (creationTime && !lock.creationTime) {
+        await writeLockfile(ssh, ownershipId, { ...lock, creationTime })
+        lock.creationTime = creationTime
+      }
+
       assertBootstrapNotSuperseded(signal)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -1529,11 +1521,13 @@ async function connect(deps) {
       }
     } else {
       assertBootstrapNotSuperseded(signal)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
   assertBootstrapNotSuperseded(signal)
+  await assertRemoteInstallUpdateClear(ssh, hermesHome)
   const spawnToken = mintToken()
 
   const spawned = await spawnRemoteDashboard(ssh, {
@@ -1542,7 +1536,6 @@ async function connect(deps) {
     token: spawnToken,
     ownershipId,
     hermesHome,
-    guestOnboarding,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
   })
 

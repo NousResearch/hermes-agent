@@ -8,7 +8,6 @@ hooks/middleware) plus registry pass-throughs.
 
 import os
 import json
-import re
 import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -18,8 +17,15 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
-from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
+from tools.registry import (
+    CHECK_FN_CACHE_BYPASS,
+    _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN,
+    _sanitize_tool_error,
+    check_fn_cache_scope,
+    discover_builtin_tools,
+    registry,
+    tool_error,
+)
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
 from utils import file_signature
@@ -615,28 +621,18 @@ _LEGACY_TOOL_ALIASES = {
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
-# --- Tool error sanitization --------------------------------------------------
-# Defense-in-depth: strip role tags / CDATA / code fences from exception text the
-# model will read, and cap length (cap shared with tools/registry.py so text never
-# passes two different caps with two different markers).
-_TOOL_ERROR_STRIP_RES = (
-    re.compile(r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>', re.IGNORECASE),
-    re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE),
-    re.compile(r'\s*```\s*$', re.MULTILINE),
-    re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL),
-)
-
-
-def _sanitize_tool_error(error_msg: str) -> str:
-    """Strip structural framing tokens from a tool error before the model sees it."""
-    if not error_msg:
-        return "[TOOL_ERROR] "
-    sanitized = error_msg
-    for pattern in _TOOL_ERROR_STRIP_RES:
-        sanitized = pattern.sub("", sanitized)
-    if len(sanitized) > _TOOL_ERROR_MAX_LEN:
-        sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
-    return f"[TOOL_ERROR] {sanitized}"
+# =========================================================================
+# Tool error sanitization
+# =========================================================================
+#
+# Tool exceptions can carry arbitrary text into the model's context as the
+# `tool` message content. json.dumps() handles quote/backslash escaping so a
+# raw injection of `</tool_call>` won't break message framing, but the model
+# still *reads* those tokens and they can confuse downstream tool-call
+# parsing or, in adversarial cases, nudge it toward role-confusion framing.
+#
+# Tool errors are sanitized in ``tools.registry`` so both direct registry
+# dispatch and this orchestration layer use the same lightweight boundary.
 
 
 @dataclass(frozen=True)

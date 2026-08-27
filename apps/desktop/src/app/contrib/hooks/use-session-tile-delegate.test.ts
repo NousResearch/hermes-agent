@@ -132,6 +132,25 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(requestGateway).not.toHaveBeenCalled()
   })
 
+  it('carries a session row connection owner into a same-named tile resume', async () => {
+    setSessions([row({ connection_id: 'source-b', id: 'stored-shared', profile: 'default' })])
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ session_id: 'runtime-shared' } as never)
+
+    renderTile(ambientRequest)
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-shared')
+
+    expect(runtimeId).toBe('runtime-shared')
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-b', 'default', 'session.resume', {
+      session_id: 'stored-shared',
+      cols: 96,
+      omit_messages: true,
+      profile: 'default'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
   it('routes a Bot tile prefetch and resume through its exact connection owner', async () => {
     const route = {
       connectionId: 'barry',
@@ -398,6 +417,31 @@ describe('useSessionTileDelegate resumeTile', () => {
       undefined,
       undefined
     )
+  })
+
+  it('hydrates the tile model and provider from resume info', async () => {
+    setSessions([row({ id: 'stored-model', profile: 'default' })])
+
+    const updateSessionState = vi.fn()
+
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      info: { fast: true, model: 'gpt-5', provider: 'openai', reasoning_effort: 'high', running: false },
+      session_id: 'runtime-model'
+    } as never)
+
+    renderTile(vi.fn(), { updateSessionState })
+    const runtimeId = await sessionTileDelegate()!.resumeTile('stored-model')
+
+    expect(runtimeId).toBe('runtime-model')
+    expect(updateSessionState).toHaveBeenCalled()
+
+    const updater = updateSessionState.mock.calls[0][1] as (state: { messages: unknown[] }) => Record<string, unknown>
+    const next = updater({ messages: [] })
+
+    expect(next.model).toBe('gpt-5')
+    expect(next.provider).toBe('openai')
+    expect(next.reasoningEffort).toBe('high')
+    expect(next.fast).toBe(true)
   })
 
   it('invalidateRuntimeBindings clears the stored→runtime map so tiles re-resume after reconnect', async () => {

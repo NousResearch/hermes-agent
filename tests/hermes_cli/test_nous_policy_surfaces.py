@@ -201,3 +201,19 @@ class TestAuxiliaryFastModel:
             monkeypatch, catalog=["vendor/blocked", "vendor/allowed"]
         )
         assert picked == "vendor/allowed"
+
+
+class TestNousPrefetch:
+    """The nous disk-cache entry is write-only: its picker branch builds from
+    the curated list, so prefetching it is a round trip for nothing."""
+
+    def test_nous_is_not_collected_for_prefetch(self, monkeypatch):
+        import hermes_cli.auth as auth_mod
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(
+            auth_mod, "_load_auth_store",
+            lambda *a, **k: {"providers": {"nous": {"access_token": "tok"}}},
+        )
+        slugs = ms._collect_authed_provider_slugs({}, {"nous": list(CURATED)}, [])
+        assert "nous" not in slugs

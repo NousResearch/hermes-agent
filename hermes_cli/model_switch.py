@@ -2565,7 +2565,12 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    return slugs
+    # Nous is deliberately excluded. Its picker branch builds from the curated
+    # list rather than cached_provider_model_ids, and nous cannot reach the
+    # api_key-only unified pathway, so a prefetched entry is written and never
+    # read — a live authenticated /v1/models round trip per picker open for
+    # nothing.
+    return [s for s in slugs if s != "nous"]
 
 
 def list_authenticated_providers(

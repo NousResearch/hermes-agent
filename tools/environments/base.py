@@ -979,6 +979,16 @@ class BaseEnvironment(ABC):
             'HERMES_AGENT="${HERMES_AGENT:-true}"'
         )
 
+        # Non-interactive pager defaults: git log/diff/branch and similar
+        # pager-happy tools hang a captured (non-TTY writing to a pipe is
+        # fine, but PTY mode IS a TTY) or PTY-backed command waiting for `q`.
+        # GIT_PAGER=cat neutralizes git specifically; PAGER=cat catches the
+        # long tail (man, systemctl, psql, ...). ${VAR:-default} semantics:
+        # a user who exported their own pager in the session keeps it.
+        parts.append(
+            'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"'
+        )
+
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)

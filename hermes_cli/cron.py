@@ -83,10 +83,16 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         # — and inside the gateway process it short-circuits to True, so the in-gateway
         # cron tool never emits a false "gateway not running" (find_gateway_pids can
         # transiently miss the gateway just after a restart).
-        from gateway.status import is_gateway_runtime_lock_active
+        try:
+            from gateway.status import is_gateway_runtime_lock_active
 
-        if is_gateway_runtime_lock_active():
-            return True
+            if is_gateway_runtime_lock_active():
+                return True
+        except Exception:
+            # A crashing lock probe is "unknown", not "dead" — let the pid
+            # scan below still decide instead of collapsing the whole
+            # tri-state to None.
+            pass
         from hermes_cli.gateway import find_gateway_pids
 
         return bool(find_gateway_pids())

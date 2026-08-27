@@ -667,7 +667,7 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
     """
     return (
         job.get("state") == "error"
-        and job.get("schedule", {}).get("kind") in {"cron", "interval"}
+        and (job.get("schedule") or {}).get("kind") in {"cron", "interval"}
     )
 
 

@@ -63,6 +63,30 @@ def test_get_secret_source_values_returns_home_snapshot_copy(tmp_path):
     }
 
 
+def test_external_secret_snapshot_distinguishes_not_hydrated_absent_and_failed(
+    tmp_path, monkeypatch
+):
+    env_loader.reset_secret_source_cache()
+    assert env_loader.get_external_secret_snapshot(tmp_path).status == "not_hydrated"
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    absent = env_loader.get_external_secret_snapshot(tmp_path)
+    assert absent.status == "absent"
+    assert absent.generation > 0
+
+    env_loader.reset_secret_source_cache()
+
+    def _fail_config(_home):
+        raise RuntimeError("unreadable config")
+
+    monkeypatch.setattr(env_loader, "_load_secrets_config", _fail_config)
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    failed = env_loader.get_external_secret_snapshot(tmp_path)
+    assert failed.status == "failed"
+    assert failed.error_kind == "config"
+    assert failed.generation > absent.generation
+
+
 def test_format_secret_source_suffix_empty_for_untracked():
     # Credentials from .env or the shell shouldn't add noise — the
     # implicit case stays unlabeled.

@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import hmac
+import json
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from types import MappingProxyType
-from typing import Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -25,19 +29,53 @@ from typing import Dict, Mapping, Optional
 _MULTIPLEX_ACTIVE: bool = False
 _ENV_KEYS_CASE_INSENSITIVE: bool = os.name == "nt"
 _FORWARDED_ENV_PREFIXES = ("APPTAINERENV_", "SINGULARITYENV_")
+_PROFILE_OWNED_NAME_HISTORY: dict[str, set[str]] = {}
+_PROFILE_OWNED_NAME_HISTORY_LOCK = RLock()
+# Scope generations may be surfaced in diagnostics, so bind credential values
+# without publishing a reusable unsalted hash of those values.  Generations are
+# process-local authority epochs; they are not a durable cross-process ID.
+_SCOPE_VALUE_DIGEST_KEY = os.urandom(32)
+
+
+@dataclass(frozen=True)
+class _EnvCarrier:
+    """Physical environment spelling plus its effective carried name."""
+
+    physical_name: str
+    effective_name: str
+    channels: tuple[str, ...]
+
+    @property
+    def forwarded(self) -> bool:
+        return bool(self.channels)
+
+
+def _env_carrier(name: str) -> _EnvCarrier:
+    physical = str(name)
+    value = physical
+    channels: list[str] = []
+    while True:
+        upper = value.upper()
+        matched = False
+        for prefix in _FORWARDED_ENV_PREFIXES:
+            if upper.startswith(prefix):
+                channels.append(prefix[:-1].lower())
+                value = value[len(prefix):]
+                matched = True
+                break
+        if not matched:
+            break
+    effective = value.upper() if _ENV_KEYS_CASE_INSENSITIVE else value
+    return _EnvCarrier(physical, effective, tuple(channels))
 
 
 def _env_name_key(name: str) -> str:
+    return _env_carrier(name).effective_name
+
+
+def _direct_env_name_key(name: str) -> str:
+    """Normalize a physical direct name without granting wrapper equivalence."""
     value = str(name)
-    changed = True
-    while changed:
-        changed = False
-        upper = value.upper()
-        for prefix in _FORWARDED_ENV_PREFIXES:
-            if upper.startswith(prefix):
-                value = value[len(prefix):]
-                changed = True
-                break
     return value.upper() if _ENV_KEYS_CASE_INSENSITIVE else value
 
 
@@ -60,6 +98,103 @@ class UnscopedSecretError(RuntimeError):
     The fix is to wrap the call path in ``set_secret_scope(...)`` (the per-turn
     / per-adapter profile scope), not to widen the global allowlist.
     """
+
+
+@dataclass(frozen=True, eq=False)
+class ProfileSecretScope(Mapping[str, str]):
+    """Immutable, identity-bound profile secret view for one generation."""
+
+    profile_home: Path | None
+    data: Mapping[str, str]
+    owned_names: frozenset[str]
+    generation: str
+    source_status: str
+    digest: str
+
+    def __getitem__(self, key: str) -> str:
+        return self.data[key]
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return dict(self.items()) == dict(other.items())
+        return NotImplemented
+
+
+@dataclass(frozen=True)
+class EnvFileSnapshot:
+    """Non-mutating dotenv parse result with an explicit source state."""
+
+    path: Path
+    data: Mapping[str, str]
+    status: str
+    error_kind: str | None = None
+
+
+def _scope_generation(
+    profile_home: Path | None,
+    values: Mapping[str, str],
+    source_status: str,
+    external_generation: int = 0,
+) -> tuple[str, str]:
+    files: list[tuple[str, int, int]] = []
+    if profile_home is not None:
+        for name in (".op.env", ".env", "config.yaml"):
+            path = profile_home / name
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((name, stat.st_mtime_ns, stat.st_size))
+    value_material = json.dumps(
+        sorted((str(name), str(value)) for name, value in values.items()),
+        separators=(",", ":"),
+    ).encode()
+    values_digest = hmac.new(
+        _SCOPE_VALUE_DIGEST_KEY,
+        value_material,
+        hashlib.sha256,
+    ).hexdigest()
+    material = {
+        "profile_home": str(profile_home) if profile_home is not None else None,
+        "names": sorted(str(name) for name in values),
+        "values_digest": values_digest,
+        "files": files,
+        "external_generation": int(external_generation),
+        "source_status": source_status,
+    }
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    return f"profile-scope-v1:{digest}", digest
+
+
+def _immutable_scope(
+    values: Mapping[str, str],
+    *,
+    profile_home: Path | None,
+    source_status: str,
+    external_generation: int = 0,
+) -> ProfileSecretScope:
+    copied = {str(key): str(value) for key, value in values.items()}
+    generation, digest = _scope_generation(
+        profile_home,
+        copied,
+        source_status,
+        external_generation,
+    )
+    return ProfileSecretScope(
+        profile_home=profile_home.resolve() if profile_home is not None else None,
+        data=MappingProxyType(copied),
+        owned_names=frozenset(copied),
+        generation=generation,
+        source_status=source_status,
+        digest=digest,
+    )
 
 
 def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
@@ -108,11 +243,11 @@ _GLOBAL_ENV_EXACT = frozenset({
     "GATEWAY_RELAY_ROUTE_KEYS", "GATEWAY_RELAY_INSTANCE_ID",
     "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
-_GLOBAL_ENV_PREFIXES = (
-    "HERMES_KANBAN_",
-    "HERMES_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
-    "TERMINAL_",          # terminal/sandbox backend settings
-)
+# Prefix-wide process authority is intentionally forbidden. Terminal, Kanban,
+# and Telegram settings can vary by profile; globally safe coordinates must be
+# named explicitly in _GLOBAL_ENV_EXACT so a new secret/control key cannot gain
+# authority merely by choosing a trusted-looking prefix.
+_GLOBAL_ENV_PREFIXES: tuple[str, ...] = ()
 
 
 def _is_global_env(name: str) -> bool:
@@ -185,8 +320,28 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     secrets: Dict[str, str] = {}
     try:
         text = env_path.read_text(encoding="utf-8-sig")
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
-        return secrets
+    except FileNotFoundError:
+        return EnvFileSnapshot(
+            path=env_path,
+            data=MappingProxyType({}),
+            status="absent",
+        )
+    except UnicodeDecodeError:
+        return EnvFileSnapshot(
+            path=env_path,
+            data=MappingProxyType({}),
+            status="failed",
+            error_kind="decode",
+        )
+    except OSError as exc:
+        return EnvFileSnapshot(
+            path=env_path,
+            data=MappingProxyType({}),
+            status="failed",
+            error_kind=type(exc).__name__,
+        )
+
+    secrets: Dict[str, str] = {}
 
     from hermes_cli.config import _parse_env_value
 
@@ -232,11 +387,32 @@ class ProfileEnvBoundary:
     target_home: Path
     source_owned_names: frozenset[str]
     target_values: Mapping[str, str]
+    target_generation: str = ""
+    target_status: str = ""
 
     @property
     def identity(self) -> str:
         """Stable target identity used by snapshot owners and diagnostics."""
         return str(self.target_home)
+
+    def compiled_target_values(self) -> dict[str, str]:
+        """Return deterministic target declarations, rejecting conflicts."""
+        declarations: dict[str, list[tuple[_EnvCarrier, str]]] = {}
+        for key, value in self.target_values.items():
+            carrier = _env_carrier(key)
+            declarations.setdefault(carrier.effective_name, []).append(
+                (carrier, value)
+            )
+
+        compiled: dict[str, str] = {}
+        for effective_name, candidates in declarations.items():
+            if len(candidates) > 1:
+                raise RuntimeError(
+                    f"conflicting target environment declarations for {effective_name!r}"
+                )
+            carrier, value = candidates[0]
+            compiled[carrier.physical_name] = value
+        return compiled
 
     def sanitize(self, env: Mapping[str, str]) -> dict[str, str]:
         """Return *env* with source-profile-owned names isolated to the target."""
@@ -244,28 +420,47 @@ class ProfileEnvBoundary:
         if self.source_home == self.target_home:
             return result
 
-        result_keys: dict[str, list[str]] = {}
+        result_carriers: dict[str, list[_EnvCarrier]] = {}
         for key in result:
-            result_keys.setdefault(_env_name_key(key), []).append(key)
-        target_values = {
-            _env_name_key(key): (key, value)
-            for key, value in self.target_values.items()
-        }
-        source_names = {_env_name_key(name) for name in self.source_owned_names}
-        for normalized in source_names:
-            physical_keys = result_keys.get(normalized, [])
-            target = target_values.get(normalized)
-            if target is not None:
-                target_key, value = target
-                output_key = physical_keys[0] if physical_keys else target_key
-                for physical_key in physical_keys:
-                    result.pop(physical_key, None)
-                result[output_key] = value
-                result_keys[normalized] = [output_key]
-            else:
-                for physical_key in physical_keys:
-                    result.pop(physical_key, None)
-                result_keys.pop(normalized, None)
+            carrier = _env_carrier(key)
+            result_carriers.setdefault(carrier.effective_name, []).append(carrier)
+
+        target_declarations: dict[str, tuple[_EnvCarrier, str]] = {}
+        for key, value in self.compiled_target_values().items():
+            carrier = _env_carrier(key)
+            target_declarations[carrier.effective_name] = (carrier, value)
+
+        source_carriers: dict[str, list[_EnvCarrier]] = {}
+        for name in self.source_owned_names:
+            carrier = _env_carrier(name)
+            source_carriers.setdefault(carrier.effective_name, []).append(carrier)
+
+        for effective_name, owned_carriers in source_carriers.items():
+            target_declaration = target_declarations.get(effective_name)
+
+            # Direct process globals (PATH, HOME, terminal coordinates) remain
+            # operational baseline when the source owned only a forwarded
+            # container carrier.  For ordinary profile-owned names, or when the
+            # source owned the direct spelling, every equivalent carrier is
+            # removed before a target declaration is materialized.
+            source_has_direct = any(not carrier.forwarded for carrier in owned_carriers)
+            direct_global = _is_global_env(effective_name)
+            removable: list[_EnvCarrier] = []
+            for carrier in result_carriers.get(effective_name, []):
+                if source_has_direct or not direct_global or carrier.forwarded:
+                    removable.append(carrier)
+
+            for carrier in removable:
+                result.pop(carrier.physical_name, None)
+
+            if target_declaration is not None:
+                target_carrier, target_value = target_declaration
+                for existing in list(result):
+                    if _direct_env_name_key(existing) == _direct_env_name_key(
+                        target_carrier.physical_name
+                    ):
+                        result.pop(existing, None)
+                result[target_carrier.physical_name] = target_value
         return result
 
 
@@ -281,15 +476,43 @@ def get_profile_owned_secret_names(
     they are user/process state, not profile-owned credentials.
     """
     home = Path(hermes_home)
-    names = set(load_env_file(home / ".op.env"))
-    names.update(load_env_file(home / ".env"))
-    names.update(
+    op_snapshot = load_env_file_snapshot(home / ".op.env")
+    env_snapshot = load_env_file_snapshot(home / ".env")
+    if fail_closed_external:
+        failed = [
+            snapshot
+            for snapshot in (op_snapshot, env_snapshot)
+            if snapshot.status == "failed"
+        ]
+        if failed:
+            details = ", ".join(
+                f"{snapshot.path.name}:{snapshot.error_kind or 'read'}"
+                for snapshot in failed
+            )
+            raise RuntimeError(
+                f"profile dotenv ownership unavailable ({details}); refusing boundary"
+            )
+    observed_names = set(op_snapshot.data)
+    observed_names.update(env_snapshot.data)
+    observed_names.update(
         _profile_external_secret_values(
             home,
             fail_closed=fail_closed_external,
         )
     )
-    return frozenset(name for name in names if not _is_global_env(name))
+    observed_names = {name for name in observed_names if not _is_global_env(name)}
+
+    # Ownership is monotonic for the life of the process. A profile can remove
+    # a name from its current sources while its old value remains in
+    # ``os.environ``; forgetting the prior ownership would reclassify that stale
+    # value as ambient and allow it to cross a later profile boundary. Clearing
+    # this history is legal only after a separately verified process-global
+    # removal event, which Hermes does not currently expose.
+    history_key = str(home.resolve())
+    with _PROFILE_OWNED_NAME_HISTORY_LOCK:
+        history = _PROFILE_OWNED_NAME_HISTORY.setdefault(history_key, set())
+        history.update(observed_names)
+        return frozenset(history)
 
 
 def build_profile_env_boundary(
@@ -320,10 +543,26 @@ def build_profile_env_boundary(
             target_home = source_home
     source = Path(source_home).resolve()
     target = Path(target_home).resolve()
-    target_values = build_profile_secret_scope(
-        target,
-        fail_closed_external=True,
-    )
+    active_scope = current_secret_scope()
+    if active_scope is not None and active_scope.profile_home is not None:
+        if active_scope.profile_home != target:
+            raise RuntimeError(
+                "active profile secret scope does not match target profile home"
+            )
+        current_scope = build_profile_secret_scope(
+            target,
+            fail_closed_external=True,
+        )
+        if active_scope.generation != current_scope.generation:
+            raise RuntimeError(
+                "active profile secret scope is stale for target profile generation"
+            )
+        target_scope = active_scope
+    else:
+        target_scope = build_profile_secret_scope(
+            target,
+            fail_closed_external=True,
+        )
     return ProfileEnvBoundary(
         source_home=source,
         target_home=target,
@@ -331,7 +570,9 @@ def build_profile_env_boundary(
             source,
             fail_closed_external=True,
         ),
-        target_values=MappingProxyType(dict(target_values)),
+        target_values=MappingProxyType(dict(target_scope)),
+        target_generation=target_scope.generation,
+        target_status=target_scope.source_status,
     )
 
 

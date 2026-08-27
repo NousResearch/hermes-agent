@@ -7,7 +7,9 @@ forwarded values resolve through the profile's secret scope, not the process env
 from __future__ import annotations
 
 import logging
+import os
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Iterable
 from hermes_cli.config import cfg_get, read_raw_config
 
@@ -28,7 +30,9 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
+# Last observed config projection. Kept for test/debug compatibility only; it
+# is never an authorization cache because the active profile may change on
+# every multiplexed turn.
 _config_passthrough: frozenset[str] | None = None
 
 
@@ -108,9 +112,12 @@ def is_env_passthrough(var_name: str) -> bool:
     return var_name in _get_allowed() or var_name in _load_config_passthrough()
 
 
-def get_all_passthrough() -> frozenset[str]:
+def get_all_passthrough(
+    *,
+    profile_home: str | os.PathLike[str] | None = None,
+) -> frozenset[str]:
     """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    return frozenset(_get_allowed()) | _load_config_passthrough(profile_home)
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:

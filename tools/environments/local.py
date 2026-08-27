@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
@@ -30,6 +31,9 @@ from tools.environments.local_gitbash_probe import (
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
+
+if TYPE_CHECKING:
+    from agent.secret_scope import ProfileEnvBoundary
 
 _IS_WINDOWS = platform.system() == "Windows"
 

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
+import hmac
 import io
 import logging
 import os
 import sys
 import threading
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from dotenv import load_dotenv
 from utils import atomic_replace, fast_safe_load
@@ -106,13 +111,27 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
-        return get_secret_source_values(home)
+        snapshot = get_external_secret_snapshot(home)
+        if snapshot.status != "stale":
+            return dict(snapshot.data)
+        # The profile-owned inputs changed.  Revoke the once-per-home lease and
+        # resolve a fresh generation in this same locked operation.
+        _APPLIED_HOMES.discard(home_key)
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME.pop(home_key, None)
 
     try:
         cfg = _load_secrets_config(home)
     except Exception:  # noqa: BLE001 — external sources must not block routing
+        _record_external_secret_snapshot(
+            home,
+            data={},
+            status="failed",
+            error_kind="config",
+        )
         return {}
     if not cfg:
+        _record_external_secret_snapshot(home, data={}, status="absent")
         return {}
 
     try:
@@ -132,9 +151,16 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         local_env["HERMES_HOME"] = str(home)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
+        _record_external_secret_snapshot(
+            home,
+            data={},
+            status="failed",
+            error_kind="source_apply",
+        )
         return {}
 
     if not report.sources:
+        _record_external_secret_snapshot(home, data={}, status="empty")
         return {}
 
     _APPLIED_HOMES.add(home_key)
@@ -145,8 +171,11 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    if values:
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _record_external_secret_snapshot(
+        home,
+        data=values,
+        status="ready" if values else "empty",
+    )
     return dict(values)
 
 
@@ -450,16 +479,23 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # flag), not names, so plugin/test sources pass and a plain dict entry never forces the crypto load.
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
+        _record_external_secret_snapshot(Path(home_path), data={}, status="empty")
         return
 
     try:
         from agent.secret_sources.registry import apply_all
     except ImportError:
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="failed", error_kind="registry_import"
+        )
         return
 
     try:
         report = apply_all(cfg, home_path)
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
+        _record_external_secret_snapshot(
+            Path(home_path), data={}, status="failed", error_kind="source_apply"
+        )
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
@@ -483,7 +519,22 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             _SECRET_SOURCES[name] = applied.source
             if name in os.environ:
                 values[name] = os.environ[name]
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+
+    source_errors = [src for src in report.sources if src.result.error]
+    if source_errors and values:
+        snapshot_status = "degraded"
+    elif source_errors:
+        snapshot_status = "failed"
+    elif values:
+        snapshot_status = "ready"
+    else:
+        snapshot_status = "empty"
+    _record_external_secret_snapshot(
+        Path(home_path),
+        data=values,
+        status=snapshot_status,
+        error_kind="source_report" if source_errors else None,
+    )
 
     for src in report.sources:
         if src.applied:

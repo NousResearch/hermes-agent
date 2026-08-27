@@ -326,6 +326,40 @@ class TestSensitiveHomePathsIntegration:
 
 
 @needs_bwrap
+class TestAncestorPinIntegration:
+    """With cwd=HOME the sandbox may not rename the parent of a hidden path
+    out from under its overlay."""
+
+    @pytest.fixture
+    def env(self, sandbox_root, fake_home):
+        env = BubblewrapEnvironment(cwd=str(fake_home), timeout=30)
+        try:
+            yield env
+        finally:
+            env.cleanup()
+
+    def test_renaming_the_parent_of_a_hidden_dir_fails(self, env, fake_home):
+        result = env.execute(f"mv {fake_home}/.config {fake_home}/.config2")
+        assert result["returncode"] != 0, result["output"]
+        assert not (fake_home / ".config2").exists()
+        assert (fake_home / ".config" / "gcloud" / "secret").read_text().startswith(MARKER)
+
+    def test_secret_stays_hidden_on_the_next_spawn(self, env, fake_home):
+        env.execute(f"mv {fake_home}/.config {fake_home}/.config2; rmdir {fake_home}/.config")
+        out = env.execute(
+            f"cat {fake_home}/.config2/gcloud/secret {fake_home}/.config/gcloud/secret 2>/dev/null; "
+            f"ls -A {fake_home}/.config/gcloud {fake_home}/.config2/gcloud 2>/dev/null"
+        )["output"]
+        assert MARKER not in out
+        assert "secret" not in out.split()
+
+    def test_pinned_dir_stays_writable(self, env, fake_home):
+        result = env.execute(f"touch {fake_home}/.config/probe")
+        assert result["returncode"] == 0, result["output"]
+        assert (fake_home / ".config" / "probe").is_file()
+
+
+@needs_bwrap
 class TestHermesHomeIntegration:
     def test_hidden_and_lists_only_the_state_dir(self, work_dir, hermes_home):
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)

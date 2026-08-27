@@ -97,3 +97,48 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     assert any(s[0] == task_id and s[1] == "default" for s in res.spawned)
 
 
+def test_generated_task_with_removed_profile_uses_default_fallback(
+    isolated_kanban_home, monkeypatch,
+):
+    """Generated cards must not strand when their specialist profile is removed.
+
+    Explicit human/control-plane assignees remain non-spawnable; only known
+    automated producers receive the configured fallback.
+    """
+    kb, _home = isolated_kanban_home
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "default")
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(
+            conn,
+            title="generated child",
+            assignee="removed-specialist",
+            created_by="auto-decomposer",
+        )
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=False,
+            default_assignee="default",
+        )
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'assigned' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+    assert res.auto_reassigned_invalid == [task_id]
+    assert res.skipped_nonspawnable == []
+    assert res.spawned[0][0] == task_id
+    assert row["assignee"] == "default"
+    payload = json.loads(event["payload"])
+    assert payload["source"] == "kanban.invalid_assignee_fallback"
+    assert payload["previous_assignee"] == "removed-specialist"
+

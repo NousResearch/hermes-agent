@@ -1047,10 +1047,15 @@ class BubblewrapEnvironment(LocalEnvironment):
 
         Runs before the command wrapper (which cd's to the tracked cwd) and
         the argv (whose --chdir carries it) are built. The initial cwd is
-        never reset: it is bound at its own path, and when it is gone from
-        the host LocalEnvironment's recovery in _run_bash takes over.
+        never reset: it is bound at its own path. A tracked cwd gone from
+        the host is not reset either: LocalEnvironment's recovery in
+        _run_bash lands it on the nearest existing parent, as for the local
+        backend, and when the mounts mask that parent the chdir_failed
+        backstop in execute resets it on that spawn.
         """
-        if self.cwd == self._initial_cwd or not masked_inside(self._bwrap_prefix(self.cwd), self.cwd):
+        if self.cwd == self._initial_cwd or not os.path.isdir(self.cwd):
+            return None
+        if not masked_inside(self._bwrap_prefix(self.cwd), self.cwd):
             return None
         stale = self.cwd
         logger.warning(

@@ -187,6 +187,17 @@ def _query_is_concrete(query: str) -> bool:
         for part in parts
     )
 
+# Same-directory links (``](./FILE.ext)`` / ``](FILE.ext)``) — siblings of
+# SKILL.md that the document explicitly links. Skills legitimately ship
+# supporting docs next to SKILL.md instead of under a support directory
+# (e.g. mattpocock/skills' domain-modeling links ./CONTEXT-FORMAT.md);
+# dropping them made the install "succeed" while the bundle came out with
+# unresolved links (#96310). The trailing extension requirement keeps prose
+# words out; the code-side checks keep this strictly to the skill's own
+# directory (support-dir links stay on _LOCAL_LINK_RE).
+_SAMEDIR_LINK_RE = re.compile(r"\]\(([^)\s\"'<>]+)")
+_SAMEDIR_NAME_RE = re.compile(r"^(?:\./)?[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
     """Extract safe referenced paths; return None on a traversal attempt."""
@@ -216,6 +227,28 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
             if re.search(r"[*?<>]", safe) or "." not in safe.rsplit("/", 1)[-1]:
                 continue
             paths.add(safe)
+    for match in _SAMEDIR_LINK_RE.finditer(normalized):
+        raw = match.group(1).rstrip(".,;:")
+        # External URLs, anchors, mailto and site-absolute targets are not
+        # same-directory file links — leave them to their own resolution.
+        if "://" in raw or raw.startswith(("mailto:", "#", "/")):
+            continue
+        name = raw[2:] if raw.startswith("./") else raw
+        # A ``..`` prefix is a traversal attempt — same fail-closed contract
+        # as the support-dir branch above, before any shape-based skipping.
+        if name.startswith(".."):
+            return None
+        # Only unambiguous file links: an extension, no internal slash, and
+        # never SKILL.md itself (that IS the bundle root).
+        if "/" in name or name == "SKILL.md" or "." not in name.lstrip("."):
+            continue
+        if not _SAMEDIR_NAME_RE.match(raw):
+            continue
+        try:
+            safe = _validate_bundle_rel_path(name)
+        except ValueError:
+            return None
+        paths.add(safe)
     return paths
 
 

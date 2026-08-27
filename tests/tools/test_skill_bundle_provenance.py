@@ -112,6 +112,44 @@ def test_url_source_rejects_traversal_reference(monkeypatch):
     assert source.fetch("https://example.com/bad/SKILL.md") is None
 
 
+def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
+    """#96310: explicitly linked same-skill-directory files must ship in the
+    bundle — dropping them made installs "succeed" with unresolved links."""
+    repo, url = served_repo
+    (repo / "CONTEXT-FORMAT.md").write_text("format\n")
+    (repo / "DEEPENING.md").write_text("deepening\n")
+    (repo / "SKILL.md").write_text(SKILL_MD + "See [the format](./CONTEXT-FORMAT.md) and [deepening](DEEPENING.md).\n")
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    bundle = UrlSource().fetch(url)
+
+    assert bundle is not None
+    assert bundle.files["CONTEXT-FORMAT.md"] == b"format\n"
+    assert bundle.files["DEEPENING.md"] == b"deepening\n"
+    # Unlinked siblings stay excluded — same fetch-minimization contract.
+    assert "README.md" not in bundle.files
+
+
+def test_same_dir_traversal_link_is_rejected(monkeypatch):
+    source = UrlSource()
+    skill = (
+        "---\nname: bad\ndescription: bad\n---\n"
+        "[bad](./../outside-secret.md)\n"
+    )
+    monkeypatch.setattr(source, "_fetch_text", lambda _url: skill)
+
+    assert source.fetch("https://example.com/bad/SKILL.md") is None
+
+
+def test_same_dir_link_without_extension_is_ignored(monkeypatch):
+    """Prose targets that aren't file links (no extension) never fetch."""
+    from tools.skills_hub import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
+    assert _referenced_support_paths(skill) == set()
+
+
 def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     source = GitHubSource(GitHubAuth())
     monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path: SKILL_MD if path.endswith("SKILL.md") else "x")

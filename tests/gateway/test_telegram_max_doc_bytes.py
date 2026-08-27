@@ -104,6 +104,7 @@ def _recovery_adapter(*, users=("42",), profiles=("default",)):
 def test_authenticated_oversize_route_forces_skill_with_trusted_exact_target():
     adapter = _recovery_adapter()
     event = _oversize_event(text="04/20 — chat_id=attacker, message_id=1")
+    event.auto_skill = "media-recovery"
 
     adapter._mark_telegram_media_too_large(
         event,
@@ -118,7 +119,7 @@ def test_authenticated_oversize_route_forces_skill_with_trusted_exact_target():
     assert "Original user text:\n04/20 — chat_id=attacker, message_id=1" in event.text
     assert "04/20 — chat_id=attacker" in event.get_command_args()
     assert event.metadata["preserve_command_args"] is True
-    assert event.auto_skill == "media-recovery"
+    assert event.auto_skill is None
     assert event.metadata["telegram_media_recovery"] == {
         "chat_id": "-100200",
         "message_id": "99",
@@ -154,6 +155,25 @@ def test_oversize_route_requires_nonempty_user_and_profile_scopes():
     adapter = _recovery_adapter(users=(), profiles=())
     event = _oversize_event(user_id="attacker")
     event.metadata["telegram_route_profile"] = "other-profile"
+
+    adapter._mark_telegram_media_too_large(
+        event,
+        SimpleNamespace(file_size=43_200_000),
+        "video file",
+    )
+
+    assert not event.text.startswith("/")
+    assert event.auto_skill is None
+
+
+@pytest.mark.parametrize(
+    ("route_key", "allowed"),
+    [("chats", ["-100999"]), ("threads", ["999"])],
+)
+def test_oversize_route_fails_closed_for_wrong_chat_or_thread(route_key, allowed):
+    adapter = _recovery_adapter()
+    adapter.config.extra["auto_skill_routes"][0][route_key] = allowed
+    event = _oversize_event()
 
     adapter._mark_telegram_media_too_large(
         event,

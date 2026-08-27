@@ -23,10 +23,12 @@ from tools.environments.local import (
 
 
 @pytest.fixture(params=[LocalEnvironment, BubblewrapEnvironment], ids=["local", "bubblewrap"])
-def env_cls(request, tmp_path, monkeypatch):
+def env_cls(request, tmp_path_factory, monkeypatch):
     """The environment classes that share LocalEnvironment's cwd recovery."""
     if request.param is BubblewrapEnvironment:
-        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "sandboxes"))
+        # Outside tmp_path: the tests use tmp_path as the cwd, and the
+        # bubblewrap backend refuses a sandbox dir inside a writable cwd.
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path_factory.mktemp("bwrap-sandboxes")))
     return request.param
 
 

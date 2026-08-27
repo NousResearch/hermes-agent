@@ -912,14 +912,17 @@ class BubblewrapEnvironment(LocalEnvironment):
         profile home under a profile home_mode) and is a symlink or a
         directory a command can rename, the command replaces it and
         chooses the next spawn's mount source, gaining read-write access
-        to any host directory without a hidden path below it. A mount
-        point cannot be renamed (EBUSY), so
-        a source bound at its own real path directly under a writable
-        root is fixed: the source and its parent are mount points inside.
-        One level deeper the parent is a plain directory: renamed,
-        recreated and given a relative symlink at the source path, it
-        steers the next spawn's mount. A read-only bind shows nothing the
-        root bind does not.
+        to any host directory without a hidden path below it. A source
+        bound at its own real path is a
+        mount point inside, and the kernel refuses to rename or move a
+        mount point from any path alias (EBUSY), so directly under a
+        writable root the source is fixed: its parent is the root itself,
+        a mount point (the cwd, a self-bound source) or a read-only
+        directory entry (a source bound elsewhere, a symlinked profile
+        home). One level deeper the parent is a plain writable directory:
+        renamed, recreated and given a relative symlink at the source
+        path, it steers the next spawn's mount. A read-only bind shows
+        nothing the root bind does not.
         """
         writable: dict[str, str] = {}
         if resolve_profile(self._config.profile).writable_cwd:
@@ -954,8 +957,8 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "source and choose the next spawn's mount. Bind it read-write only at "
                 "its own path (dest equal to src) directly under terminal.cwd, a "
                 "read-write bind source or the profile home, with no symlink on the "
-                "way, where the source and its parent are mount points inside and "
-                "cannot be moved; or make it read-only."
+                "way: bound at its own path the source is a mount point, which no "
+                "command can rename or move from any path; or make it read-only."
             )
 
     def _check_sandbox_root(self, sandbox_root: str) -> None:

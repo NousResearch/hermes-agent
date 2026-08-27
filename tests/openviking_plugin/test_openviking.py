@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 import plugins.memory.openviking as openviking_plugin
 from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import OpenVikingMemoryProvider
@@ -635,7 +637,8 @@ class TestOpenVikingRead:
 
 
 class TestOpenVikingAutoRecallPrefetch:
-    def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch):
+    @pytest.mark.parametrize("peer", ["", "hermes"])
+    def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch, peer):
         records = {"searches": [], "reads": [], "listings": [], "headers": []}
 
         class Handler(BaseHTTPRequestHandler):
@@ -655,6 +658,7 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/health":
                     self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
+                records["headers"].append(dict(self.headers))
                 if parsed.path == "/api/v1/system/status":
                     self._send_json({"status": "ok", "result": {"user": "user"}})
                     return
@@ -709,7 +713,7 @@ class TestOpenVikingAutoRecallPrefetch:
                             "result": {
                                 "memories": [
                                     {
-                                        "uri": "viking://user/peers/hermes/memories/e2e-full.md",
+                                        "uri": "viking://user/user/peers/hermes/memories/e2e-full.md",
                                         "score": 0.9,
                                         "level": 2,
                                         "category": "events",
@@ -742,7 +746,7 @@ class TestOpenVikingAutoRecallPrefetch:
         monkeypatch.setenv("OPENVIKING_ENDPOINT", endpoint)
         monkeypatch.setenv("OPENVIKING_ACCOUNT", "acct")
         monkeypatch.setenv("OPENVIKING_USER", "user")
-        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+        monkeypatch.setenv("OPENVIKING_AGENT", peer)
 
         provider = OpenVikingMemoryProvider()
         try:
@@ -760,7 +764,7 @@ class TestOpenVikingAutoRecallPrefetch:
         assert "people/ada.md — Ada is the project owner." in block
         assert "E2E full L2 memory content." in block
         assert "E2E abstract should not be injected." not in block
-        assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
+        assert records["reads"] == ["viking://user/user/peers/hermes/memories/e2e-full.md"]
         assert [listing["uri"] for listing in records["listings"]] == [
             "viking://user/user/memories/preferences",
             "viking://user/user/memories/entities",
@@ -781,7 +785,7 @@ class TestOpenVikingAutoRecallPrefetch:
             {key.lower(): value for key, value in headers.items()}
             for headers in records["headers"]
         ]
-        assert all(headers.get("x-openviking-actor-peer") == "hermes" for headers in normalized_headers)
+        assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
         assert all(
             headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
             for headers in normalized_headers
@@ -907,6 +911,7 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
         monkeypatch.setenv("OPENVIKING_API_KEY", "")
         monkeypatch.setenv("OPENVIKING_USER", "alice")
+        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider._env_refresh_enabled = True
@@ -946,6 +951,7 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
         monkeypatch.setenv("OPENVIKING_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider.initialize("session-1")

@@ -738,8 +738,8 @@ class TestReviewRound3:
         assert bc._profile_is_locked(str(tmp_path), "Default") is True
 
     def test_snapshot_fails_fast_when_locked(self, tmp_path, monkeypatch):
-        """snapshot_real_profile bails with the actionable message when the
-        active profile's cookie DB is locked — never proceeds to a heavy copy."""
+        """snapshot_real_profile always BLOCKS when locked — never kills, never
+        proceeds to a heavy copy. autoclose off → plain quit guidance."""
         import hermes_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         home = tmp_path / "hh"
@@ -753,47 +753,28 @@ class TestReviewRound3:
                             lambda *a, **k: (called.__setitem__("copytree", called["copytree"] + 1), orig_ct(*a, **k))[1])
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert dst is None
-        assert err and ("locked" in err.lower() or "running" in err.lower())
+        assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
         assert "quit" in err.lower()
-        assert "real_profile_autoclose" in err  # offers the consented option
         assert called["copytree"] == 0  # bailed before any copy
 
-    def test_autoclose_closes_then_snapshots(self, tmp_path, monkeypatch):
-        """With autoclose consent on, a locked profile is closed and the
-        snapshot then proceeds (lock released)."""
-        import hermes_cli.browser_connect as bc
-        src = self._multi(tmp_path / "real")
-        home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
-        # Locked on first probe; closer "releases" it; subsequent copy runs.
-        lock_state = {"locked": True}
-        monkeypatch.setattr(bc, "_profile_is_locked",
-                            lambda s, p: lock_state["locked"])
-        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: True)
-
-        def fake_close(src_, timeout=15.0):
-            lock_state["locked"] = False
-            return True, "closed the browser and the profile lock released."
-
-        monkeypatch.setattr(bc, "close_browser_holding_profile", fake_close)
-        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
-        assert err is None
-        assert (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text() == "PROFILE6-SESSION"
-
-    def test_autoclose_failure_reports_clearly(self, tmp_path, monkeypatch):
-        """If autoclose can't release the lock (relaunch/tray), fail with a
-        clear message and no copy."""
+    def test_snapshot_blocks_when_locked_even_with_autoclose(self, tmp_path, monkeypatch):
+        """Even with autoclose armed, snapshot_real_profile does NOT kill — it
+        blocks and defers the close to the explicit, user-approved step. The
+        message offers the close (mentions Hermes can close it)."""
         import hermes_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         home = tmp_path / "hh"
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
         monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: True)
+        killed = {"n": 0}
         monkeypatch.setattr(bc, "close_browser_holding_profile",
-                            lambda s, timeout=15.0: (False, "still locked — relaunched."))
+                            lambda *a, **k: (killed.__setitem__("n", killed["n"] + 1), (True, "x"))[1])
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert dst is None
-        assert err and "tried to close it" in err
+        assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
+        assert "close it for you" in err.lower() or "can close it" in err.lower()
+        assert killed["n"] == 0  # snapshot must NOT invoke the killer itself
 
     def test_processes_holding_profile_identity_binding(self, tmp_path, monkeypatch):
         """The process matcher requires BOTH a browser binary AND this exact

@@ -629,6 +629,11 @@ def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
 
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
 
+# Prefix stamped on the "profile is locked" error so the calling layer can
+# recognize it as the specific needs-the-browser-closed condition (vs a generic
+# snapshot failure) and surface the close-with-approval flow.
+_PROFILE_LOCKED_PREFIX = "[profile-locked] "
+
 
 def _profile_cookie_db(src: str, source_profile: str) -> str | None:
     """Path to the active profile's cookie DB (modern Network/ first)."""
@@ -806,29 +811,31 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # minutes. On POSIX this never trips (no mandatory locking) so
     # copy-while-running still works.
     if _profile_is_locked(src, source_profile):
-        # Consented auto-close: only when browser.real_profile_autoclose is on
-        # (the agent must have the user's OK — it's destructive). Terminate the
-        # browser tree bound to this profile, wait for the lock to release, then
-        # continue the snapshot. Off by default → fail fast with guidance.
+        # NEVER kill from here. Closing the user's browser is destructive and
+        # must be an explicit, per-attempt, user-approved step — not a silent
+        # side effect of a snapshot. So we always BLOCK when locked and let the
+        # agent decide whether to ask the user to close it (only offered when
+        # browser.real_profile_autoclose arms the capability). A subsequent
+        # attempt that is still locked blocks again — no auto-retry, no loop.
         if _real_profile_autoclose():
-            closed, msg = close_browser_holding_profile(src)
-            if not closed:
-                return None, (
-                    f"{browser} is running and locks its login data; Hermes "
-                    f"tried to close it but {msg} Fully quit {browser} "
-                    "(including any background/tray instance) and retry."
-                )
-            logger.info("real-profile: %s", msg)
-            # fall through — lock released, snapshot proceeds
+            msg = (
+                f"{browser} is running and has its profile locked, so its login "
+                "data can't be copied yet. Hermes can close it for you "
+                "(this quits the browser — you'll lose unsaved tabs). Ask the "
+                "user to confirm, then close it and retry; if it's still locked "
+                "after that, they must fully quit it (including any "
+                "background/tray instance)."
+            )
         else:
-            return None, (
+            msg = (
                 f"{browser} is running and has its profile locked, so its login "
                 "data can't be copied. Fully quit the browser (including any "
-                "background/tray instance) and retry, turn "
-                "browser.use_real_profile off, or enable "
-                "browser.real_profile_autoclose to let Hermes close it for you "
-                "(closes the browser, losing unsaved tabs)."
+                "background/tray instance) and retry, or turn "
+                "browser.use_real_profile off. (Enable "
+                "browser.real_profile_autoclose to let Hermes offer to close it "
+                "for you.)"
             )
+        return None, _PROFILE_LOCKED_PREFIX + msg
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated. A half-written
     # tree (no marker) is treated as absent and rebuilt — otherwise a torn first

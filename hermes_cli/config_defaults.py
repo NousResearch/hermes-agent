@@ -594,12 +594,13 @@ DEFAULT_CONFIG = {
         "use_real_profile": False,
         # When real-profile browsing needs the browser closed (Windows: a
         # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
-        # fully quit before its profile can be copied), allow Hermes to close
-        # the browser automatically instead of just failing. DESTRUCTIVE: it
-        # terminates the browser process tree bound to that profile, losing any
-        # unsaved tabs/form state — so it is OFF by default and the agent must
-        # get the user's OK before triggering it. No effect on macOS/Linux,
-        # where the profile can be copied while the browser runs.
+        # fully quit before its profile can be copied), arm the "offer to close
+        # it" flow. This does NOT auto-kill: when the profile is locked the
+        # snapshot always blocks and the agent asks the user first; only on
+        # approval does it run `hermes browser close-profile` (terminates the
+        # browser process tree bound to that profile, losing unsaved tabs) and
+        # retry. Still locked afterward → stays blocked, no loop, no auto-kill.
+        # OFF by default. No effect on macOS/Linux (copy-while-running works).
         "real_profile_autoclose": False,
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)

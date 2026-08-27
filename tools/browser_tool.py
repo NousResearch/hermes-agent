@@ -1635,6 +1635,19 @@ def _real_profile_cdp() -> tuple:
         # No live browser owns the dir now — safe to (re)snapshot + overlay.
         snap_dir, err = snapshot_real_profile(browser)
         if err or not snap_dir:
+            from hermes_cli.browser_connect import _PROFILE_LOCKED_PREFIX
+
+            if err and err.startswith(_PROFILE_LOCKED_PREFIX):
+                # The user's browser is holding the profile. Surface the guidance
+                # verbatim (it already tells the agent whether closing is armed)
+                # plus the exact approved-close command. The agent must ASK the
+                # user before running it — it quits their browser.
+                body = err[len(_PROFILE_LOCKED_PREFIX):]
+                return None, (
+                    body + " To close it (only after the user approves — it "
+                    "quits their browser and loses unsaved tabs), run: "
+                    "`hermes browser close-profile`, then retry."
+                )
             return None, f"browser.use_real_profile is on, but {err}"
         copy_dir = snap_dir
 

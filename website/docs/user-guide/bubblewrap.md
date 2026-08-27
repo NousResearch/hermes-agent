@@ -50,6 +50,10 @@ degraded result that names the package (or an error under
 - A fresh `/dev`, a private `/proc` (the command's own pid namespace, so it
   cannot see or signal host processes) and a fresh `/tmp` per command.
   Nothing written to `/tmp` survives the command; use the working directory.
+- An empty `/run/user/<uid>`: the gpg-agent, ssh-agent, keyring and D-Bus
+  sockets that live there are not reachable, so a command cannot sign or
+  decrypt with keys loaded on the host. The docker socket, if present, is
+  replaced by an empty file.
 - The working directory at its host path, writable in the `workspace` and
   `network` profiles, read-only in `restricted`. `cd` persists between
   commands, and variables exported in one command are visible in the next,
@@ -76,6 +80,22 @@ readable and writable; the rest of `HERMES_HOME` stays hidden.
 
 A path that does not exist on the host is simply skipped. Writes into a
 hidden directory land in the sandbox's copy and never reach the host.
+
+## Working directory
+
+The working directory (`terminal.cwd`, the launch directory for the CLI,
+`MESSAGING_CWD` or the home directory for the gateway) is the writable
+set: everything under it can be changed, everything else on the host is
+read-only. Point it at a project or scratch directory. With the home
+directory as the working directory every dotfile outside the hidden set
+(`~/.bashrc`, `~/.profile`, `~/.config/autostart`, `~/.local/bin`, ...) is
+writable, which is a path back into your own shells; Hermes logs a warning
+at startup in that case. A working directory of `/` is refused, since it
+would make the whole root writable.
+
+If the working directory is deleted on the host (for example by the
+command's own `rm -rf`), later commands run in the nearest existing parent
+directory, read-only, until it exists again.
 
 ## Profiles
 
@@ -160,6 +180,11 @@ detached process could not outlive it.
   hidden set (`/etc`, other dotfiles, secrets kept inside project
   directories) is readable by a command. Add to `bubblewrap_binds` only
   what you want the agent to see, and keep secrets in the hidden paths.
+- Unix sockets outside `/run/user/<uid>`, `/tmp` and the docker socket
+  stay connectable (a read-only mount does not block `connect()`), and the
+  agent environment variables that name them (`SSH_AUTH_SOCK`,
+  `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`) are passed through as for
+  `local`, although they point at masked paths on a standard desktop.
 - One sandbox per command: processes, mounts and `/tmp` do not carry over
   between commands. Only the working directory and the shell state
   (`cd`, exported variables) persist.

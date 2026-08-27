@@ -30,7 +30,9 @@ import logging
 import os
 import resource
 import shutil
+import signal
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -485,7 +487,53 @@ class BubblewrapEnvironment(LocalEnvironment):
         uid_threads = uid_thread_count(os.getuid()) if self._config.max_procs else 0
         return make_preexec(rlimit_values(self._config, uid_threads=uid_threads))
 
+    def _live_sandbox_pids(self) -> list[int]:
+        """PIDs of this instance's bwrap wrappers still running.
+
+        A wrapper is a direct child of this process whose argv is the bwrap
+        path with this instance's state dir bound; the state dir is unique
+        per instance and fixed at construction, so nothing from inside a
+        sandbox can forge it. Zombies are left for the thread that spawned
+        them to reap.
+        """
+        me = os.getpid()
+        bwrap = self._bwrap_path.encode()
+        state_dir = self._state_dir.encode()
+        pids: list[int] = []
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", "rb") as fh:
+                    fields = fh.read().rsplit(b")", 1)[1].split()
+                if fields[0] == b"Z" or int(fields[1]) != me:
+                    continue
+                with open(f"/proc/{name}/cmdline", "rb") as fh:
+                    argv = fh.read().split(b"\0")
+            except (OSError, IndexError, ValueError):
+                continue
+            if argv and argv[0] == bwrap and state_dir in argv:
+                pids.append(int(name))
+        return pids
+
+    def _kill_live_sandboxes(self, wait: float = 2.0) -> None:
+        """SIGKILL this instance's running bwrap wrappers.
+
+        --die-with-parent takes the sandboxed tree down with each wrapper,
+        background children included, since the wrapper's death kills the
+        pid namespace's init.
+        """
+        for pid in self._live_sandbox_pids():
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                continue
+        deadline = time.monotonic() + wait
+        while self._live_sandbox_pids() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
     def cleanup(self):
+        self._kill_live_sandboxes()
         super().cleanup()
         shutil.rmtree(self._state_dir, ignore_errors=True)
         try:

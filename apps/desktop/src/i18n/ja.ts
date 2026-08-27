@@ -3001,6 +3001,23 @@ export const ja = defineLocale({
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
+      currentTurnElapsed: '現在のターン経過時間',
+      modelUsage: 'モデル使用量',
+      openModelUsage: 'モデル別 Token 使用量を開く',
+      modelUsagePanel: {
+        active: '現在',
+        actualCost: value => `実費 ${value}`,
+        cacheRead: value => `キャッシュ読込 ${value}`,
+        calls: count => `${count} 回`,
+        empty: 'モデル使用量はまだありません',
+        estimatedCost: value => `推定 ${value}`,
+        loading: 'モデル使用量を読み込み中…',
+        reasoning: value => `推論 ${value}`,
+        title: 'モデル使用量',
+        totalTokens: value => `合計 ${value} Tokens`,
+        unavailable: 'モデル使用量を一時的に取得できません',
+        unknownProvider: '不明なプロバイダー'
+      },
       contextUsage: 'コンテキスト使用状況',
       systemResources: {
         title: 'システムリソース',

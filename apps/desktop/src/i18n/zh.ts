@@ -3728,6 +3728,23 @@ export const zh = defineLocale({
       starmap: '记忆图谱',
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
+      currentTurnElapsed: '当前回合已用时间',
+      modelUsage: '模型用量',
+      openModelUsage: '打开分模型 Token 用量',
+      modelUsagePanel: {
+        active: '当前',
+        actualCost: value => `实际 ${value}`,
+        cacheRead: value => `缓存读取 ${value}`,
+        calls: count => `${count} 次调用`,
+        empty: '暂无模型用量',
+        estimatedCost: value => `估算 ${value}`,
+        loading: '正在加载模型用量…',
+        reasoning: value => `推理 ${value}`,
+        title: '模型用量',
+        totalTokens: value => `共 ${value} Tokens`,
+        unavailable: '模型用量暂时不可用',
+        unknownProvider: '未知提供方'
+      },
       contextUsage: '上下文用量',
       systemResources: {
         title: '系统资源',

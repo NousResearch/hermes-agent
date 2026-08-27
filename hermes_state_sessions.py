@@ -766,6 +766,32 @@ class SessionSessionsMixin:
         )
         return dict(row) if row else None
 
+    def get_session_model_usage(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return the accounted model/provider routes for one session.
+
+        ``sessions`` stores only the aggregate counters and one route, while
+        ``session_model_usage`` preserves the model/provider active for every
+        incremental API-call delta. Desktop uses this read surface for its
+        per-model statusbar breakdown, including sessions that switch models.
+        """
+        if not session_id:
+            return []
+        self.flush_token_counts()
+        return [
+            dict(row)
+            for row in self._read_all(
+                """SELECT model, billing_provider, billing_base_url,
+                          billing_mode, api_call_count, input_tokens,
+                          output_tokens, cache_read_tokens, cache_write_tokens,
+                          reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                          cost_status, cost_source, first_seen, last_seen
+                   FROM session_model_usage
+                   WHERE session_id = ?
+                   ORDER BY last_seen DESC, model, billing_provider""",
+                (session_id,),
+            )
+        ]
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""
         exact = self.get_session(session_id_or_prefix)

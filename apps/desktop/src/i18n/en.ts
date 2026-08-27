@@ -3567,6 +3567,23 @@ export const en: Translations = {
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
+      currentTurnElapsed: 'Current turn elapsed',
+      modelUsage: 'Model usage',
+      openModelUsage: 'Open per-model token usage',
+      modelUsagePanel: {
+        active: 'active',
+        actualCost: value => `actual ${value}`,
+        cacheRead: value => `cache read ${value}`,
+        calls: count => `${count} call${count === 1 ? '' : 's'}`,
+        empty: 'No model usage yet',
+        estimatedCost: value => `est. ${value}`,
+        loading: 'Loading model usage…',
+        reasoning: value => `reasoning ${value}`,
+        title: 'Model usage',
+        totalTokens: value => `${value} tokens total`,
+        unavailable: 'Model usage is temporarily unavailable',
+        unknownProvider: 'unknown provider'
+      },
       contextUsage: 'Context usage',
       systemResources: {
         title: 'System Resources',

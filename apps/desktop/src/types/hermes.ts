@@ -743,6 +743,41 @@ export interface UsageStats {
   total: number
 }
 
+export interface ModelUsageRoute {
+  actual_cost_usd: number
+  billing_mode: string
+  cache_read: number
+  cache_write: number
+  calls: number
+  cost_source: string
+  cost_status: string
+  estimated_cost_usd: number
+  input: number
+  last_seen: number
+  model: string
+  output: number
+  provider: string
+  reasoning: number
+  total: number
+}
+
+export interface ModelUsageTotals {
+  actual_cost_usd: number
+  cache_read: number
+  cache_write: number
+  calls: number
+  estimated_cost_usd: number
+  input: number
+  output: number
+  reasoning: number
+  total: number
+}
+
+export interface SessionModelUsage {
+  routes: ModelUsageRoute[]
+  totals: ModelUsageTotals
+}
+
 /** One graph node in the star map (learned skill or memory chunk). */
 export interface StarmapNode {
   id: string

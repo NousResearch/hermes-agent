@@ -2961,6 +2961,23 @@ export const zhHant = defineLocale({
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
+      currentTurnElapsed: '目前回合已用時間',
+      modelUsage: '模型用量',
+      openModelUsage: '開啟分模型 Token 用量',
+      modelUsagePanel: {
+        active: '目前',
+        actualCost: value => `實際 ${value}`,
+        cacheRead: value => `快取讀取 ${value}`,
+        calls: count => `${count} 次呼叫`,
+        empty: '尚無模型用量',
+        estimatedCost: value => `估算 ${value}`,
+        loading: '正在載入模型用量…',
+        reasoning: value => `推理 ${value}`,
+        title: '模型用量',
+        totalTokens: value => `共 ${value} Tokens`,
+        unavailable: '模型用量暫時不可用',
+        unknownProvider: '未知提供方'
+      },
       contextUsage: '上下文使用量',
       systemResources: {
         title: '系統資源',

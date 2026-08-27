@@ -790,6 +790,81 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     assert run_flag_on() == run_flag_off()
 
 
+def test_session_model_usage_returns_route_breakdown_and_totals(monkeypatch):
+    class DbContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get_session_model_usage(self, session_key):
+            assert session_key == "stored-model-usage"
+            return [
+                {
+                    "model": "deepseek-v4-pro",
+                    "billing_provider": "deepseek",
+                    "billing_mode": "api_key",
+                    "api_call_count": 2,
+                    "input_tokens": 40_000,
+                    "output_tokens": 8_000,
+                    "cache_read_tokens": 3_000,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 1_000,
+                    "estimated_cost_usd": 0.12,
+                    "actual_cost_usd": 0,
+                    "cost_status": "estimated",
+                    "cost_source": "pricing",
+                    "last_seen": 20.0,
+                },
+                {
+                    "model": "claude-opus-4.8",
+                    "billing_provider": "openrouter",
+                    "billing_mode": "api_key",
+                    "api_call_count": 3,
+                    "input_tokens": 50_000,
+                    "output_tokens": 4_000,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 2_000,
+                    "estimated_cost_usd": 0.34,
+                    "actual_cost_usd": 0,
+                    "cost_status": "estimated",
+                    "cost_source": "pricing",
+                    "last_seen": 30.0,
+                },
+            ]
+
+    sid = "runtime-model-usage"
+    server._sessions[sid] = {"session_key": "stored-model-usage"}
+    try:
+        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext())
+
+        response = server._methods["session.model_usage"](
+            "usage-1", {"session_id": sid}
+        )["result"]
+
+        assert [route["model"] for route in response["routes"]] == [
+            "deepseek-v4-pro",
+            "claude-opus-4.8",
+        ]
+        assert response["routes"][0]["provider"] == "deepseek"
+        assert response["routes"][0]["total"] == 48_000
+        assert response["totals"] == {
+            "calls": 5,
+            "input": 90_000,
+            "output": 12_000,
+            "cache_read": 3_000,
+            "cache_write": 0,
+            "reasoning": 3_000,
+            "total": 102_000,
+            "estimated_cost_usd": pytest.approx(0.46),
+            "actual_cost_usd": 0,
+        }
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back

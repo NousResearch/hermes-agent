@@ -114,7 +114,12 @@ def _spawn_serve(port: int, tmp_path: Path, merge_stderr: bool = True) -> subpro
         cwd=str(REPO_ROOT),
         env=env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        # merge_stderr=False: the caller only asserts on stdout. Discard
+        # stderr instead of piping it — with the serve-path stdout redirect
+        # active ALL server logging lands on stderr, and an unread stderr
+        # pipe can fill (~64KB) and block the child before it ever emits
+        # the READY sentinel, turning the test into a timeout flake.
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
         text=True,
     )
 
@@ -237,10 +242,3 @@ def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             proc.kill()
-        # Drain stderr after exit so the pipe doesn't fill and block the child
-        # on platforms with small pipe buffers.
-        if proc.stderr is not None:
-            try:
-                proc.stderr.read()
-            except Exception:
-                pass

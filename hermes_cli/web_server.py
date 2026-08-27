@@ -19524,13 +19524,22 @@ def _write_machine_sentinel_line(line: str) -> None:
     machine-readable sentinel printed after that import via ``print()`` lands
     on stderr — invisible to consumers that parse the child's stdout pipe
     (the Desktop spawn, scripts). fd 1 is untouched by the Python-level
-    redirect, so write there; fall back to ``print`` for exotic environments
-    where fd 1 isn't writable (e.g. closed).
+    redirect, so write there.
+
+    Best-effort by design: if fd 1 is unwritable (closed; invalid under
+    pythonw.exe), fall back to ``print()`` for human visibility only — the
+    redirected stream can't reach stdout-parsing consumers, and pythonw
+    Desktop spawns rely on ``_write_dashboard_ready_file()`` (the
+    HERMES_DESKTOP_READY_FILE channel) for port discovery instead. Never
+    raises: a sentinel-delivery failure must not kill a healthy serve.
     """
     try:
         os.write(1, (line + "\n").encode())
     except OSError:
-        print(line, flush=True)
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
 
 
 def _report_port_in_use(host: str, port: int) -> None:

@@ -400,6 +400,18 @@ describe('prompt-templates store', () => {
       expect($promptTemplates.get().find(s => s.id === folder.id)?.parentId).toBeNull()
     })
 
+    it('can nest back into a folder after being pulled out', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Group')
+      const tpl = addTemplate('T', '', 't', folder.id)
+
+      expect(placeNode(tpl.id, folder.id, 'before')).toBe(true)
+      expect($promptTemplates.get().find(s => s.id === tpl.id)?.parentId).toBeNull()
+
+      expect(placeNode(tpl.id, folder.id, 'inside')).toBe(true)
+      expect($promptTemplates.get().find(s => s.id === tpl.id)?.parentId).toBe(folder.id)
+    })
+
     it('moves a folder with its descendants as one block', () => {
       $promptTemplates.set([])
       const f = addFolder('F')

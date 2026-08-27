@@ -174,6 +174,7 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
   const [editingId, setEditingId] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ overId: string; placement: DropPlacement } | null>(null)
   const activeIdRef = useRef<string | null>(null)
+  /** Live pointer Y — updated from dnd-kit delta (ul onPointerMove misses capture during drag). */
   const pointerYRef = useRef(0)
   const listRef = useRef<HTMLUListElement | null>(null)
 
@@ -225,6 +226,25 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     }
   }
 
+  /**
+   * Pointer Y while dragging. The list's onPointerMove often stops once
+   * PointerSensor captures the pointer — derive from activator + delta instead.
+   */
+  function pointerYFromDrag(event: { activatorEvent: Event; delta: { y: number } }): number {
+    const act = event.activatorEvent
+
+    if (act instanceof PointerEvent || act instanceof MouseEvent || act instanceof TouchEvent) {
+      const startY =
+        'clientY' in act
+          ? act.clientY
+          : act.touches[0]?.clientY ?? act.changedTouches[0]?.clientY ?? pointerYRef.current
+
+      return startY + event.delta.y
+    }
+
+    return pointerYRef.current
+  }
+
   function resolvePlacement(overId: string, clientY: number): DropPlacement {
     const overNode = templates.find(s => s.id === overId)
     const el = listRef.current?.querySelector<HTMLElement>(`[data-template-id="${CSS.escape(overId)}"]`)
@@ -237,12 +257,11 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     const ratio = (clientY - rect.top) / Math.max(rect.height, 1)
 
     if (overNode.kind === 'folder') {
-      if (ratio < 0.25) {
+      // Prefer nest-into-folder: only a thin top edge is "before" as a sibling.
+      // Bottom edge used to be "after" (root sibling past the whole subtree), which
+      // made it feel impossible to drop a template *back* into an empty/open folder.
+      if (ratio < 0.15) {
         return 'before'
-      }
-
-      if (ratio > 0.75) {
-        return 'after'
       }
 
       return 'inside'
@@ -251,27 +270,34 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     return ratio < 0.5 ? 'before' : 'after'
   }
 
-  function updateDropHint(overId: string | null) {
+  function updateDropHint(overId: string | null, clientY: number) {
     if (!overId || overId === activeIdRef.current) {
       setDropHint(null)
 
       return
     }
 
-    setDropHint({ overId, placement: resolvePlacement(overId, pointerYRef.current) })
+    pointerYRef.current = clientY
+    setDropHint({ overId, placement: resolvePlacement(overId, clientY) })
   }
 
-  function handleDragStart({ active }: DragStartEvent) {
+  function handleDragStart({ active, activatorEvent }: DragStartEvent) {
     activeIdRef.current = String(active.id)
     setEditingId(null)
+
+    if (activatorEvent instanceof PointerEvent || activatorEvent instanceof MouseEvent) {
+      pointerYRef.current = activatorEvent.clientY
+    }
   }
 
-  function handleDragMove({ over }: DragMoveEvent) {
-    updateDropHint(over ? String(over.id) : null)
+  function handleDragMove(event: DragMoveEvent) {
+    const y = pointerYFromDrag(event)
+    updateDropHint(event.over ? String(event.over.id) : null, y)
   }
 
-  function handleDragOver({ over }: DragOverEvent) {
-    updateDropHint(over ? String(over.id) : null)
+  function handleDragOver(event: DragOverEvent) {
+    const y = pointerYFromDrag(event)
+    updateDropHint(event.over ? String(event.over.id) : null, y)
   }
 
   function handleDragCancel() {
@@ -279,7 +305,9 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     setDropHint(null)
   }
 
-  function handleDragEnd({ activatorEvent, active, over }: DragEndEvent) {
+  function handleDragEnd(event: DragEndEvent) {
+    const { activatorEvent, active, over } = event
+
     // Match sidebar: drop grabber focus so hover affordance doesn't stick "on".
     if (!(activatorEvent instanceof KeyboardEvent)) {
       ;(document.activeElement as HTMLElement | null)?.blur()
@@ -287,7 +315,8 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
 
     const fromId = String(active.id)
     const toId = over ? String(over.id) : null
-    const placement = toId ? resolvePlacement(toId, pointerYRef.current) : null
+    const y = pointerYFromDrag(event)
+    const placement = toId ? resolvePlacement(toId, y) : null
 
     activeIdRef.current = null
     setDropHint(null)
@@ -304,8 +333,11 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
+      <DialogContent
+        bodyClassName="flex max-h-[calc(85vh-2rem)] flex-col gap-3 overflow-hidden"
+        className="max-w-lg"
+      >
+        <DialogHeader className="shrink-0">
           <DialogTitle>{c.templatesTitle}</DialogTitle>
           <DialogDescription>{c.templatesDesc}</DialogDescription>
         </DialogHeader>
@@ -325,7 +357,7 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
           >
             <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
               <ul
-                className="grid max-h-[40vh] gap-1 overflow-y-auto"
+                className="grid min-h-0 flex-1 gap-1 overflow-y-auto"
                 onPointerMove={event => {
                   pointerYRef.current = event.clientY
                 }}
@@ -358,7 +390,7 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
           </DndContext>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3">
           <Button onClick={handleReset} size="sm" variant="ghost">
             {c.templateReset}
           </Button>

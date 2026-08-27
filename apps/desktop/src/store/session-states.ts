@@ -1071,7 +1071,50 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   return mirrored || null
 }
 
+const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
+
+/** Stored ids last opened as a bot's chat. A tile carries `workspaceMode`, but
+ *  a bot chat normally lands in MAIN — `in-place` mints no tile when there is
+ *  none to front — and main has no tile to carry the scope on. Kept here so a
+ *  surface can still tell a companion chat from a working session, persisted
+ *  so that survives a relaunch the way tile scope does. */
+export const $botChatSessionIds = atom<ReadonlySet<string>>(
+  new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
+)
+
+function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+  const current = $botChatSessionIds.get()
+
+  if (current.has(storedSessionId) === isBotChat) {
+    return
+  }
+
+  const next = new Set(current)
+
+  if (isBotChat) {
+    next.add(storedSessionId)
+  } else {
+    next.delete(storedSessionId)
+  }
+
+  $botChatSessionIds.set(next)
+  writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
+}
+
+/** True while this live session is a bot's chat rather than a working session.
+ *  Surfaces read it to drop coding chrome that means nothing in a companion
+ *  conversation — the composer's branch/worktree rail. */
+export function isBotChatSession(sessionId: null | string | undefined): boolean {
+  const stored = sessionId ? storedSessionIdForRuntimeId(sessionId) : null
+
+  return Boolean(stored && $botChatSessionIds.get().has(stored))
+}
+
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
+  // Before the tile lookup: openSession routes every open through here, and a
+  // bot chat usually has no tile to record the scope on.
+  rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
   const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : undefined

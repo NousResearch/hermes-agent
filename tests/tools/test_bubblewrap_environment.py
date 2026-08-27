@@ -454,3 +454,82 @@ class TestKillAndCleanupIntegration:
         finally:
             if worker.is_alive():
                 env._kill_live_sandboxes()
+
+
+@needs_bwrap
+class TestEnvPassthroughParity:
+    """The sandbox gets the env LocalEnvironment would build, nothing more."""
+
+    @pytest.fixture
+    def clean_passthrough(self):
+        from agent import secret_scope as ss
+        from tools import env_passthrough as ep
+
+        def reset():
+            ep.clear_env_passthrough()
+            ep._config_passthrough = None
+            ss.set_multiplex_active(False)
+
+        reset()
+        yield ep
+        reset()
+
+    @pytest.fixture
+    def pair(self, sandbox_root, work_dir):
+        local = LocalEnvironment(cwd=str(work_dir), timeout=30)
+        bwrap = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            yield local, bwrap
+        finally:
+            local.cleanup()
+            bwrap.cleanup()
+
+    def test_passthrough_omits_a_provider_key_absent_from_passthrough(self, clean_passthrough, monkeypatch, sandbox_root, work_dir):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-hermes-marker")
+        monkeypatch.setenv("HERMES_PLAIN", "plain-marker")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            out = env.execute("env")["output"]
+        finally:
+            env.cleanup()
+        assert "OPENROUTER_API_KEY" not in out
+        assert "sk-or-hermes-marker" not in out
+        # The plain variable proves the process env does reach the sandbox.
+        assert "HERMES_PLAIN=plain-marker" in out
+
+    def test_passthrough_registered_token_is_visible_as_for_local(self, clean_passthrough, monkeypatch, pair):
+        clean_passthrough.register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.setenv("SERVICE_TOKEN", "token")
+        local, bwrap = pair
+        cmd = "printf '%s' \"${SERVICE_TOKEN-unset}\""
+        assert bwrap.execute(cmd)["output"] == local.execute(cmd)["output"] == "token"
+
+    def test_passthrough_variable_names_match_local(self, clean_passthrough, pair):
+        local, bwrap = pair
+        cmd = "python3 -c 'import os; print(chr(10).join(sorted(os.environ)))'"
+        local_names = set(local.execute(cmd)["output"].split())
+        bwrap_names = set(bwrap.execute(cmd)["output"].split())
+        assert bwrap_names - local_names == set(), "variables injected into the sandbox"
+        assert local_names - bwrap_names == set(), "variables missing from the sandbox"
+
+    @pytest.mark.parametrize("mode", ["auto", "profile"])
+    def test_passthrough_home_follows_home_mode_as_for_local(self, clean_passthrough, monkeypatch, sandbox_root, work_dir, mode):
+        from hermes_constants import get_hermes_home
+
+        profile_home = get_hermes_home() / "home"
+        profile_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("TERMINAL_HOME_MODE", mode)
+        local = LocalEnvironment(cwd=str(work_dir), timeout=30)
+        bwrap = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            cmd = "printf '%s' \"$HOME\""
+            home_local = local.execute(cmd)["output"]
+            assert bwrap.execute(cmd)["output"] == home_local
+            expected = str(profile_home) if mode == "profile" else os.path.expanduser("~")
+            assert home_local == expected
+            if mode == "profile":
+                assert bwrap.execute("touch \"$HOME/probe\"")["returncode"] == 0
+                assert (profile_home / "probe").is_file()
+        finally:
+            local.cleanup()
+            bwrap.cleanup()

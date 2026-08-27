@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-27T09:39:24Z",
+  "updated_at": "2026-08-27T11:03:10Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -167,10 +167,6 @@
         },
         {
           "id": "minimax/minimax-m3:free",
-          "description": "free"
-        },
-        {
-          "id": "openrouter/elephant-alpha",
           "description": "free"
         },
         {

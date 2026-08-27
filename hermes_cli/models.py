@@ -137,7 +137,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("thinkingmachines/inkling:free",          "free"),
     ("thinkingmachines/inkling-small:free",    "free"),
     ("minimax/minimax-m3:free",                "free"),
-    ("openrouter/elephant-alpha",              "free"),
     ("z-ai/glm-5.2:free",                      "free"),
     ("poolside/laguna-s-2.1:free",             "free"),
     ("poolside/laguna-xs-2.1:free",            "free"),

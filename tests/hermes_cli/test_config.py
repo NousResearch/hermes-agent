@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,7 +38,18 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            if sys.platform == "win32":
+                # Windows default is %LOCALAPPDATA%\hermes — see
+                # hermes_constants._get_platform_default_hermes_home.
+                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                base = (
+                    Path(local_appdata)
+                    if local_appdata
+                    else Path.home() / "AppData" / "Local"
+                )
+                assert home == base / "hermes"
+            else:
+                assert home == Path.home() / ".hermes"
 
 
 class TestEnsureHermesHome:

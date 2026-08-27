@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-from agent.context_compressor import SUMMARY_PREFIX
+from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
 from run_agent import AIAgent
 import run_agent
@@ -479,7 +479,7 @@ class TestPreflightCompression:
         # summary-first before the next API call).
         assert compressed == [
             {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "hello", _DB_PERSISTED_MARKER: True},
         ]
         assert new_system_prompt == "You are helpful."
         build_prompt.assert_not_called()
@@ -675,7 +675,7 @@ class TestPreflightCompression:
             mock_compress.return_value = (
                 [
                     {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
-                    {"role": "user", "content": "hello"},
+                    {"role": "user", "content": "hello", _DB_PERSISTED_MARKER: True},
                 ],
                 "new system prompt",
             )

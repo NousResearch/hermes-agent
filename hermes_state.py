@@ -11261,17 +11261,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
-            inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, messages
+            from agent.transcript_repair import resolve_and_repair_transcript_batch
+
+            inserted_rows = resolve_and_repair_transcript_batch(
+                conn,
+                session_id,
+                messages,
+                encode_content_fn=self._encode_content,
+                decode_content_fn=self._decode_content,
             )
-            # One aggregated counter update for the whole batch.
+            inserted = 0
+            tool_calls_total = 0
+            if inserted_rows:
+                inserted, tool_calls_total = self._insert_message_rows(
+                    conn, session_id, inserted_rows
+                )
+
+            # One aggregated counter update for the newly inserted rows.
             if tool_calls_total > 0:
                 conn.execute(
                     """UPDATE sessions SET message_count = message_count + ?,
                        tool_call_count = tool_call_count + ? WHERE id = ?""",
                     (inserted, tool_calls_total, session_id),
                 )
-            else:
+            elif inserted > 0:
                 conn.execute(
                     "UPDATE sessions SET message_count = message_count + ? WHERE id = ?",
                     (inserted, session_id),

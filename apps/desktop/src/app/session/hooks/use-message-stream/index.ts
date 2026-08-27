@@ -725,15 +725,25 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+        const sameTurnAssistant = streamId
+          ? nextMessages.find(m => m.id === streamId)
+          : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+        const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
         // Having streamed the reply normally means this window owns the whole
         // turn and re-reading stored history would be wasted work. That only
         // holds for a turn it STARTED: an adopted one (resumed onto a session
         // already running elsewhere) arrives reply-first, with no prompt row,
         // so it has to hydrate or the user's own message never shows up.
+        // Adopted turns still hydrate so a resume-onto-running session can
+        // pick up the user's prompt row — unless this window already has
+        // visible assistant text and the terminal frame is empty. In that
+        // case hydrate would replace the live bubble with a stored empty
+        // row (#95514; adoptedRunningTurn must not short-circuit).
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
           !unresolvedUserTail &&
+          !(localVisibleText && !finalText) &&
           (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 
         return {

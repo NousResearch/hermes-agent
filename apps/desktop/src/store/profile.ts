@@ -515,6 +515,16 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     return
   }
 
+  // openGatewayForProfile is the legacy LOCAL-scoped path. When the active
+  // source is a non-local registry connection the rail lists THAT machine's
+  // profiles; pre-warming them here would spawn (and fail) local children for
+  // profile names that only exist remotely.
+  const prewarmConnectionId = activeGatewayConnectionId()
+
+  if (prewarmConnectionId) {
+    return
+  }
+
   const now = Date.now()
 
   if (now - (prewarmedAt.get(scope) ?? 0) < PREWARM_MIN_INTERVAL_MS) {

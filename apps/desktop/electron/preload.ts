@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
+  revalidateConnectionFor: payload => ipcRenderer.invoke('hermes:connection:revalidate-for', payload),
   touchBackend: (profile, options) => ipcRenderer.invoke('hermes:backend:touch', profile, options),
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),

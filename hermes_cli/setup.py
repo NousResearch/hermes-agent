@@ -2481,43 +2481,28 @@ def setup_telemetry(config: dict):
 
 
 def _record_send_consent_change(*, enabled: bool) -> None:
-    """Persist a consent transition at the moment the user makes it.
+    """Reconcile consent windows at the moment the user decides.
 
-    Enabling stamps the day so the gate excludes anything collected earlier.
-    Disabling stamps a revocation so that if the user ever re-enables, the
-    packages collected while sending was off are never released — the doc
-    promises `send: false` means no further packages leave the machine, and
-    that has to survive a later change of mind.
+    Same single writer as the relay and the sender — reconciliation derives
+    the window state from the observation, so wizard, relay, and mid-pass
+    callers cannot disagree. The relay's once-per-process reconcile would
+    catch this on the next hook fire anyway; running it here just makes the
+    wizard's effect immediate.
     """
     try:
         from hermes_cli.observability.shared_metrics import SharedMetricsStore
         from hermes_cli.observability.shared_metrics_sender import (
-            LAST_SEEN_SEND_KEY,
-            opt_in_period,
-            record_revoked,
+            reconcile_send_consent,
         )
         from hermes_cli.sqlite_util import write_txn
 
         store = SharedMetricsStore()
         with store._connection() as connection:
             with write_txn(connection):
-                if enabled:
-                    opt_in_period(connection)
-                else:
-                    record_revoked(connection)
-                # Keep the relay's edge detector in step. Without this the
-                # wizard's change looks like "no transition" on the next hook
-                # fire, and a later true->false edge could be missed.
-                connection.execute(
-                    """
-                    INSERT INTO telemetry_state(key, value) VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                    """,
-                    (LAST_SEEN_SEND_KEY, "1" if enabled else "0"),
-                )
+                reconcile_send_consent(connection, enabled)
     except Exception:
-        # Never block the wizard on telemetry bookkeeping. The sender records
-        # the same transitions on its next pass.
+        # Never block the wizard on telemetry bookkeeping. The relay runs the
+        # same reconciliation on the next lifecycle hook.
         logger.debug("Unable to record shared-metrics consent change", exc_info=True)
 
 

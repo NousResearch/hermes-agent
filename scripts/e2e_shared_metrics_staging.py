@@ -62,6 +62,31 @@ def main() -> int:
     )
 
     today = datetime.now(timezone.utc).date().isoformat()
+    # The generator only exports COMPLETED periods, so the realistic E2E
+    # package is yesterday's. It also has to be: the consent gate only
+    # releases a package once its whole period is confirmed consented, and
+    # today's period cannot be confirmed before it ends.
+    from datetime import timedelta
+
+    period_day = (
+        datetime.now(timezone.utc).date() - timedelta(days=1)
+    ).isoformat()
+
+    # Open the consent window before the period, confirm it after — exactly
+    # what the runtime reconciler does across two days of hook fires.
+    from hermes_cli.observability.shared_metrics_sender import (
+        reconcile_send_consent,
+    )
+    from hermes_cli.sqlite_util import write_txn
+
+    with store._connection() as connection:
+        with write_txn(connection):
+            reconcile_send_consent(
+                connection,
+                True,
+                now=datetime.now(timezone.utc) - timedelta(days=2),
+            )
+            reconcile_send_consent(connection, True)
     real_install_id = str(uuid.uuid4())
     packages = []
 
@@ -77,8 +102,8 @@ def main() -> int:
             "generated_at": datetime.now(timezone.utc).isoformat().replace(
                 "+00:00", "Z"
             ),
-            "period_start": f"{today}T00:00:00Z",
-            "period_end": f"{today}T23:59:59Z",
+            "period_start": f"{period_day}T00:00:00Z",
+            "period_end": f"{period_day}T23:59:59Z",
             "resource": {
                 "hermes_version": "e2e-test",
                 "os_family": "macos",
@@ -105,11 +130,11 @@ def main() -> int:
                 """,
                 (
                     package_id,
-                    f"{today}T00:00:00Z",
-                    f"{today}T23:59:59Z",
+                    f"{period_day}T00:00:00Z",
+                    f"{period_day}T23:59:59Z",
                     json.dumps(payload),
-                    f"{today}T0{index}:00:00Z",
-                    f"{today}T0{index}:00:01Z",
+                    f"{period_day}T0{index}:00:00Z",
+                    f"{period_day}T0{index}:00:01Z",
                 ),
             )
         packages.append((package_id, metric_count))

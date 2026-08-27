@@ -301,10 +301,20 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
-**Only packages for periods on or after the opt-in day are ever sent.** The
-opt-in day (UTC) is recorded when `send` first becomes true, and any package
-whose `period_start` predates it is permanently excluded, however late it was
-created.
+**A package is only sent when its whole period falls inside a recorded
+consent window.** Consent is stored as explicit intervals in the shared-
+metrics SQLite store (`send_consent_windows`): a window opens when `send:
+true` is first observed, is confirmed forward by every later observation,
+and closes — at the last *confirmed* moment, never at the wall clock — when
+`send: false` is observed. A single reconciler derives this table from the
+config on every process start, so wizard changes, hand-edits to
+`config.yaml`, and mid-pass revocations all take the same path, and no
+transition can be missed by any of them.
+
+Any package whose period predates the first window, falls between windows,
+or runs past the newest confirmed moment is excluded — the gate fails
+closed. A fresh package therefore waits at most one process start after its
+period completes before becoming eligible.
 
 The gate is on the **period**, not on the package's creation time. One period
 is split across several packages created on different days: a day's first
@@ -389,11 +399,15 @@ before every package, so a pass already in flight stops after the package it
 is currently sending rather than draining its whole batch. It does not delete
 previously transmitted packages, and it does not stop local collection.
 
-Turning sending off also **closes the consent window**. Packages collected
-while it was off are never transmitted, even if sending is later re-enabled —
-re-enabling starts a new window from that day. Without this, a write-once
-opt-in date would have retroactively released the entire refused period the
-next time the user changed their mind.
+Turning sending off also **closes the consent window** — at the last moment
+consent was actually observed, not at the wall clock. Packages whose periods
+fall between one window and the next are never transmitted, even if sending
+is later re-enabled, and this holds for any number of on/off cycles, across
+hand-edits with no process running, and under a clock that jumps backwards
+(window opens are clamped above every timestamp already in the store).
+Unlike the earlier single moving opt-in date, closing and reopening does NOT
+discard the still-undelivered backlog from a previous consented window —
+those packages stay inside their own interval and remain eligible.
 
 ### A.5 Retention
 

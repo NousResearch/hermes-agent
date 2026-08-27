@@ -19,12 +19,11 @@ from hermes_cli.observability.shared_metrics_sender import (
     MAX_ATTEMPTS,
     MAX_PACKAGES_PER_PASS,
     MAX_SEND_ATTEMPTS,
-    OPT_IN_PERIOD_KEY,
     REQUEST_TIMEOUT_SECONDS,
     SharedMetricsSender,
-    opt_in_period,
-    record_revoked,
+    reconcile_send_consent,
 )
+from hermes_cli.sqlite_util import write_txn
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
@@ -61,10 +60,45 @@ class FakeTransport:
 
 @pytest.fixture
 def store(tmp_path):
-    return SharedMetricsStore(
+    """A store with a broad consent window already open.
+
+    Most tests exercise claiming/retry/transport, not the consent gate, and
+    the interval gate fails closed with no window. One window opened before
+    every test package and confirmed well past NOW keeps those tests about
+    what they are about. Gate tests clear it via _clear_consent.
+    """
+    built = SharedMetricsStore(
         database_path=tmp_path / "metrics.sqlite3",
         outbox_directory=tmp_path / "outbox",
     )
+    _grant_consent(built)
+    return built
+
+
+def _grant_consent(
+    store,
+    opened=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    confirmed_through=datetime(2026, 10, 1, tzinfo=timezone.utc),
+):
+    """Open a consent window and heartbeat it forward, via the real writer."""
+    with store._connection() as connection:
+        with write_txn(connection):
+            reconcile_send_consent(connection, True, now=opened)
+            reconcile_send_consent(connection, True, now=confirmed_through)
+
+
+def _revoke_consent(store, at):
+    with store._connection() as connection:
+        with write_txn(connection):
+            reconcile_send_consent(connection, False, now=at)
+
+
+def _clear_consent(store):
+    """Remove all consent state, for tests of the fail-closed default."""
+    with store._connection() as connection:
+        with write_txn(connection):
+            connection.execute("DELETE FROM send_consent_windows")
+            connection.execute("DELETE FROM consent_marks")
 
 
 def _add_package(store, package_id, period_day, *, exported=True, install_id=INSTALL_ID):
@@ -231,6 +265,9 @@ class TestContractResponses:
 
 class TestConsentGate:
     def test_packages_from_before_opt_in_are_never_sent(self, store):
+        # Consent opens on Aug 24; the "old" package's period predates it.
+        _clear_consent(store)
+        _grant_consent(store, opened=datetime(2026, 8, 24, tzinfo=timezone.utc))
         _add_package(store, "old", "2026-08-20")
         _add_package(store, "new", "2026-08-26")
         transport = FakeTransport(FakeResponse(202))
@@ -245,19 +282,27 @@ class TestConsentGate:
         _sender(store, transport).send_pending()
         assert sorted(b["package_id"] for b in transport.bodies) == ["head", "tail"]
 
-    def test_opt_in_day_is_recorded_once_and_does_not_move(self, store):
+    def test_opt_in_is_immortalised_as_a_window_not_a_day(self, store):
+        """The window survives replayed observations without moving."""
         with store._connection() as connection:
-            first = opt_in_period(connection, now=NOW)
-            later = opt_in_period(connection, now=NOW + timedelta(days=10))
-        assert first == later == "2026-08-26"
-
-    def test_opt_in_day_is_persisted(self, store):
+            rows = connection.execute(
+                "SELECT opened_at, closed_at FROM send_consent_windows"
+            ).fetchall()
+        assert len(rows) == 1 and rows[0][1] is None
+        _grant_consent(store)  # replay: must not create a second window
         with store._connection() as connection:
-            opt_in_period(connection, now=NOW)
-            value = connection.execute(
-                "SELECT value FROM telemetry_state WHERE key = ?", (OPT_IN_PERIOD_KEY,)
+            count = connection.execute(
+                "SELECT COUNT(*) FROM send_consent_windows"
             ).fetchone()[0]
-        assert value == "2026-08-26"
+        assert count == 1
+
+    def test_no_consent_window_means_nothing_is_sent(self, store):
+        """The gate fails closed: absence of a window is absence of consent."""
+        _clear_consent(store)
+        _add_package(store, "pkg-1", "2026-08-26")
+        transport = FakeTransport(FakeResponse(202))
+        _sender(store, transport).send_pending()
+        assert transport.calls == []
 
     def test_unexported_packages_are_skipped(self, store):
         _add_package(store, "pending-export", "2026-08-26", exported=False)
@@ -266,32 +311,31 @@ class TestConsentGate:
         assert transport.calls == []
 
     def test_revoking_then_re_enabling_never_releases_the_off_window(self, store):
-        """Regression: re-opt-in retroactively transmitted the refused window.
+        """The R3/R5 leak: re-opt-in must not release the refused interval.
 
-        opt_in_period was write-once, so packages collected while the user had
-        send: false still had period_start >= the ORIGINAL opt-in day. Turning
-        sending back on released the entire opted-out window — contradicting
-        the documented promise that `send: false` means no further packages
-        leave the machine.
+        Under the interval model the refused days fall BETWEEN two windows;
+        no later observation can place them inside one, so the property holds
+        for any number of on/off cycles — not just the single cycle the old
+        moving day-stamp was patched to survive.
         """
-        _add_package(store, "consented", "2026-08-26")
-        with store._connection() as connection:
-            with __import__(
-                "hermes_cli.sqlite_util", fromlist=["write_txn"]
-            ).write_txn(connection):
-                opt_in_period(connection, now=NOW)
+        _clear_consent(store)
+        _grant_consent(store, opened=NOW - timedelta(days=2), confirmed_through=NOW)
+        _add_package(store, "consented", "2026-08-25")
 
-        # User turns sending off; packages keep being collected.
-        with store._connection() as connection:
-            with __import__(
-                "hermes_cli.sqlite_util", fromlist=["write_txn"]
-            ).write_txn(connection):
-                record_revoked(connection)
+        # User turns sending off; packages keep being collected for 3 days.
+        _revoke_consent(store, at=NOW)
         for day in ("2026-08-27", "2026-08-28", "2026-08-29"):
             _add_package(store, f"refused-{day}", day)
 
-        # User re-enables a few days later.
+        # User re-enables 5 days later; heartbeat confirms past the horizon.
         later = NOW + timedelta(days=5)
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, True, now=later)
+                reconcile_send_consent(
+                    connection, True, now=later + timedelta(days=30)
+                )
+
         transport = FakeTransport(*[FakeResponse(202)] * 10)
         SharedMetricsSender(
             store, ENDPOINT, post=transport, sleep=lambda _s: None, now=lambda: later
@@ -301,21 +345,30 @@ class TestConsentGate:
         assert not any("refused" in pid for pid in sent), (
             f"transmitted packages collected while sending was off: {sent}"
         )
+        # And the interval model's improvement over the day-stamp: the
+        # pre-revocation consented package is NOT collateral damage.
+        assert "consented" in sent, (
+            "the consented backlog was destroyed by the revoke/re-enable cycle"
+        )
 
     def test_a_package_from_after_re_enabling_is_sent(self, store):
-        """The revocation fix must not wedge sending off permanently."""
-        with store._connection() as connection:
-            with __import__(
-                "hermes_cli.sqlite_util", fromlist=["write_txn"]
-            ).write_txn(connection):
-                opt_in_period(connection, now=NOW)
-                record_revoked(connection)
+        """The revocation handling must not wedge sending off permanently."""
+        _clear_consent(store)
+        _grant_consent(store, opened=NOW - timedelta(days=2), confirmed_through=NOW)
+        _revoke_consent(store, at=NOW)
 
         later = NOW + timedelta(days=5)
-        _add_package(store, "after-re-optin", later.date().isoformat())
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, True, now=later)
+                reconcile_send_consent(
+                    connection, True, now=later + timedelta(days=10)
+                )
+        _add_package(store, "after-re-optin", (later + timedelta(days=1)).date().isoformat())
         transport = FakeTransport(FakeResponse(202))
         SharedMetricsSender(
-            store, ENDPOINT, post=transport, sleep=lambda _s: None, now=lambda: later
+            store, ENDPOINT, post=transport, sleep=lambda _s: None,
+            now=lambda: later + timedelta(days=2),
         ).send_pending()
         assert len(transport.calls) == 1
 

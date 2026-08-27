@@ -3334,9 +3334,10 @@ DEFAULT_CONFIG = {
             # Transmit exported packages to the Nous telemetry service.
             # Requires ``enabled``: it never switches collection on by itself,
             # and ``send`` without ``enabled`` is logged as an error rather
-            # than silently doing nothing. Only packages whose period starts
-            # on or after the opt-in day are ever sent, so data collected
-            # before consent stays local.
+            # than silently doing nothing. A package is only sent when its
+            # whole period falls inside a recorded consent window, so data
+            # collected before consent — or while it was withdrawn — stays
+            # local.
             "send": False,
             # Ingest endpoint. Production by default; override for staging or
             # a local test server. Deliberately NOT overridable by an

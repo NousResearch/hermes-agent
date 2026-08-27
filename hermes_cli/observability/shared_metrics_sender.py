@@ -17,7 +17,10 @@ file. See Appendix A.7 of ``docs/observability/relay-shared-metrics.md``.
 **Consent is gated on the package's PERIOD, not its creation time.** One
 period is split across packages created on different days, so a created-at
 gate would send a period's tail while dropping its head and silently
-undercount the opt-in day.
+undercount the first consented day. The gate itself is interval containment:
+the period must fall entirely inside a recorded consent window
+(``send_consent_windows``), maintained by the single ``reconcile_send_consent``
+writer below.
 """
 
 from __future__ import annotations
@@ -87,18 +90,6 @@ _PERMANENT_STATUSES = frozenset({400, 413})
 #: measured at ~160 requests — which wastes the user's bandwidth and keeps a
 #: doomed package at the head of the queue.
 MAX_SEND_ATTEMPTS = 25
-
-OPT_IN_PERIOD_KEY = "send_opt_in_period"
-
-#: Set when sending is turned off, cleared by the next enabled pass (which
-#: also advances OPT_IN_PERIOD_KEY). This is what makes consent revocation
-#: permanent for the packages collected while it was off.
-SEND_REVOKED_KEY = "send_revoked"
-
-#: Last send-consent state this machine observed ("1"/"0"). Persisted because
-#: each hook fires in a fresh process, so a true->false edge is only visible
-#: by comparing against what was recorded last time.
-LAST_SEEN_SEND_KEY = "send_last_seen"
 
 
 def _utc_now() -> datetime:
@@ -173,46 +164,86 @@ def _retry_after_seconds(value: str | None, default: int) -> int:
         return default
 
 
-def opt_in_period(connection: sqlite3.Connection, *, now: datetime | None = None) -> str:
-    """Return the day (UTC) from which packages may be sent.
+def reconcile_send_consent(
+    connection: sqlite3.Connection,
+    send_enabled: bool,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Reconcile the consent-window table with the observed config state.
 
-    Must run inside a write transaction.
+    THE ONLY writer of consent state. Must run inside a write transaction.
+    A pure function of (config, now, store): call it from anywhere, any
+    number of times, in any order — the resulting windows are the same. This
+    replaces the previous edge-detection design, whose three partial
+    observers (wizard, relay, mid-pass) each covered a different subset of
+    transitions and repeatedly leaked the transitions between the subsets.
 
-    This is the CURRENT consent window's start, not a permanent first-ever
-    opt-in date. If the user previously turned sending off, ``record_revoked``
-    stamps that; the next enabled pass advances the gate to the day sending
-    resumed, so packages collected during the opted-out window are never
-    transmitted. Without that advance, re-enabling would retroactively release
-    the entire period the user had explicitly refused.
+    Timestamp discipline (each rule is load-bearing; see the validation
+    harness in tests/hermes_cli/test_shared_metrics_consent_windows.py):
+
+    - The 'obs' mark advances to every observation stamp, monotonically.
+      An open window's ``last_confirmed_at`` follows it: consent is asserted
+      only for time that was actually observed.
+    - A close is stamped at ``last_confirmed_at`` — never "now" — so an
+      unobserved gap (hand-edited config, machine off for 90 days) is never
+      inside a window and fails closed.
+    - An open clamps to ``max(now, obs, data)``: a rolled-back clock cannot
+      open a window underneath refused packages already on disk, and cannot
+      make the new window adjacent to the previous close.
     """
-    today = (now or _utc_now()).date().isoformat()
+    stamp = _isoformat(now or _utc_now())
+    connection.execute(
+        """
+        INSERT INTO consent_marks(name, stamp) VALUES ('obs', ?)
+        ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)
+        """,
+        (stamp,),
+    )
+    marks = dict(
+        connection.execute("SELECT name, stamp FROM consent_marks").fetchall()
+    )
+    obs = marks["obs"]  # >= stamp; immune to clock rollback
+    data = marks.get("data")
 
-    revoked = _state_get(connection, SEND_REVOKED_KEY)
-    if revoked:
-        # Sending resumed after a revocation: the new window starts today.
-        _state_set(connection, OPT_IN_PERIOD_KEY, today)
+    open_row = connection.execute(
+        "SELECT rowid FROM send_consent_windows WHERE closed_at IS NULL"
+    ).fetchone()
+
+    if send_enabled:
+        if open_row is None:
+            opened = max(x for x in (obs, data) if x is not None)
+            connection.execute(
+                "INSERT INTO send_consent_windows(opened_at, last_confirmed_at)"
+                " VALUES (?, ?)",
+                (opened, opened),
+            )
+        else:
+            connection.execute(
+                "UPDATE send_consent_windows"
+                " SET last_confirmed_at = MAX(last_confirmed_at, ?)"
+                " WHERE rowid = ?",
+                (obs, open_row[0]),
+            )
+    elif open_row is not None:
         connection.execute(
-            "DELETE FROM telemetry_state WHERE key = ?", (SEND_REVOKED_KEY,)
+            "UPDATE send_consent_windows SET closed_at = last_confirmed_at"
+            " WHERE rowid = ?",
+            (open_row[0],),
         )
-        return today
-
-    existing = _state_get(connection, OPT_IN_PERIOD_KEY)
-    if existing:
-        return existing
-
-    _state_set(connection, OPT_IN_PERIOD_KEY, today)
-    return today
 
 
-def record_revoked(connection: sqlite3.Connection) -> None:
-    """Mark that sending was turned off, closing the current consent window.
-
-    Idempotent. The marker is only cleared by the next enabled pass, which
-    also advances the gate — so any package collected between the two events
-    stays local permanently.
-    """
-    if _state_get(connection, OPT_IN_PERIOD_KEY):
-        _state_set(connection, SEND_REVOKED_KEY, "1")
+#: Claim-time consent predicate: the package's period must fall entirely
+#: inside SOME recorded consent window. An open window vouches only up to its
+#: last confirmed moment, so a package whose period runs past it waits for
+#: the next reconcile heartbeat (fail-closed; released within one hook fire).
+CONSENT_GATE_SQL = """EXISTS (
+    SELECT 1 FROM send_consent_windows w
+    WHERE package_outbox.period_start >= w.opened_at
+      AND package_outbox.period_end <=
+          CASE WHEN w.closed_at IS NULL THEN w.last_confirmed_at
+               ELSE w.closed_at END
+)"""
 
 
 def _state_get(connection: sqlite3.Connection, key: str) -> str | None:
@@ -278,7 +309,6 @@ class SharedMetricsSender:
         """
         with self._store._connection() as connection:
             with write_txn(connection):
-                period = opt_in_period(connection, now=now)
                 stamp = _isoformat(now)
                 lease_until = now + timedelta(seconds=_CLAIM_LEASE_SECONDS)
 
@@ -286,6 +316,10 @@ class SharedMetricsSender:
                 exclusion = (
                     f" AND package_id NOT IN ({placeholders})" if seen else ""
                 )
+                # Consent is a READ here — the claim must never mutate the
+                # window table. The old design's opt_in_period() call at this
+                # exact spot meant selecting a row could rewrite what was
+                # permitted to be sent (and did, under a rolled-back clock).
                 row = connection.execute(
                     f"""
                     SELECT package_id, payload_json, sent_install_id
@@ -293,13 +327,13 @@ class SharedMetricsSender:
                     WHERE exported_at IS NOT NULL
                       AND (send_state IS NULL OR send_state = 'pending')
                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                      AND substr(period_start, 1, 10) >= ?
+                      AND {CONSENT_GATE_SQL}
                       AND send_attempts < ?
                       {exclusion}
                     ORDER BY created_at, package_id
                     LIMIT 1
                     """,
-                    (stamp, period, MAX_SEND_ATTEMPTS, *sorted(seen)),
+                    (stamp, MAX_SEND_ATTEMPTS, *sorted(seen)),
                 ).fetchone()
                 if row is None:
                     return None
@@ -523,13 +557,12 @@ class SharedMetricsSender:
         for _ in range(MAX_PACKAGES_PER_PASS):
             if not self._still_consented():
                 # The user turned sending off while this pass was running.
-                # Stop without transmitting anything further, and close the
-                # consent window. This covers only the mid-pass case; a
-                # revocation made while no pass is running is caught by the
-                # relay's edge detector before it early-returns, because this
-                # loop would never run to observe it.
+                # Stop without transmitting anything further, and reconcile
+                # so the window closes at its last confirmed moment. This is
+                # the same single writer every other observation point uses —
+                # not a separate recording mechanism.
                 logger.info("Shared-metrics sending disabled mid-pass; stopping")
-                self._record_revocation()
+                self._reconcile(send_enabled=False)
                 break
             try:
                 package = self._claim_next(self._now(), seen)
@@ -561,14 +594,18 @@ class SharedMetricsSender:
                 outcome.deferred += 1
         return outcome
 
-    def _record_revocation(self) -> None:
-        """Close the consent window after an observed revocation."""
+    def _reconcile(self, *, send_enabled: bool) -> None:
+        """Run the single consent writer from within a pass."""
         try:
             with self._store._connection() as connection:
                 with write_txn(connection):
-                    record_revoked(connection)
+                    reconcile_send_consent(
+                        connection, send_enabled, now=self._now()
+                    )
         except Exception:
-            logger.debug("Unable to record consent revocation", exc_info=True)
+            logger.warning(
+                "Unable to reconcile shared-metrics consent", exc_info=True
+            )
 
     def _still_consented(self) -> bool:
         """Re-read profile-owned send consent.

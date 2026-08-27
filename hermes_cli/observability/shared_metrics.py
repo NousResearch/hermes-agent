@@ -338,6 +338,7 @@ class SharedMetricsStore:
             """
         )
         SharedMetricsStore._add_send_columns(connection)
+        SharedMetricsStore._add_consent_tables(connection)
         connection.execute(
             """
             INSERT INTO telemetry_state(key, value)
@@ -382,6 +383,55 @@ class SharedMetricsStore:
                 connection.execute(
                     f"ALTER TABLE package_outbox ADD COLUMN {column} {declaration}"
                 )
+
+    @staticmethod
+    def _add_consent_tables(connection: sqlite3.Connection) -> None:
+        """Create the consent-window tables, idempotently.
+
+        Additive like ``_add_send_columns`` — the schema version is
+        deliberately NOT bumped, and old readers never touch these tables.
+
+        ``send_consent_windows`` records consent as explicit intervals rather
+        than a moving day-stamp: a window is opened when send consent is
+        observed, heartbeat-confirmed on every later observation, and closed
+        at the LAST CONFIRMED moment (never "now") when consent is observed
+        withdrawn. Consent is asserted only for time that was actually
+        observed, so unobserved gaps — a hand-edited config with no process
+        running — fail closed by construction.
+
+        ``consent_marks`` holds two monotonic high-water marks with strictly
+        separated roles:
+
+        - ``obs``: the latest observation stamp ever seen. Advanced only by
+          the reconciler. Confirms consent and clamps window closes.
+        - ``data``: the latest package ``period_end`` ever stored. Advanced
+          only by the package writer. Clamps window OPENS, so a rolled-back
+          clock can never open a window underneath packages that already
+          exist on disk.
+
+        The separation is load-bearing: letting data stamps confirm consent
+        re-created a refused-window leak (packages stored during an off
+        window would vouch for it), and letting observation stamps clamp
+        opens is not enough on its own to stop a rollback sliding a window
+        under existing refused data.
+        """
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS send_consent_windows (
+                opened_at TEXT NOT NULL,
+                last_confirmed_at TEXT NOT NULL,
+                closed_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consent_marks (
+                name TEXT PRIMARY KEY CHECK (name IN ('obs', 'data')),
+                stamp TEXT NOT NULL
+            )
+            """
+        )
 
     @staticmethod
     def _create_counter_aggregates_table(connection: sqlite3.Connection) -> None:
@@ -616,6 +666,16 @@ class SharedMetricsStore:
                 payload_json,
                 payload["generated_at"],
             ),
+        )
+        # Advance the data high-water mark. This is the ONLY writer of the
+        # 'data' mark: it clamps consent-window opens so a rolled-back clock
+        # can never open a window underneath packages that already exist.
+        connection.execute(
+            """
+            INSERT INTO consent_marks(name, stamp) VALUES ('data', ?)
+            ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)
+            """,
+            (payload["period_end"],),
         )
         for row in rows:
             connection.execute(

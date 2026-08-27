@@ -33,7 +33,10 @@ def test_disabling_collection_closes_the_send_consent_window(monkeypatch, tmp_pa
     package collected in between.
     """
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
-    from hermes_cli.observability.shared_metrics_sender import SEND_REVOKED_KEY
+    from hermes_cli.observability.shared_metrics_sender import (
+        reconcile_send_consent,
+    )
+    from hermes_cli.sqlite_util import write_txn
 
     store = SharedMetricsStore(
         database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"
@@ -48,24 +51,21 @@ def test_disabling_collection_closes_the_send_consent_window(monkeypatch, tmp_pa
         "hermes_cli.setup.prompt_yes_no", lambda _question, default: False
     )
     config = {"telemetry": {"shared_metrics": {"enabled": True, "send": True}}}
-    # Consent was granted earlier, so a window is already open — that is
-    # precisely the state whose closure must be recorded.
-    from hermes_cli.sqlite_util import write_txn
-    from hermes_cli.observability.shared_metrics_sender import opt_in_period
-
+    # Consent was granted earlier, so a window is open — that is precisely
+    # the state whose closure must be recorded.
     with store._connection() as connection:
         with write_txn(connection):
-            opt_in_period(connection)
+            reconcile_send_consent(connection, True)
 
     setup_telemetry(config)
 
     assert config["telemetry"]["shared_metrics"]["enabled"] is False
     assert config["telemetry"]["shared_metrics"]["send"] is False
     with store._connection() as connection:
-        row = connection.execute(
-            "SELECT value FROM telemetry_state WHERE key = ?", (SEND_REVOKED_KEY,)
-        ).fetchone()
-    assert row is not None and row[0] == "1", (
+        open_windows = connection.execute(
+            "SELECT COUNT(*) FROM send_consent_windows WHERE closed_at IS NULL"
+        ).fetchone()[0]
+    assert open_windows == 0, (
         "disabling collection left the send consent window open"
     )
 

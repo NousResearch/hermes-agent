@@ -1084,60 +1084,26 @@ class _Runtime:
             self._safe(self._send_exported_packages)
 
     def _observe_send_consent(self, send_enabled: bool) -> None:
-        """Close the consent window on a true->false transition.
+        """Reconcile consent windows with the observed config state.
 
-        Persists the last-seen send state so a change is detected even though
-        this runs in a fresh process each time. Only the falling edge matters:
-        opening a new window is the sender's job, on the next enabled pass.
+        Thin wrapper over the SINGLE consent writer. The old edge-detection
+        body (last-seen key, rising/falling branches) is gone: reconciliation
+        derives the correct window state from what it observes, so there is
+        no transition to miss and no ordering between callers to get wrong.
 
-        Failures here must never break the export hook, but they are logged at
+        Failures must never break the export hook, but they are logged at
         warning rather than debug: silently failing to close a consent window
         is a privacy-relevant event, not routine bookkeeping.
         """
         try:
             from hermes_cli.observability.shared_metrics_sender import (
-                LAST_SEEN_SEND_KEY,
-                opt_in_period,
-                record_revoked,
+                reconcile_send_consent,
             )
             from hermes_cli.sqlite_util import write_txn
 
-            current = "1" if send_enabled else "0"
             with self.subscriber.store._connection() as connection:
                 with write_txn(connection):
-                    row = connection.execute(
-                        "SELECT value FROM telemetry_state WHERE key = ?",
-                        (LAST_SEEN_SEND_KEY,),
-                    ).fetchone()
-                    previous = str(row[0]) if row is not None else None
-
-                    if send_enabled:
-                        # Open the window HERE, on the rising edge, rather than
-                        # leaving it to the sender's first claim. The sender
-                        # only runs when there is something to send, so a user
-                        # who opts in and then opts out before any package
-                        # exists would otherwise have no window to close, and
-                        # record_revoked (which requires one) would no-op.
-                        opt_in_period(connection)
-                    elif previous == "1":
-                        # `previous == "1"` is the true falling edge. Widening
-                        # this to an unconditional else would be behaviourally
-                        # equivalent today — record_revoked is idempotent and
-                        # no-ops without an open window — so no test can tell
-                        # the two apart. It is written as an edge anyway
-                        # because that is the property intended, and a future
-                        # change to record_revoked should not silently turn
-                        # every disabled pass into a revocation.
-                        record_revoked(connection)
-
-                    if previous != current:
-                        connection.execute(
-                            """
-                            INSERT INTO telemetry_state(key, value) VALUES (?, ?)
-                            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                            """,
-                            (LAST_SEEN_SEND_KEY, current),
-                        )
+                    reconcile_send_consent(connection, send_enabled)
         except Exception:
             logger.warning(
                 "Unable to record a shared-metrics consent transition",
@@ -1259,8 +1225,54 @@ def handles_hook(hook_name: str) -> bool:
     return hook_name in HANDLED_HOOKS and enabled()
 
 
+_consent_reconcile_done = False
+
+
+def _reconcile_send_consent_once() -> None:
+    """Reconcile consent windows with config, once per process.
+
+    Runs BEFORE and INDEPENDENT of the collection gate — that placement is
+    the fix for the round-5 D1 leak, where the only idle-path consent
+    observer sat behind ``handles_hook()`` and became dead code the moment
+    ``enabled: false`` was set. A user with collection off still gets their
+    send-consent windows reconciled here.
+
+    Skipped only when there is no store on disk AND consent is off: with no
+    store there are no packages, so there is nothing a window could protect,
+    and creating ``~/.hermes/telemetry`` for every fully-disabled user would
+    be a behaviour change in the wrong direction.
+    """
+    global _consent_reconcile_done
+    if _consent_reconcile_done:
+        return
+    _consent_reconcile_done = True
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_cli.observability.shared_metrics_send_config import (
+            resolve_send_config,
+        )
+        from hermes_cli.observability.shared_metrics_sender import (
+            reconcile_send_consent,
+        )
+        from hermes_cli.sqlite_util import write_txn
+
+        resolved = resolve_send_config(read_raw_config_readonly() or {})
+        store = SharedMetricsStore()
+        if not resolved.send and not store.database_path.exists():
+            return
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, resolved.send)
+    except Exception:
+        logger.warning(
+            "Unable to reconcile shared-metrics send consent", exc_info=True
+        )
+
+
 def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     """Project one Hermes lifecycle event into the core Relay integration."""
+    _reconcile_send_consent_once()
     if not handles_hook(hook_name):
         return
     if not relay_runtime.relay_instrumentation_enabled():

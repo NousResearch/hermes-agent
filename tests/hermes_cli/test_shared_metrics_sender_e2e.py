@@ -77,10 +77,28 @@ def server():
 
 @pytest.fixture
 def store(tmp_path):
-    return SharedMetricsStore(
+    built = SharedMetricsStore(
         database_path=tmp_path / "metrics.sqlite3",
         outbox_directory=tmp_path / "outbox",
     )
+    # Open a consent window covering the fixture packages; the interval gate
+    # fails closed without one, and this file tests transport, not consent.
+    from datetime import datetime, timezone
+
+    from hermes_cli.observability.shared_metrics_sender import (
+        reconcile_send_consent,
+    )
+    from hermes_cli.sqlite_util import write_txn
+
+    with built._connection() as connection:
+        with write_txn(connection):
+            reconcile_send_consent(
+                connection, True, now=datetime(2026, 8, 20, tzinfo=timezone.utc)
+            )
+            reconcile_send_consent(
+                connection, True, now=datetime(2026, 10, 1, tzinfo=timezone.utc)
+            )
+    return built
 
 
 def _endpoint(server):

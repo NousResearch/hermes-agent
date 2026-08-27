@@ -209,13 +209,13 @@ class TestInteractivePathIsNotBlocked:
         runtime._join_send_thread(timeout=5)
 
 
-class TestConsentRevocationWindow:
-    """The falling edge must close the window even with no pass running.
+class TestConsentWindows:
+    """Consent reconciliation must work from the relay, in any order.
 
-    Round 3 recorded revocation inside the send loop, which cannot fire for
-    the dominant case: the user turns sending off while idle, so the relay
-    early-returns and no sender is ever built. Re-enabling then released
-    every package collected during the refused window.
+    Round 4's edge detector missed the idle-revocation path; round 5 found it
+    was also dead code whenever collection was off (handles_hook gated it).
+    These tests drive the relay entry points against the single reconciler
+    and assert on the interval table — the only consent state that exists.
     """
 
     def _runtime(self, tmp_path):
@@ -223,20 +223,19 @@ class TestConsentRevocationWindow:
         runtime.subscriber.store = RealBackedStore(tmp_path)
         return runtime
 
-    def _state(self, runtime, key):
+    def _windows(self, runtime):
         with runtime.subscriber.store._connection() as connection:
-            row = connection.execute(
-                "SELECT value FROM telemetry_state WHERE key = ?", (key,)
-            ).fetchone()
-        return row[0] if row else None
+            return [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT opened_at, last_confirmed_at, closed_at"
+                    " FROM send_consent_windows ORDER BY opened_at"
+                )
+            ]
 
     def test_revoking_while_idle_closes_the_window(
         self, monkeypatch, tmp_path, capture_sender
     ):
-        from hermes_cli.observability.shared_metrics_sender import (
-            SEND_REVOKED_KEY,
-        )
-
         runtime = self._runtime(tmp_path)
 
         _set_config(monkeypatch, _config(enabled=True, send=True))
@@ -247,88 +246,101 @@ class TestConsentRevocationWindow:
         for _ in range(6):
             runtime._send_exported_packages()
 
-        assert self._state(runtime, SEND_REVOKED_KEY) == "1", (
-            "revoking while no pass was running left the consent window open"
+        windows = self._windows(runtime)
+        assert windows and all(w[2] is not None for w in windows), (
+            f"revoking while idle left a window open: {windows}"
         )
 
-    def test_no_spurious_revocation_when_nothing_changes(
+    def test_replayed_observations_create_no_junk_windows(
         self, monkeypatch, tmp_path, capture_sender
     ):
-        """The detector must key on an EDGE, not on every disabled pass.
-
-        A level trigger re-closes a window the user has since REOPENED: each
-        later disabled pass stamps revoked again, so the next enabled pass
-        advances the gate and silently drops packages the user did consent to.
-        Mutation-checked — an earlier version of this test used a
-        never-consented store, where record_revoked no-ops regardless, and so
-        could not tell an edge trigger from a level trigger.
-        """
-        from hermes_cli.observability.shared_metrics_sender import (
-            OPT_IN_PERIOD_KEY,
-            SEND_REVOKED_KEY,
-        )
-
+        """Reconciliation is idempotent — there is no edge to double-count."""
         runtime = self._runtime(tmp_path)
 
         _set_config(monkeypatch, _config(enabled=True, send=True))
-        runtime._send_exported_packages()
-
+        for _ in range(4):
+            runtime._send_exported_packages()
         _set_config(monkeypatch, _config(enabled=True, send=False))
-        runtime._send_exported_packages()
-        assert self._state(runtime, SEND_REVOKED_KEY) == "1"
-
-        # User changes their mind and re-enables.
+        for _ in range(4):
+            runtime._send_exported_packages()
         _set_config(monkeypatch, _config(enabled=True, send=True))
-        runtime._send_exported_packages()
-        assert self._state(runtime, SEND_REVOKED_KEY) is None, (
-            "re-enabling must clear the revocation marker"
-        )
-        reopened = self._state(runtime, OPT_IN_PERIOD_KEY)
-
-        # Further ENABLED passes must not disturb the reopened window.
         for _ in range(4):
             runtime._send_exported_packages()
 
-        assert self._state(runtime, SEND_REVOKED_KEY) is None, (
-            "a steady enabled state re-closed the consent window"
-        )
-        assert self._state(runtime, OPT_IN_PERIOD_KEY) == reopened
+        assert len(self._windows(runtime)) == 2
 
-    def test_a_never_consented_user_is_never_marked_revoked(
+    def test_a_never_consented_user_gets_no_window(
         self, monkeypatch, tmp_path, capture_sender
     ):
-        from hermes_cli.observability.shared_metrics_sender import (
-            SEND_REVOKED_KEY,
-        )
-
         runtime = self._runtime(tmp_path)
         _set_config(monkeypatch, _config(enabled=True, send=False))
         for _ in range(5):
             runtime._send_exported_packages()
 
-        assert self._state(runtime, SEND_REVOKED_KEY) is None
+        assert self._windows(runtime) == []
 
-    def test_re_enabling_after_an_idle_revocation_starts_a_new_window(
+    def test_re_enabling_opens_a_new_window_after_the_refusal(
         self, monkeypatch, tmp_path, capture_sender
     ):
-        from hermes_cli.observability.shared_metrics_sender import (
-            OPT_IN_PERIOD_KEY,
-            SEND_REVOKED_KEY,
-        )
-
+        """The refused gap must fall BETWEEN the two windows."""
         runtime = self._runtime(tmp_path)
         _set_config(monkeypatch, _config(enabled=True, send=True))
         runtime._send_exported_packages()
-        first_window = self._state(runtime, OPT_IN_PERIOD_KEY)
-
         _set_config(monkeypatch, _config(enabled=True, send=False))
         runtime._send_exported_packages()
-        assert self._state(runtime, SEND_REVOKED_KEY) == "1"
-
-        # Re-enabling must not simply resume the original window.
         _set_config(monkeypatch, _config(enabled=True, send=True))
         runtime._send_exported_packages()
-        assert first_window is not None
+
+        windows = self._windows(runtime)
+        assert len(windows) == 2
+        first, second = windows
+        assert first[2] is not None, "first window must be closed"
+        assert second[2] is None, "second window must be open"
+        assert second[0] >= first[2], (
+            f"new window may not overlap the refused gap: {windows}"
+        )
+
+    def test_reconcile_runs_even_when_collection_is_disabled(
+        self, monkeypatch, tmp_path
+    ):
+        """Round-5 D1: enabled:false must not make consent handling dead code.
+
+        The module-level once-per-process reconciler must close the window
+        regardless of handles_hook(). Drives the real observe_lifecycle gate
+        path: handles_hook is False throughout.
+        """
+        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_cli.observability.shared_metrics_sender import (
+            reconcile_send_consent,
+        )
+        from hermes_cli.sqlite_util import write_txn
+
+        store = SharedMetricsStore(
+            database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"
+        )
+        # A consent window is open from an earlier consented era.
+        with store._connection() as connection:
+            with write_txn(connection):
+                reconcile_send_consent(connection, True)
+
+        monkeypatch.setattr(
+            "hermes_cli.observability.shared_metrics.SharedMetricsStore",
+            lambda *a, **k: store,
+        )
+        _set_config(monkeypatch, _config(enabled=False, send=False))
+        monkeypatch.setattr(mod, "_consent_reconcile_done", False)
+
+        # The full lifecycle entry point, with collection OFF.
+        mod.observe_lifecycle("finish_task")
+
+        with store._connection() as connection:
+            open_windows = connection.execute(
+                "SELECT COUNT(*) FROM send_consent_windows WHERE closed_at IS NULL"
+            ).fetchone()[0]
+        assert open_windows == 0, (
+            "enabled:false made the consent reconciler unreachable (D1)"
+        )
+
 
 
 class TestFailureIsolation:

@@ -391,6 +391,20 @@ DEFAULT_CONFIG = {
         # ``false`` keeps the historical strict-provider behavior (Mistral,
         # Groq, Cerebras reject the field with HTTP 400).
         "reasoning_echo": False,
+        # Turn liveness watchdog (#95548): a turn that shows no observable
+        # progress (activity-clock idle, never touched by lease renewal) for
+        # `timeout_s` seconds is logged loudly, force-interrupted so the UI
+        # can retry it, and its durable turn lease stops renewing so TTL
+        # expiry lets stale-turn cleanup reclaim the session even when the
+        # hard interrupt cannot unwind a wedged frame. `timeout_s` <= 0
+        # disables the watchdog; `poll_s` is the sampling interval. Invalid
+        # values (typo, NaN, Inf, non-positive poll) warn and fall back to
+        # the default instead of crashing startup or silently disabling the
+        # watchdog. See agent/turn_liveness.py.
+        "turn_liveness": {
+            "timeout_s": 600.0,
+            "poll_s": 15.0,
+        },
     },
 
     "terminal": {

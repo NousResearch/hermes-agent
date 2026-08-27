@@ -34,6 +34,7 @@ except Exception:
 _API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1"
 
 # Published max output-token ceiling shared by every current Gemini text model; used
 # for max_tokens=None because the native API's low internal default truncates output.
@@ -99,7 +100,32 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
-    return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+    if not normalized:
+        return False
+    if normalized.endswith("/openai"):
+        return False
+    return (
+        "generativelanguage.googleapis.com" in normalized
+        or "aiplatform.googleapis.com" in normalized
+    )
+
+
+def is_vertex_express_key(api_key: str) -> bool:
+    """Vertex Express keys are ``AQ.…``; AI Studio keys are ``AIza…``."""
+    return str(api_key or "").strip().startswith("AQ.")
+
+
+def _is_vertex_express_base_url(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    return "aiplatform.googleapis.com" in normalized
+
+
+def gemini_model_path(base_url: str, model: str) -> str:
+    """Path under the native host: Studio ``models/…`` vs Express ``publishers/google/models/…``."""
+    name = bare_gemini_model_id(model)
+    if _is_vertex_express_base_url(base_url):
+        return f"publishers/google/models/{name}"
+    return f"models/{name}"
 
 
 def probe_gemini_tier(
@@ -115,7 +141,10 @@ def probe_gemini_tier(
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
+            resp = client.post(
+                f"{base}/{gemini_model_path(base, model)}:generateContent",
+                params={"key": key}, json=payload, headers=headers,
+            )
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
         return "unknown"
@@ -640,7 +669,10 @@ class GeminiNativeClient:
         if not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        self.base_url = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/").removesuffix("/openai")
+        normalized_base = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/").removesuffix("/openai")
+        if is_vertex_express_key(api_key) and not _is_vertex_express_base_url(normalized_base):
+            normalized_base = VERTEX_EXPRESS_BASE_URL
+        self.base_url = normalized_base
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))
@@ -677,7 +709,7 @@ class GeminiNativeClient:
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
         )
         model = bare_gemini_model_id(model)
-        url = f"{self.base_url}/models/{model}:"
+        url = f"{self.base_url}/{gemini_model_path(self.base_url, model)}:"
         if stream:
             return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)

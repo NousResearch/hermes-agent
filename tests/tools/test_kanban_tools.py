@@ -843,6 +843,15 @@ def test_kanban_guidance_resolves_board_context_before_needs_input_block():
     assert "only then block" in KANBAN_GUIDANCE.lower()
 
 
+def test_kanban_guidance_keeps_board_record_receipts_off_the_filesystem():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "board-record-only" in KANBAN_GUIDANCE
+    assert "Kanban as source of truth" in KANBAN_GUIDANCE
+    assert "Never search the checkout for board records" in KANBAN_GUIDANCE
+    assert "complete with a no-op receipt" in KANBAN_GUIDANCE
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

@@ -6186,7 +6186,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     _watch_children = getattr(server, "_watch_stdio_children", None)
                     _watch_ok = (
                         _watch_children is not None
-                        and inspect.isawaitable(_watch_children())
+                        and (inspect.iscoroutinefunction(_watch_children) or callable(_watch_children))
                         and asyncio.iscoroutine(_call_coro)
                     )
                     if not _watch_ok:

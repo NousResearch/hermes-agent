@@ -1603,7 +1603,10 @@ def _zip_overlay_block_reason(
     result = subprocess.run(
         # -uall: a user-level ``status.showUntrackedFiles = no`` git config
         # would otherwise hide untracked files and silently blind this guard.
-        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        # --ignored=all: gitignored files are still USER DATA the ZIP overlay
+        # would permanently delete (logs, local venvs, scratch files) — a
+        # .gitignore entry must not blind the guard either (#87392).
+        git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=all"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -1615,6 +1618,11 @@ def _zip_overlay_block_reason(
         suffix = f" ({detail[0]})" if detail else ""
         return f"could not check the working tree{suffix}"
     lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    # --ignored=all reports the ZIP path's own preserved entries (venv,
+    # node_modules are gitignored on every normal install). The swap never
+    # touches those top-level entries, so they must not turn into a false
+    # dirty-tree refusal. Everything else — including ignored files — blocks.
+    lines = [line for line in lines if not _is_zip_preserved_entry_status_line(line)]
     if ignore_staging_artifacts:
         lines = [
             line for line in lines if not _is_zip_staging_artifact_status_line(line)
@@ -1625,6 +1633,22 @@ def _zip_overlay_block_reason(
 
 
 _ZIP_STAGING_ARTIFACT_SUFFIXES = (".hermes-update-staging", ".hermes-update-old")
+# Keep in sync with the `preserve` set in _update_via_zip's swap loop.
+_ZIP_PRESERVED_TOP_LEVEL = {"venv", "node_modules", ".git", ".env"}
+
+
+def _is_zip_preserved_entry_status_line(line: str) -> bool:
+    """True when every path on a porcelain status line sits under a top-level
+    entry the ZIP swap preserves (rename lines carry two paths)."""
+    payload = line[3:] if len(line) >= 3 else line
+    paths = payload.split(" -> ")
+    for path in paths:
+        top_level = (
+            path.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
+        )
+        if top_level not in _ZIP_PRESERVED_TOP_LEVEL:
+            return False
+    return True
 
 
 def _is_zip_staging_artifact_status_line(line: str) -> bool:

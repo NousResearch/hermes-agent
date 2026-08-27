@@ -247,3 +247,44 @@ def test_recheck_still_blocks_user_files_amid_staging_artifacts(tmp_path, monkey
         tmp_path, ignore_staging_artifacts=True
     )
     assert reason is not None
+
+
+def test_zip_overlay_blocked_on_ignored_user_file(tmp_path, monkeypatch):
+    """#87392 follow-up: a gitignored file outside the preserved entries is
+    still user data the overlay would delete — it must block."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess, "run", _porcelain_run("!! scratch/notes.local\n")
+    )
+    reason = update_cmd._zip_overlay_block_reason(tmp_path)
+    assert reason is not None
+    assert "uncommitted" in reason or "untracked" in reason
+
+
+def test_zip_overlay_requests_ignored_files_from_git(tmp_path, monkeypatch):
+    """The status invocation itself must carry --ignored=all."""
+    seen = {}
+
+    def capture_run(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "status" in joined and "--porcelain" in joined:
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(update_cmd.subprocess, "run", capture_run)
+    update_cmd._zip_overlay_block_reason(tmp_path)
+    assert "--ignored=all" in [str(c) for c in seen["cmd"]]
+
+
+def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
+    """venv/node_modules are gitignored on every normal install and the swap
+    preserves them — --ignored=all must not turn them into a false refusal."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        update_cmd.subprocess,
+        "run",
+        _porcelain_run("!! venv/\n!! node_modules/\n!! .env\n"),
+    )
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None

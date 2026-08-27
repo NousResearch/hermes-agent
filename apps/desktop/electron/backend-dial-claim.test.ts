@@ -182,7 +182,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes the connections update-all dispatch through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connections:update-all',")
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 2_000)
+    // The handler grew on main (renderer-side exclusions + the managed-SSH
+    // dispatch branch) — keep the scan window comfortably past the dial.
+    const body = mainSource.slice(handlerStart, handlerStart + 3_000)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')

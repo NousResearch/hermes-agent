@@ -885,3 +885,67 @@ class TestStreamIncludeUsageFinalChunk:
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
         assert response.choices[0].message.content == "Partial text before drop"
+
+
+# ── Merged-finish content chunk swallowed by the SSE-echo guard (#94614) ──
+
+class TestMergedFinishChunkSurvivesSSEGuard:
+    """vLLM >= 0.1.dev20051 merges finish_reason into the final CONTENT
+    chunk instead of a separate marker-only chunk. When the SSE-echo guard
+    is engaged at that moment (GLM-family tokenizers emit standalone ':'
+    tokens mid-prose), the guard's content-shape continue paths swallow the
+    terminal chunk and finish_reason is never captured — a complete stream
+    is misclassified as a mid-stream drop. Terminal fields must be
+    extracted before any content-shape continue."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_merged_finish_chunk_after_sse_lookalike_prefix_completes(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _vllm_merged_finish_stream():
+            # ':' then ' uniform' engage the SSE-echo guard (may_be_sse True)
+            yield _make_stream_chunk(content=":")
+            yield _make_stream_chunk(content=" uniform")
+            # Merged-finish terminal content chunk, as the new vLLM emits
+            yield _make_stream_chunk(content=".", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _vllm_merged_finish_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == ": uniform."
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_merged_finish_chunk_without_sse_trigger_still_completes(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Control: the same merged-finish shape without an SSE-lookalike
+        prefix must keep completing (guard never engages)."""
+
+        def _plain_merged_finish_stream():
+            yield _make_stream_chunk(content="Hello")
+            yield _make_stream_chunk(content=".", finish_reason="stop")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _plain_merged_finish_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Hello."

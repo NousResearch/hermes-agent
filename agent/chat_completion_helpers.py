@@ -4317,6 +4317,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
 
+            # Extract terminal chunk fields BEFORE any content-shape `continue`.
+            # Backends that merge finish_reason into the final content chunk
+            # (e.g. vLLM >= 0.1.dev20051) can have that chunk swallowed by the
+            # SSE-echo guard below when the tokenizer emits standalone ':'
+            # tokens — the finish chunk would never register and the response
+            # would be falsely flagged as truncated (#94614).
+            chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+            if chunk_finish_reason:
+                finish_reason = chunk_finish_reason
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_obj = chunk.usage
+
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
@@ -4452,13 +4464,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # discarding the attempted action.
                         result["partial_tool_names"].append(name)
 
-            chunk_finish_reason = getattr(chunk.choices[0], "finish_reason", None)
-            if chunk_finish_reason:
-                finish_reason = chunk_finish_reason
-
-            # Usage in the final chunk
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_obj = chunk.usage
+            # (finish_reason/usage are now extracted at the top of the loop
+            # body. The old tail-side extraction sat after the SSE-echo
+            # guard's `continue` paths, so a merged finish chunk that tripped
+            # the guard never registered — false "stream truncated".)
 
         _close_managed_stream()
 

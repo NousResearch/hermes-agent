@@ -384,7 +384,9 @@ def resolve_bind_dests(binds: Iterable[BindMount]) -> list[BindMount]:
     symlink lands the mount on its target, an absolute one aborts the
     spawn. Naming the real path up front gives both the same mount, and
     the ancestor pins are then computed against the real tree the bind
-    makes writable.
+    makes writable. BubblewrapEnvironment applies this once at
+    construction; build_bwrap_args does not, so a symlink planted under
+    a dest between spawns cannot move the mount.
     """
     return [
         replace(bind, dest=os.path.realpath(os.path.abspath(os.path.expanduser(bind.dest))))
@@ -504,7 +506,10 @@ def build_bwrap_args(
     # failing on a missing bind source.
     argv += ["--bind-try" if profile.writable_cwd else "--ro-bind-try", initial_cwd, initial_cwd]
 
-    binds = resolve_bind_dests(filter_binds(config.binds, hidden_paths))
+    # Dests are emitted as given: BubblewrapEnvironment resolved them at
+    # construction, and a realpath here would let a symlink planted under a
+    # dest between spawns move the mount.
+    binds = filter_binds(config.binds, hidden_paths)
     for bind in binds:
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
 
@@ -745,10 +750,6 @@ class BubblewrapEnvironment(LocalEnvironment):
         config: BubblewrapConfig | None = None,
     ):
         self._config = load_bubblewrap_config() if config is None else config
-        # Bind destinations are resolved once here, like the hidden set and
-        # the cwd, so the mount paths are fixed for the life of the
-        # environment; the builder resolves again for its own callers.
-        self._config = replace(self._config, binds=tuple(resolve_bind_dests(self._config.binds)))
         # Reject an unknown profile and an unusable bwrap before anything is
         # created on disk; the probe raises EnvironmentConnectionError, which
         # the terminal tool turns into its degraded or error result.
@@ -763,6 +764,14 @@ class BubblewrapEnvironment(LocalEnvironment):
         # Resolved once and kept for the life of the environment: the set
         # never follows a symlink swapped in later.
         self._hidden_paths = sensitive_paths(self._home, self._hermes_home)
+        # The operator binds are filtered and their destinations resolved
+        # once here, like the hidden set and the cwd, so the mount paths are
+        # fixed for the life of the environment and a dropped bind
+        # warns once; the builder's own filter then drops nothing.
+        self._config = replace(
+            self._config,
+            binds=tuple(resolve_bind_dests(filter_binds(self._config.binds, self._hidden_paths))),
+        )
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
@@ -850,7 +859,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         writable: list[str] = [self._initial_cwd] if resolve_profile(self._config.profile).writable_cwd else []
         writable += [
             os.path.realpath(os.path.expanduser(bind.src))
-            for bind in filter_binds(self._config.binds, self._hidden_paths)
+            for bind in self._config.binds
             if not bind.readonly
         ]
         for root in writable:

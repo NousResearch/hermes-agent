@@ -50,6 +50,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from agent.strict_persona_bundles import (
+    MANIFEST_NAME as STRICT_PERSONA_MANIFEST,
+    StrictPersonaError,
+    approval_registry_path,
+    build_strict_persona_invocation,
+    load_strict_persona_bundle,
+)
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -89,6 +96,7 @@ def _iter_bundle_files() -> List[Path]:
     files: List[Path] = []
     for ext in ("*.yaml", "*.yml"):
         files.extend(sorted(base.glob(ext)))
+    files.extend(sorted(base.glob(f"*/{STRICT_PERSONA_MANIFEST}")))
     return files
 
 
@@ -110,6 +118,12 @@ def _max_mtime(files: List[Path]) -> float:
             mtimes.append(f.stat().st_mtime)
         except OSError:
             continue
+    registry = approval_registry_path()
+    if registry.exists():
+        try:
+            mtimes.append(registry.stat().st_mtime)
+        except OSError:
+            pass
     return max(mtimes) if mtimes else 0.0
 
 
@@ -121,7 +135,7 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     """
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
     try:
@@ -132,6 +146,12 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     if not isinstance(data, dict):
         logger.warning("Bundle %s is not a mapping; skipping", path)
         return None
+    if path.name == STRICT_PERSONA_MANIFEST or data.get("kind") == "persona":
+        try:
+            return load_strict_persona_bundle(path, bundles_root=_bundles_dir())
+        except (OSError, StrictPersonaError) as exc:
+            logger.warning("Strict persona bundle %s rejected: %s", path, exc)
+            return None
 
     name = str(data.get("name") or path.stem).strip()
     if not name:
@@ -285,11 +305,33 @@ def build_bundle_invocation_message(
     # keep skill_bundles cheap to import in test environments.
     from agent.skill_commands import _load_skill_payload, _build_skill_message
 
+    strict_persona = info.get("strict") is True and info.get("kind") == "persona"
     try:
         from agent.skill_utils import get_disabled_skill_names
         disabled_names = get_disabled_skill_names(platform=platform)
-    except Exception:
+    except Exception as exc:
+        if strict_persona:
+            logger.warning(
+                "Strict persona invocation %s rejected: disabled-skill policy "
+                "could not be read: %s",
+                cmd_key,
+                exc,
+            )
+            return None
         disabled_names = set()
+
+    if strict_persona:
+        try:
+            return build_strict_persona_invocation(
+                info,
+                bundles_root=_bundles_dir(),
+                disabled_names=set(disabled_names),
+                user_instruction=user_instruction,
+                task_id=task_id,
+            )
+        except (OSError, StrictPersonaError) as exc:
+            logger.warning("Strict persona invocation %s rejected: %s", cmd_key, exc)
+            return None
 
     loaded_names: List[str] = []
     missing: List[str] = []

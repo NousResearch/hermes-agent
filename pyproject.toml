@@ -117,7 +117,8 @@ dependencies = [
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
-  "uvicorn[standard]>=0.24.0,<1",
+  # CIDR-aware forwarded_allow_ips requires uvicorn >=0.31.0.
+  "uvicorn[standard]>=0.31.0,<1",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500

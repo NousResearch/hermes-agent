@@ -1868,6 +1868,16 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#   #
+#   # Reverse proxies connecting from another container or host are not
+#   # trusted by default. Add only the proxy's exact IP address, or a bounded
+#   # CIDR for a dedicated proxy network, so X-Forwarded-Proto and
+#   # X-Forwarded-For can be honored. Loopback is always trusted. Wildcards
+#   # and /0 networks are rejected.
+#   #
+#   #   trusted_proxies:
+#   #     - "172.20.0.5"
+#   #     # - "172.20.0.0/24"  # dedicated network, if the IP is dynamic
 #
 # -----------------------------------------------------------------------------
 # Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,

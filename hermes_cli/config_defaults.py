@@ -1633,6 +1633,11 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # IP addresses or bounded CIDR networks of reverse proxies allowed to
+        # supply X-Forwarded-Proto / X-Forwarded-For. Loopback remains trusted
+        # automatically. Wildcards and /0 networks are rejected so arbitrary
+        # clients cannot spoof their scheme or source address.
+        "trusted_proxies": [],
         # WebSocket keepalive for the dashboard/desktop web server (#79635).
         # Applied to NON-loopback binds only: loopback always disables the
         # protocol ping (see hermes_cli/web_server.py — an event-loop stall

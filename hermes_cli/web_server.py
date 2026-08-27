@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import math
@@ -19557,6 +19558,66 @@ def _report_port_in_use(host: str, port: int) -> None:
     )
 
 
+_DEFAULT_DASHBOARD_FORWARDED_ALLOW_IPS = ("127.0.0.1", "::1")
+
+
+def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str]:
+    """Return the bounded proxy addresses uvicorn may trust.
+
+    Uvicorn's default trusts loopback. Preserve that behavior and extend it
+    only with explicit IP addresses or CIDR networks from config. Invalid or
+    unbounded entries fail closed instead of turning arbitrary client-supplied
+    forwarding headers into request metadata.
+    """
+    configured = dashboard_config.get("trusted_proxies", [])
+    if configured in (None, ""):
+        configured = []
+    elif isinstance(configured, str):
+        configured = [configured]
+    elif not isinstance(configured, (list, tuple)):
+        _log.warning(
+            "dashboard.trusted_proxies must be a list of IP addresses or CIDR networks; "
+            "ignoring %r",
+            configured,
+        )
+        configured = []
+
+    trusted = list(_DEFAULT_DASHBOARD_FORWARDED_ALLOW_IPS)
+    for raw_entry in configured:
+        if not isinstance(raw_entry, str) or not raw_entry.strip():
+            _log.warning(
+                "Ignoring invalid dashboard.trusted_proxies entry %r; expected an IP "
+                "address or CIDR network",
+                raw_entry,
+            )
+            continue
+
+        entry = raw_entry.strip()
+        try:
+            if "/" in entry:
+                network = ipaddress.ip_network(entry, strict=False)
+                if network.prefixlen == 0:
+                    raise ValueError("unbounded network")
+                normalized = str(network)
+            else:
+                normalized = str(ipaddress.ip_address(entry))
+        except ValueError:
+            _log.warning(
+                "Ignoring unsafe dashboard.trusted_proxies entry %r; use a bounded IP "
+                "address or CIDR network, never '*' or a /0 network",
+                raw_entry,
+            )
+            continue
+
+        if normalized not in trusted:
+            trusted.append(normalized)
+
+    if trusted != list(_DEFAULT_DASHBOARD_FORWARDED_ALLOW_IPS):
+        _log.info("Dashboard trusted proxies: %s", ", ".join(trusted))
+
+    return trusted
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -19804,6 +19865,12 @@ def start_server(
         # decide cookie Secure flags, so we flip proxy_headers on for that
         # mode.
         proxy_headers=bool(app.state.auth_required),
+        # Keep uvicorn's loopback-only default unless the operator explicitly
+        # trusts the address or bounded network of an upstream proxy. This is
+        # what lets a separate-container TLS terminator supply HTTPS/client
+        # metadata without accepting spoofed X-Forwarded-* headers from every
+        # caller.
+        forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
         # Half-open detection for public binds only (see above). Loopback
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still

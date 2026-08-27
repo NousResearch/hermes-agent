@@ -288,6 +288,7 @@ describe('secondary connection timeout (#93454)', () => {
     vi.useFakeTimers()
 
     let callCount = 0
+
     const getConnection = vi.fn(({ profile }: { profile: string }) => {
       callCount += 1
 
@@ -319,6 +320,7 @@ describe('secondary connection timeout (#93454)', () => {
     vi.useFakeTimers()
 
     let callCount = 0
+
     const getConnection = vi.fn(({ profile }: { profile: string }) => {
       callCount += 1
 

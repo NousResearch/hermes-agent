@@ -1015,7 +1015,8 @@ export const zh: Translations = {
     },
     managedUpdates: {
       title: '托管更新',
-      intro: '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',
+      intro:
+        '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',
       sshConnection: '桌面端托管的 SSH 安装',
       update: '更新',
       updating: '更新中…',

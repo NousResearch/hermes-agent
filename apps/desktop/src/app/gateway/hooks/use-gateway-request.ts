@@ -84,8 +84,10 @@ export function useGatewayRequest() {
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
+
         connectionRef.current = conn
         setConnection(conn)
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // and short-lived, so the cached conn.wsUrl ticket is dead here;
         // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
@@ -97,6 +99,7 @@ export function useGatewayRequest() {
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
+
         await existing.connect(wsUrl)
 
         return existing

@@ -222,11 +222,13 @@ describe('manualPickRemoved', () => {
 
 describe('reconcileSelectionAfterCatalogRefresh', () => {
   const zhipu = { name: '智谱2', slug: 'zhipu', models: ['glm-4.5-air', 'glm-5-turbo'] }
+
   const bytea = {
     name: '字节A',
     slug: 'byteplus',
     models: ['deepseek-v4-flash', 'doubao-seed-2.0-pro']
   }
+
   const moa = { name: 'Mixture of Agents', slug: 'moa', models: ['default'] }
 
   it('switches to the first new-group model when the current pick is gone', () => {

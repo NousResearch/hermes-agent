@@ -372,6 +372,7 @@ describe('useGatewayRequest', () => {
       connectionState: 'closed',
       request: vi.fn().mockRejectedValue(new Error('connection closed'))
     } as unknown as HermesGateway
+
     const getConnection = vi.fn(() => new Promise(() => undefined))
 
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { getConnection }

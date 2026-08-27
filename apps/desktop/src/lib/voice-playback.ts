@@ -156,6 +156,7 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out re-minting the gateway WebSocket URL for profile "${profile}"`
     )
+
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {

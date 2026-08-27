@@ -94,7 +94,6 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
-
 // Flush microtasks until the dial registers its secondary (or bail). The dial
 // path's hop count is an implementation detail — #95343's withTimeout wrapper
 // added an await hop and broke the previous exactly-two-Promise.resolve flush.

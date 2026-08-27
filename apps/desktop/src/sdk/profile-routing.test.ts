@@ -104,8 +104,7 @@ vi.mock('@/store/gateway', async () => {
   }
 })
 
-const { BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS, DEFAULT_SESSION_HYDRATION_TIMEOUT_MS, host } =
-  await import('./index')
+const { BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS, DEFAULT_SESSION_HYDRATION_TIMEOUT_MS, host } = await import('./index')
 
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')

@@ -142,8 +142,9 @@ has dest equal to src and sits directly under that directory, with no
 symlink on the way: bwrap resolves a bind source on the host at every
 command, so a source a command can rename or replace with a symlink would
 let it choose what the next command mounts. Bound at its own path directly
-under a writable directory, the source and its parent are mount points
-inside the sandbox and cannot be moved. Read-only binds are not affected.
+under a writable directory, the source is a mount point inside the sandbox,
+which no command can rename or move from any path. Read-only binds are not
+affected.
 
 The profile home is a bind too. Under `terminal.home_mode: profile`,
 `HERMES_HOME/home` must be a plain directory or a link to a directory

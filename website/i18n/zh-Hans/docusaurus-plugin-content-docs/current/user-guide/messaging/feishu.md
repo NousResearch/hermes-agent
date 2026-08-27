@@ -212,6 +212,8 @@ FEISHU_GROUP_POLICY=allowlist   # 默认
 FEISHU_REQUIRE_MENTION=false
 ```
 
+在公告较多的群组中，设置 `FEISHU_IGNORE_AT_ALL=true` 可防止 `@所有人`/`@everyone` 提及触发机器人——只有明确 @提及 机器人才会触发。
+
 如需按群控制，在 `group_rules` 条目中设置 `require_mention`——参见下方[按群访问控制](#per-group-access-control)。
 
 ### 机器人身份
@@ -498,6 +500,7 @@ platforms:
 | `FEISHU_ALLOWED_USERS` | — | _（空）_ | 用户白名单的逗号分隔 open_id 列表 |
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
+| `FEISHU_IGNORE_AT_ALL` | — | `false` | 启用时，@所有人/@everyone 不会触发机器人；仅明确 @提及 机器人时触发 |
 | `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |

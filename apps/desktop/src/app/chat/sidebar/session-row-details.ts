@@ -15,12 +15,13 @@ const modelLabel = (model: null | string) => model?.split('/').pop()?.trim() || 
 const oneLine = (value: null | string) => value?.replace(/\s+/g, ' ').trim() || null
 
 // Compact rows can show a two-line, 13px `leading-none` title plus the body's
-// 4px vertical padding: 30px. Comfortable and detailed content fits within
-// their 45px and 63px shell minimums, respectively. Keep the virtualizer at
-// those floors until each row has been observed; underestimating makes long
-// lists jump when their actual heights are measured.
+// 4px vertical padding: 30px. Comfortable and detailed rows add 13.5px text
+// lines plus margins, so their estimates round the 45.5px and 63px content
+// floors up to 46px and 64px. Keep the virtualizer at those floors until each
+// row has been observed; underestimating makes long lists jump when their
+// actual heights are measured.
 export const sessionRowEstimate = (density: SessionListDensity) =>
-  ({ compact: 30, comfortable: 45, detailed: 63 })[density]
+  ({ compact: 30, comfortable: 46, detailed: 64 })[density]
 
 /** Virtual-list placement estimate for the Inbox-style card. A full card
  *  stacks four text lines (header, title, preview, model/size) where the

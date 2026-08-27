@@ -1424,7 +1424,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
-            ignore_at_all=_to_boolean(extra.get("ignore_at_all", _get_scoped_secret("FEISHU_IGNORE_AT_ALL", "false"))),
+            # Env wins over extra-config (matches the _apply_yaml_config
+            # bridge contract: "Env vars take precedence over YAML").
+            ignore_at_all=_to_boolean(
+                _get_scoped_secret("FEISHU_IGNORE_AT_ALL")
+                or str(extra.get("ignore_at_all", "false")).lower()
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3332,8 +3337,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
-        # When FEISHU_IGNORE_AT_ALL is set, @_all alone does not trigger
-        # the bot; an explicit bot mention is still required.
+        # When the ignore_at_all setting is enabled, @_all alone does not
+        # trigger the bot; an explicit bot mention is still required.
         raw_content = getattr(message, "content", "") or ""
         if not self._ignore_at_all and "@_all" in raw_content:
             return True

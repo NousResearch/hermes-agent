@@ -2539,25 +2539,19 @@ class TestApplyYamlConfigIgnoreAtAll(unittest.TestCase):
         return _apply_yaml_config({}, feishu_cfg)
 
     def test_bridges_yaml_key_to_env(self):
-        os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
-        try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
             self._call({"ignore_at_all": True})
             self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
-        finally:
-            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
 
     def test_env_wins_over_yaml(self):
-        os.environ["FEISHU_IGNORE_AT_ALL"] = "true"
-        try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ["FEISHU_IGNORE_AT_ALL"] = "true"
             self._call({"ignore_at_all": False})
             self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
-        finally:
-            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
 
     def test_key_absent_leaves_env_untouched(self):
-        os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
-        try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)
             self._call({"allow_bots": "mentions"})
             self.assertNotIn("FEISHU_IGNORE_AT_ALL", os.environ)
-        finally:
-            os.environ.pop("FEISHU_IGNORE_AT_ALL", None)

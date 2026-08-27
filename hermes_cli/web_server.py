@@ -19515,9 +19515,27 @@ def _port_bind_conflict(host: str, port: int) -> bool:
     return False
 
 
+def _write_machine_sentinel_line(line: str) -> None:
+    """Write a machine-parsed sentinel line to the REAL stdout (fd 1).
+
+    The serve startup path imports ``tui_gateway.server`` (flush-on-SIGTERM
+    handlers, #94724) which redirects ``sys.stdout`` to ``sys.stderr`` at
+    import time to keep stray prints off the JSON-RPC protocol stream. Any
+    machine-readable sentinel printed after that import via ``print()`` lands
+    on stderr — invisible to consumers that parse the child's stdout pipe
+    (the Desktop spawn, scripts). fd 1 is untouched by the Python-level
+    redirect, so write there; fall back to ``print`` for exotic environments
+    where fd 1 isn't writable (e.g. closed).
+    """
+    try:
+        os.write(1, (line + "\n").encode())
+    except OSError:
+        print(line, flush=True)
+
+
 def _report_port_in_use(host: str, port: int) -> None:
     """Print the machine sentinel + a human hint naming likely holders."""
-    print(_PORT_IN_USE_SENTINEL.format(port=port), flush=True)
+    _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
     print(
         f"  Port {port} on {host} is already in use — likely another "
         "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
@@ -19894,12 +19912,8 @@ def start_server(
             # still the real stdout — and the Desktop spawn watches
             # child.stdout for this sentinel — so write to the fd, not to the
             # (redirected) sys.stdout, or the desktop times out after 90s
-            # against a perfectly healthy backend.
-            _ready_line = f"{ready_token} port={actual_port}\n"
-            try:
-                os.write(1, _ready_line.encode())
-            except OSError:
-                print(_ready_line, end="", flush=True)
+            # against a perfectly healthy backend (#96282).
+            _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

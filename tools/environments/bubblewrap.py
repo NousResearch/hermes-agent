@@ -668,14 +668,57 @@ def make_preexec(limits: Mapping[int, int]) -> Callable[[], None] | None:
     return _apply_rlimits
 
 
+_MOUNT_ARITY: dict[str, int] = {
+    "--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2,
+    "--tmpfs": 1, "--dev": 1, "--proc": 1,
+}
+
+
+def masked_inside(argv: Sequence[str], path: str) -> bool:
+    """True when host directory *path* is hidden inside the sandbox *argv* builds.
+
+    Mounts stack in argv order, so the last directive whose destination is
+    *path* or an ancestor of it decides what shows there: a mount root is
+    visible (bwrap creates the mount point), a fresh --tmpfs, --dev or
+    --proc hides everything below its root, and a bind shows what its
+    source holds at the same relative path (the root bind of / shows the
+    host itself). A -try bind whose source is missing is skipped, as bwrap
+    skips it. Reads only the host presence of directories, as the pins do.
+    """
+    visible = True
+    i = 0
+    while i < len(argv):
+        arity = _MOUNT_ARITY.get(argv[i])
+        if arity is None:
+            i += 1
+            continue
+        operands = argv[i + 1:i + 1 + arity]
+        i += 1 + arity
+        dest = operands[-1]
+        if dest == path:
+            visible = True
+        elif _is_within(path, dest):
+            if arity == 1:
+                visible = False
+                continue
+            src = operands[0]
+            if argv[i - 1 - arity].endswith("-try") and not os.path.exists(src):
+                continue
+            visible = os.path.isdir(os.path.join(src, os.path.relpath(path, dest)))
+    return not visible
+
+
 def chdir_failed(result: Mapping[str, object], tracked_cwd: str) -> bool:
-    """True when bwrap could not enter *tracked_cwd*, so the shell never ran.
+    """True when the result looks like bwrap failing to enter *tracked_cwd*.
 
     bwrap prints one line, ``Can't chdir to <dir>: ...``, and exits 1
     before the command starts; the wrapper then never prints the cwd
     marker (``cwd_observed`` stays unset). A command that ran and failed
     has the marker, and a timed-out one has the timeout note appended, so
-    neither is a single bwrap line.
+    neither is a single bwrap line. A command can forge the shape by
+    printing the line and replacing its shell, so the caller must not
+    treat a match as proof that nothing ran: masked_inside decides that
+    before the spawn, and this is only the backstop.
     """
     if result.get("returncode", 0) == 0 or result.get("cwd_observed"):
         return False
@@ -825,46 +868,76 @@ class BubblewrapEnvironment(LocalEnvironment):
         return self._state_dir
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
-        """Run a command; recover once when the tracked cwd is not visible inside.
+        """Run a command; report a tracked cwd that the sandbox mounts hide.
 
         The tracked cwd is checked against the host (LocalEnvironment's
         missing-cwd recovery), not against what the overlays mask
         inside the sandbox. After ``cd`` into a host directory under a
-        hidden path, or under the fresh /tmp, ``--chdir`` fails on every
-        later spawn before the shell runs, so no cwd marker ever moves the
-        tracked cwd again. Reset it to the initial cwd and run the command
-        once more there; nothing ran the first time. Only ``--chdir``
-        changes between the two spawns.
+        hidden path, or under the fresh /tmp, ``--chdir`` would fail on
+        every later spawn before the shell runs, and no cwd marker could
+        move the tracked cwd again. _reset_masked_cwd decides that from the
+        fixed mount layout before the wrapper and the spawn are built and
+        resets the tracked cwd to the initial cwd, so the command runs
+        exactly once there; the note tells the caller. The chdir_failed
+        backstop below only resets the tracked cwd and never re-runs the
+        command: its shape can be forged by a command that prints the
+        bwrap line and replaces its shell.
         """
+        note = self._reset_masked_cwd()
         result = super().execute(command, cwd, **kwargs)
-        if not chdir_failed(result, self.cwd):
-            return result
-        stale = self.cwd
-        logger.warning(
-            "bubblewrap cannot enter the tracked cwd %s: it exists on the host but not "
-            "inside the sandbox. Resetting the working directory to %s.",
-            stale, self._initial_cwd,
-        )
-        self.cwd = self._initial_cwd
-        result = super().execute(command, cwd, **kwargs)
-        result["output"] = (
-            f"[bubblewrap: working directory {stale} is not visible inside the sandbox; "
-            f"reset to {self._initial_cwd}]\n" + result.get("output", "")
-        )
+        if note is not None:
+            result["output"] = note + result.get("output", "")
+        elif self.cwd != self._initial_cwd and chdir_failed(result, self.cwd):
+            stale = self.cwd
+            logger.warning(
+                "bubblewrap could not enter the tracked cwd %s; resetting the working "
+                "directory to %s for the next command.",
+                stale, self._initial_cwd,
+            )
+            self.cwd = self._initial_cwd
+            result["output"] = (
+                result.get("output", "")
+                + f"\n[bubblewrap: could not enter working directory {stale}; reset to "
+                f"{self._initial_cwd}, run the command again]"
+            )
         return result
 
-    def _wrap_popen_args(self, args: list[str]) -> list[str]:
-        prefix = build_bwrap_args(
+    def _bwrap_prefix(self, tracked_cwd: str) -> list[str]:
+        return build_bwrap_args(
             self._config,
             self._initial_cwd,
             self._state_dir,
             self._home,
             self._hermes_home,
-            self.cwd,
+            tracked_cwd,
             bwrap_path=self._bwrap_path,
             hidden_paths=self._hidden_paths,
         )
-        return prefix + list(args)
+
+    def _reset_masked_cwd(self) -> str | None:
+        """Reset a tracked cwd the mounts hide to the initial cwd; return the note.
+
+        Runs before the command wrapper (which cd's to the tracked cwd) and
+        the argv (whose --chdir carries it) are built. The initial cwd is
+        never reset: it is bound at its own path, and when it is gone from
+        the host LocalEnvironment's recovery in _run_bash takes over.
+        """
+        if self.cwd == self._initial_cwd or not masked_inside(self._bwrap_prefix(self.cwd), self.cwd):
+            return None
+        stale = self.cwd
+        logger.warning(
+            "bubblewrap: the tracked cwd %s is not visible inside the sandbox; resetting "
+            "the working directory to %s.",
+            stale, self._initial_cwd,
+        )
+        self.cwd = self._initial_cwd
+        return (
+            f"[bubblewrap: working directory {stale} is not visible inside the sandbox; "
+            f"reset to {self._initial_cwd}]\n"
+        )
+
+    def _wrap_popen_args(self, args: list[str]) -> list[str]:
+        return self._bwrap_prefix(self.cwd) + list(args)
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         # --unsetenv strips the socket variables from the environment bwrap

@@ -381,7 +381,11 @@ all = [
 ]
 
 [build-system]
-requires = ["setuptools==83.0.0"]
+# setuptools.build_meta + our setup.py bdist_wheel guard import wheel during
+# PEP 517 isolated builds (uv sync / uv pip install -e .). Without wheel in
+# requires, the isolation sandbox only gets setuptools and Windows installer
+# fails with ModuleNotFoundError: wheel.cli (#96488).
+requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -419,7 +423,7 @@ exclude-newer = "14 days"
 # risk — their newest releases are years old — and unbricks resolvers that
 # cannot see upload dates.
 #
-# setuptools, pillow, mcp: exact-pinned bricks (#78227, #75992, #76020). uv
+# setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
 # applies exclude-newer to build-system.requires and core deps too; when a
 # resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
 # it filters the pinned version and the package cannot even BUILD
@@ -433,7 +437,7 @@ exclude-newer = "14 days"
 # firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
 # The pin bump WAS the review; exclude-newer adds zero float protection to
 # an exact pin and would only delay the reviewed version 14 days.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false }
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, wheel = false, pillow = false, mcp = false, firecrawl-anydoc = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

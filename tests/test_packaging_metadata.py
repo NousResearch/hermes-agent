@@ -288,6 +288,28 @@ def test_build_system_requires_exempt_from_exclude_newer():
 
 
 
+
+def test_build_system_requires_wheel_for_isolated_builds():
+    """Regression for #96488 — PEP 517 isolation must include wheel.
+
+    ``setuptools.build_meta`` and our ``setup.py`` bdist_wheel guard import
+    ``wheel`` during editable builds. uv's build-isolation sandbox is seeded
+    only from ``[build-system].requires``; without ``wheel`` there, Windows
+    ``uv sync`` / ``uv pip install -e .`` fails with
+    ``ModuleNotFoundError: No module named 'wheel.cli'`` even when the real
+    venv already has wheel installed.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    names = {
+        _distribution_name(req)
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    assert "wheel" in names, (
+        "wheel must be listed in [build-system].requires so PEP 517 isolated "
+        "builds can import wheel.cli / bdist_wheel — see #96488"
+    )
+
+
 def _lazy_deps_by_feature():
     """Parse LAZY_DEPS into {feature_name: [spec, ...]} via AST.
 

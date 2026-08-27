@@ -38,6 +38,12 @@ from tools.environments.bubblewrap import (
 from tools.environments.local import LocalEnvironment
 
 
+@pytest.fixture(autouse=True)
+def _bwrap_probe_passed(monkeypatch):
+    """Unit constructions never spawn: count the process-wide bwrap probe as passed."""
+    monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
+
+
 def _bwrap_usable() -> bool:
     if shutil.which("bwrap") is None:
         return False

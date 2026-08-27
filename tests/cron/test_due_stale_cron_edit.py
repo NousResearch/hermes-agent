@@ -171,3 +171,25 @@ def test_helper_reports_match_for_non_cron_and_unvalidatable(temp_home):
         )
         is False
     )
+
+
+def test_stale_edit_without_manual_marker_still_reanchors(temp_home, monkeypatch):
+    """#93049 protection intact after the #94010 fix: a hand-edited stale
+    next_run_at WITHOUT the manual_run_at marker still re-anchors without
+    firing (carried from #94034's suite)."""
+    from cron.jobs import get_due_jobs, get_job
+
+    monkeypatch.setattr(
+        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
+    )
+    jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
+
+    stored_before = get_job(jid)
+    assert "manual_run_at" not in stored_before
+
+    due = get_due_jobs()
+
+    assert [j["id"] for j in due if j["id"] == jid] == []
+    after = get_job(jid)
+    assert after["next_run_at"] != _SATURDAY_0700.isoformat()
+    assert "manual_run_at" not in after

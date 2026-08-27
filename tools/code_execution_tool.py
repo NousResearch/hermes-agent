@@ -625,6 +625,25 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
+    # The commands below run with cwd="/" or from the sandbox dir, and
+    # BaseEnvironment.execute tracks the cwd each ran in, so the terminal
+    # would carry on at / afterwards. Remember the tracked cwd and put it
+    # back on the way out; it is a host-side value that feeds only the
+    # next command's cd (--chdir under bubblewrap).
+    prev_cwd = getattr(env, "cwd", None)
+    try:
+        return _execute_remote_dispatch(code, env, env_type, effective_task_id, sandbox_tools, reset=reset,
+                                        timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
+                                        idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)))
+    finally:
+        if prev_cwd is not None:
+            env.cwd = prev_cwd
+
+
+def _execute_remote_dispatch(code: str, env, env_type: str, effective_task_id: str, sandbox_tools: frozenset, *,
+                             reset: bool, timeout: int, max_tool_calls: int, exec_start: float,
+                             idle_exit: int) -> str:
+    """Session kernel first (never for bubblewrap), else the per-call script ship."""
     try:
         py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
         if "OK" not in py_check.get("output", ""):
@@ -648,8 +667,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
             kernel_result = execute_in_remote_kernel(
                 code, env=env, env_type=env_type, task_env_id=effective_task_id,
                 sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
-                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                max_tool_calls=max_tool_calls, reset=bool(reset), idle_exit=idle_exit,
             )
         except Exception:
             logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)

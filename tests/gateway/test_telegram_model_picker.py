@@ -133,15 +133,33 @@ class TestTelegramModelPicker:
         assert vendors[0]["label"] == "Moonshot AI"
         assert len(vendors[0]["indices"]) == 2
 
-    def test_geoless_id_is_labelled_when_colliding_with_a_routed_twin(self):
-        """``openai.gpt-5.6-terra`` and ``global.openai.gpt-5.6-terra`` are
-        distinct profiles: the geoless one must not render as a bare name
-        indistinguishable from its routed twin."""
+    def test_geoless_id_uses_configured_short_geo_when_colliding(self, monkeypatch):
+        """A bare model ID gets the short geography of the configured Bedrock
+        region (us/eu/ap/...), never the implementation term ``direct`` or a
+        full region name such as ``us-east-1``."""
         adapter = _make_adapter()
+        monkeypatch.setattr(adapter, "_bedrock_region_scope", lambda: "us")
         models = ["openai.gpt-5.6-terra", "global.openai.gpt-5.6-terra"]
         labels = adapter._model_button_labels(models)
-        assert labels == ["direct: gpt-5.6-terra", "global: gpt-5.6-terra"]
-        assert len(set(labels)) == 2
+        assert labels == ["us: gpt-5.6-terra", "global: gpt-5.6-terra"]
+        assert all("direct" not in label and "us-east-1" not in label for label in labels)
+
+    @pytest.mark.parametrize(
+        ("region", "scope"),
+        [
+            ("us-east-1", "us"),
+            ("eu-west-3", "eu"),
+            ("ap-southeast-2", "ap"),
+            ("ca-central-1", "ca"),
+        ],
+    )
+    def test_bedrock_region_scope_is_short(self, monkeypatch, region, scope):
+        adapter = _make_adapter()
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.resolve_bedrock_runtime_region",
+            lambda: region,
+        )
+        assert adapter._bedrock_region_scope() == scope
 
     def test_group_models_by_vendor_returns_empty_for_non_bedrock(self):
         """Plain provider model lists must not gain a vendor step."""
@@ -174,11 +192,12 @@ class TestTelegramModelPicker:
 
     def test_geoless_ids_keep_full_model_name_in_label(self, monkeypatch):
         """``openai.gpt-5.6-terra`` has no geo: it renders as a bare model
-        name when unique, and gets the ``direct:`` marker when a routed twin
-        exists (both are real, distinct profiles)."""
+        name when unique, and gets the configured short geography when a
+        routed twin exists."""
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
         monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
         adapter = _make_adapter()
+        monkeypatch.setattr(adapter, "_bedrock_region_scope", lambda: "us")
         models = [
             "openai.gpt-5.6-terra",
             "us.openai.gpt-5.6-terra",
@@ -189,7 +208,7 @@ class TestTelegramModelPicker:
         flat = [b for row in keyboard.inline_keyboard for b in row]
 
         assert [b.text for b in flat[:3]] == [
-            "direct: gpt-5.6-terra",
+            "us: gpt-5.6-terra",
             "us: gpt-5.6-terra",
             "gpt-5.5",
         ]

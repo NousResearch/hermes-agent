@@ -4023,6 +4023,25 @@ class TelegramAdapter(BasePlatformAdapter):
     def _canonical_vendor(cls, vendor: str) -> str:
         return cls._VENDOR_ALIASES.get(vendor, vendor)
 
+    @staticmethod
+    def _bedrock_region_scope() -> str:
+        """Return the configured Bedrock region as a short geography.
+
+        Examples: ``us-east-1`` → ``us``, ``eu-west-3`` → ``eu``. Region
+        resolution follows the runtime's own precedence (config.yaml, AWS
+        environment/profile, fallback), so picker labels describe the
+        endpoint Hermes will actually call. An unknown region uses the
+        neutral ``region`` label rather than leaking a misleading ID term.
+        """
+        try:
+            from agent.bedrock_adapter import resolve_bedrock_runtime_region
+            from hermes_cli.model_setup_flows import bedrock_region_geo_prefix
+
+            region = resolve_bedrock_runtime_region()
+            return bedrock_region_geo_prefix(region).rstrip(".") or "region"
+        except Exception:
+            return "region"
+
     def _model_button_labels(self, models: list) -> list:
         """Render display labels for *models*, one per entry.
 
@@ -4044,9 +4063,10 @@ class TelegramAdapter(BasePlatformAdapter):
         for (geo, vendor, short) in parsed:
             label = short
             if vendor and counts.get(short, 0) > 1:
-                # ``direct`` marks an ID carrying no routing namespace, which
-                # would otherwise be a bare name next to its routed twins.
-                label = f"{geo or 'direct'}: {short}"
+                # A bare ID takes the short geography of the configured
+                # Bedrock endpoint (us/eu/ap/...), while an inference profile
+                # already carries its own routing scope (global/us/eu/...).
+                label = f"{geo or self._bedrock_region_scope()}: {short}"
             if len(label) > 38:
                 label = label[:35] + "..."
             labels.append(label)

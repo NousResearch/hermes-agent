@@ -17,7 +17,10 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    file_mutation_result_landed,
+    is_skill_view_dedup_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -905,6 +908,8 @@ def _trim_error(msg: str) -> str:
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
+        return False, ""
+    if is_skill_view_dedup_result(tool_name, result):
         return False, ""
     data = safe_json_loads(result)
 

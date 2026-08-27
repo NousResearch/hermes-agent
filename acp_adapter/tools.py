@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
+from agent.tool_result_classification import is_skill_view_dedup_result
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,8 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
     # cannot produce; catch it so a tool that blew up is not shown green.
     if isinstance(result, str) and result.startswith("Error executing tool '"):
         return True
+    if is_skill_view_dedup_result(tool_name or "", result):
+        return False
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return False
@@ -357,6 +360,8 @@ def _format_execute_code_result(tool_name: str, data: Args, args: Args) -> Optio
 
 @_structured()
 def _format_skill_view_result(tool_name: str, data: Args, args: Args) -> Optional[str]:
+    if is_skill_view_dedup_result(tool_name, data):
+        return f"Skill already loaded: {data.get('error')}"
     if data.get("success") is False:
         return f"Skill view failed: {data.get('error', 'unknown error')}"
     content = str(data.get("content") or "")

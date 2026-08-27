@@ -142,6 +142,33 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_skill_view_dedup_hits_do_not_trip_consecutive_failure_breaker():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_warn_after=2,
+            exact_failure_block_after=2,
+            same_tool_failure_halt_after=99,
+        )
+    )
+    args = {"name": "demo"}
+    result = json.dumps({
+        "success": False,
+        "status": "deduplicated",
+        "dedup": True,
+        "content_returned": False,
+        "error": "already loaded",
+    })
+
+    assert classify_tool_failure("skill_view", result) == (False, "")
+    for _ in range(2):
+        assert controller.before_call("skill_view", args).action == "allow"
+        assert controller.after_call("skill_view", args, result).action == "allow"
+
+    assert controller.before_call("skill_view", args).action == "allow"
+    assert controller.halt_decision is None
+
+
 
 
 

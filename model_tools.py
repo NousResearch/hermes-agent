@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.tool_result_classification import is_skill_view_dedup_result
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
@@ -596,6 +597,8 @@ class _CallIds:
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""
+    if is_skill_view_dedup_result(tool_name, result):
+        return "ok", None, None
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):

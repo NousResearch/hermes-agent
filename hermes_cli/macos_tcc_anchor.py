@@ -38,6 +38,7 @@ uv-managed.  Best-effort: never raises to callers.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import platform
@@ -59,6 +60,13 @@ _STORE_ROOT_MARKERS = ("/uv/python/", "/.hermes-runtime/python/")
 
 class _BootGateFailed(Exception):
     """Staged copy refused to boot; the live venv must stay untouched."""
+
+
+def _marker_value(source_file: Path) -> str:
+    """Canonical marker value: fully resolved so symlinked spellings of the
+    same store binary (``cpython-3.11-macos-*`` → ``cpython-3.11.15-macos-*``)
+    compare equal."""
+    return os.path.realpath(str(source_file))
 
 
 def is_macos() -> bool:
@@ -231,19 +239,34 @@ def _materialize_aliases(
 def _passes_boot_gate(staged: Path, venv_dir: Path) -> bool:
     """Launch *staged* and demand encodings + the venv prefix.
 
-    ``OSError`` (fixture / wrong arch / exec-format) is treated as a skip —
-    we cannot verify, and we also cannot brick a host that cannot run the
-    binary.  A real crash (dyld, encodings, wrong prefix) refuses the install.
+    The probe runs with ``PYTHONHOME``/``PYTHONPATH`` scrubbed: an inherited
+    ``PYTHONHOME`` papers over exactly the prefix-resolution failure the gate
+    exists to catch.  ``OSError`` is split by errno — ``ENOENT``/``ENOEXEC``
+    (fixture binaries, foreign-arch images) means the binary cannot run here
+    at all, so the symlinked venv was equally dead and installing cannot make
+    things worse: skip.  Anything else (notably ``EACCES`` after our own
+    chmod) is a broken install about to go live: refuse.
     """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
+                     "__PYVENV_LAUNCHER__")
+    }
     try:
         proc = subprocess.run(
             [str(staged), "-c", "import encodings, sys; print(sys.prefix)"],
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
         )
-    except OSError:
-        return True
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOEXEC):
+            logger.debug("boot gate skipped: cannot execute %s (%s)", staged, exc)
+            return True
+        logger.warning("boot gate: staged copy not executable: %s", exc)
+        return False
     except subprocess.TimeoutExpired:
         return False
     if proc.returncode != 0:
@@ -282,7 +305,7 @@ def _install_anchor(venv_dir: Path, source_file: Path) -> None:
                 f"staged copy at {tmp_path} failed encodings/prefix probe"
             )
         os.replace(tmp_path, venv_py)
-        _anchor_marker(venv_bin).write_text(str(source_file), encoding="utf-8")
+        _anchor_marker(venv_bin).write_text(_marker_value(source_file), encoding="utf-8")
         _materialize_aliases(venv_bin, venv_py, refresh=True)
     except Exception:
         try:
@@ -317,8 +340,8 @@ def ensure_tcc_anchor(project_root: Path | None = None) -> Path | None:
     if not venv_py.is_symlink():
         marker = _anchor_marker(venv_py.parent)
         try:
-            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == str(
-                source_file
+            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == (
+                _marker_value(source_file)
             ):
                 _provision_libpython(venv_dir, source_file, refresh=False)
                 if _passes_boot_gate(venv_py, venv_dir):
@@ -361,7 +384,7 @@ def tcc_anchor_state(project_root: Path | None = None) -> tuple[str, str]:
     if not venv_py.is_symlink():
         marker = _anchor_marker(venv_py.parent)
         source_file = _interpreter_file(source)
-        expected = str(source_file) if source_file is not None else source
+        expected = _marker_value(source_file) if source_file is not None else source
         try:
             if marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected:
                 return "active", str(venv_py)

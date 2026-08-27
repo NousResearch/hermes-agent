@@ -12,6 +12,7 @@ the existing macOS CI job, not against one-byte fixtures.
 
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import shutil
@@ -332,14 +333,46 @@ class TestBootGate:
         assert not tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
 
     def test_skips_unexecutable_staging(self, tmp_path, monkeypatch):
-        # OSError (fixture binaries, exec-format on a foreign arch) means the
-        # binary cannot run here at all — the symlinked venv was equally dead,
-        # so installing cannot make things worse. Skip, don't refuse.
+        # ENOENT/ENOEXEC (fixture bad-shebang binaries, wrong-arch images)
+        # mean the binary cannot run here at all — the symlinked venv was
+        # equally dead, so installing cannot make things worse.
         def noexec(*a, **k):
-            raise OSError("cannot execute")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
         monkeypatch.setattr(tcc.subprocess, "run", noexec)
         assert tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_refuses_eacces_after_chmod(self, tmp_path, monkeypatch):
+        # EACCES after copy2+chmod is a broken install about to go live —
+        # refuse, never skip (review: kokhlo on #95605).
+        def denied(*a, **k):
+            raise PermissionError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(tcc.subprocess, "run", denied)
+        assert not tcc._passes_boot_gate(tmp_path / "staged", tmp_path / "venv")
+
+    def test_scrubs_pythonhome_pythonpath(self, tmp_path, monkeypatch):
+        # A staged copy that dies with `No module named 'encodings'` boots
+        # fine under PYTHONHOME=<venv> — the inherited var papers over the
+        # exact failure the gate exists to catch (review: kokhlo on #95605,
+        # verified live). The probe must run with a scrubbed environment.
+        captured = {}
+
+        def spy(*a, **k):
+            captured.update(k)
+            return self._proc(a[0], 0, f"{tmp_path / 'venv'}\n", "")
+
+        monkeypatch.setattr(tcc.subprocess, "run", spy)
+        monkeypatch.setenv("PYTHONHOME", "/poison")
+        monkeypatch.setenv("PYTHONPATH", "/poison")
+        venv = tmp_path / "venv"
+        venv.mkdir(exist_ok=True)
+
+        assert tcc._passes_boot_gate(tmp_path / "staged", venv)
+        env = captured.get("env")
+        assert env is not None, "gate must pass an explicit scrubbed env"
+        assert "PYTHONHOME" not in env
+        assert "PYTHONPATH" not in env
 
     def test_accepts_matching_prefix(self, tmp_path, monkeypatch):
         venv = tmp_path / "venv"
@@ -352,6 +385,29 @@ class TestBootGate:
 
 
 class TestTccAnchorState:
+    def test_state_active_through_unpatched_home_symlink(self, tmp_path, monkeypatch):
+        # The managed-runtime layout symlinks cpython-3.11-macos-* →
+        # cpython-3.11.15-macos-*, so pyvenv.cfg home and the marker record
+        # different spellings of the same binary. State must resolve both
+        # sides before comparing, or a fresh install reports stale
+        # (review: kokhlo on #95605, hit on a live venv).
+        _darwin(monkeypatch)
+        patched = _build_store(tmp_path, version="3.11.15")
+        versionless = patched.parent.parent / "cpython-3.11-macos-aarch64-none"
+        os.symlink(patched.parent, versionless)
+        home = versionless / "bin"
+
+        root = tmp_path / "checkout"
+        venv_bin = root / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (root / ".venv" / "pyvenv.cfg").write_text(f"home = {home}\n")
+        os.symlink(home / "python3.11", venv_bin / "python")
+
+        tcc.ensure_tcc_anchor(root)
+
+        status, _ = tcc.tcc_anchor_state(root)
+        assert status == "active"
+
     def test_state_missing_then_active(self, tmp_path, monkeypatch):
         _darwin(monkeypatch)
         store_bin = _build_store(tmp_path)

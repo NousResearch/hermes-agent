@@ -1441,6 +1441,15 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    # Durable-first (#94724 item 2): persist every session's un-flushed
+    # transcript within a bounded budget BEFORE the slow per-session
+    # teardown below (plugin hooks, memory commit, delegation interrupts,
+    # agent.close). A supervisor that SIGKILLs a slow shutdown mid-way can
+    # then no longer lose the transcripts — the flush already landed.
+    try:
+        _flush_sessions_before_exit()
+    except Exception:
+        pass
     try:
         _release_gateway_wake_owner()
     except Exception:
@@ -1460,6 +1469,176 @@ except (TypeError, ValueError):
     _SESSION_TTL_S = float(6 * 3600)
 _SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
 _REAPER_SCAN_S = 300.0
+
+
+# ── Flush-on-kill + periodic incremental flush (#94724 item 2) ───────────
+# A `hermes serve` killed mid-update used to lose every un-flushed in-memory
+# session: the next RPC failed with "session-scoped RPC rejected: not in
+# memory (detached/reaped runtime)" and NO store held the transcript. #95576
+# made serves survive *future* updates; this closes the kill path itself:
+#   (a) SIGTERM/SIGINT run a bounded, best-effort flush of in-memory session
+#       transcripts to state.db BEFORE the normal shutdown path, chained to
+#       whatever handler was installed before (uvicorn's included);
+#   (b) the idle-reaper scan piggybacks a periodic incremental flush so even
+#       a SIGKILL loses at most one flush interval.
+try:
+    _EXIT_FLUSH_BUDGET_S = float(
+        os.environ.get("HERMES_TUI_EXIT_FLUSH_BUDGET_S") or 5.0
+    )
+except (TypeError, ValueError):
+    _EXIT_FLUSH_BUDGET_S = 5.0
+_EXIT_FLUSH_BUDGET_S = max(0.0, _EXIT_FLUSH_BUDGET_S)
+
+try:
+    _INCREMENTAL_FLUSH_INTERVAL_S = float(
+        os.environ.get("HERMES_TUI_SESSION_FLUSH_INTERVAL_S") or _REAPER_SCAN_S
+    )
+except (TypeError, ValueError):
+    _INCREMENTAL_FLUSH_INTERVAL_S = _REAPER_SCAN_S
+_INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, _INCREMENTAL_FLUSH_INTERVAL_S)
+
+
+def _flush_session_messages(session: dict | None) -> bool:
+    """Best-effort durable flush of one session's in-memory transcript.
+
+    Rides ``agent._persist_session`` — the same marker-deduped persist
+    contract ``_finalize_session`` uses (#13121) — so repeated calls only
+    write genuinely-unflushed messages and never duplicate durable rows.
+    """
+    if not session:
+        return False
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "_persist_session"):
+        return False
+    snapshot = getattr(agent, "_session_messages", None)
+    if not snapshot:
+        return False
+    try:
+        agent._persist_session(snapshot)
+        return True
+    except Exception:
+        logger.debug("incremental session flush failed", exc_info=True)
+        return False
+
+
+def _flush_dirty_sessions(now: float | None = None) -> int:
+    """Periodic incremental flush, driven by the idle-reaper scan.
+
+    Skips ``running`` sessions: the turn thread owns mid-turn persistence
+    (it already flushes at every persist point) and
+    ``_drop_trailing_empty_response_scaffolding`` mutates the live message
+    list, so racing an in-flight turn from the reaper thread is never safe.
+    Idle/detached sessions — precisely the ones a kill strands — are flushed
+    at most once per ``_INCREMENTAL_FLUSH_INTERVAL_S``. ``now`` is injectable
+    for tests (monotonic clock).
+    """
+    if _INCREMENTAL_FLUSH_INTERVAL_S <= 0:
+        return 0
+    if now is None:
+        now = time.monotonic()
+    with _sessions_lock:
+        sessions = list(_sessions.values())
+    flushed = 0
+    for session in sessions:
+        if not isinstance(session, dict) or session.get("running"):
+            continue
+        last = float(session.get("_last_incremental_flush") or 0.0)
+        if last and (now - last) < _INCREMENTAL_FLUSH_INTERVAL_S:
+            continue
+        if _flush_session_messages(session):
+            flushed += 1
+        session["_last_incremental_flush"] = now
+    return flushed
+
+
+def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
+    """Bounded flush of ALL in-memory sessions on the way out.
+
+    Runs on a daemon worker joined with the budget so a hung SQLite write
+    can never block exit longer than ``HERMES_TUI_EXIT_FLUSH_BUDGET_S``
+    (default 5s). Running sessions are included — the process is dying, so
+    a best-effort partial transcript beats guaranteed loss.
+    """
+    budget = _EXIT_FLUSH_BUDGET_S if budget_s is None else max(0.0, budget_s)
+    if budget <= 0:
+        return 0
+    result = {"flushed": 0}
+
+    def _run() -> None:
+        deadline = time.monotonic() + budget
+        with _sessions_lock:
+            sessions = list(_sessions.values())
+        for session in sessions:
+            if time.monotonic() >= deadline:
+                break
+            if _flush_session_messages(session):
+                result["flushed"] += 1
+
+    worker = threading.Thread(target=_run, daemon=True, name="hermes-exit-flush")
+    worker.start()
+    worker.join(budget)
+    return result["flushed"]
+
+
+_exit_flush_prev_handlers: dict[int, Any] = {}
+_exit_flush_handlers_installed = False
+
+
+def _handle_exit_flush_signal(signum, frame) -> None:
+    """Flush in-memory sessions, then hand off to the prior handler.
+
+    Chaining preserves the pre-existing signal story (uvicorn's graceful
+    shutdown, a supervisor's handler, or the default terminate disposition)
+    — this handler only *prepends* a bounded durable flush.
+    """
+    try:
+        _flush_sessions_before_exit()
+    except Exception:
+        pass
+    import signal as _signal
+
+    prev = _exit_flush_prev_handlers.get(signum)
+    if callable(prev):
+        prev(signum, frame)
+        return
+    if prev is _signal.SIG_IGN:
+        return
+    # Default disposition: restore it and re-raise so the process still dies
+    # with the correct signal (exit status visible to supervisors).
+    try:
+        _signal.signal(signum, _signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    except Exception:
+        raise SystemExit(128 + int(signum)) from None
+
+
+def install_exit_flush_signal_handlers() -> bool:
+    """Install chaining SIGTERM/SIGINT flush handlers (main thread only).
+
+    Called by ``hermes serve`` / dashboard startup before uvicorn takes over
+    signals: uvicorn's ``capture_signals()`` saves these as the "original"
+    handlers and restores + re-raises into them after its graceful shutdown,
+    so the flush also covers terminations outside uvicorn's serve window.
+    Idempotent; returns False off the main thread or when installation fails.
+    """
+    global _exit_flush_handlers_installed
+    if _exit_flush_handlers_installed:
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    import signal as _signal
+
+    installed = False
+    for signum in (_signal.SIGTERM, _signal.SIGINT):
+        try:
+            prev = _signal.getsignal(signum)
+            _signal.signal(signum, _handle_exit_flush_signal)
+            _exit_flush_prev_handlers[signum] = prev
+            installed = True
+        except (ValueError, OSError, RuntimeError):
+            continue
+    _exit_flush_handlers_installed = installed
+    return installed
 
 
 def _transport_is_dead(transport) -> bool:
@@ -1491,6 +1670,13 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 
 def _reap_idle_sessions() -> None:
     now = time.time()
+    # Piggyback the periodic incremental flush on the existing reaper tick
+    # (#94724 item 2) — no new timer subsystem. Even a SIGKILL then loses at
+    # most one flush interval of un-persisted messages.
+    try:
+        _flush_dirty_sessions()
+    except Exception:
+        logger.debug("periodic incremental session flush failed", exc_info=True)
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:

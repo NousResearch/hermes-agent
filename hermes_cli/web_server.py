@@ -19770,6 +19770,19 @@ def start_server(
     )
     server = uvicorn.Server(config)
 
+    # Flush-on-kill guard (#94724 item 2): install chaining SIGTERM/SIGINT
+    # handlers that first persist in-memory session transcripts to state.db
+    # (bounded, best-effort) before the normal shutdown story runs. Installed
+    # on the main thread BEFORE uvicorn's capture_signals() so uvicorn saves
+    # these as the "original" handlers and re-raises into them after its own
+    # graceful shutdown — kills outside the serve window are covered too.
+    try:
+        from tui_gateway.server import install_exit_flush_signal_handlers
+
+        install_exit_flush_signal_handlers()
+    except Exception as exc:
+        _log.debug("exit-flush signal handlers not installed: %s", exc)
+
     # ── #93608: machine-readable port-conflict detection ──────────────
     # uvicorn's own bind_socket() would catch the EADDRINUSE and exit 1
     # with a bare ERROR line — indistinguishable from "backend broken".

@@ -218,6 +218,15 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     a stale higher-precedence copy cannot shadow the rotation (#62269).
     Suppressed ``env:<VAR>`` pool sources are re-enabled so a deliberate
     re-add through the UI behaves like ``hermes auth add``.
+
+    The save also forces an immediate ``load_pool()`` for every provider
+    registered against this env var so the env-seeded ``credential_pool``
+    entry is materialized to ``auth.json`` right now — the live runtime reads
+    from the pool, and before #96058 the Desktop "Save" action only touched
+    ``.env`` while ``auth.json``'s mtime stayed unchanged, so an OpenCode Go
+    (or any other env-backed provider) request kept 401'ing until the user
+    ran ``hermes auth add <provider> --type api-key`` separately. This makes
+    the Desktop save's effect on disk match what ``hermes auth add`` does.
     """
     from hermes_cli.config import load_env, save_env_value
 
@@ -236,6 +245,19 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
 
         for provider in _providers_for_env_var(env_var):
             unsuppress_credential_source(provider, f"env:{env_var}")
+    except Exception:
+        pass
+
+    # Materialize the env-seeded credential_pool entry to auth.json NOW so the
+    # next request authenticates against the just-saved key. ``load_pool`` is
+    # idempotent and additive-only for env sources (#9331), so re-running it
+    # is safe even when the pool already had this entry. Best-effort: a
+    # failure here must not mask the successful .env write above.
+    try:
+        from agent.credential_pool import load_pool
+
+        for provider in _providers_for_env_var(env_var):
+            load_pool(provider)
     except Exception:
         pass
 

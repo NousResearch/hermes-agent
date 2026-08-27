@@ -146,6 +146,118 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
 
 
 # ---------------------------------------------------------------------------
+# Desktop PUT /api/env — #96058: credential_pool must be materialized so the
+# live runtime picks up the new key without waiting for its next background
+# load_pool() or a separate `hermes auth add`.
+# ---------------------------------------------------------------------------
+
+
+# OpenCode Go is a registered api_key provider with api_key_env_vars containing
+# the single env var OPENCODE_GO_API_KEY — exercising the exact reproducer
+# from issue #96058 (Ubuntu 24.04, openai_sdk 2.24.0, provider=opencode-go).
+OPENCODE_KEY_NEW = "ocg-" + "e" * 28
+
+
+def test_put_api_env_materializes_credential_pool_entry(hermes_home):
+    """Desktop Providers → API keys → Save must write a credential_pool entry.
+
+    Pre-fix: save_provider_env_credential only mutated .env. The live pool
+    kept authenticating with a stale higher-precedence config.yaml mirror or
+    the old cached credential until a separate ``hermes auth add opencode-go``
+    ran. auth.json mtime was unchanged before/after Save (#96058).
+
+    Post-fix: the same PUT /api/env call must also materialize an entry under
+    ``credential_pool.<provider>`` in auth.json so the next request
+    authenticates immediately, matching ``hermes auth add <provider> --type
+    api-key`` behavior.
+    """
+    # Start clean: empty auth.json so the only way a pool entry shows up is
+    # via the PUT /api/env handler we're testing.
+    _write_auth(hermes_home, {})
+
+    resp = client.put(
+        "/api/env",
+        json={"key": "OPENCODE_GO_API_KEY", "value": OPENCODE_KEY_NEW},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("ok") is True
+    assert body.get("key") == "OPENCODE_GO_API_KEY"
+
+    # auth.json must now have a credential_pool entry for opencode-go. The
+    # exact source string lives in source="env:OPENCODE_GO_API_KEY" — env
+    # sources are sanitized on disk (the raw token is replaced with a
+    # fingerprint; the canonical secret lives in .env and gets re-hydrated by
+    # load_pool() on each read). The critical observable is: load_pool() on
+    # the next call returns an in-memory entry carrying the just-saved token.
+    auth = _read_auth(hermes_home)
+    pool = auth.get("credential_pool", {})
+    assert "opencode-go" in pool, (
+        "PUT /api/env did not materialize a credential_pool entry for "
+        "opencode-go (#96058)"
+    )
+    entries = pool["opencode-go"]
+    assert isinstance(entries, list) and entries, pool
+    matched_disk = [
+        e for e in entries
+        if isinstance(e.get("source"), str)
+        and e["source"] == "env:OPENCODE_GO_API_KEY"
+    ]
+    assert matched_disk, (
+        f"credential_pool.opencode-go env-seeded reference missing on disk; "
+        f"got {entries!r}"
+    )
+    # And: a fresh load_pool() must surface the just-saved token to the
+    # runtime. This is the actual end-to-end contract — anything weaker
+    # means the OpenAI client will 401 because it never receives the new key.
+    from agent.credential_pool import load_pool
+    pool_obj = load_pool("opencode-go")
+    runtime_entries = pool_obj.entries()
+    matched_runtime = [
+        e for e in runtime_entries
+        if e.access_token == OPENCODE_KEY_NEW
+        and isinstance(e.source, str)
+        and e.source == "env:OPENCODE_GO_API_KEY"
+    ]
+    assert matched_runtime, (
+        "load_pool('opencode-go') did not surface the just-saved token; "
+        "the live runtime will keep 401'ing (#96058). "
+        f"Got sources: {[e.source for e in runtime_entries]!r}"
+    )
+    assert matched_runtime[0].auth_type == "api_key"
+
+
+def test_put_api_env_writes_auth_json_for_provider(hermes_home):
+    """Sentinel for #96058: PUT /api/env must modify auth.json on disk.
+
+    The reported symptom was ``stat -c '%y' ~/.hermes/auth.json`` returning
+    the same value before and after the Desktop Save. After the fix the file's
+    mtime advances because the save materializes the env-seeded pool entry.
+    """
+    _write_auth(hermes_home, {})
+    auth_path = hermes_home / "auth.json"
+    assert auth_path.exists()
+    mtime_before = auth_path.stat().st_mtime_ns
+
+    # Tiny delay so a write is observable even on filesystems with 1s mtime
+    # resolution. Use ns precision so this is reliable on every FS.
+    import time
+    time.sleep(0.05)
+
+    resp = client.put(
+        "/api/env",
+        json={"key": "OPENCODE_GO_API_KEY", "value": OPENCODE_KEY_NEW},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert auth_path.stat().st_mtime_ns > mtime_before, (
+        "auth.json was not modified by the Desktop Save — bug #96058"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Suppression round-trip: delete sticks, re-add lifts it
 # ---------------------------------------------------------------------------
 

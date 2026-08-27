@@ -107,6 +107,14 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         update_cmd, "_venv_core_imports_healthy", lambda: (True, "")
     )
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    # Upstream moves restart work into a fresh interpreter. The update-flow
+    # test owns the marker transition, so emulate the worker's successful
+    # completion and its authoritative marker clear without launching a child.
+    monkeypatch.setattr(
+        update_cmd,
+        "_run_post_update_restart_in_fresh_process",
+        lambda **kwargs: update_cmd._clear_fleet_restart_pending_marker(),
+    )
 
     import hermes_cli.gateway as hermes_gateway
 
@@ -268,8 +276,6 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []
     )
-    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
-
     assert update_cmd._run_pending_fleet_restart() is True
     assert "nothing to restart" in capsys.readouterr().out
 

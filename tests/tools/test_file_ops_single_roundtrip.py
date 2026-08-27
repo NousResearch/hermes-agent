@@ -339,6 +339,13 @@ class TestNativeRead:
         assert calls == []
 
 
+# The native reader scans 1 MiB chunks and clamps each page line to
+# ``4 * get_max_line_length() + 1`` bytes (8001 by default), exactly as
+# ``sed | cut -b1-N`` does. These shapes put a newline, a line, the clamp
+# point, a CRLF pair and EOF precisely on those chunk boundaries.
+_CHUNK = 1 << 20
+_CLAMP = 8001
+
 PARITY_CASES = [
     ("plain", b"one\ntwo\nthree\n", {}),
     ("no_trailing_newline", b"a\nb", {}),
@@ -353,6 +360,27 @@ PARITY_CASES = [
     ("long_line", b"a" * 9000 + b"\nshort\n", {}),
     ("multibyte_long_line", ("汉" * 4000 + "\nx\n").encode("utf-8"), {}),
     ("multi_chunk_line", b"b" * 3_000_000 + b"\nz\n", {}),
+    ("newline_last_byte_of_chunk", b"a" * (_CHUNK - 1) + b"\nsecond\n", {}),
+    ("newline_first_byte_of_next_chunk", b"a" * _CHUNK + b"\nsecond\n", {}),
+    ("line_spans_three_boundaries", b"p\n" + b"b" * (3 * _CHUNK + 5) + b"\nz\n", {}),
+    (
+        "clamp_fills_on_boundary",
+        b"x" * (_CHUNK - _CLAMP - 1) + b"\n" + b"c" * 20000 + b"\ntail\n",
+        {"offset": 2, "limit": 3},
+    ),
+    (
+        "clamp_fills_after_boundary",
+        b"x" * (_CHUNK - _CLAMP) + b"\n" + b"c" * 20000 + b"\ntail\n",
+        {"offset": 2, "limit": 3},
+    ),
+    ("eof_midline_on_boundary", b"l1\n" + b"d" * (2 * _CHUNK - 3), {}),
+    ("blank_lines_on_boundary", b"e" * (_CHUNK - 2) + b"\n\n\n" + b"f\n", {}),
+    ("crlf_split_on_boundary", b"r" * (_CHUNK - 1) + b"\r\n" + b"s\r\n", {}),
+    (
+        "page_starts_in_second_chunk",
+        b"q\n" * (_CHUNK // 2 + 3) + b"target1\ntarget2\n",
+        {"offset": _CHUNK // 2 + 3, "limit": 4},
+    ),
     ("window", b"".join(b"l%d\n" % i for i in range(1, 11)), {"offset": 3, "limit": 2}),
     ("window_reaches_eof", b"".join(b"l%d\n" % i for i in range(1, 11)), {"offset": 9, "limit": 5}),
     ("past_eof", b"".join(b"l%d\n" % i for i in range(1, 6)), {"offset": 50}),
@@ -419,3 +447,4 @@ class TestCompoundFallback:
             r = ops.read_file(p)
         assert r.error is None and r.content == "1|one\n2|two\n3|"
         assert r.total_lines == 2
+

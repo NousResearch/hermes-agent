@@ -632,6 +632,45 @@ class TestPerProviderReasoningEcho:
         assert fallback_api["reasoning_content"] == "FALLBACK_PRIVATE_TRACE"
         assert "_reasoning_route" not in fallback_api
 
+    def test_unprovenanced_rebuild_fails_closed_on_replay_route(self):
+        agent = self._make_agent(
+            provider="custom:destination",
+            model="destination-model",
+            base_url="https://destination.example/v1",
+        )
+        agent._fallback_activated = False
+        agent._reasoning_replay_field = "reasoning"
+        source = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert "reasoning" not in api_message
+        assert "reasoning_content" not in api_message
+        assert "reasoning_details" not in api_message
+        assert "_reasoning_route" not in api_message
+
+    def test_unprovenanced_require_side_rebuild_uses_safe_pad(self):
+        agent = self._make_agent(reasoning_echo_flag=True)
+        source = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+            "tool_calls": [{"id": "call-1", "type": "function"}],
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert "reasoning" not in api_message
+        assert api_message["reasoning_content"] == " "
+        assert "reasoning_details" not in api_message
+        assert "_reasoning_route" not in api_message
+
     def test_restore_primary_reverts_flag(self):
         """After fallback, restore_primary_runtime reverts the flag
         from the snapshot saved by switch_model."""

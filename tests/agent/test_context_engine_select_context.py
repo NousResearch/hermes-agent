@@ -218,7 +218,32 @@ def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
     out = _apply_context_engine_selection(
         agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
     )
-    assert out is role_unusual  # accepted structurally; downstream sanitizers normalize
+    assert out == role_unusual  # accepted structurally; downstream sanitizers normalize
+    assert out is not role_unusual  # downstream mutation must not alter engine-owned state
+
+
+def test_selected_context_is_structurally_cloned_before_downstream_mutation():
+    selected = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "visible"}],
+            "reasoning": "CURRENT_ROUTE_TRACE",
+            "_reasoning_route": "route-fingerprint",
+        }
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return selected
+
+    out = _apply_context_engine_selection(
+        _agent_with(_Engine()), REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    out[0].pop("_reasoning_route")
+    out[0]["content"][0]["text"] = "mutated"
+
+    assert selected[0]["_reasoning_route"] == "route-fingerprint"
+    assert selected[0]["content"][0]["text"] == "visible"
 
 
 # -- on_turn_complete (post-turn observation) ------------------------------

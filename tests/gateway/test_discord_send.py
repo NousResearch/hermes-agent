@@ -559,3 +559,85 @@ async def test_send_video_oversized_skips_base_fallback(tmp_path, monkeypatch):
     assert result.success is False
     assert "too large" in (result.error or "").lower()
     assert base_called["yes"] is False
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeypatch):
+    """Sibling site of #50846: batch image sends must preflight local files too.
+
+    An oversized local image in a chunk previously went straight into
+    channel.send(files=...), 413-ing the whole chunk and dumping its siblings
+    into the per-image fallback. The oversized file must be skipped up front,
+    the rest of the chunk delivered, and a notice appended to the message.
+    """
+    from plugins.platforms.discord.adapter import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+
+    small = tmp_path / "small.png"
+    small.write_bytes(b"ok")
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x")
+
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    channel = SimpleNamespace(id=9, guild=None, send=send)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    original = os.path.getsize
+    monkeypatch.setattr(
+        os.path,
+        "getsize",
+        lambda path: (
+            _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1
+            if str(path) == str(big)
+            else original(path)
+        ),
+    )
+
+    await adapter.send_multiple_images(
+        "9",
+        [(f"file://{small}", ""), (f"file://{big}", "")],
+    )
+
+    assert send.await_count == 1
+    kwargs = send.await_args.kwargs
+    files = kwargs.get("files") or []
+    assert len(files) == 1  # only the small image made it
+    assert "big.png" in (kwargs.get("content") or "")
+    assert "exceeds" in (kwargs.get("content") or "")
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_all_oversized_sends_notice(tmp_path, monkeypatch):
+    """When every image in the chunk is oversized, the user still gets a notice."""
+    from plugins.platforms.discord.adapter import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+
+    big = tmp_path / "only.png"
+    big.write_bytes(b"x")
+
+    send = AsyncMock(return_value=SimpleNamespace(id=8))
+    channel = SimpleNamespace(id=10, guild=None, send=send)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _cid: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    monkeypatch.setattr(
+        os.path,
+        "getsize",
+        lambda path: _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1,
+    )
+
+    await adapter.send_multiple_images("10", [(f"file://{big}", "")])
+
+    assert send.await_count == 1
+    kwargs = send.await_args.kwargs
+    assert not kwargs.get("files")
+    assert "only.png" in (kwargs.get("content") or "")

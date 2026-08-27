@@ -675,6 +675,38 @@ class TestInitialCwdGuard:
             with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
                 BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=config)
 
+    @pytest.mark.parametrize("spelling", ["link", "target"])
+    def test_cwd_under_a_profile_home_linked_inside_hermes_home_is_refused(self, sandbox_root, fake_home, monkeypatch, spelling):
+        # The profile-home bind lands at the link path, so a cwd under a
+        # link target inside HERMES_HOME sits under the tmpfs in every
+        # spawn and nothing binds it back.
+        hermes_home = fake_home / ".hermes"
+        target = hermes_home / "profiles" / "x"
+        (target / "proj").mkdir(parents=True)
+        (hermes_home / "home").symlink_to(target)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        cwd = (hermes_home / "home" if spelling == "link" else target) / "proj"
+        with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    @pytest.mark.parametrize("spelling", ["link", "target"])
+    def test_cwd_under_a_profile_home_linked_outside_constructs_under_home_mode_profile(self, sandbox_root, fake_home, tmp_path, monkeypatch, spelling):
+        # Its real path is outside every hidden path: no exemption needed.
+        hermes_home = fake_home / ".hermes"
+        hermes_home.mkdir()
+        target = tmp_path / "elsewhere" / "home"
+        (target / "proj").mkdir(parents=True)
+        (hermes_home / "home").symlink_to(target)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        cwd = (hermes_home / "home" if spelling == "link" else target) / "proj"
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        try:
+            assert env._initial_cwd == os.path.realpath(target / "proj")
+        finally:
+            env.cleanup()
+
     def test_cwd_under_tmp_constructs(self, sandbox_root, fake_home):
         # /tmp is a fresh tmpfs inside, but the cwd is bound at its own path on top of it.
         cwd = Path(tempfile.mkdtemp(prefix="hermes-", dir="/tmp"))

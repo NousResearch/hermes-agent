@@ -670,11 +670,28 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 
 # --- Message format conversion: OpenAI → Bedrock Converse ---
 
+_CONVERSE_TOP_LEVEL_BANNED = frozenset({"oneOf", "allOf", "anyOf"})
+
+
+def _converse_input_schema(parameters):
+    """Converse rejects top-level oneOf/allOf/anyOf with a ValidationException (same constraint as
+    the Anthropic native API); Pydantic/MCP/plugin schemas ship them at the root, and one such tool
+    fails the whole request. Strip them and keep a plain object schema; nested ones are accepted."""
+    if not isinstance(parameters, dict) or not _CONVERSE_TOP_LEVEL_BANNED & parameters.keys():
+        return parameters
+    stripped = {k: v for k, v in parameters.items() if k not in _CONVERSE_TOP_LEVEL_BANNED}
+    stripped.setdefault("type", "object")
+    if not isinstance(stripped.get("properties"), dict):
+        stripped["properties"] = {}
+    return stripped
+
+
 def convert_tools_to_converse(tools: list[dict]) -> list[dict]:
     """OpenAI ``{"function": {...}}`` tool defs → Converse ``{"toolSpec": {...}}``."""
     return [{"toolSpec": {
         "name": fn.get("name", ""), "description": fn.get("description", ""),
-        "inputSchema": {"json": fn.get("parameters", {"type": "object", "properties": {}})},
+        "inputSchema": {"json": _converse_input_schema(
+            fn.get("parameters", {"type": "object", "properties": {}}))},
     }} for fn in (t.get("function", {}) for t in tools or [])]
 
 

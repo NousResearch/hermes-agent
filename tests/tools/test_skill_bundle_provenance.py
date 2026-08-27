@@ -146,13 +146,78 @@ def test_same_dir_link_without_extension_is_ignored(monkeypatch):
     """Prose targets that aren't file links (no extension) never fetch."""
     from tools.skills_hub import _referenced_support_paths
 
-    skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
+    skill = "---\nname: x\ndescription: x\---\nsee [notes](NOTES) and `README`\n"
     assert _referenced_support_paths(skill) == set()
+
+
+def test_same_dir_link_query_and_fragment_are_stripped():
+    """?query and #fragment never leak into the fetched bundle path."""
+    from tools.skills_hub import _referenced_support_paths
+
+    skill = (
+        "---\nname: x\ndescription: x\---\n"
+        "[a](CONTEXT-FORMAT.md?raw=1) [b](DEEPENING.md#usage)\n"
+    )
+    assert _referenced_support_paths(skill) == {"CONTEXT-FORMAT.md", "DEEPENING.md"}
+
+
+def test_case_variant_of_skill_md_is_never_a_sibling_entry():
+    """skill.md must not ship as a bundle file (case-insensitive FS collision)."""
+    from tools.skills_hub import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\---\n[home](skill.md)\n"
+    assert _referenced_support_paths(skill) == set()
+
+
+def test_case_folded_sibling_collision_drops_the_pair():
+    """A.md + a.md would collide on install — neither ships."""
+    from tools.skills_hub import _referenced_support_paths
+
+    skill = "---\nname: x\ndescription: x\---\n[a](A.md) [a2](a.md)\n"
+    assert _referenced_support_paths(skill) == set()
+
+
+def test_github_fetches_pin_to_the_tree_revision(monkeypatch):
+    """#96310 review: every byte fetch carries the tree's SHA as ?ref=."""
+    source = GitHubSource(GitHubAuth())
+    fetched: list[tuple[str, dict | None]] = []
+
+    def _fake_content(repo, path, ref=None):
+        fetched.append((path, {"ref": ref} if ref else None))
+        return SKILL_MD if path.endswith("SKILL.md") else "x"
+
+    monkeypatch.setattr(source, "_fetch_file_content", _fake_content)
+    monkeypatch.setattr(
+        source,
+        "_fetch_file_bytes",
+        lambda repo, path, ref=None: fetched.append((path, {"ref": ref} if ref else None)) or b"x",
+    )
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/CONTEXT-FORMAT.md", "type": "blob", "mode": "100644"},
+        ],
+    )
+    source._tree_revisions["owner/repo"] = "treesha123"
+
+    minimal_skill = "---\nname: x\ndescription: x\n---\nSee [the format](CONTEXT-FORMAT.md).\n"
+    monkeypatch.setattr(
+        source, "_fetch_file_content",
+        lambda repo, path, ref=None: fetched.append((path, {"ref": ref} if ref else None)) or minimal_skill,
+    )
+
+    bundle = source.fetch("owner/repo/skill")
+
+    assert bundle is not None
+    assert fetched, "expected byte fetches"
+    for path, params in fetched:
+        assert params == {"ref": "treesha123"}, path
 
 
 def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     source = GitHubSource(GitHubAuth())
-    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path: SKILL_MD if path.endswith("SKILL.md") else "x")
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: SKILL_MD if path.endswith("SKILL.md") else "x")
     source._tree_cache["owner/repo"] = (
         "main",
         [

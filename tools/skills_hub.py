@@ -229,26 +229,51 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
             paths.add(safe)
     for match in _SAMEDIR_LINK_RE.finditer(normalized):
         raw = match.group(1).rstrip(".,;:")
+        # Canonicalize first: drop query/fragment components (``?raw=1``,
+        # ``#section``) and percent-decode — the same normalization the
+        # support-dir branch applies via urlsplit+unquote — then strip a
+        # leading ``./``. The set below deduplicates case-SENSITIVE repeats;
+        # case-VARIANT collisions are rejected rather than merged (below).
+        name = unquote(urlsplit(raw).path)
+        name = name[2:] if name.startswith("./") else name
         # External URLs, anchors, mailto and site-absolute targets are not
         # same-directory file links — leave them to their own resolution.
-        if "://" in raw or raw.startswith(("mailto:", "#", "/")):
+        if not name or "://" in raw or raw.startswith(("mailto:", "#", "/")):
             continue
-        name = raw[2:] if raw.startswith("./") else raw
         # A ``..`` prefix is a traversal attempt — same fail-closed contract
         # as the support-dir branch above, before any shape-based skipping.
         if name.startswith(".."):
             return None
         # Only unambiguous file links: an extension, no internal slash, and
-        # never SKILL.md itself (that IS the bundle root).
-        if "/" in name or name == "SKILL.md" or "." not in name.lstrip("."):
+        # never SKILL.md itself (that IS the bundle root). The casefold
+        # check keeps a ``skill.md`` link from shipping as a bundle entry
+        # that collides with SKILL.md on case-insensitive filesystems
+        # (macOS/Windows) — skipped, not merged, so the bundle root is
+        # never overwritten (#96310 review).
+        if (
+            "/" in name
+            or name.casefold() == "skill.md"
+            or "." not in name.lstrip(".")
+        ):
             continue
-        if not _SAMEDIR_NAME_RE.match(raw):
+        if not _SAMEDIR_NAME_RE.match(name):
             continue
         try:
             safe = _validate_bundle_rel_path(name)
         except ValueError:
             return None
         paths.add(safe)
+    # Case-folded collision among the accepted same-dir names themselves
+    # (``A.md`` + ``a.md``) would also collide on install — drop the pair
+    # rather than guess which variant the author meant.
+    folded: dict[str, str] = {}
+    for p in sorted(paths):
+        key = p.casefold()
+        if key in folded:
+            paths.discard(folded[key])
+            paths.discard(p)
+        else:
+            folded[key] = p
     return paths
 
 
@@ -733,7 +758,19 @@ class GitHubSource(SkillSource):
         repo = f"{parts[0]}/{parts[1]}"
         skill_path = parts[2]
 
-        skill_md = self._fetch_file_content(repo, f"{skill_path.rstrip('/')}/SKILL.md")
+        # Resolve the tree FIRST so every byte fetch in this install —
+        # SKILL.md included — can be pinned to the same revision. Without the
+        # pin the /contents endpoint floats to the default-branch HEAD and
+        # the downloaded bytes can come from a NEWER revision than the tree
+        # the paths were validated against (TOCTOU between "the tree says
+        # this is a regular blob" and "what actually gets downloaded").
+        # Idempotent + cached, so callers that already primed the tree pay
+        # nothing extra.
+        tree = self._get_repo_tree(repo)
+        pinned_ref = self._tree_revisions.get(repo)
+        skill_md = self._fetch_file_content(
+            repo, f"{skill_path.rstrip('/')}/SKILL.md", ref=pinned_ref
+        )
         if skill_md is None:
             return None
         referenced = _referenced_support_paths(skill_md)
@@ -741,7 +778,6 @@ class GitHubSource(SkillSource):
             return None
 
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
-        tree = self._get_repo_tree(repo)
         if tree is not None:
             # Download the FULL skill directory, not just SKILL.md-linked
             # paths. Link-driven fetching silently dropped every support file
@@ -770,7 +806,7 @@ class GitHubSource(SkillSource):
                 except ValueError:
                     logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                     return None
-                content = self._fetch_file_bytes(repo, item_path)
+                content = self._fetch_file_bytes(repo, item_path, ref=pinned_ref)
                 if content is None:
                     logger.warning("Failed to fetch referenced skill support "
                                    "file; continuing without it: %s", item_path)
@@ -1169,9 +1205,11 @@ class GitHubSource(SkillSource):
 
         return None
 
-    def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
+    def _fetch_file_content(
+        self, repo: str, path: str, ref: Optional[str] = None
+    ) -> Optional[str]:
         """Fetch a single text file from GitHub."""
-        content = self._fetch_file_bytes(repo, path)
+        content = self._fetch_file_bytes(repo, path, ref=ref)
         if content is None:
             return None
         try:
@@ -1179,12 +1217,25 @@ class GitHubSource(SkillSource):
         except UnicodeDecodeError:
             return None
 
-    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
-        """Fetch exact file bytes from GitHub without text decoding."""
+    def _fetch_file_bytes(
+        self, repo: str, path: str, ref: Optional[str] = None
+    ) -> Optional[bytes]:
+        """Fetch exact file bytes from GitHub without text decoding.
+
+        ``ref`` pins the fetch to a specific commit/tree SHA. Without it the
+        contents endpoint floats to the default-branch HEAD, so the bytes can
+        come from a NEWER revision than the tree the paths were validated
+        against — a TOCTOU between "what the tree says is a regular blob"
+        and "what actually gets downloaded". Callers that resolved paths from
+        a tree pass that tree's SHA; ``None`` keeps the legacy unpinned
+        behavior for call sites with no revision in hand.
+        """
         encoded_path = quote(path, safe="/")
         url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
+        params = {"ref": ref} if ref else None
         resp = self._github_get(
             url,
+            params=params,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:

@@ -122,11 +122,11 @@ computer_use:
 ```
 
 Hermes then launches the cua-driver runtime with the trusted-launcher grant
-(`--grant existing-profile`), and
-`cua_browser_prepare` with an existing profile succeeds against the exact
-`(pid, window_id)` the agent proves. Leave it `false` (the default) and
-existing-profile attachment fails closed; driver-owned isolated profiles work
-either way and are what the agent prefers.
+(`--grant existing-profile`), and the standard capture/click/type actions
+succeed against the exact `(pid, window_id)` of that signed-in window. Leave
+it `false` (the default) and existing-profile attachment fails closed;
+driver-owned isolated profiles work either way and are what the agent
+prefers.
 
 ### Bounded mode for repeatable automation
 

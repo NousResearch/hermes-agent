@@ -6167,12 +6167,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     ):
                         # Dead stdio children with a stale session object: the
                         # transport failed WITHOUT clearing session, so the
-                        # line-6077 reconnect path never fires. Signal the
-                        # server task to rebuild the transport (respawn the
-                        # subprocess) in the background and return a clean
-                        # reconnecting error; the next call lands on the fresh
-                        # session. The breaker resets once it initializes.
-                        _bump_server_error(server_name)
+                        # transport-down reconnect path above never fires.
+                        # Signal the server task to rebuild the transport
+                        # (respawn the subprocess) in the background and return
+                        # a clean reconnecting error; the next call lands on
+                        # the fresh session. The breaker resets once it
+                        # initializes. No explicit _bump_server_error here:
+                        # this error return flows through the handler's JSON
+                        # parse, which already bumps once on any error payload.
                         if _signal_reconnect(server):
                             return tool_error(
                                 f"MCP server '{server_name}' stdio subprocess is "
@@ -6215,11 +6217,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             )
                             if watch_task in done and not rpc_task.done():
                                 rpc_task.cancel()
+                                # Same stale-session problem as the pre-call
+                                # gate above: the subprocess died mid-call but
+                                # nothing clears server.session, so without a
+                                # reconnect signal the server would stay dead
+                                # until the idle keepalive probe notices.
+                                _signal_reconnect(server)
                                 raise TimeoutError(
                                     f"MCP stdio subprocess for '{server_name}' "
                                     f"exited mid-call; failing the call fast "
                                     f"instead of waiting "
-                                    f"{float(tool_timeout):.0f}s"
+                                    f"{float(tool_timeout):.0f}s; reconnect "
+                                    f"requested — give it a few seconds to "
+                                    f"respawn before retrying"
                                 )
                             result = await rpc_task
                         finally:

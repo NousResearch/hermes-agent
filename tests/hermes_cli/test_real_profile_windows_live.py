@@ -122,8 +122,18 @@ def test_autoclose_on_closes_chrome_and_snapshots(tmp_path):
 
         assert err is None, f"auto-close snapshot failed: {err}"
         assert dst is not None
-        copy_ck = Path(dst) / "Default" / "Cookies"
-        assert copy_ck.is_file(), "cookie DB not copied after auto-close"
+        # Cookie DB may be at the modern Network/ location or the legacy path,
+        # depending on the Chrome build — accept either, but it MUST exist and
+        # be a valid SQLite cookies DB.
+        candidates = [
+            Path(dst) / "Default" / "Network" / "Cookies",
+            Path(dst) / "Default" / "Cookies",
+        ]
+        copy_ck = next((c for c in candidates if c.is_file()), None)
+        assert copy_ck is not None, (
+            "cookie DB not copied after auto-close; Default contents: "
+            + repr(sorted(os.listdir(Path(dst) / "Default")) if (Path(dst) / "Default").is_dir() else "NO Default")
+        )
         # Valid SQLite with the cookies table.
         con = sqlite3.connect(str(copy_ck))
         try:

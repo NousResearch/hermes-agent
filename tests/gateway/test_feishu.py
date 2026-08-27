@@ -2544,11 +2544,12 @@ class TestApplyYamlConfigIgnoreAtAll(unittest.TestCase):
             self._call({"ignore_at_all": True})
             self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
 
-    def test_env_wins_over_yaml(self):
+    def test_yaml_replaces_plain_env_value(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ["FEISHU_IGNORE_AT_ALL"] = "true"
-            self._call({"ignore_at_all": False})
-            self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "true")
+            seeded = self._call({"ignore_at_all": False})
+            self.assertEqual(os.environ["FEISHU_IGNORE_AT_ALL"], "false")
+            self.assertEqual(seeded, {"ignore_at_all": "false"})
 
     def test_key_absent_leaves_env_untouched(self):
         with patch.dict(os.environ, {}, clear=False):

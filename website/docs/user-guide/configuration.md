@@ -87,6 +87,39 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+## Database Settings
+
+The `database:` section controls how Hermes opens its SQLite state database
+(`state.db`), which stores sessions, messages, and gateway routing:
+
+```yaml
+database:
+  # Journal mode for state.db: wal (default) or delete.
+  # Use delete on filesystems where WAL is unsafe (network mounts, some
+  # virtiofs setups). Note: an existing on-disk WAL database is never
+  # live-downgraded — Hermes keeps WAL and logs an error telling you the
+  # configured delete did not apply. To convert an existing database, stop
+  # every process using it and run a one-time offline
+  # `PRAGMA journal_mode=DELETE` on the file.
+  journal_mode: wal
+
+  # Durability level for every state.db connection: OFF, NORMAL, FULL,
+  # EXTRA (or 0-3). Unset leaves SQLite's compile-time default, which
+  # differs between interpreter builds. On macOS this is a floor, not a
+  # pin: values below FULL are refused to protect against Darwin fsync
+  # reordering; EXTRA is honored.
+  # synchronous: FULL
+
+  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
+  # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+```
+
+Hermes also warns (once per process per database) when an existing
+database's on-disk journal mode is silently flipped to WAL on open — for
+example a database an operator had manually converted to `delete` — and
+names `database.journal_mode` as the setting that makes the choice stick.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

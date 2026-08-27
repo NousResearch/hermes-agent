@@ -566,16 +566,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
     ],
-    # OpenCode free tier — keyless (no OpenCode account needed). Synced
-    # against live GET /zen/v1/models + anonymous probes (2026-08-21);
-    # deepseek-v4-flash-free delisted (promo ended, now 401s).
-    # big-pickle + mimo-v2.5-free delisted (UA-gated: the relay 429s
-    # FreeUsageLimitError for every client except User-Agent
-    # "opencode/latest"; we send honest Hermes attribution and don't
-    # impersonate other clients — verified 2026-08-21).
+    # OpenCode free tier — keyless (no OpenCode account needed). This is the
+    # OFFLINE FLOOR only: provider_model_ids("opencode-free") revalidates live
+    # against GET /zen/v1/models (keyless) and filters to the anonymous free
+    # tier, so a relay-delisted model stops appearing in the picker and a
+    # newly-live one becomes selectable without a release. This floor keeps the
+    # picker populated when the relay is unreachable. Note: this floor may lag
+    # the live relay (e.g. x-preview-f-free was delisted 2026-08-26) — that is
+    # intentional; the live revalidation is the source of truth when reachable.
+    # deepseek-v4-flash-free and mimo-v2.5-free are back on the live list.
     "opencode-free": [
         "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
+        "deepseek-v4-flash-free",
         "hy3-free",
+        "mimo-v2.5-free",
         "laguna-s-2.1-free",
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
@@ -4100,12 +4104,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
-    # OpenCode Free: curated keyless list only. models.dev's cost.input==0
-    # filter lags reality (deepseek-v4-flash-free stayed "free" there after
-    # its promo ended and the relay began 401ing keyless requests), so the
-    # curated list — synced against anonymous live probes — is authoritative.
+    # OpenCode Free: keyless live catalog, revalidated against the Zen relay
+    # every TTL. models.dev's cost.input==0 filter lags reality
+    # (deepseek-v4-flash-free stayed "free" there after its promo ended and the
+    # relay began 401ing keyless requests), so we filter the live /zen/v1/models
+    # dump to the anonymous-servable `*-free` tier ourselves and fall back to
+    # the curated _PROVIDER_MODELS floor only when the live fetch fails or is
+    # empty. This is what keeps a relay-delisted model (e.g. x-preview-f-free)
+    # from lingering in the picker until a release re-syncs the snapshot.
     if normalized == "opencode-free":
-        return list(_PROVIDER_MODELS.get(normalized, []))
+        return _fetch_opencode_free_models() or list(_PROVIDER_MODELS.get(normalized, []))
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
@@ -4196,6 +4204,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+# Providers whose catalog is served with NO credential and therefore gets a
+# stable (constant) credential fingerprint in the disk cache. The opencode-free
+# catalog is anonymous — its freshness comes from TTL revalidation, not from
+# user-rotatable credentials — so folding in unrelated auth.json mtimes would
+# only needlessly bust the SWR cache.
+_KEYLESS_STABLE_CACHE_PROVIDERS = frozenset({"opencode-free"})
 # Stale-while-revalidate window: an expired-but-same-credentials entry is
 # served IMMEDIATELY (picker opens stay instant) while a background daemon
 # thread re-fetches the live catalog and rewrites the disk cache for the
@@ -4295,6 +4309,14 @@ def _credential_fingerprint(provider: str) -> str:
     import os as _os
 
     parts: list[str] = []
+
+    # Keyless providers have no credential to fingerprint: the catalog is
+    # served anonymously, so nothing the user rotates (env vars, auth files,
+    # base URLs) should invalidate the cached entry. A stable fingerprint keeps
+    # the SWR disk cache alive across unrelated re-auths and only busts on TTL
+    # expiry — matching how the live catalog genuinely changes.
+    if (provider or "").strip().lower() in _KEYLESS_STABLE_CACHE_PROVIDERS:
+        return "keyless:" + (provider or "").strip().lower()
 
     # Env vars from PROVIDER_REGISTRY for this slug
     try:
@@ -5447,6 +5469,12 @@ _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 # (big-pickle is OpenCode's rotating free stealth slot.)
 _OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
 
+# Models whose slug carries ``-free`` but are NOT anonymous-servable: they are
+# KEYED (Go-subscription) models and must be excluded from the keyless free
+# catalog even though the suffix looks free. ox-alpha-free is the Go relay's
+# subscription twin of the Zen keyless Ox Alpha (verified 2026-08-21).
+_OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
+
 
 def is_opencode_zen_free_model(model_id: Optional[str]) -> bool:
     """True when ``model_id`` is an OpenCode Zen free-tier slug.
@@ -5481,6 +5509,51 @@ def opencode_zen_free_headers() -> dict:
         "X-Title": "Hermes Agent",
         "User-Agent": f"HermesAgent/{_v}",
     }
+
+
+def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
+    """Fetch the live keyless OpenCode Free catalog from the Zen relay.
+
+    GETs ``{_OPENCODE_ZEN_FREE_BASE_URL}/models`` ANONYMOUSLY (the free tier
+    rejects any unrecognized Authorization bearer with 401) and filters the
+    dump to the anonymous-servable ``*-free`` tier. Returns ``None`` on any
+    network/auth/parse failure so callers fall back to the curated
+    ``_PROVIDER_MODELS["opencode-free"]`` floor; an empty filtered result is
+    treated as a failure for the same reason (a relay with zero free models is
+    not worth trusting over the floor).
+
+    The Zen ``/models`` dump also lists paid/subscription IDs (e.g. Go
+    ``ox-alpha-free`` is KEYED despite the suffix), so a bare ``*-free`` suffix
+    filter is not safe on its own — this mirrors the existing
+    ``opencode_zen_free_runtime`` contract, which uses membership in the
+    verified keyless catalog as the routing criterion.
+    """
+    import urllib.request
+
+    from hermes_cli.urllib_security import open_credentialed_url
+
+    url = f"{_OPENCODE_ZEN_FREE_BASE_URL.rstrip('/')}/models"
+    req = urllib.request.Request(url)
+    req.add_header("Accept", "application/json")
+    for k, v in opencode_zen_free_headers().items():
+        if k.lower() != "authorization":  # never send a bearer keylessly
+            req.add_header(k, v)
+    try:
+        with open_credentialed_url(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        items = data if isinstance(data, list) else data.get("data", [])
+    except Exception:
+        return None
+    ids = [m["id"] for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)]
+    # Filter to the anonymous-servable free tier. The Zen dump can contain
+    # keyed/Go IDs; only the verified free set belongs in the keyless picker.
+    live_free = [
+        mid
+        for mid in ids
+        if mid.lower().endswith("-free")
+        and mid.lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
+    ]
+    return live_free if live_free else None
 
 
 def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str]) -> Optional[dict]:

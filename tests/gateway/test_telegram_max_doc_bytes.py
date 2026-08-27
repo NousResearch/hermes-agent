@@ -86,6 +86,7 @@ def _recovery_adapter(*, users=("42",), profiles=("default",)):
             enabled=True,
             token="***",
             extra={
+                "allowed_chats": ["-100200"],
                 "auto_skill_routes": [
                     {
                         "users": list(users),

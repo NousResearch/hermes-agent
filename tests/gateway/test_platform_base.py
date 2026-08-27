@@ -124,7 +124,7 @@ class TestMessageEventGetCommandArgs:
 
     def test_preserves_verbatim_args_for_trusted_adapter_command(self):
         event = MessageEvent(
-            text="/telegram-chip 04/20 — canary",
+            text="/media-recovery 04/20 — canary",
             metadata={"preserve_command_args": True},
         )
         assert event.get_command_args() == "04/20 — canary"

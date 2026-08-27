@@ -2057,7 +2057,9 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user",
             "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "docker_orphan_reaper", "bubblewrap_profile", "bubblewrap_binds",
+            "bubblewrap_memory_mb", "bubblewrap_cpu_seconds", "bubblewrap_max_procs",
+            "sandbox_dir", "persistent_shell")}}
 
 
 def _terminal_env_value(value: Any) -> str:

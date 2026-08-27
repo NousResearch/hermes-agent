@@ -1844,6 +1844,11 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+        "bubblewrap_profile": "TERMINAL_BUBBLEWRAP_PROFILE",
+        "bubblewrap_binds": "TERMINAL_BUBBLEWRAP_BINDS",
+        "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
+        "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
+        "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
     for _cfg_key, _env_var in _terminal_env_map.items():

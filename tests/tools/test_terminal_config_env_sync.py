@@ -321,3 +321,64 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def _cli_env_map_values() -> set[str]:
+    import cli
+    return set(cli._TERMINAL_ENV_MAPPINGS.values())
+
+
+def _gateway_env_map_values() -> set[str]:
+    import gateway.run as gr
+    return _extract_dict_values(inspect.getsource(gr), "_terminal_env_map")
+
+
+BUBBLEWRAP_KEYS = {
+    "bubblewrap_profile": "TERMINAL_BUBBLEWRAP_PROFILE",
+    "bubblewrap_binds": "TERMINAL_BUBBLEWRAP_BINDS",
+    "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
+    "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
+    "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+}
+
+
+def test_bubblewrap_keys_are_bridged_everywhere():
+    """Every terminal.bubblewrap_* key has a default and rides all three
+    config-to-env bridges under the TERMINAL_BUBBLEWRAP_* name the backend
+    reads."""
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    terminal = DEFAULT_CONFIG["terminal"]
+    assert terminal["bubblewrap_profile"] == "network"
+    assert terminal["bubblewrap_binds"] == []
+    assert terminal["bubblewrap_memory_mb"] == 256
+    assert terminal["bubblewrap_cpu_seconds"] == 30
+    assert terminal["bubblewrap_max_procs"] == 256
+    assert {k for k in terminal if k.startswith("bubblewrap_")} == set(BUBBLEWRAP_KEYS)
+
+    for key, env_var in BUBBLEWRAP_KEYS.items():
+        assert key in _cli_env_map_keys(), key
+        assert key in _gateway_env_map_keys(), key
+        assert key in _save_config_env_sync_keys(), key
+        assert TERMINAL_CONFIG_ENV_MAP[key] == env_var
+        assert env_var in _cli_env_map_values(), env_var
+        assert env_var in _gateway_env_map_values(), env_var
+
+
+def test_bubblewrap_defaults_feed_the_backend_loader():
+    """The bridged env values of the defaults load into the builder's own
+    defaults, JSON-encoded list included."""
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.environments import bubblewrap
+
+    assert {bubblewrap.ENV_PROFILE, bubblewrap.ENV_BINDS, bubblewrap.ENV_MEMORY_MB,
+            bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS} == set(BUBBLEWRAP_KEYS.values())
+
+    env = {
+        TERMINAL_CONFIG_ENV_MAP[key]: _terminal_env_value(DEFAULT_CONFIG["terminal"][key])
+        for key in BUBBLEWRAP_KEYS
+    }
+    assert env[bubblewrap.ENV_BINDS] == "[]"
+    assert bubblewrap.load_bubblewrap_config(env) == bubblewrap.BubblewrapConfig()

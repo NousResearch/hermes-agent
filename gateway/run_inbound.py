@@ -1568,8 +1568,14 @@ class GatewayInboundMixin:
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    "[Reply metadata: the user is replying to an assistant/bot-authored "
+                    f'message; the quoted text is not user-authored: "{reply_text}"]\n\n'
+                    f"{message_text}"
+                )
+            else:
+                message_text = f'[Replying to: "{reply_text}"]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

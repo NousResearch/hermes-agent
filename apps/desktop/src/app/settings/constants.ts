@@ -680,11 +680,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'browser',
     label: 'Browser',
     icon: Globe,
-    keys: [
-      'browser.use_real_profile',
-      'browser.allow_private_urls',
-      'browser.auto_local_for_private_urls'
-    ]
+    keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
   },
   {
     id: 'memory',

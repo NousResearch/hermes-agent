@@ -5,6 +5,7 @@ resource limits and optional persistence via writable overlay dirs that survive 
 """
 
 import logging
+import hashlib
 import os
 import shutil
 import subprocess
@@ -22,9 +23,10 @@ from tools.environments.remote_common import bash_argv, run_capture
 logger = logging.getLogger(__name__)
 
 
-def _snapshot_store_path() -> Path:
+def _snapshot_store_path(owner_home: str | os.PathLike | None = None) -> Path:
     """Return the active profile's Singularity snapshot registry path."""
-    return get_hermes_home() / "singularity_snapshots.json"
+    home = Path(owner_home).resolve() if owner_home is not None else get_hermes_home()
+    return home / "singularity_snapshots.json"
 
 # Apptainer accepts these exact variables for private Docker-registry pulls.
 # Image construction gets this narrow capability set back after the common
@@ -39,40 +41,71 @@ _REGISTRY_AUTH_ENV_VARS = (
 )
 
 
-def _registry_auth_source() -> Mapping[str, str]:
-    """Return registry grants from the active target profile authority.
+def _registry_auth_source(
+    owner_home: str | os.PathLike | None = None,
+) -> Mapping[str, str]:
+    """Return registry grants from the exact target profile authority.
 
-    A multiplexed process must have a profile secret scope installed. Falling
-    back to process-global ``os.environ`` there would reintroduce the launch
-    profile's credentials after the generic child boundary already sanitized
+    A multiplexed process must bind the grants to the captured artifact owner.
+    Falling back to process-global ``os.environ`` there would reintroduce the
+    launch profile's credentials after the generic child boundary sanitized
     them. Non-multiplex callers retain the historical ambient fallback.
     """
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        current_secret_scope,
+        is_multiplex_active,
+    )
 
     scope = current_secret_scope()
     multiplex_active = is_multiplex_active()
+    owner = Path(owner_home).resolve() if owner_home is not None else None
     if scope is not None:
         if multiplex_active:
+            if owner is not None and scope.profile_home != owner:
+                raise RuntimeError(
+                    "Singularity registry authority does not match artifact owner"
+                )
             return scope
         source = dict(os.environ)
         source.update({str(key): str(value) for key, value in scope.items()})
         return source
     if multiplex_active:
-        raise RuntimeError(
-            "Singularity image build requested without an active target-profile "
-            "secret scope while multiplexing is enabled"
-        )
+        if owner is None:
+            raise RuntimeError(
+                "Singularity image build requested without an active target-profile "
+                "secret scope or explicit artifact owner while multiplexing is enabled"
+            )
+        return build_profile_secret_scope(owner, fail_closed_external=True)
     return os.environ
 
 
-def _singularity_subprocess_env(*, include_registry_auth: bool = False) -> dict[str, str]:
-    env = build_subprocess_env()
+def _singularity_subprocess_env(
+    *,
+    include_registry_auth: bool = False,
+    owner_home: str | os.PathLike | None = None,
+    source_home: str | os.PathLike | None = None,
+) -> dict[str, str]:
+    from agent.secret_scope import is_multiplex_active
+
+    enforce_profile_boundary = owner_home is not None and (
+        is_multiplex_active()
+        or (
+            source_home is not None
+            and Path(source_home).resolve() != Path(owner_home).resolve()
+        )
+    )
+    env = build_subprocess_env(
+        profile_home=owner_home,
+        source_profile_home=source_home,
+        enforce_profile_boundary=enforce_profile_boundary,
+    )
     if include_registry_auth:
         auth_names = {name.upper() for name in _REGISTRY_AUTH_ENV_VARS}
         for key in list(env):
             if key.upper() in auth_names:
                 env.pop(key, None)
-        source = _registry_auth_source()
+        source = _registry_auth_source(owner_home)
         for key in _REGISTRY_AUTH_ENV_VARS:
             value = source.get(key)
             if value is not None:
@@ -91,7 +124,11 @@ def _find_singularity_executable() -> str:
         "or Singularity and ensure the CLI is available.")
 
 
-def _ensure_singularity_available() -> str:
+def _ensure_singularity_available(
+    *,
+    owner_home: str | os.PathLike | None = None,
+    source_home: str | os.PathLike | None = None,
+) -> str:
     """Preflight check: resolve the executable and verify it responds."""
     exe = _find_singularity_executable()
     try:
@@ -106,12 +143,15 @@ def _ensure_singularity_available() -> str:
     return exe
 
 
-def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store_path())
+def _load_snapshots(owner_home: str | os.PathLike | None = None) -> dict:
+    return _load_json_store(_snapshot_store_path(owner_home))
 
 
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_snapshot_store_path(), data)
+def _save_snapshots(
+    data: dict,
+    owner_home: str | os.PathLike | None = None,
+) -> None:
+    _save_json_store(_snapshot_store_path(owner_home), data)
 
 
 def _get_scratch_dir() -> Path:
@@ -146,22 +186,26 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
     if (image.endswith('.sif') and Path(image).exists()) or not image.startswith('docker://'):
         return image
 
-    image_name = image.replace('docker://', '').replace('/', '-').replace(':', '-')
+    explicit_owner = Path(owner_home).resolve() if owner_home is not None else None
+    owner = explicit_owner or get_hermes_home().resolve()
+    owner_id = _profile_artifact_id(owner)
+    image_id = _image_identity(image)
     cache_dir = _get_apptainer_cache_dir()
     sif_path = cache_dir / f"{image_name}.sif"
     if sif_path.exists():
         return str(sif_path)
 
     with _sif_build_lock:
-        if sif_path.exists():
+        if cacheable and sif_path.exists():
             return str(sif_path)
 
         logger.info("Building SIF image (one-time setup)...")
         logger.info("  Source: %s", image)
         logger.info("  Target: %s", sif_path)
 
-        tmp_dir = cache_dir / "tmp"
+        tmp_dir = profile_cache / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
+        build_path = tmp_dir / f"{image_id}-{uuid.uuid4().hex}.building.sif"
 
         # External build tool may need registry credentials from the user env — exact preservation.
         from tools.environments.local import build_subprocess_env
@@ -175,14 +219,19 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
                 logger.warning("SIF build failed, falling back to docker:// URL")
                 logger.warning("  Error: %s", result.stderr[:500])
                 return image
+            if not build_path.exists():
+                raise RuntimeError("Apptainer reported success without publishing a SIF")
+            os.replace(build_path, sif_path)
             logger.info("SIF image built successfully")
             return str(sif_path)
         except subprocess.TimeoutExpired:
             logger.warning("SIF build timed out, falling back to docker:// URL")
-            if sif_path.exists():
-                sif_path.unlink()
+            if build_path.exists():
+                build_path.unlink()
             return image
         except Exception as e:
+            if build_path.exists():
+                build_path.unlink()
             logger.warning("SIF build error: %s, falling back to docker:// URL", e)
             return image
 
@@ -198,8 +247,39 @@ class SingularityEnvironment(BaseEnvironment):
                  memory: int = 0, disk: int = 0, persistent_filesystem: bool = False,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
-        self.executable = _ensure_singularity_available()
-        self.image = _get_or_build_sif(image, self.executable)
+        boundary = getattr(self, "_profile_env_boundary", None)
+        from hermes_constants import get_process_hermes_home
+
+        self._owner_home = (
+            boundary.target_home
+            if boundary is not None
+            else get_hermes_home().resolve()
+        )
+        self._source_home = (
+            boundary.source_home
+            if boundary is not None
+            else Path(get_process_hermes_home()).resolve()
+        )
+        self._owner_generation = (
+            boundary.target_generation if boundary is not None else ""
+        )
+        self._image_authority_id = _image_identity(image)
+        self._artifact_epoch = (
+            hashlib.sha256(self._owner_generation.encode()).hexdigest()
+            if self._owner_generation
+            else "single-profile"
+        )
+        self.executable = _ensure_singularity_available(
+            owner_home=self._owner_home,
+            source_home=self._source_home,
+        )
+        self.image = _get_or_build_sif(
+            image,
+            self.executable,
+            owner_home=self._owner_home,
+            source_home=self._source_home,
+            policy_generation=self._owner_generation,
+        )
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
         self._instance_started = False
         self._persistent = persistent_filesystem
@@ -257,6 +337,8 @@ class SingularityEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Stop the instance. If persistent, the overlay dir survives."""
+        owner_home = self._owner_home
+        source_home = self._source_home
         if self._instance_started:
             try:
                 run_capture([self.executable, "instance", "stop", self.instance_id], timeout=30)
@@ -266,6 +348,9 @@ class SingularityEnvironment(BaseEnvironment):
             self._instance_started = False
 
         if self._persistent and self._overlay_dir:
-            snapshots = _load_snapshots()
-            snapshots[self._task_id] = str(self._overlay_dir)
-            _save_snapshots(snapshots)
+            snapshots = _load_snapshots(owner_home)
+            snapshot_key = (
+                f"{self._image_authority_id}:{self._artifact_epoch}:{self._task_id}"
+            )
+            snapshots[snapshot_key] = str(self._overlay_dir)
+            _save_snapshots(snapshots, owner_home)

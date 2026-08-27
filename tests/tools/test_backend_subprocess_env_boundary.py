@@ -130,6 +130,9 @@ def _make_singularity_exec_env():
     env.executable = "apptainer"
     env.instance_id = "hermes_test"
     env._instance_started = True
+    env._profile_env_boundary = None
+    env._owner_home = None
+    env._source_home = None
     return env
 
 
@@ -255,6 +258,8 @@ def _capture_singularity_run(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append((list(cmd), kwargs))
+        if len(cmd) >= 3 and cmd[1] == "build":
+            Path(cmd[2]).write_bytes(b"test-sif")
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(singularity_env.subprocess, "run", fake_run)
@@ -317,7 +322,8 @@ def test_singularity_image_build_gets_only_explicit_registry_auth(
         "docker://example.invalid/private:latest", "apptainer"
     )
 
-    assert result.endswith("example.invalid-private-latest.sif")
+    assert result.endswith(".sif")
+    assert Path(result).is_file()
     assert len(calls) == 1
     child_env = calls[0][1]["env"]
     for key, value in registry_auth.items():
@@ -399,7 +405,8 @@ def test_singularity_image_build_registry_auth_is_target_profile_scoped(
         reset_secret_scope(token)
         set_multiplex_active(False)
 
-    assert result.endswith("example.invalid-scoped-latest.sif")
+    assert result.endswith(".sif")
+    assert Path(result).is_file()
     child_env = calls[0][1]["env"]
     for key, source_value in source_auth.items():
         assert child_env.get(key) != source_value

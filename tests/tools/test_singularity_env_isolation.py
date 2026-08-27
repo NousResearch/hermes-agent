@@ -74,6 +74,9 @@ def _bare_singularity_env(env_overrides: dict | None = None) -> SingularityEnvir
     instance.instance_id = "hermes_test_instance"
     instance._instance_started = True
     instance.env = env_overrides or {}
+    instance._profile_env_boundary = None
+    instance._owner_home = None
+    instance._source_home = None
     return instance
 
 

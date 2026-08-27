@@ -2532,3 +2532,58 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is False
         assert list_calls["n"] >= 1
+
+
+class TestTimeoutStopSecCoversCronFloor:
+    """#94759: TimeoutStopSec must cover the FULL stop budget.
+
+    resolve_cron_drain_budget() can hold the shutdown drain for
+    agent.cron_drain_timeout plus CRON_DRAIN_CLEANUP_RESERVE_S on top of
+    (as a max of) the restart drain, so the unit leash is sized from
+    max(restart_drain, cron_floor) + 30 — not the restart drain alone."""
+
+    def _unit_with_config(self, tmp_path, monkeypatch, config_yaml, env=None):
+        hermes = tmp_path / "home" / ".hermes"
+        hermes.mkdir(parents=True)
+        (hermes / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes))
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths", lambda home, existing: []
+        )
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, value)
+        return gateway_cli.generate_systemd_unit(system=False)
+
+    def test_cron_floor_dominates_when_larger(self, tmp_path, monkeypatch):
+        unit = self._unit_with_config(
+            tmp_path,
+            monkeypatch,
+            "agent:\n  restart_drain_timeout: 0\n  cron_drain_timeout: 120\n",
+        )
+        # cron floor 120 + reserve 10 + cleanup 30 = 160 > the old formula's 60.
+        assert "TimeoutStopSec=160" in unit
+
+    def test_restart_drain_still_dominates_when_larger(self, tmp_path, monkeypatch):
+        unit = self._unit_with_config(
+            tmp_path,
+            monkeypatch,
+            "agent:\n  restart_drain_timeout: 60\n",
+        )
+        # An explicit restart drain above the default cron floor (30+10=40)
+        # keeps the old formula's result — no regression for
+        # restart-drain-dominated installs. (Default installs differ from
+        # main: restart_drain_timeout defaults to 0, so the cron floor 40+30
+        # raises the leash from 60 to 70 — see the PR description.)
+        assert "TimeoutStopSec=90" in unit
+
+    def test_env_override_extends_the_leash(self, tmp_path, monkeypatch):
+        unit = self._unit_with_config(
+            tmp_path,
+            monkeypatch,
+            "agent:\n  restart_drain_timeout: 0\n",
+            env={"HERMES_CRON_DRAIN_TIMEOUT": "200"},
+        )
+        assert "TimeoutStopSec=240" in unit

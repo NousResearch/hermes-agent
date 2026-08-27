@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-27T09:32:16Z",
+  "updated_at": "2026-08-27T09:39:24Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -117,10 +117,6 @@
           "description": ""
         },
         {
-          "id": "minimax/minimax-m3:free",
-          "description": "free"
-        },
-        {
           "id": "z-ai/glm-5.3",
           "description": ""
         },
@@ -167,6 +163,10 @@
         },
         {
           "id": "thinkingmachines/inkling-small:free",
+          "description": "free"
+        },
+        {
+          "id": "minimax/minimax-m3:free",
           "description": "free"
         },
         {

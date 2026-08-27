@@ -3479,6 +3479,22 @@ class GatewaySlashCommandsMixin:
                     "gateway.rollback.kept_user_edits",
                     files=shown + more,
                 )
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5})" if len(oversize) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_oversize",
+                    files=shown + more,
+                )
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5})" if len(failed) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.failed_deletes",
+                    files=shown + more,
+                )
             return msg
         return t("gateway.rollback.restore_failed", error=result["error"])
 

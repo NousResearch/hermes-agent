@@ -3478,9 +3478,37 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print_info("  Configure all settings:    hermes setup")
     if gateway_choice != 0:
         print_info("  Connect Telegram/Discord:  hermes setup gateway")
+    _print_macos_fda_tip()
     print()
 
     _print_setup_summary(config, hermes_home)
+
+
+def _print_macos_fda_tip() -> None:
+    """One-time macOS onboarding tip: a single Full Disk Access grant kills
+    every per-folder permission prompt, permanently (issue #52010 follow-up).
+
+    Uses the same prompt-free probe as doctor's check_macos_full_disk_access
+    (the TCC db dir is FDA-gated but probing it never triggers a dialog).
+    Silent on non-macOS and when FDA is already granted or indeterminate.
+    """
+    if sys.platform != "darwin":
+        return
+    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
+    try:
+        os.listdir(tcc_dir)
+        return  # already granted — nothing to teach
+    except PermissionError:
+        pass
+    except OSError:
+        return  # indeterminate — don't nag
+    print()
+    print_info("  macOS tip: silence ALL folder permission prompts with one switch —")
+    print_info("  System Settings → Privacy & Security → Full Disk Access → enable")
+    print_info("  your terminal (and Hermes.app if you use Desktop), or run:")
+    print_info("    open \"x-apple.systempreferences:com.apple.preference"
+               ".security?Privacy_AllFiles\"")
+    print_info("  The grant is permanent — it survives every Hermes update.")
 
 
 def _blank_slate_minimal_toolsets(config: dict):

@@ -15,6 +15,23 @@ vi.mock('@/lib/storage', () => ({
       storage.set(key, value)
     }
   },
+  // store/session persists its exact owner hints through the JSON helpers.
+  readJson: (key: string) => {
+    const value = storage.get(key)
+
+    try {
+      return value === undefined ? null : JSON.parse(value)
+    } catch {
+      return null
+    }
+  },
+  writeJson: (key: string, value: unknown) => {
+    if (value === null) {
+      storage.delete(key)
+    } else {
+      storage.set(key, JSON.stringify(value))
+    }
+  },
   storedBoolean: (key: string, fallback: boolean) => {
     const value = storage.get(key)
 

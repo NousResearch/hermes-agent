@@ -5053,11 +5053,13 @@ _LAZY_COMMAND_EXPORTS = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked",
         "_add_upstream_remote",
+        "_apply_pending_fleet_restart_catchup",
         "_atomic_replace_dir",
         "_capture_active_lazy_features",
         "_capture_active_tool_dependencies",
         "_capture_head_sha",
         "_classify_concurrent_instance",
+        "_clear_fleet_restart_pending_marker",
         "_assess_parked_branch_switch",
         "_branch_head_label",
         "_branch_head_suffix",
@@ -5078,10 +5080,14 @@ _LAZY_COMMAND_EXPORTS = {
         "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
         "_fleet_probe_expected_runtimes",
+        "_fleet_restart_pending_marker_path",
         "_filter_non_gateway_concurrent_instances",
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
         "_format_time_ago",
+        "_gateway_service_matches_profile",
+        "_gateway_recovery_partition",
+        "_gateway_restart_recovery_profiles",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",
         "_purge_stale_hermes_modules",
@@ -5094,6 +5100,9 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_android_python",
         "_is_fork",
         "_leftover_pausable_gateway_pids",
+        "_ledger_manual_serve_holders",
+        "_relaunch_stopped_serves",
+        "_serve_relaunch_commands",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
         "_npm_bin_exists",
@@ -5101,6 +5110,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_manifest_paths",
         "_npm_manifests_digest",
         "_orphaned_desktop_backend_pids",
+        "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
@@ -5114,6 +5124,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts",
         "_refresh_windows_gateway_launchers",
+        "_recover_gateway_restart_after_abort",
         "_reload_updated_runtime_modules",
         "_resolve_pre_update_backup_mode",
         "_resolve_stash_selector",
@@ -5121,6 +5132,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_restore_active_tool_dependencies",
         "_restore_stashed_changes",
         "_resume_windows_gateways_after_update",
+        "_run_pending_fleet_restart",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
         "_service_unit_supports_graceful_sigusr1_restart",
@@ -5141,8 +5153,10 @@ _LAZY_COMMAND_EXPORTS = {
         "_wait_for_windows_update_gateway_exit",
         "_warn_gateway_restart_phase_aborted",
         "_warn_incomplete_gateway_fleet_restart",
+        "_warn_pending_fleet_restart_on_startup",
         "_web_build_toolchain_ready",
         "_web_toolchain_roots",
+        "_write_fleet_restart_pending_marker",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
         "_write_update_incomplete_marker",
@@ -7787,7 +7801,38 @@ def _desktop_macos_relaunchable_fixup(
             )
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        # Legacy ad-hoc fallback: re-sign, but NEVER delete the safeStorage
+        # keychain item. Deleting it would permanently orphan every
+        # credential encrypted under it (gateway token, native OAuth access/
+        # refresh tokens) — and this path is reached exactly when the
+        # entitlement-preserving signer failed, so there is no verified
+        # successor identity to hand the key to. The keychain prompt macOS
+        # shows instead is recoverable ("Always Allow" updates the item's ACL
+        # partition list and preserves the key); deletion is not. The real
+        # fix (proof-carrying rotation/migration) belongs in Electron, where
+        # safeStorage can read the old key. Tracked as follow-up.
+        result = subprocess.run(
+            [codesign, "--force", "--deep", "--sign", "-", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign failed (exit {result.returncode}); "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign did not pass strict verification; "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False
@@ -10691,12 +10736,8 @@ def cmd_update(args):
     ``sys.exit`` or unhandled exceptions).
     """
     from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
         is_managed,
-        is_nix_install_method,
         managed_error,
-        recommended_update_command_for_method,
     )
 
     if is_managed():
@@ -10719,20 +10760,23 @@ def cmd_update(args):
         print_update_plan(collect_runtime_inventory())
         return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
+    # Image-managed / package-managed admission gate (#91277 Phase 3): one
+    # shared decision for every mutation surface. Consults the baked image
+    # provenance marker first (authoritative, fail-closed on malformed),
+    # then the pre-existing docker/nix/apt heuristics. Prints the real
+    # update command, records a `refused` receipt so fleet tooling sees the
+    # blocked attempt, and exits 2 (refused-by-contract, distinct from
+    # exit 1 errors).
+    from hermes_cli.update_contract import (
+        evaluate_update_admission,
+        record_refusal_receipt,
+    )
 
-    if is_nix_install_method(install_method) or install_method == "apt":
-        print(recommended_update_command_for_method(install_method))
-        sys.exit(1)
+    refusal = evaluate_update_admission(PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
@@ -11588,30 +11632,35 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print live listening dashboard processes and return the count."""
+    """Print live listening dashboard/serve processes and return the count.
+
+    Serve-mode backends are INCLUDED (#81564): `--stop` kills them, so
+    `--status` hiding them left Desktop SSH backends invisible to the CLI —
+    an operator could kill what they couldn't see. Ledger-registered serves
+    (profiled launches the argv scan can't match) surface via the
+    spawn-ledger augmentation in _scan_dashboard_processes.
+    """
     from gateway.status import _pid_exists
 
-    live: list[tuple[int, str]] = []
+    live: list[tuple[int, str, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if mode != "dashboard":
-            continue
         if port <= 0 or not _pid_exists(pid):
             continue
         if not _dashboard_listening(host, port):
             continue
-        live.append((pid, command))
+        live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard processes running.")
+        print("No hermes dashboard or serve processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard process(es) running:")
-    for pid, command in live:
-        print(f"    PID {pid}: {command}")
+    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    for pid, command, mode in live:
+        print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
 
 
@@ -12309,6 +12358,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "browser",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13087,6 +13137,15 @@ def main():
     except Exception:
         pass
 
+    # Cheap hint only (#95294): an interrupted update that pulled code but
+    # never restarted the fleet. Do NOT restart here — that is ``hermes
+    # update`` catch-up work. Skip when the user is already running update.
+    try:
+        if "update" not in sys.argv[1:]:
+            _warn_pending_fleet_restart_on_startup()
+    except Exception:
+        pass
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
@@ -13204,6 +13263,61 @@ def main():
         return cmd_worktree(_args)
 
     worktree_parser.set_defaults(func=_dispatch_worktree)
+
+
+    # =========================================================================
+    # browser command — real-profile helpers (agent-invoked, user-approved)
+    # =========================================================================
+    browser_parser = subparsers.add_parser(
+        "browser",
+        help="Real-profile browsing helpers (close a browser locking its profile)",
+        description=(
+            "Helpers for real-profile browsing (browser.use_real_profile). "
+            "close-profile terminates the browser process tree holding your "
+            "default profile so Hermes can copy it — DESTRUCTIVE (unsaved tabs "
+            "in that browser are lost). The agent runs this only after you "
+            "approve closing the browser."
+        ),
+    )
+    browser_subparsers = browser_parser.add_subparsers(dest="browser_action")
+    browser_close = browser_subparsers.add_parser(
+        "close-profile",
+        help="Close the browser locking your real profile (asks nothing — "
+             "run only with the user's explicit OK; loses unsaved tabs)",
+    )
+    browser_close.add_argument(
+        "--browser",
+        help="Override detected default browser (chrome/edge/brave/chromium)",
+    )
+
+    def _dispatch_browser(_args):
+        from hermes_cli.browser_connect import (
+            UNSUPPORTED_CHANNEL,
+            close_browser_holding_profile,
+            detect_default_chromium,
+            real_profile_data_dir,
+        )
+
+        action = getattr(_args, "browser_action", None)
+        if action != "close-profile":
+            browser_parser.print_help()
+            return 2
+        browser = getattr(_args, "browser", None) or detect_default_chromium()
+        if not browser or browser == UNSUPPORTED_CHANNEL:
+            print("✗ No supported Chromium default browser detected.", file=sys.stderr)
+            return 1
+        src = real_profile_data_dir(browser)
+        if not src:
+            print(f"✗ Could not resolve the {browser} profile directory.", file=sys.stderr)
+            return 1
+        closed, msg = close_browser_holding_profile(src)
+        if closed:
+            print(f"✓ {msg}")
+            return 0
+        print(f"✗ {msg}", file=sys.stderr)
+        return 1
+
+    browser_parser.set_defaults(func=_dispatch_browser)
 
 
     # =========================================================================

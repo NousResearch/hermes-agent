@@ -1746,6 +1746,10 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    # Commands run on the Hermes host itself — controller-side platform
+    # behavior (macOS TCC pruning, etc.) legitimately applies here.
+    is_local = True
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)

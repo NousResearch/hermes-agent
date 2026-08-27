@@ -169,8 +169,8 @@ def self_suspend_available(environ: Optional[dict] = None) -> bool:
 
     True iff the Fly-injected machine identity is present AND the local Machines
     API socket exists. Off-Fly (local dev, Azure ACA, tests) this is False and
-    the watcher simply skips the suspend step — dormancy still happens, the
-    platform just never freezes the process.
+    the watcher skips the quiesce entirely: the platform owns the freeze, so
+    the gateway stays connected until it lands.
     """
     env = environ if environ is not None else os.environ
     return bool(

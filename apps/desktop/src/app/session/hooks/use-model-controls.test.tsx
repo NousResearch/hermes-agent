@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { cleanup, render, renderHook } from '@testing-library/react'
+import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
@@ -21,7 +21,9 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const notify = vi.fn()
 const notifyError = vi.fn()
+const dismissNotification = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
@@ -41,6 +43,9 @@ vi.mock('@/store/session-states', async importOriginal => {
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      common: {
+        confirm: 'Confirm'
+      },
       desktop: {
         modelSwitchFailed: 'Model switch failed'
       }
@@ -49,6 +54,8 @@ vi.mock('@/i18n', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
+  dismissNotification: (...args: Parameters<typeof dismissNotification>) => dismissNotification(...args),
+  notify: (...args: Parameters<typeof notify>) => notify(...args),
   notifyError: (...args: Parameters<typeof notifyError>) => notifyError(...args)
 }))
 
@@ -299,6 +306,56 @@ describe('useModelControls', () => {
     await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
 
     expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('confirms a guarded model switch before retrying it', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_message: 'This contributor model trains on your data.',
+        confirm_required: true,
+        key: 'model',
+        value: 'muse-spark-1.2-contributor'
+      })
+      .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
+
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: expect.objectContaining({ label: 'Confirm' }),
+        kind: 'warning',
+        message: 'This contributor model trains on your data.'
+      })
+    )
+
+    const action = notify.mock.calls.at(-1)?.[0]?.action
+
+    await act(async () => {
+      await action?.onClick()
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    expect(requestGateway).toHaveBeenLastCalledWith('config.set', {
+      confirm_expensive_model: true,
+      key: 'model',
+      session_id: 'session-1',
+      value: 'muse-spark-1.2-contributor --provider opencode-go --global'
+    })
+    expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
+    expect($currentProvider.get()).toBe('opencode-go')
   })
 
   it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {

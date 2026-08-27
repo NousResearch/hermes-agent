@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { manualPickRemoved, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import {
+  firstSelectableCatalogModel,
+  manualPickRemoved,
+  modelOptionsQueryKey,
+  reconcileSelectionAfterCatalogRefresh,
+  requestModelOptions,
+  selectionInCatalog
+} from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -117,6 +124,51 @@ describe('requestModelOptions', () => {
 
     expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true, refresh: true })
   })
+
+  it('prefers an owner-routed request over the ambient gateway socket', async () => {
+    const gatewayPayload = {
+      model: 'chrome-model',
+      provider: 'nous',
+      providers: [{ models: ['chrome-model'], name: 'Nous', slug: 'nous' }]
+    }
+
+    const routedPayload = {
+      model: 'berry-model',
+      provider: 'openai',
+      providers: [{ models: ['berry-model'], name: 'OpenAI', slug: 'openai' }]
+    }
+
+    const gateway = {
+      request: vi.fn(() => Promise.resolve(gatewayPayload))
+    }
+
+    const request = vi.fn(() => Promise.resolve(routedPayload)) as unknown as <T>(
+      method: string,
+      params?: Record<string, unknown>
+    ) => Promise<T>
+
+    await expect(requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })).resolves.toBe(
+      routedPayload
+    )
+
+    expect(request).toHaveBeenCalledWith('model.options', { explicit_only: true, session_id: 'tile-1' })
+    expect(gateway.request).not.toHaveBeenCalled()
+  })
+
+  it('scopes REST recovery to the catalog owner profile', async () => {
+    const restPayload = {
+      model: 'berry-local',
+      provider: 'hermes-local',
+      providers: [{ models: ['berry-local'], name: 'Hermes Local', slug: 'hermes-local' }]
+    }
+
+    const request = vi.fn(() => Promise.reject(new Error('gateway request unavailable')))
+
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+
+    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toEqual(restPayload)
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, 'berry')
+  })
 })
 
 describe('modelOptionsQueryKey', () => {
@@ -165,5 +217,37 @@ describe('manualPickRemoved', () => {
 
   it('never clobbers when there is no pick', () => {
     expect(manualPickRemoved(providers, '', '')).toBe(false)
+  })
+})
+
+describe('reconcileSelectionAfterCatalogRefresh', () => {
+  const zhipu = { name: '智谱2', slug: 'zhipu', models: ['glm-4.5-air', 'glm-5-turbo'] }
+  const bytea = {
+    name: '字节A',
+    slug: 'byteplus',
+    models: ['deepseek-v4-flash', 'doubao-seed-2.0-pro']
+  }
+  const moa = { name: 'Mixture of Agents', slug: 'moa', models: ['default'] }
+
+  it('switches to the first new-group model when the current pick is gone', () => {
+    expect(selectionInCatalog([bytea], 'glm-4.5-air')).toBe(false)
+    expect(firstSelectableCatalogModel([moa, bytea])).toEqual({
+      model: 'deepseek-v4-flash',
+      provider: 'byteplus'
+    })
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa, bytea])).toEqual({
+      model: 'deepseek-v4-flash',
+      provider: 'byteplus'
+    })
+  })
+
+  it('keeps the current pick when it is still in the refreshed catalog', () => {
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [zhipu, moa])).toBeNull()
+  })
+
+  it('does not wipe the pick when the refreshed catalog has no selectable models', () => {
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [moa])).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', [])).toBeNull()
+    expect(reconcileSelectionAfterCatalogRefresh('glm-4.5-air', undefined)).toBeNull()
   })
 })

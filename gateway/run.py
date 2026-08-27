@@ -7274,6 +7274,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+        # One-shot: log the "platform owns the suspend" notice once, not per tick.
+        self._scale_to_zero_no_suspend_logged: bool = False
 
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
@@ -8919,8 +8921,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wakes the machine, the preserved reconnect supervisor re-dials, and the
         connector drains the buffered backlog. After driving dormant we set a
         re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
-        Off-Fly (no flaps socket / machine identity) the suspend step is skipped:
-        dormancy still happens, the process just stays running — fail-awake.
+        Off-Fly (no flaps socket / machine identity) the watcher does not quiesce
+        at all: the platform suspends on its own timer, so the gateway stays
+        connected and serving until the freeze lands.
         """
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
@@ -8937,6 +8940,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 go_dormant = getattr(adapter, "go_dormant", None)
                 if not callable(go_dormant):
+                    continue
+                # Quiesce only when a suspend can follow it. Off-Fly the platform
+                # owns the freeze on its own timer, so this does not bring it any
+                # closer, and go_dormant()'s socket close arms the reconnect
+                # supervisor: it re-dials ~1.4s later and the drain clears the
+                # flip, every cooldown. The destination is then unflipped when the
+                # freeze lands, and inbound is dropped instead of buffered. Stay
+                # connected and let the connector's orphan detection adopt the
+                # destination once the platform freezes us.
+                from gateway.scale_to_zero import self_suspend_available
+
+                if not self_suspend_available():
+                    if not self._scale_to_zero_no_suspend_logged:
+                        self._scale_to_zero_no_suspend_logged = True
+                        logger.info(
+                            "scale-to-zero: idle, but this platform suspends on "
+                            "its own timer (no in-machine suspend API); staying "
+                            "connected rather than quiescing"
+                        )
                     continue
                 logger.info(
                     "scale-to-zero: gateway idle for >= %.0fs — going dormant "
@@ -12047,6 +12069,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             task, "background boot-path send failed after gate release: see traceback"
         )
 
+    async def _clear_resume_pending_for_claimed_obligations(
+        self, claimed: list, *, require_success: bool = False
+    ) -> list:
+        """Clear resume flags and return rows safe to redeliver.
+
+        Startup recovery preserves its historical best-effort behavior. Runtime
+        reconnect recovery is stricter: if the session-store write fails, the
+        corresponding response must not be sent because the same agent turn
+        could otherwise be resumed immediately afterward.
+        """
+        sendable = []
+        for row in claimed:
+            session_key = row.get("session_key") or ""
+            if not session_key:
+                sendable.append(row)
+                continue
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.debug(
+                    "clear_resume_pending failed for %s", session_key,
+                    exc_info=True,
+                )
+                if not require_success:
+                    sendable.append(row)
+            else:
+                sendable.append(row)
+        return sendable
+
     async def _claim_pending_obligations(self) -> list:
         """Claim recoverable delivery-ledger rows and clear their
         ``resume_pending`` flags. Pure DB work — no network sends.
@@ -12072,14 +12123,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not await asyncio.to_thread(ledger_enabled):
                 return []
-            # Only claim rows we can actually send this boot: self.adapters
-            # holds a platform only after its connect() succeeded, and each
-            # claim spends one of the row's three redelivery attempts.
-            _deliverable = {
-                getattr(p, "value", str(p)) for p in self.adapters
+            # Only claim rows whose exact transport owner is connected this
+            # boot. A multiplexed gateway can host several bot identities for
+            # one platform; platform-only filtering would spend a disconnected
+            # bot's retry budget merely because another bot is online.
+            _profile_adapters = getattr(self, "_profile_adapters", None) or {}
+            _deliverable_targets = {
+                (getattr(p, "value", str(p)), "default") for p in self.adapters
             }
+            # Legacy rows predate adapter_profile. They are unambiguous only in
+            # a non-multiplexed gateway; fail closed when multiple bot identities
+            # share the process.
+            if not _profile_adapters:
+                _deliverable_targets.update(
+                    (getattr(p, "value", str(p)), None) for p in self.adapters
+                )
+            for _profile, _adapters in _profile_adapters.items():
+                _deliverable_targets.update(
+                    (getattr(p, "value", str(p)), _profile) for p in _adapters
+                )
+            _deliverable = {platform for platform, _ in _deliverable_targets}
             claimed = await asyncio.to_thread(
-                sweep_recoverable, None, deliverable_platforms=_deliverable
+                sweep_recoverable,
+                None,
+                deliverable_platforms=_deliverable,
+                deliverable_targets=_deliverable_targets,
             )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
@@ -12091,17 +12159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # send. Claiming already spent one of the row's redelivery attempts —
         # the answer is in the ledger, so the resume path must never re-run
         # these turns (#91969).
-        for row in claimed:
-            session_key = row.get("session_key") or ""
-            if not session_key:
-                continue
-            try:
-                await self.async_session_store.clear_resume_pending(session_key)
-            except Exception:
-                logger.debug(
-                    "clear_resume_pending failed for %s", session_key,
-                    exc_info=True,
-                )
+        await self._clear_resume_pending_for_claimed_obligations(claimed)
         return claimed
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
@@ -12119,6 +12177,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 RECOVERED_MARKER,
                 mark_delivered,
                 mark_failed,
+                release_runtime_claim,
             )
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
@@ -12134,14 +12193,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     row["obligation_id"], row.get("platform"),
                 )
                 continue
-            adapter = self.adapters.get(platform)
+            if "profile" in row:
+                adapter = self._authorization_adapter(
+                    platform, row.get("profile")
+                )
+            else:
+                # Startup rows preserve the historical default-adapter route.
+                adapter = self.adapters.get(platform)
             if adapter is None:
-                # Platform not connected this boot — leave the row claimed;
-                # attempts cap + stale cutoff bound the retries on later boots.
+                # Runtime claims have not reached a transport yet. If the
+                # reconnect vanished before dispatch, release the claim without
+                # spending an attempt so the next reconnect can retry it.
+                if row.get("runtime_recovery"):
+                    try:
+                        await asyncio.to_thread(
+                            release_runtime_claim,
+                            row["obligation_id"],
+                            "send_path_degraded",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "failed to release undispatched runtime obligation %s",
+                            row["obligation_id"],
+                            exc_info=True,
+                        )
+                # Startup claims preserve their historical state; attempts cap
+                # + stale cutoff bound later retries.
                 continue
             content = row["content"]
             if row.get("needs_marker"):
-                content = RECOVERED_MARKER + content
+                content = row.get("marker", RECOVERED_MARKER) + content
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
@@ -12190,6 +12271,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return await self._redeliver_claimed_obligations(
             await self._claim_pending_obligations()
         )
+
+    async def _redeliver_failed_obligations_for_platform(
+        self,
+        platform: Platform,
+        *,
+        profile: Optional[str] = None,
+    ) -> int:
+        """Replay one adapter identity's transient failures after reconnect.
+
+        The startup sweep cannot claim live-owner rows by design. A platform
+        adapter can reconnect without the gateway process exiting, however, so
+        ``send_path_degraded`` responses otherwise remain failed until the next
+        process restart. Claiming, resume clearing, and sending stay best-effort
+        and reuse the startup redelivery path's attempt and ambiguity contract.
+        """
+        try:
+            from gateway.delivery_ledger import (
+                ledger_enabled,
+                release_runtime_claim,
+                sweep_failed_for_runtime,
+            )
+
+            if not await asyncio.to_thread(ledger_enabled):
+                return 0
+            claimed = await asyncio.to_thread(
+                sweep_failed_for_runtime,
+                platform.value,
+                profile=profile,
+            )
+        except Exception:
+            logger.debug(
+                "runtime delivery ledger sweep failed after %s reconnect",
+                platform.value,
+                exc_info=True,
+            )
+            return 0
+        if not claimed:
+            return 0
+
+        # Clear before any send so the reconnect path cannot both redeliver an
+        # already-produced answer and schedule the same agent turn for resume.
+        sendable = await self._clear_resume_pending_for_claimed_obligations(
+            claimed, require_success=True
+        )
+        sendable_ids = {row["obligation_id"] for row in sendable}
+        for row in claimed:
+            if row["obligation_id"] in sendable_ids:
+                continue
+            try:
+                await asyncio.to_thread(
+                    release_runtime_claim,
+                    row["obligation_id"],
+                    "send_path_degraded",
+                )
+            except Exception:
+                logger.debug(
+                    "failed to release runtime delivery claim %s",
+                    row["obligation_id"],
+                    exc_info=True,
+                )
+        return await self._redeliver_claimed_obligations(sendable)
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -14600,6 +14742,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 
+                        # Final responses rejected while this adapter was down
+                        # are still owned by this live process, so startup
+                        # recovery cannot claim them. Replay the explicitly
+                        # transient subset now that the platform is usable.
+                        try:
+                            await self._redeliver_failed_obligations_for_platform(
+                                platform
+                            )
+                        except Exception:
+                            logger.debug(
+                                "failed-obligation redelivery after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
+
                         # Rebuild channel directory with the new adapter
                         try:
                             from gateway.channel_directory import build_channel_directory
@@ -15618,9 +15775,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
                     await self._safe_adapter_disconnect(adapter, platform)
+                    self._schedule_secondary_profile_startup_reconnect(
+                        profile_name, platform, adapter
+                    )
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 await self._safe_adapter_disconnect(adapter, platform)
+                self._schedule_secondary_profile_startup_reconnect(
+                    profile_name, platform, adapter
+                )
         return connected
 
     def _configure_profile_adapter(
@@ -15711,6 +15874,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 platform.value,
                                 profile_name,
                             )
+                            await self._redeliver_failed_obligations_for_platform(
+                                platform, profile=profile_name
+                            )
                             return
                         # A newer reconnect already won the slot while this
                         # attempt was awaiting connect; do not replace it.
@@ -15765,6 +15931,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_pending.pop(platform, None)
                         if not profile_pending:
                             pending.pop(profile_name, None)
+
+    def _schedule_secondary_profile_startup_reconnect(
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+    ) -> None:
+        """Queue a cold-start reconnect for a secondary adapter.
+
+        Startup failure branches run BEFORE ``self._running`` flips True
+        (``_start_secondary_profile_adapters()`` is called mid-``start()``,
+        while ``self._running`` is still False), so the regular scheduler's
+        ``not self._running`` guard would silently drop the request and the
+        runner's ``while self._running`` loop would exit immediately. This
+        bridge parks a background task across the remainder of startup and
+        hands off to the regular scheduler once the gateway is live (the
+        scheduler's own ``_profile_failed_platforms`` slot dedupes at
+        handoff); if shutdown begins first, the request is released.
+        Non-retryable failures are dropped here exactly as the regular
+        scheduler would.
+        """
+        if not getattr(adapter, "fatal_error_retryable", True):
+            return
+
+        async def _await_running_then_schedule() -> None:
+            if self._running:
+                try:
+                    self._schedule_secondary_profile_reconnect(
+                        profile_name, platform, adapter
+                    )
+                except Exception:
+                    # Same GC-time-exception hazard as the post-poll handoff
+                    # below; surface it in gateway.log instead.
+                    logger.exception(
+                        "secondary-startup-reconnect handoff failed "
+                        "(profile=%s platform=%s)",
+                        profile_name,
+                        platform.value,
+                    )
+                return
+            # Modest poll interval: startup completion has no dedicated event,
+            # and the reconnect runner's own backoff makes sub-100ms precision
+            # irrelevant. Bounded so a wedged startup cannot spin the loop.
+            while not self._running and not self._shutdown_event.is_set():
+                await asyncio.sleep(0.1)
+            if self._running and not self._shutdown_event.is_set():
+                try:
+                    self._schedule_secondary_profile_reconnect(
+                        profile_name, platform, adapter
+                    )
+                except Exception:
+                    # The handoff touches live registries; if it raises, the
+                    # parked task would otherwise die as an unretrieved-task
+                    # exception logged only at GC time. Surface it where
+                    # operators look.
+                    logger.exception(
+                        "secondary-startup-reconnect handoff failed "
+                        "(profile=%s platform=%s)",
+                        profile_name,
+                        platform.value,
+                    )
+
+        task = asyncio.create_task(
+            _await_running_then_schedule(),
+            name=f"secondary-startup-reconnect:{profile_name}:{platform.value}",
+        )
+        background_tasks = getattr(self, "_background_tasks", None)
+        if not isinstance(background_tasks, set):
+            background_tasks = set()
+            self._background_tasks = background_tasks
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     def _schedule_secondary_profile_reconnect(
         self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
@@ -15879,10 +16114,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope primary-adapter messages to their routed multiplex profile.
+
+        Profile routes are normally stamped on ``event.source`` before this
+        handler runs. Resolve the home per event so session lookup and transcript
+        loading use the same profile store as the later agent run and persistence
+        path. Authorization still belongs to the primary transport profile: a
+        shared Discord/Telegram adapter can route the turn to a profile that
+        intentionally has no bot credential or platform allowlist. Preserve that
+        transport home on the live source so the auth gate does not re-check the
+        sender against the routed runtime's unrelated secret scope. Sources that
+        bypass adapter routing are resolved here; genuinely unrouted events retain
+        the gateway's launch/default home.
+        """
+        default_home = Path(get_hermes_home())
 
         async def _handler(event):
+            source = event.source
+            # In-process only (SessionSource serialization ignores dynamic attrs).
+            # The route selects agent/session state, not which bot admitted the
+            # message. Keep those two trust domains separate.
+            source._authorization_profile_home = default_home
+            if (
+                not getattr(source, "profile", None)
+                and getattr(source, "profile_route_rejected", False) is not True
+            ):
+                from gateway.profile_routing import ProfileRouteRejected
+
+                try:
+                    source.profile = self._profile_name_for_source(source)
+                except ProfileRouteRejected:
+                    # NOT write-only: ``_handle_message``'s ingress gate reads
+                    # this exact marker and drops the message fail-closed
+                    # ("explicit profile route targets an unserved profile").
+                    # Setting it here also stops that gate from re-running
+                    # routing for the same source.
+                    source.profile_route_rejected = True
+
+            profile_home = (
+                self._resolve_profile_home_for_source(source)
+                if getattr(source, "profile", None)
+                else default_home
+            )
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 
@@ -15901,7 +16174,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not has_hook("gateway_platform_event"):
                 return
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 return
             invoke_hook("gateway_platform_event", **event)
         except Exception:
@@ -15929,12 +16202,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _make_default_profile_platform_event_handler(self):
         """Scope primary-transport events to their routed multiplex profile."""
+        default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
+            source._authorization_profile_home = default_home
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
+
+    def _is_user_authorized_for_source(
+        self,
+        source: SessionSource,
+        *,
+        allow_adapter_delegation: bool = True,
+    ) -> bool:
+        """Authorize under the live transport's profile, not the routed runtime.
+
+        A primary adapter may route one chat into another profile's agent/session
+        namespace. That runtime profile need not (and normally should not) copy the
+        shared bot token or allowlist. The primary message/platform-event handlers
+        stamp the transport home as an in-process-only attribute before entering
+        the routed scope; consult it here for the narrow authorization read, then
+        restore the routed scope for the remainder of the turn.
+        """
+        def _check() -> bool:
+            # Preserve the historical one-argument seam used by plugins/tests;
+            # only pass the keyword for the explicit delegation-disabled path.
+            if allow_adapter_delegation:
+                return self._is_user_authorized(source)
+            return self._is_user_authorized(
+                source,
+                allow_adapter_delegation=False,
+            )
+
+        authorization_home = getattr(source, "_authorization_profile_home", None)
+        if authorization_home is not None:
+            with _profile_runtime_scope(Path(authorization_home)):
+                return _check()
+        return _check()
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):
@@ -16849,10 +17155,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
             # authorizes every member of the listed chat regardless of
             # sender). Defer to _is_user_authorized so that path runs.
-            if not self._is_user_authorized(source):
+            if not self._is_user_authorized_for_source(source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-        elif not self._is_user_authorized(source):
+        elif not self._is_user_authorized_for_source(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
@@ -26344,6 +26650,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
+        ("compression", "tail_mode"),
         ("compression", "protect_last_n"),
         ("compression", "proactive_prune_tokens"),
         ("compression", "proactive_prune_min_result_chars"),
@@ -31152,7 +31459,47 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from gateway.control_socket import GatewayControlServer
 
-        _control_server = GatewayControlServer()
+        # pause-for-update (#92091 step 2): the updater asks this gateway to
+        # drain in-flight turns and exit cleanly — releasing every venv file
+        # handle — instead of being tree-killed mid-turn. Same drain path as
+        # SIGUSR1/service restarts (request_restart(via_service=True)); the
+        # updater (or the service manager) relaunches after the code swap.
+        # The handler runs on the socket's executor thread, so the restart
+        # request is marshalled onto the loop thread; the ACK returns the
+        # drain budget so the caller knows how long to wait for exit.
+        _main_loop = asyncio.get_running_loop()
+
+        def _pause_for_update_handler() -> dict:
+            try:
+                from hermes_cli.gateway import _get_restart_drain_timeout
+
+                _drain = float(_get_restart_drain_timeout())
+            except Exception:
+                _drain = 30.0
+            accepted_box: list[bool] = []
+            _done = threading.Event()
+
+            def _request() -> None:
+                try:
+                    accepted_box.append(
+                        runner.request_restart(detached=False, via_service=True)
+                    )
+                finally:
+                    _done.set()
+
+            _main_loop.call_soon_threadsafe(_request)
+            _done.wait(timeout=5.0)
+            accepted = bool(accepted_box and accepted_box[0])
+            return {
+                "pausing": accepted,
+                "already_stopping": not accepted,
+                "pid": os.getpid(),
+                "drain_timeout": _drain,
+            }
+
+        _control_server = GatewayControlServer(
+            verb_handlers={"pause-for-update": _pause_for_update_handler}
+        )
         if not await _control_server.start():
             _control_server = None
         else:

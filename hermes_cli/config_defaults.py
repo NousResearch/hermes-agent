@@ -575,6 +575,33 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # Consent to browse with the user's REAL logins for local browsing.
+        # When true, local browsing (the Browser Use CLI, or the built-in
+        # browser tools) runs on a Hermes-managed SNAPSHOT of the user's
+        # ACTIVE default-Chromium profile (Local State -> profile.last_used) —
+        # its cookies, logins and preferences copied in and re-synced when a
+        # fresh session launches — driven by Hermes' packaged Chromium. Only
+        # the active profile is copied. The snapshot is a non-default dir, so it
+        # sidesteps Chrome 136+'s block on debugging the default profile and
+        # never contends with the user's running browser. Turning this back off
+        # deletes the snapshot store (~/.hermes/browser-profile/) so copied
+        # credentials don't outlive consent. Only Chromium-family default
+        # browsers are supported (Chrome, Edge, Brave, Chromium); a non-Chromium
+        # default (e.g. Firefox) fails closed with a clear message. Default
+        # false. Also gates the browser_exec ``local`` argument, which forces a
+        # real-profile local session even under a cloud browser backend. Toggle
+        # in the desktop Settings → Browser section.
+        "use_real_profile": False,
+        # When real-profile browsing needs the browser closed (Windows: a
+        # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
+        # fully quit before its profile can be copied), arm the "offer to close
+        # it" flow. This does NOT auto-kill: when the profile is locked the
+        # snapshot always blocks and the agent asks the user first; only on
+        # approval does it run `hermes browser close-profile` (terminates the
+        # browser process tree bound to that profile, losing unsaved tabs) and
+        # retry. Still locked afterward → stays blocked, no loop, no auto-kill.
+        # OFF by default. No effect on macOS/Linux (copy-while-running works).
+        "real_profile_autoclose": False,
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -784,9 +811,8 @@ DEFAULT_CONFIG = {
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "tail_mode": "legacy",        # tail retention policy (#87326):
-                                      #   "legacy" — 0.20×window verbatim tail (default)
-                                      #   "lean"   — clamped 2.5%-of-window tail
+        "tail_mode": "lean",          # tail retention policy (#87326):
+                                      #   "lean"   — clamped 2.5%-of-window tail (default)
                                       #              (10K floor / 25K cap) plus chunked
                                       #              digests, a mechanical anchor index,
                                       #              verbatim user messages, and
@@ -795,6 +821,9 @@ DEFAULT_CONFIG = {
                                       #              tokens after compaction; costs a few
                                       #              extra summarizer calls at the
                                       #              compaction boundary.
+                                      #   "legacy" — pre-#87326 0.20×threshold verbatim
+                                      #              tail (100-240K tokens on big-window
+                                      #              or raised-threshold setups).
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing
@@ -3663,6 +3692,12 @@ DEFAULT_CONFIG = {
         # flags when it launches the runtime. See
         # https://cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # macOS only: allow launching an UNSIGNED (ad-hoc / TeamIdentifier
+        # not set) CuaDriver.app for the private-session daemon. The default
+        # (false) fails closed unless the bundle is signed with the official
+        # cua-driver identity (com.trycua.driver / team 4YEC26S9KF). Enable
+        # only when developing the driver locally from source.
+        "allow_unsigned_driver": False,
         # Pre-authorize existing-profile browser attachment in standard mode
         # (cua-driver's trusted-launcher `--grant existing-profile`). When
         # true, the agent can attach to your already-running, signed-in

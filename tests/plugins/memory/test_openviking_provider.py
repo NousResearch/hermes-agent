@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.memory.openviking as openviking_module
+from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _DEFERRED_COMMIT_TIMEOUT,
     _VikingClient,
 )
+
+_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
@@ -767,6 +770,40 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["kwargs"]["params"] == {"uri": "viking://~/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert captured["kwargs"]["headers"]["User-Agent"] == _EXPECTED_USER_AGENT
+
+
+def test_viking_client_upload_uses_user_agent_without_json_content_type(
+    tmp_path,
+    monkeypatch,
+):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    upload = tmp_path / "notes.txt"
+    upload.write_text("notes", encoding="utf-8")
+    captured = {}
+
+    def capture_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"result": {"temp_file_id": "temp-1"}},
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    assert client.upload_temp_file(upload) == "temp-1"
+    assert captured["url"] == "https://example.com/api/v1/resources/temp_upload"
+    headers = captured["kwargs"]["headers"]
+    assert headers["User-Agent"] == _EXPECTED_USER_AGENT
+    assert "Content-Type" not in headers
 
 
 def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(monkeypatch):
@@ -808,14 +845,19 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
         "/api/v1/system/status",
         "/api/v1/admin/accounts",
     ]
-    assert calls[0][1] == {"Accept": "application/json"}
-    assert calls[1][1] == {"Accept": "application/json"}
+    expected_anonymous_headers = {
+        "Accept": "application/json",
+    }
+    assert calls[0][1] == expected_anonymous_headers
+    assert calls[1][1] == expected_anonymous_headers
     for _url, headers in calls[2:]:
         assert headers["X-API-Key"] == "secret-key"
         assert headers["Authorization"] == "Bearer secret-key"
 
 
-def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypatch):
+def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_headers(
+    monkeypatch,
+):
     captured_headers = []
     client = _VikingClient(
         "https://openviking.example",
@@ -874,7 +916,9 @@ def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatc
     payload = client.health_payload()
     assert payload == modern
     assert client.health() is True
-    assert calls[0] == {"Accept": "application/json"}
+    assert calls[0] == {
+        "Accept": "application/json",
+    }
     assert "Authorization" in calls[1]
     assert calls[1]["Authorization"].startswith("Bearer account.user.")
     assert "X-API-Key" in calls[1]

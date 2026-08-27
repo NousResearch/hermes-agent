@@ -374,6 +374,34 @@ def get_read_block_error(path: str) -> Optional[str]:
             "security boundary; the terminal tool can still bypass.)"
         )
 
+    # browser-profile/: real-profile browsing snapshot (browser.use_real_profile).
+    # A copy of the user's Cookies / Login Data / Web Data lives here — the same
+    # credential class as auth.json, so it gets the same directory-prefix read
+    # deny. Prefix (not a finite filename list) so future Chromium files are
+    # covered too.
+    for hd in hermes_dirs:
+        try:
+            browser_profile = (hd / "browser-profile").resolve()
+        except Exception:
+            continue
+        if resolved == browser_profile:
+            return (
+                f"Access denied: {path} is the Hermes real-profile browser "
+                "snapshot directory (copied cookies/logins) and cannot be read "
+                "directly. (Defense-in-depth — not a security boundary; the "
+                "terminal tool can still bypass.)"
+            )
+        try:
+            resolved.relative_to(browser_profile)
+        except ValueError:
+            continue
+        return (
+            f"Access denied: {path} is inside the Hermes real-profile browser "
+            "snapshot (copied cookies/logins) and cannot be read directly. "
+            "(Defense-in-depth — not a security boundary; the terminal tool "
+            "can still bypass.)"
+        )
+
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
     # .env contents — .env.example is the documented-shape substitute. The

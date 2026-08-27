@@ -379,7 +379,11 @@ def clarify_tool(
         # Empty questions array → fall through to the single-question path.
 
     if not question or not question.strip():
-        return tool_error("Question text is required.")
+        return tool_error(
+            "No question provided. Pass questions=[{question: '...', "
+            "choices?: [...], multi_select?: bool}, ...] — a single question "
+            "is a one-entry array."
+        )
 
     question = question.strip()
 
@@ -437,98 +441,39 @@ def check_clarify_requirements() -> bool:
 CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
-        "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports three modes:\n\n"
-        "1. **Single-select multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option. List the choice you recommend "
-        "FIRST: the UI labels it '(Recommended)' and highlights it by default.\n"
-        "2. **Multi-select multiple choice** — set multi_select=true. The user can select "
-        "multiple options via checkboxes. user_response will be a list of selected choices.\n"
-        "3. **Open-ended** — omit choices entirely. The user types a free-form "
-        "response.\n\n"
-        "You can also ask SEVERAL questions in ONE call: pass "
-        "questions in the `questions` array (each with its own choices/"
-        "multi_select, any mix of the three modes). The user answers them all "
-        "on a single form, in any order. STRONGLY preferred over a chain of "
-        "single-question clarify calls when you need several independent answers.\n"
-        "CRITICAL: when you are offering options, put each option ONLY in the "
-        "`choices` array — NEVER enumerate the options inside the `question` "
-        "text. The UI renders `choices` as selectable rows; options written "
-        "into the question string render as dead prose the user can't pick. "
-        "Right: question='Which deployment target?', choices=['staging', "
-        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
-        "Use this tool when:\n"
-        "- The task is ambiguous and you need the user to choose an approach\n"
-        "- You want post-task feedback ('How did that work out?')\n"
-        "- You want to offer to save a skill or update memory\n"
-        "- A decision has meaningful trade-offs the user should weigh in on\n\n"
-        "Do NOT use this tool for simple yes/no confirmation of dangerous "
-        "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "Ask the user one or more questions when you need a decision, "
+        "clarification, or feedback before proceeding. Pass every question "
+        f"in `questions` (1-{MAX_QUESTIONS} entries) — a single question is a "
+        "one-entry array, and several INDEPENDENT questions belong in ONE "
+        "call (one form beats a chain of clarify calls; if one answer would "
+        "change another question, ask separately). Per question: "
+        f"single-select (up to {MAX_CHOICES} choices — put your recommended "
+        "option FIRST, the UI marks it '(Recommended)' and auto-appends an "
+        "'Other' free-text row), multi-select (multi_select=true), or "
+        "open-ended (omit choices). Options go ONLY in `choices`, never "
+        "enumerated inside the question text (choices render as pickable "
+        "rows; options written into the question are dead prose the user "
+        "can't click). Result: {responses: [...]} in question order (plus "
+        "timed_out=true if the user stopped part-way). Prefer deciding "
+        "low-stakes questions yourself; don't use this for dangerous-command "
+        "confirmation (the terminal tool handles that)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "question": {
-                "type": "string",
-                "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
-                ),
-            },
-            "choices": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": MAX_CHOICES,
-                "description": (
-                    "REQUIRED whenever you are presenting selectable options: "
-                    "each distinct option is its own array element (up to 4). "
-                    "ORDER MATTERS: put the option you actually recommend "
-                    "FIRST — the UI labels it '(Recommended)' and pre-selects "
-                    "it, so a list ordered arbitrarily recommends the wrong "
-                    "thing to the user. Do not write '(Recommended)' yourself. "
-                    "The UI renders these as pickable rows and auto-appends an "
-                    "'Other (type your answer)' option. Omit this parameter "
-                    "entirely ONLY for a genuinely open-ended free-text question."
-                ),
-            },
-            "multi_select": {
-                "type": "boolean",
-                "description": (
-                    "When true, the user can select MULTIPLE options (like checkboxes). "
-                    "The user_response will be a list of selected choices. "
-                    "When false (default), single selection (radio). "
-                    "Has no effect when choices is omitted (open-ended question)."
-                ),
-            },
             "questions": {
                 "type": "array",
+                "minItems": 1,
                 "maxItems": MAX_QUESTIONS,
                 "description": (
-                    "Ask 2-5 INDEPENDENT questions in one call instead of "
-                    "several sequential clarify calls — the user answers them "
-                    "on one form, in any order. Each item has its own "
-                    "question/choices/multi_select (same rules as the "
-                    "top-level parameters); optional `id` is echoed back in "
-                    "the matching response. When set, the top-level question/"
-                    "choices are ignored. put a short batch title in the "
-                    "top-level `question` The result is {responses: [...]}, "
-                    "with `timed_out: true` added if the user stopped part-way "
-                    "(unanswered entries have an empty user_response). Only "
-                    "batch questions that are truly independent — if one "
-                    "answer would change another question, ask separately."
+                    "The question(s). Each: question text (options excluded), "
+                    "optional choices (recommended first; omit for free-text), "
+                    "optional multi_select. Responses come back in question "
+                    "order with the question text echoed."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": (
-                                "Optional short identifier echoed in the "
-                                "matching response (e.g. 'approach')."
-                            ),
-                        },
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
@@ -540,8 +485,14 @@ CLARIFY_SCHEMA = {
                     "required": ["question"],
                 },
             },
+            # NOTE: the handler also accepts (unadvertised): a per-question
+            # `id` (echoed in the matching response — redundant since rows
+            # carry the question text and preserve order), and the legacy
+            # single-question shape (`question` + `choices` + `multi_select`
+            # at top level; a top-level `question` beside `questions` is the
+            # batch form's title). One documented way to call.
         },
-        "required": ["question"],
+        "required": ["questions"],
     },
 }
 

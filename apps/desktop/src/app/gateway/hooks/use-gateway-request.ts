@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -72,8 +73,17 @@ export function useGatewayRequest() {
       try {
         // Reconnect to whichever profile the gateway is currently routed to (not
         // always the primary), so a sleep/wake reconnect keeps the user on the
-        // profile they were chatting in.
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        // profile they were chatting in. Both awaits below are IPC round-trips
+        // into the main process with no timeout of their own (#93454) — a
+        // wedged main-process round-trip otherwise hangs this await forever,
+        // latching reconnectingRef.current so every later requestGateway() call
+        // returns the same never-settling promise. Bound the same way
+        // use-gateway-boot.ts bounds the primary boot/soft-switch equivalents.
+        const conn = await withTimeout(
+          desktop.getConnection($activeGatewayProfile.get()),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out reconnecting to Hermes backend'
+        )
         connectionRef.current = conn
         setConnection(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
@@ -82,7 +92,11 @@ export function useGatewayRequest() {
         // auth rejection becomes a reauth error; transport failures remain
         // retryable. Stash only the former so requestGateway can show the
         // actionable "sign in again" message.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          'Timed out re-minting the gateway WebSocket URL'
+        )
         await existing.connect(wsUrl)
 
         return existing
@@ -114,15 +128,14 @@ export function useGatewayRequest() {
       try {
         return await gateway.request<T>(method, params, timeoutMs, signal)
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-
-        if (!/not connected|connection closed/i.test(message)) {
+        if (!isGatewayTransportError(error)) {
           throw error
         }
 
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
-        // single-use ticket); background profiles are always local pool
-        // backends, so the registry handles their reconnect with no reauth.
+        // single-use ticket). Background profiles stay on the registry's
+        // connection-owned reconnect path, including composite remote/SSH
+        // sources.
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
@@ -145,4 +158,43 @@ export function useGatewayRequest() {
   )
 
   return { connectionRef, gateway, gatewayRef, requestGateway }
+}
+
+const GATEWAY_TRANSPORT_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ERR_NETWORK',
+  'ERR_SOCKET_CLOSED'
+])
+
+function errorCode(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const code = (value as { code?: unknown }).code
+
+  return typeof code === 'string' ? code.toUpperCase() : null
+}
+
+function isGatewayTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (/not connected|connection closed|connection reset|ECONNRESET/i.test(message)) {
+    return true
+  }
+
+  const cause = typeof error === 'object' && error !== null ? (error as { cause?: unknown }).cause : undefined
+
+  return [error, cause].some(value => {
+    const code = errorCode(value)
+
+    return code !== null && GATEWAY_TRANSPORT_ERROR_CODES.has(code)
+  })
 }

@@ -2396,6 +2396,7 @@ class MCPServerTask:
         "_reconnect_retries", "_session_proven", "_was_parked",
         "_inflight_tasks", "_reconnecting", "_suspect_reason",
         "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
+        "_ever_connected",
     )
 
     def __init__(self, name: str):
@@ -2426,6 +2427,12 @@ class MCPServerTask:
         # keeps getting charged and still reaches the park instead of
         # hot-cycling respawns forever.
         self._session_proven: bool = False
+        # Set once tools have ever been registered and never cleared again,
+        # unlike ``_ready`` (which is cleared on every reconnect cycle). Used
+        # to tell a genuine first-connection failure from a later reconnect
+        # failure that merely happens to occur while ``_ready`` is
+        # momentarily clear — see the ``initial_retries`` ladder in run().
+        self._ever_connected: bool = False
         # True while parked (reconnect budget exhausted) or after a park,
         # until the session proves healthy again — used to log the
         # parked→revived transition exactly once.
@@ -3307,6 +3314,23 @@ class MCPServerTask:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                    # Positive identity for the machine spawn ledger (#61514):
+                    # record each helper child as (pid, create_time,
+                    # 'mcp-helper', spawner=this process) so startup sweeps
+                    # can reap orphans left after an unclean parent exit.
+                    # Best-effort — never let ledger I/O break MCP startup.
+                    for _pid in new_pids:
+                        try:
+                            from hermes_cli.process_identity import register_child
+
+                            register_child(_pid, "mcp-helper")
+                        except Exception:
+                            logger.debug(
+                                "spawn-ledger register_child failed for MCP "
+                                "helper pid %s",
+                                _pid,
+                                exc_info=True,
+                            )
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
@@ -3335,6 +3359,7 @@ class MCPServerTask:
                     self._mark_lifecycle_started()
                     await self._discover_tools()
                     self._ready.set()
+                    self._ever_connected = True
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
@@ -3706,6 +3731,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._ever_connected = True
                         # Session is live again: clear any breaker state from a
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
@@ -3771,6 +3797,7 @@ class MCPServerTask:
                             self.session = session
                             await self._discover_tools()
                             self._ready.set()
+                            self._ever_connected = True
                             # Session is live again: clear any breaker state from
                             # a prior outage so the first call after recovery
                             # isn't gated on a stale failure count (#16788).
@@ -3818,6 +3845,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._ever_connected = True
                         # Session is live again: clear any breaker state from a
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
@@ -4116,9 +4144,15 @@ class MCPServerTask:
 
                 # If this is the first connection attempt, retry with backoff
                 # before giving up. A transient DNS/network blip at startup
-                # should not permanently kill the server.
+                # should not permanently kill the server. Gated on
+                # ``_ever_connected`` rather than ``_ready`` — ``_ready`` is
+                # cleared on every reconnect cycle (see below), so a server
+                # that already registered tools once and then dropped would
+                # otherwise be misclassified as never having connected and
+                # re-enter this initial-connect ladder (#94654).
+                # ``_ever_connected`` itself is set once and never cleared.
                 # (Ported from Kilo Code's MCP resilience fix.)
-                if not self._ready.is_set():
+                if not self._ever_connected:
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park

@@ -71,7 +71,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,47 @@ class DeadlineExpired(TimeoutError):
         self.timeout_s = timeout_s
 
 
+class SuspectableBackend(Protocol):
+    """Phase 3a (#85125): a stateful backend the deadline layer can flag.
+
+    A timed-out stateful backend (MCP connection, browser session, LSP
+    client) may be left wedged by the abandoned half-finished operation.
+    ``run_bounded_*`` calls ``mark_suspect`` on timeout so the OWNER can
+    health-check or recycle the backend before reuse (``ensure_healthy``)
+    instead of returning a poisoned handle to the cache. Consumers adopt
+    incrementally (Phase 3b, one backend per PR), so the layer fails open:
+    backends without the protocol are simply never marked.
+
+    Adopter contract: ``mark_suspect`` MUST be cheap, non-blocking, and
+    must not acquire locks the guarded operation may hold. It runs inline —
+    on the event loop in the async flavor, and on the caller's thread in
+    the sync flavor while the wedged worker is still alive. Set a flag;
+    do the expensive health-check/recycle work in ``ensure_healthy``.
+    """
+
+    def mark_suspect(self, reason: str) -> None: ...
+
+    def ensure_healthy(self) -> bool: ...
+
+
+def _mark_backend_suspect(backend: object | None, label: str, timeout_s: float) -> None:
+    """Best-effort ``mark_suspect`` on a timed-out call's backend.
+
+    Never raises: adoption state must not be able to weaken the deadline
+    bound or corrupt the ``BoundedResult`` the caller is about to receive.
+    A non-adopting backend (no ``mark_suspect``) is tolerated silently —
+    Phase 3b lands per-backend, so absence is the norm during adoption.
+    """
+    if backend is None:
+        return
+    try:
+        mark = getattr(backend, "mark_suspect", None)
+        if callable(mark):
+            mark(f"{label} timed out after {timeout_s:.1f}s")
+    except Exception:
+        logger.debug("deadline mark_suspect failed", exc_info=True)
+
+
 @dataclass(frozen=True, kw_only=True)
 class BoundedResult:
     """Outcome of a bounded operation.
@@ -155,7 +196,9 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
     try:
         value = float(timeout)
     except (TypeError, ValueError):
-        logger.warning("clamp_timeout: non-numeric timeout %r; treating as unbounded", timeout)
+        logger.warning(
+            "clamp_timeout: non-numeric timeout %r; treating as unbounded", timeout
+        )
         return None
     if value != value:  # NaN
         logger.warning("clamp_timeout: NaN timeout; treating as unbounded")
@@ -169,6 +212,7 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
 # Timeout resolution: config.yaml ``timeouts:`` section > legacy env var >
 # registered default.
 # ---------------------------------------------------------------------------
+
 
 def _timeouts_section() -> dict:
     """Read the ``timeouts:`` root section from config.yaml (read-only).
@@ -233,7 +277,9 @@ def resolve_timeout(
                     return clamp_timeout(value)
             except (TypeError, ValueError):
                 pass
-        logger.warning("timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw)
+        logger.warning(
+            "timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw
+        )
 
     if env_var:
         env_raw = os.getenv(env_var, "").strip()
@@ -255,6 +301,7 @@ def resolve_timeout(
 # stacks when the loop provably failed to process the expiry — the one piece
 # of information loop-blocked hangs otherwise never surface.
 # ---------------------------------------------------------------------------
+
 
 def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
     """Observe an abandoned task's outcome so it never logs 'never retrieved'."""
@@ -297,6 +344,7 @@ async def run_bounded_async(
     label: str = "operation",
     on_abandon: Optional[Callable[[], Awaitable[Any]]] = None,
     dump_on_blocked_loop: bool = True,
+    backend: object | None = None,
 ) -> BoundedResult:
     """Await ``awaitable`` under a wall-clock deadline independent of loop timers.
 
@@ -317,7 +365,13 @@ async def run_bounded_async(
     start = time.monotonic()
     if timeout_s is None:
         value = await awaitable
-        return BoundedResult(timed_out=False, value=value, elapsed_s=time.monotonic() - start, timeout_s=None, label=label)
+        return BoundedResult(
+            timed_out=False,
+            value=value,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=None,
+            label=label,
+        )
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
@@ -363,15 +417,37 @@ async def run_bounded_async(
             if not deadline.done():
                 deadline.cancel()
             value = await task
-            return BoundedResult(timed_out=False, value=value, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
+            return BoundedResult(
+                timed_out=False,
+                value=value,
+                elapsed_s=time.monotonic() - start,
+                timeout_s=timeout_s,
+                label=label,
+            )
 
         task.cancel()
         task.add_done_callback(_consume_abandoned)
         if on_abandon is not None:
             cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
             cleanup.add_done_callback(_consume_abandoned)
-        logger.warning("[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s)
-        return BoundedResult(timed_out=True, value=None, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
+        # Phase 3a (#85125): the abandoned task may leave the backend
+        # half-wedged; flag it so the owner recycles before reuse.
+        # Deliberately INLINE on the loop (adopter contract: mark_suspect is
+        # cheap and non-blocking). Running it synchronously guarantees the
+        # mark happens-before this BoundedResult returns AND before the
+        # ensure_future'd on_abandon cleanup can start (next loop tick) — an
+        # offloaded mark would race both.
+        _mark_backend_suspect(backend, label, timeout_s)
+        logger.warning(
+            "[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s
+        )
+        return BoundedResult(
+            timed_out=True,
+            value=None,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=timeout_s,
+            label=label,
+        )
     finally:
         timer.cancel()
         if watchdog is not None:
@@ -386,12 +462,14 @@ async def run_bounded_async(
 # Bounded execution — sync flavor.
 # ---------------------------------------------------------------------------
 
+
 def run_bounded_sync(
     fn: Callable[[], Any],
     timeout: Optional[float],
     *,
     label: str = "operation",
     on_timeout: Optional[Callable[[], None]] = None,
+    backend: object | None = None,
 ) -> BoundedResult:
     """Run ``fn`` in a daemon worker thread under a wall-clock deadline.
 
@@ -411,7 +489,13 @@ def run_bounded_sync(
     timeout_s = clamp_timeout(timeout)
     start = time.monotonic()
     if timeout_s is None:
-        return BoundedResult(timed_out=False, value=fn(), elapsed_s=time.monotonic() - start, timeout_s=None, label=label)
+        return BoundedResult(
+            timed_out=False,
+            value=fn(),
+            elapsed_s=time.monotonic() - start,
+            timeout_s=None,
+            label=label,
+        )
 
     box: dict[str, Any] = {}
     done = threading.Event()
@@ -424,27 +508,45 @@ def run_bounded_sync(
         finally:
             done.set()
 
-    thread = threading.Thread(
-        target=_worker, name=f"deadline-{label}", daemon=True
-    )
+    thread = threading.Thread(target=_worker, name=f"deadline-{label}", daemon=True)
     thread.start()
     if not done.wait(timeout_s):
-        logger.warning("[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s)
+        logger.warning(
+            "[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s
+        )
+        # Phase 3a (#85125), ordering: mark suspect BEFORE owner cleanup so a
+        # recycle/re-init in on_timeout never gets a stale flag on the healed
+        # replacement. The sync flavor runs the mark inline — the protocol
+        # contract requires mark_suspect to be cheap.
+        _mark_backend_suspect(backend, label, timeout_s)
         if on_timeout is not None:
             try:
                 on_timeout()
             except Exception:
                 logger.debug("deadline on_timeout callback failed", exc_info=True)
-        return BoundedResult(timed_out=True, value=None, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
+        return BoundedResult(
+            timed_out=True,
+            value=None,
+            elapsed_s=time.monotonic() - start,
+            timeout_s=timeout_s,
+            label=label,
+        )
 
     if "exc" in box:
         raise box["exc"]
-    return BoundedResult(timed_out=False, value=box.get("value"), elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
+    return BoundedResult(
+        timed_out=False,
+        value=box.get("value"),
+        elapsed_s=time.monotonic() - start,
+        timeout_s=timeout_s,
+        label=label,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Whole-tree process termination.
 # ---------------------------------------------------------------------------
+
 
 def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     """Terminate ``pid`` and all its descendants, portably.
@@ -490,7 +592,9 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # cross-platform contract (False = nothing was terminated).
             return proc.returncode == 0
         except Exception:
-            logger.debug("kill_process_tree: taskkill failed for pid %s", pid, exc_info=True)
+            logger.debug(
+                "kill_process_tree: taskkill failed for pid %s", pid, exc_info=True
+            )
             return False
 
     import signal as _signal
@@ -523,7 +627,9 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # pid leads its own group: one syscall covers the whole group.
             # (The == check guards against signalling the caller's own group
             # when pid is not a leader.)
-            os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+            os.killpg(  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+                pgid, sig
+            )
         else:
             os.kill(pid, sig)
         signalled = True

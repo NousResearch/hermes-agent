@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { applyConnectionChange, commitConnectionFailure, resolveTerminalConnection } from './connection-apply'
+import {
+  applyConnectionChange,
+  commitConnectionFailure,
+  resolveTerminalConnection,
+  teardownSshState
+} from './connection-apply'
 
 function deferred() {
   let resolve!: () => void
@@ -83,6 +88,39 @@ describe('resolveTerminalConnection', () => {
         async () => undefined
       )
     ).rejects.toThrow('not ready')
+  })
+})
+
+describe('teardownSshState', () => {
+  it('terminates the owned remote backend before closing its tunnel and SSH transport', async () => {
+    const events: string[] = []
+
+    const ssh = {
+      cancelForward: async () => events.push('forward'),
+      close: async () => events.push('ssh')
+    }
+
+    await teardownSshState(
+      { ssh, ownershipId: 'owner', localPort: 1234, remotePort: 5678 },
+      { cleanupRemote: async () => events.push('remote') }
+    )
+
+    expect(events).toEqual(['remote', 'forward', 'ssh'])
+  })
+
+  it('still closes the SSH transport when remote cleanup fails', async () => {
+    const close = vi.fn(async () => undefined)
+
+    await teardownSshState(
+      { ssh: { cancelForward: vi.fn(async () => undefined), close }, ownershipId: 'owner' },
+      {
+        cleanupRemote: async () => {
+          throw new Error('remote unavailable')
+        }
+      }
+    )
+
+    expect(close).toHaveBeenCalledOnce()
   })
 })
 

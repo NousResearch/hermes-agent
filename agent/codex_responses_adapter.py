@@ -288,6 +288,61 @@ def _clamp_responses_call_id(call_id: str) -> str:
     return f"call_{digest}"
 
 
+# The Responses API enforces the same 64-char cap on function names as on
+# input item ids (_MAX_RESPONSES_ITEM_ID_LENGTH) — names over the cap are
+# rejected with the same non-retryable 400 as pattern violations.
+_VALID_RESPONSES_FN_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+
+
+def _sanitize_replayed_fn_name(name: str) -> str:
+    """Coerce a *replayed* function_call name to the Responses API contract.
+
+    The Responses API requires ``function_call.name`` to match
+    ``^[a-zA-Z0-9_-]+$`` and rejects the whole request with a non-retryable
+    HTTP 400 otherwise (issue #31666).  A name with invalid characters (dots,
+    spaces, unicode — e.g. from an earlier model degeneration) stored in
+    conversation history therefore bricks every subsequent turn of the
+    session: the 400 replays forever until the user manually starts a new
+    conversation.
+
+    Invalid characters are replaced with ``_`` (runs collapsed) rather than
+    stripped, so an all-invalid name degrades to the ``"fn"`` placeholder
+    instead of an empty string — an empty name would just trade one
+    non-retryable 400 for a preflight ValueError.  Valid names pass through
+    unchanged, preserving prompt-cache prefixes.
+
+    Apply this ONLY to replayed function_call input items, never to live
+    tool definitions: tool schema names must match the dispatch registry
+    exactly.  Pairing with function_call_output is by call_id, so renaming
+    a replayed function_call is safe.
+    """
+    if not isinstance(name, str):
+        return "fn"
+    if _VALID_RESPONSES_FN_NAME_RE.fullmatch(name):
+        return name
+    coerced = re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())
+    coerced = re.sub(r"_+", "_", coerced).strip("_")
+    return coerced[:64] or "fn"
+
+
+def _canonical_call_id_from_fc(response_item_id: Any) -> Optional[str]:
+    """Map an ``fc_…`` response-item id to its canonical ``call_<suffix>``.
+
+    Both sides of a replayed pair — the assistant ``function_call`` and the
+    tool ``function_call_output`` — must derive the SAME call_id from an
+    fc_-only stored id, or an oversized pair clamps to two different
+    surrogates and the API rejects the output as unmatched.  Keep every
+    caller on this single helper.
+    """
+    if (
+        isinstance(response_item_id, str)
+        and response_item_id.startswith("fc_")
+        and len(response_item_id) > len("fc_")
+    ):
+        return f"call_{response_item_id[len('fc_'):]}"
+    return None
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -667,13 +722,8 @@ def _chat_messages_to_responses_input(
                         if not isinstance(call_id, str) or not call_id.strip():
                             call_id = embedded_call_id
                         if not isinstance(call_id, str) or not call_id.strip():
-                            if (
-                                isinstance(embedded_response_item_id, str)
-                                and embedded_response_item_id.startswith("fc_")
-                                and len(embedded_response_item_id) > len("fc_")
-                            ):
-                                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
-                            else:
+                            call_id = _canonical_call_id_from_fc(embedded_response_item_id)
+                            if call_id is None:
                                 _raw_args = str(fn.get("arguments", "{}"))
                                 call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
                         call_id = call_id.strip()
@@ -688,7 +738,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": _clamp_responses_call_id(call_id),
-                            "name": fn_name,
+                            "name": _sanitize_replayed_fn_name(fn_name),
                             "arguments": arguments,
                         })
                         item_sources.append(msg)
@@ -705,9 +755,13 @@ def _chat_messages_to_responses_input(
 
         if role == "tool":
             raw_tool_call_id = msg.get("tool_call_id")
-            call_id, _ = _split_responses_tool_id(raw_tool_call_id)
+            call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
             if not isinstance(call_id, str) or not call_id.strip():
-                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                # Legacy fc_-only stored ids: canonicalize to the same
+                # ``call_<suffix>`` the assistant branch synthesizes above, so
+                # a >64-char pair clamps to the SAME surrogate on both sides.
+                call_id = _canonical_call_id_from_fc(tool_response_item_id)
+                if call_id is None and isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
@@ -813,7 +867,7 @@ def _preflight_codex_input_items(
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _sanitize_replayed_fn_name(name),
                     "arguments": arguments,
                 }
             )

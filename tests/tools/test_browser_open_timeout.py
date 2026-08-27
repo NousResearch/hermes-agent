@@ -96,7 +96,9 @@ class TestBrowserNavigateOpenTimeout:
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
         monkeypatch.setattr(bt, "_is_local_backend", lambda: True)
         monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda key: False)
-        monkeypatch.setattr(bt, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(
+            bt, "_navigation_session_key", lambda task_id, url, local_browser=False: task_id
+        )
         monkeypatch.setattr(bt, "_maybe_start_recording", lambda *a, **kw: None)
         monkeypatch.setattr(bt, "check_website_access", lambda url: None)
 

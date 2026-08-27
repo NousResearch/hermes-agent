@@ -169,6 +169,9 @@ declare global {
         ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
+        // Drain/update/restore one Desktop-managed SSH install. External URL
+        // and cloud sources are refused without touching their processes.
+        updateManaged?: (id: string) => Promise<DesktopManagedConnectionUpdateResult>
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
         // excludeIds skips connections the caller updates through another
@@ -180,13 +183,15 @@ declare global {
         // materially edited so the renderer can dispose (and re-dial) the
         // secondary gateways scoped to it. Optional: older Electron mains
         // don't emit it.
-        onChanged?: (callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void) => () => void
+        onChanged?: (
+          callback: (payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void
+        ) => () => void
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
@@ -198,6 +203,9 @@ declare global {
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the profile used on the next Desktop launch without
+        // interrupting the live gateway workspace switch.
+        remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -415,6 +423,13 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
+      setActiveConnectionRoute?: (
+        route: {
+          connectionId?: null | string
+          profile?: string
+          registryScoped?: boolean
+        } | null
+      ) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
@@ -935,6 +950,37 @@ export interface DesktopConnectionUpdateResult {
   reason?: string
   detail?: string
   error?: string
+}
+
+export type DesktopManagedConnectionUpdateOutcome =
+  'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
+
+export interface DesktopManagedUpdateReceipt {
+  correlationId: string
+  // Additive receipt outcomes remain forward-compatible with newer updater
+  // kernels instead of making an older renderer reject their proof.
+  outcome: string
+  startedAt?: string
+  finishedAt?: string
+  preSha?: string
+  postSha?: string
+  preVersion?: string
+  postVersion?: string
+  stopReason?: string
+}
+
+export interface DesktopManagedConnectionUpdateResult {
+  connectionId: string
+  correlationId: string
+  ok: boolean
+  updateOk: boolean
+  restoreOk: boolean
+  outcome: DesktopManagedConnectionUpdateOutcome
+  exitCode: number | null
+  receipt: DesktopManagedUpdateReceipt | null
+  scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  error?: string
+  message?: string
 }
 
 export interface DesktopSshResolveResult {

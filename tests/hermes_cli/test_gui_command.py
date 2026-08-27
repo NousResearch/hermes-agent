@@ -458,6 +458,10 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
 def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
     """A failing stable sign must still leave a launchable (deep ad-hoc) bundle.
 
+    The stable signer raising routes into the legacy deep ad-hoc fallback;
+    with the fallback sign and strict verification succeeding, the fixup
+    reports ``True`` per its documented contract.
+
     ``macos_only``: the subject is ``codesign`` against a real ``.app`` bundle
     layout (``exe.parents[2]``), which only the macOS packaged tree produces.
     """
@@ -487,7 +491,7 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
 
     monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
     assert ["xattr", "-cr", str(app)] in calls
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
 
@@ -739,6 +743,172 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     assert exc.value.code == 0
     mock_setup.assert_called_once_with("Hermes Local Signing")
     mock_install.assert_not_called()
+
+
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, monkeypatch):
+    """A successful stable-identity re-sign must NOT delete the safeStorage item.
+
+    Regression for review feedback on #90961: deleting the keychain item
+    permanently orphans every safeStorage-backed credential (gateway token,
+    native OAuth access/refresh tokens — see electron/main.ts). On the stable
+    path the cert-anchored designated requirement is stable across rebuilds,
+    so after the first launch the keychain ACL already matches and deleting
+    the item would destroy working credentials on every update.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
+    )
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(
+        cli_main.subprocess, "run",
+        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_path, monkeypatch):
+    """Default no-config path (identity == '-') must not delete the keychain item.
+
+    Witness for the default ad-hoc success path: with no
+    ``desktop.macos_signing_identity`` configured, the fixup signs ad-hoc with
+    identifier-pinned requirements and must leave the safeStorage item alone.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(
+        cli_main.subprocess, "run",
+        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path, monkeypatch):
+    """A failed fallback re-sign must preserve the keychain item (no deletion).
+
+    Regression for review feedback on #90961: the fallback previously deleted
+    the safeStorage item unconditionally, even when ``codesign`` failed
+    (``check=False`` result was ignored). A failed recovery can permanently
+    orphan gateway and native OAuth credentials without producing a verified
+    successor app/key identity. The fixup must check the codesign result,
+    run strict verification, and leave the keychain untouched on failure.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # First subprocess call is the xattr clear (exit 0); the deep sign
+        # fails with a non-zero exit.
+        if cmd[:2] == ["/usr/bin/codesign", "--force"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+    assert not any("--verify" in c for c in calls)
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_deletes(tmp_path, monkeypatch):
+    """A successful fallback re-sign runs strict verification, no deletion.
+
+    The legacy ad-hoc fallback signs, verifies with
+    ``codesign --verify --deep --strict``, and leaves the safeStorage keychain
+    item untouched. The keychain prompt macOS shows instead is recoverable
+    ("Always Allow" updates the ACL partition list and preserves the key);
+    deletion is not.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+    assert ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)] in calls
+    assert not any("delete-generic-password" in c for c in calls)
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

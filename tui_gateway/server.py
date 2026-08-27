@@ -384,6 +384,16 @@ _current_runtime_session_record: contextvars.ContextVar[dict | None] = (
     contextvars.ContextVar("hermes_gateway_runtime_session_record", default=None)
 )
 
+# JSON-RPC method being dispatched on this thread/task. Purely diagnostic: the
+# 4001 "session not found" warning below is the only signal a stale-runtime
+# retry loop leaves behind, and without the method name it cannot say WHICH
+# client poll is looping (a 5s `process.list` poll produced 18,614 rejections
+# against one id before the caller could be identified). Never used for
+# authorization — the method string is client-supplied.
+_current_rpc_method: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "hermes_gateway_rpc_method", default=""
+)
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -1822,6 +1832,29 @@ def _transfer_db_to_agent(agent, db) -> bool:
         return False
 
 
+def _open_profile_session_db(profile_home):
+    """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED.
+
+    A named-profile agent whose profile store cannot be opened must surface a
+    clear error and never get built against the launch ``state.db``: a silent
+    fallback bleeds the session's rows and messages into the wrong profile's
+    store exactly when the profile store is briefly unopenable (locked,
+    unreadable, mid-restore), and the named profile then looks blank. Callers
+    let the raised error abort the agent build (deferred builds route it to
+    the build's ``agent_error`` path) instead of swallowing it back onto the
+    launch handle.
+    """
+    from hermes_state import SessionDB
+
+    db_path = Path(profile_home) / "state.db"
+    try:
+        return SessionDB(db_path=db_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"profile session store unavailable: {db_path}: {exc}"
+        ) from exc
+
+
 @contextlib.contextmanager
 def _profile_db(params: dict | None = None):
     """Yield the SessionDB for ``params['profile']`` (app-global remote mode).
@@ -2444,7 +2477,11 @@ def handle_request(req: dict) -> dict | None:
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
-    return fn(rid, params)
+    token = _current_rpc_method.set(method)
+    try:
+        return fn(rid, params)
+    finally:
+        _current_rpc_method.reset(token)
 
 
 def _current_session_steer_authority(
@@ -2706,17 +2743,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
-                try:
-                    from hermes_state import SessionDB
-
-                    # DEDICATED handle — ours until _transfer_db_to_agent hands
-                    # it to the built agent in the finally below. Every path
-                    # that leaves this build without that transfer (the except
-                    # below, and a session reaped mid-build) must close it.
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                    owns_db = True
-                except Exception:
-                    session_db = None
+                # DEDICATED handle — ours until _transfer_db_to_agent hands
+                # it to the built agent in the finally below. Every path
+                # that leaves this build without that transfer (the except
+                # below, and a session reaped mid-build) must close it.
+                # FAIL CLOSED on open failure: the raise routes to the
+                # ``except`` below (clear agent_error, no agent turn) instead
+                # of silently binding _make_agent's launch-DB default and
+                # bleeding this session into the wrong profile's state.db.
+                session_db = _open_profile_session_db(profile_home)
+                owns_db = True
 
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -2894,8 +2930,9 @@ def _sess_nowait(params, rid):
     # report is diagnosable as "request arrived and was rejected" instead of
     # "request never arrived" (see #90428).
     logger.warning(
-        "session-scoped RPC rejected: session_id=%r not in memory "
+        "session-scoped RPC rejected: method=%s session_id=%r not in memory "
         "(detached/reaped runtime; client should resume the stored session), rid=%r",
+        _current_rpc_method.get() or "?",
         sid,
         rid,
     )
@@ -5638,6 +5675,9 @@ def _apply_model_switch(
             confirm_msg = warning.message
             if result.warning_message:
                 confirm_msg = f"{confirm_msg}\n\n{result.warning_message}"
+            # Same contract as the deferred branch below: confirm_message is
+            # canonical, warning is the pre-confirm-era alias. Identical by
+            # design, not by accident.
             return {
                 "value": result.new_model,
                 "warning": confirm_msg,
@@ -5816,6 +5856,216 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             "error",
             sid,
             {"message": f"Could not switch to configured model {model}: {e}"},
+        )
+
+
+def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
+    """Selection-guard message for a model queued mid-turn, or ``None``.
+
+    Runs BEFORE the pick is stashed, while the client still has a live response
+    it can turn into a confirm prompt. Only pre-resolution inputs exist here --
+    the model id the user picked and any explicit ``--provider`` -- which is
+    exactly what the data-policy guard keys on. Guards that can only decide
+    once base_url / api_key / model_info have settled still get their chance in
+    ``_apply_model_switch``; the cost guard returns ``None`` when pricing is
+    unknown, so an early call can only under-fire, never over-fire.
+
+    A misbehaving guard must never break the pick, so exceptions are swallowed
+    and treated as "no warning" -- the apply-time check remains the backstop.
+    """
+    if not model:
+        return None
+    try:
+        from hermes_cli.model_selection_guards import combined_selection_warning
+
+        warning = combined_selection_warning(model, provider=provider or None)
+    except Exception:
+        return None
+
+    return warning.message if warning is not None else None
+
+
+def _tui_compression_config_signature(cfg: dict | None) -> tuple:
+    """Stable snapshot of compression/context keys that must apply next turn.
+
+    Reuses the messaging-gateway cache-busting extract so Desktop/TUI and
+    messaging stay on the same key set. Adds ``idle_compact_after_seconds``
+    and ``tail_mode``, which affect live TUI sessions but are not in the
+    gateway tuple today.
+    """
+    from gateway.run import GatewayRunner
+
+    keys = GatewayRunner._extract_cache_busting_config(cfg)
+    picked = {
+        key: value
+        for key, value in keys.items()
+        if key.startswith("compression.") or key == "model.context_length"
+    }
+    compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
+    for extra in ("idle_compact_after_seconds", "tail_mode"):
+        picked[f"compression.{extra}"] = compression.get(extra)
+    return tuple(sorted(picked.items()))
+
+
+def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
+    """Update a live session's compressor from current config.yaml.
+
+    Preserves the agent object, session identity, history, and callbacks.
+    Recomputes the trigger from the ratio-based threshold and then applies
+    ``compression.threshold_tokens`` so raising, lowering, or clearing the
+    cap all take effect on the next preflight.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+    enabled_raw = compression.get("enabled", True)
+    if isinstance(enabled_raw, bool):
+        agent.compression_enabled = enabled_raw
+    else:
+        agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
+
+    idle_raw = compression.get(
+        "idle_compact_after_seconds",
+        getattr(agent, "compression_idle_compact_after_seconds", 0),
+    )
+    try:
+        agent.compression_idle_compact_after_seconds = max(0, int(idle_raw or 0))
+    except (TypeError, ValueError):
+        pass
+
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None:
+        return
+
+    if "tail_mode" in compression:
+        mode = str(compression.get("tail_mode") or "legacy").strip().lower()
+        cc.tail_mode = mode if mode in ("legacy", "lean") else "legacy"
+
+    def _assign_int(key: str, attr: str, default: int, min_value: int = 0) -> None:
+        if key not in compression:
+            return
+        try:
+            raw = compression.get(key)
+            value = default if raw is None else int(raw)
+            setattr(cc, attr, max(min_value, value))
+        except (TypeError, ValueError):
+            return
+
+    _assign_int("proactive_prune_tokens", "proactive_prune_tokens", 0)
+    _assign_int("proactive_prune_min_result_chars", "proactive_prune_min_result_chars", 8000)
+    _assign_int("proactive_prune_min_reclaim_tokens", "proactive_prune_min_reclaim_tokens", 0)
+    _assign_int("protect_last_n", "protect_last_n", 20)
+    _assign_int("min_tail_user_messages", "min_tail_user_messages", 1, min_value=1)
+
+    if "target_ratio" in compression:
+        try:
+            cc.summary_target_ratio = max(0.10, min(float(compression["target_ratio"]), 0.80))
+        except (TypeError, ValueError):
+            pass
+
+    raw_thresholds = compression.get("model_thresholds")
+    if isinstance(raw_thresholds, dict):
+        cc.model_thresholds = {
+            str(k): float(v)
+            for k, v in raw_thresholds.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+
+    if "threshold" in compression:
+        try:
+            pct = float(compression["threshold"])
+            cc._config_threshold_percent = pct
+            cc._configured_threshold_percent = pct
+            base = pct
+            model_thresholds = getattr(cc, "model_thresholds", None) or {}
+            if model_thresholds:
+                from agent.context_compressor import resolve_model_threshold
+
+                base = resolve_model_threshold(
+                    getattr(agent, "model", "") or "",
+                    model_thresholds,
+                    pct,
+                )
+            cc._base_threshold_percent = base
+            if hasattr(cc, "_effective_threshold_percent"):
+                try:
+                    cc.threshold_percent = cc._effective_threshold_percent(
+                        cc.context_length, base
+                    )
+                except Exception:
+                    cc.threshold_percent = pct
+            else:
+                cc.threshold_percent = pct
+        except (TypeError, ValueError):
+            pass
+
+    raw_ctx = model_cfg.get("context_length")
+    if raw_ctx is not None:
+        try:
+            new_ctx = int(raw_ctx)
+        except (TypeError, ValueError):
+            new_ctx = 0
+        if new_ctx > 0:
+            cc._config_context_length = new_ctx
+            try:
+                cc.context_length = new_ctx
+            except Exception:
+                pass
+
+    coerce_cap = getattr(cc, "_coerce_threshold_tokens_cap", None)
+    if callable(coerce_cap):
+        cc.threshold_tokens_cap = coerce_cap(compression.get("threshold_tokens"))
+    elif "threshold_tokens" in compression:
+        try:
+            cap = int(compression.get("threshold_tokens"))
+            cc.threshold_tokens_cap = cap if cap > 0 else None
+        except (TypeError, ValueError):
+            cc.threshold_tokens_cap = None
+
+    # Invalidate cached trigger so the next preflight re-derives from the
+    # current percent/window and then applies the (possibly new) cap.
+    if hasattr(cc, "_threshold_tokens"):
+        cc._threshold_tokens = None
+        if hasattr(cc, "_tail_token_budget"):
+            cc._tail_token_budget = None
+    elif hasattr(cc, "_apply_threshold_tokens_cap"):
+        compute = getattr(cc, "_compute_threshold_tokens", None)
+        if callable(compute):
+            cc.threshold_tokens = compute(
+                getattr(cc, "context_length", 0) or 0,
+                getattr(cc, "threshold_percent", 0.5),
+                getattr(cc, "max_tokens", None),
+            )
+        cc._apply_threshold_tokens_cap()
+    else:
+        cap = getattr(cc, "threshold_tokens_cap", None)
+        current = getattr(cc, "threshold_tokens", None)
+        if cap and current:
+            cc.threshold_tokens = min(int(current), int(cap))
+
+
+def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
+    """Adopt compression.* / model.context_length edits at turn start.
+
+    Messaging gateways already rebuild a cached agent when these keys change.
+    Desktop/TUI only synced the model; the live compressor kept the threshold
+    captured at agent creation (#95151).
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    cfg = _load_cfg() or {}
+    signature = _tui_compression_config_signature(cfg)
+    seen = session.get("config_compression_seen")
+    session["config_compression_seen"] = signature
+    if signature == seen:
+        return
+    try:
+        _apply_live_compression_config(agent, cfg)
+    except Exception as e:
+        logger.warning(
+            "Could not apply live compression config for %s: %s", sid, e
         )
 
 
@@ -7854,12 +8104,21 @@ def _init_session(
         db = session_db
     elif profile_home:
         try:
-            from hermes_state import SessionDB
-
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            db = _open_profile_session_db(profile_home)
             _init_owns_db = True
         except Exception:
-            db = _get_db()
+            # FAIL CLOSED — same class as the deferred-build bind: a
+            # named-profile session must never read/write the launch
+            # ``state.db``. Skip the cwd hydration/persist (the row lands on
+            # the agent's own lazy-create once the store recovers) rather
+            # than writing this session's row into the wrong profile's store.
+            logger.warning(
+                "profile session store unavailable for %s — skipping cwd "
+                "hydration instead of touching the launch state.db",
+                profile_home,
+                exc_info=True,
+            )
+            db = None
     else:
         db = _get_db()
     try:
@@ -11493,6 +11752,7 @@ def _run_prompt_submit(
                 # config sync so an explicit pick wins over a config.yaml change.
                 _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
+                _sync_agent_compression_with_config(sid, session)
             # Bot Chat capability sync — adopt Settings→Capabilities edits
             # (skills/toolsets/MCP/SOUL) into the eternal bot session before
             # the turn runs. No-op for every other session shape.
@@ -12689,19 +12949,57 @@ def _(rid, params: dict) -> dict:
                         pending_model = parsed.model_input
                     except Exception:
                         pending_model = str(value)
+                    pending_provider = (
+                        getattr(parsed, "explicit_provider", "") or ""
+                    ).strip()
+                    confirmed = bool(params.get("confirm_expensive_model", False))
+                    # Run the selection guards HERE, not only at apply time.
+                    # This branch used to answer confirm_required=False without
+                    # consulting them, so a client that implements the confirm
+                    # round-trip was told no consent was needed. It stashed the
+                    # pick, and _apply_pending_model_switch -- which calls the
+                    # guards with the stashed (unconfirmed) flag -- dropped the
+                    # switch at the next turn start. The model reverted with no
+                    # confirm ever offered, because the one moment a round-trip
+                    # was possible had already passed.
+                    if not confirmed:
+                        pending_warning = _pending_switch_selection_warning(
+                            pending_model, pending_provider
+                        )
+                        if pending_warning is not None:
+                            # Nothing is stashed: an unconfirmed guarded pick
+                            # leaves the session exactly as it was, and the
+                            # client re-sends with confirm_expensive_model to
+                            # queue it for real.
+                            return _ok(
+                                rid,
+                                {
+                                    "key": key,
+                                    "value": pending_model,
+                                    # `confirm_message` is the field to read.
+                                    # `warning` carries the same text only so
+                                    # clients written before the confirm
+                                    # round-trip existed still show something;
+                                    # `_apply_pending_model_switch` already
+                                    # prefers confirm_message and falls back to
+                                    # warning. Keep them identical or drop
+                                    # `warning` -- do not let them diverge.
+                                    "warning": pending_warning,
+                                    "confirm_required": True,
+                                    "confirm_message": pending_warning,
+                                    "scope": "session",
+                                    "deferred": False,
+                                },
+                            )
                     session["pending_model_switch"] = {
                         "raw": value,
-                        "confirm_expensive_model": bool(
-                            params.get("confirm_expensive_model", False)
-                        ),
+                        "confirm_expensive_model": confirmed,
                         # The resolved model/provider the next turn will run on.
                         # _session_info reports these while the switch is pending
                         # so the end-of-turn settle keeps showing the user's pick
                         # instead of blipping back to the still-live old model.
                         "display_model": pending_model,
-                        "display_provider": (
-                            getattr(parsed, "explicit_provider", "") or ""
-                        ).strip(),
+                        "display_provider": pending_provider,
                     }
                     return _ok(
                         rid,

@@ -4,20 +4,25 @@ import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   $sessionStates,
   $sessionTiles,
   blankDraftTile,
+  clearAllSessionStates,
+  closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  foregroundSessionScopes,
+  isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
   nextSessionTileForWorkspace,
   openSessionTile,
   orderTilesByTree,
   patchSessionTile,
+  recordSessionEventScope,
   releaseSessionTranscript,
   requestForOwnedSession,
   resetTileRuntimeBindings,
@@ -30,6 +35,62 @@ import {
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
+
+describe('foregroundSessionScopes', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('keeps the exact registry owner of an idle foreground runtime', () => {
+    recordSessionEventScope({ connectionId: 'cloud', profile: 'default', session_id: 'runtime-1' })
+    $activeSessionId.set('runtime-1')
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+  })
+
+  it('fails closed when the foreground runtime has no registered source', () => {
+    $activeSessionId.set('legacy-runtime')
+
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
+  it('keeps every open pane owner, not only the focused runtime', () => {
+    recordSessionEventScope({ connectionId: 'cloud-a', profile: 'default', session_id: 'runtime-a' })
+    recordSessionEventScope({ connectionId: 'cloud-b', profile: 'default', session_id: 'runtime-b' })
+    $sessionTiles.set([
+      { runtimeId: 'runtime-a', storedSessionId: 'stored-a' },
+      {
+        ownerRoute: { connectionId: 'cloud-b', profile: 'default' },
+        storedSessionId: 'stored-b'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud-a::default', 'conn:cloud-b::default']))
+  })
+
+  it('releases an idle pane owner when the pane closes', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'cloud', profile: 'default' },
+        storedSessionId: 'stored-cloud'
+      }
+    ])
+
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+
+    $sessionTiles.set([])
+
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+})
 
 describe('resetTileRuntimeBindings', () => {
   afterEach(() => {
@@ -265,6 +326,52 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => {
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('drops persisted bot tiles so a roster/profile rehydrate cannot restore them', () => {
+    openSessionTile('chat-a', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:a'
+    })
+    openSessionTile('chat-b', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:b'
+    })
+    $layoutTree.set(group(['workspace', tilePane('chat-a'), tilePane('chat-b')], { active: 'workspace', id: 'main' }))
+
+    closeAllOpenSessionTiles('workspace')
+
+    expect($sessionTiles.get()).toEqual([])
+
+    // Profile swap re-reads the shared Bot bucket. Close All must have
+    // emptied it, not only dismissed the tree panes.
+    $activeGatewayProfile.set('other-profile')
+    expect($sessionTiles.get()).toEqual([])
+    $activeGatewayProfile.set('default')
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('leaves session tiles stacked in a different zone open', () => {
+    openSessionTile('keep', 'right', 'workspace')
+    openSessionTile('close-me', 'center', 'workspace')
+    $layoutTree.set(
+      split('row', [
+        group(['workspace', tilePane('close-me')], { active: 'workspace', id: 'main' }),
+        group([tilePane('keep')], { active: tilePane('keep'), id: 'right' })
+      ])
+    )
+
+    closeAllOpenSessionTiles('workspace')
+
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['keep'])
   })
 })
 
@@ -609,6 +716,12 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     expect(knownOwnerForSession('stored-2')).toBe('loki')
   })
 
+  it('keeps a session row connection owner when profiles share the same name', () => {
+    setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {
     expect(knownOwnerForSession('unknown-session')).toBeUndefined()
     expect(knownOwnerForSession(null)).toBeUndefined()
@@ -625,5 +738,51 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
 
     expect(ambient).toHaveBeenCalledTimes(1)
     expect(ambient.mock.calls[0]).toEqual(['approval.respond', { choice: 'once', session_id: 'unknown-session' }])
+  })
+})
+
+describe('isSessionRemote (#94640)', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+  })
+  afterEach(() => {
+    $sessionTiles.set([])
+    setSessions([])
+    $connection.set(null)
+  })
+
+  it('falls back to the ambient connection when the session has no known owner route', () => {
+    $connection.set({ mode: 'remote' } as never)
+    expect(isSessionRemote('unknown-session')).toBe(true)
+
+    $connection.set({ mode: 'local' } as never)
+    expect(isSessionRemote('unknown-session')).toBe(false)
+  })
+
+  it("prefers the session's OWN owner route over an ambient connection of a different mode", () => {
+    // The window's active/ambient connection is local, but this session
+    // belongs to a registered secondary REMOTE connection (Bot Mode / the
+    // unified Sessions list). Composer image uploads must still upload
+    // bytes for it — reading ambient mode here shipped a client-local
+    // composer-images path to the remote backend (#94640).
+    $connection.set({ mode: 'local' } as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'homelab', mode: 'remote', profile: 'default' },
+        runtimeId: 'rt-1',
+        storedSessionId: 'stored-1'
+      }
+    ])
+
+    expect(isSessionRemote('rt-1')).toBe(true)
+    expect(isSessionRemote('stored-1')).toBe(true)
+  })
+
+  it('falls back to ambient when the owner is a bare pool profile (no connectionId/mode)', () => {
+    $connection.set({ mode: 'remote' } as never)
+    setSessions([{ id: 'stored-2', profile: 'loki' } as never])
+
+    expect(isSessionRemote('stored-2')).toBe(true)
   })
 })

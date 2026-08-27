@@ -658,6 +658,13 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
+    # True only when commands execute on the SAME host as the Hermes process
+    # (LocalEnvironment). Controller-host facts (sys.platform, Path.home())
+    # only describe the execution target when this is True — remote/container
+    # backends must not inherit controller-side platform behavior (e.g. the
+    # macOS TCC search pruning in tools/file_operations.py).
+    is_local: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
@@ -970,6 +977,16 @@ class BaseEnvironment(ABC):
         parts.append(
             'export AI_AGENT="${AI_AGENT:-hermes-agent}" '
             'HERMES_AGENT="${HERMES_AGENT:-true}"'
+        )
+
+        # Non-interactive pager defaults: git log/diff/branch and similar
+        # pager-happy tools hang a captured (non-TTY writing to a pipe is
+        # fine, but PTY mode IS a TTY) or PTY-backed command waiting for `q`.
+        # GIT_PAGER=cat neutralizes git specifically; PAGER=cat catches the
+        # long tail (man, systemctl, psql, ...). ${VAR:-default} semantics:
+        # a user who exported their own pager in the session keeps it.
+        parts.append(
+            'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"'
         )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through

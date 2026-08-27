@@ -1721,6 +1721,17 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if preserved:
             msg["reasoning_details"] = preserved
 
+    if reasoning_text or msg.get("reasoning_content") or msg.get("reasoning_details"):
+        # Internal provenance for route-safe historical replay. These keys are
+        # stripped from every provider-facing clone before transport.
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        msg["_reasoning_route"] = reasoning_route_fingerprint(
+            getattr(agent, "provider", None),
+            getattr(agent, "model", None),
+            getattr(agent, "base_url", None),
+        )
+
     # Provider-native carriers replayed verbatim on later turns:
     # anthropic_content_blocks keeps interleaved thinking + tool_use order
     # (reconstruction reorders signed blocks -> HTTP 400); codex_* items are
@@ -2156,6 +2167,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         api_msg = msg.copy()
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
+            if key == "reasoning" and agent._reasoning_replay_field_for_api() == "reasoning":
+                continue
             api_msg.pop(key, None)
         # Mirror of the transport's role-qualified strip: ``name`` is
         # schema-foreign on tool results only (strict providers reject with

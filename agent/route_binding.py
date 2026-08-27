@@ -65,8 +65,16 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._config_context_length = None
     agent.model, agent.provider, agent.requested_provider = model, provider, provider
     agent.base_url, agent.api_mode = base_url, api_mode
-    # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
+    # Reasoning echo/replay settings travel with the active route; restore_primary_runtime reverts them.
     agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
+    replay_field = entry.get("reasoning_replay_field")
+    if isinstance(replay_field, str):
+        replay_field = replay_field.strip().lower()
+    agent._reasoning_replay_field = (
+        replay_field if replay_field in {"reasoning", "reasoning_content"} else None
+    )
+    from agent.agent_runtime_helpers import _sync_compressor_reasoning_replay
+    _sync_compressor_reasoning_replay(agent)
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     from agent.turn_recovery import reset_codex_reasoning_replay

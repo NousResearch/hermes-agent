@@ -77,6 +77,7 @@ def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallba
         "tool_calls": message.get("tool_calls"),
         "tool_call_id": message.get("tool_call_id"),
         **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
+        "reasoning_route": message.get("_reasoning_route") if is_assistant else None,
         "platform_message_id": message.get("platform_message_id") or message.get("message_id"),
         "observed": bool(message.get("observed")),
         "timestamp": fallback_ts if timestamp is None else timestamp,

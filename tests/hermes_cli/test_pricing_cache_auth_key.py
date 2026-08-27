@@ -1,0 +1,127 @@
+"""``_pricing_cache`` keys on auth state, not just the base URL.
+
+A governed endpoint (Nous ``/v1/models`` filtered by an org's model policy)
+answers an authenticated read with a narrower catalog than an anonymous one.
+Keyed on the base URL alone, whichever read landed first in a process answered
+every later one — so an authenticated caller could be handed the full,
+unfiltered catalog without a request going out.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+import hermes_cli.models as models_mod
+from hermes_cli.models import fetch_models_with_pricing, peek_cached_pricing
+
+BASE = "https://inference-api.example.com"
+
+# What the endpoint serves anonymously vs. to a policy-restricted caller.
+_FULL = ["vendor/allowed", "vendor/blocked"]
+_FILTERED = ["vendor/allowed"]
+
+
+@pytest.fixture(autouse=True)
+def _clear_pricing_cache():
+    models_mod._pricing_cache.clear()
+    models_mod._pricing_cache_retry_after.clear()
+    yield
+    models_mod._pricing_cache.clear()
+    models_mod._pricing_cache_retry_after.clear()
+
+
+@pytest.fixture
+def catalog(monkeypatch):
+    """Serve the filtered catalog to an authenticated read, the full one to an
+    anonymous read, and record every request."""
+    requests: list[str | None] = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        auth = req.get_header("Authorization")
+        requests.append(auth)
+        ids = _FILTERED if auth else _FULL
+        payload = {
+            "data": [
+                {"id": mid, "pricing": {"prompt": "0.000002", "completion": "0.00001"}}
+                for mid in ids
+            ]
+        }
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(payload).encode()
+        resp.__enter__ = lambda self: self
+        resp.__exit__ = lambda *a: False
+        return resp
+
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", _fake_urlopen)
+    return requests
+
+
+def test_authenticated_read_is_not_answered_by_an_anonymous_one(catalog):
+    """The bug: an anonymous read landing first must not answer the next
+    authenticated read out of cache."""
+    anon = fetch_models_with_pricing(api_key="", base_url=BASE)
+    authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+
+    assert sorted(anon) == sorted(_FULL)
+    assert sorted(authed) == sorted(_FILTERED)
+    assert len(catalog) == 2, "the authenticated read must reach the network"
+    assert catalog[0] is None and catalog[1] == "Bearer sk-test"
+
+
+def test_anonymous_read_is_not_answered_by_an_authenticated_one(catalog):
+    """And the reverse direction, so neither entry can shadow the other."""
+    authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+    anon = fetch_models_with_pricing(api_key="", base_url=BASE)
+
+    assert sorted(authed) == sorted(_FILTERED)
+    assert sorted(anon) == sorted(_FULL)
+    assert len(catalog) == 2
+
+
+@pytest.mark.parametrize("api_key", ["sk-test", ""])
+def test_repeated_read_still_hits_the_cache(catalog, api_key):
+    """Widening the key must not cost the caching it was there for."""
+    first = fetch_models_with_pricing(api_key=api_key, base_url=BASE)
+    second = fetch_models_with_pricing(api_key=api_key, base_url=BASE)
+
+    assert first == second
+    assert len(catalog) == 1, "second read should be served from cache"
+
+
+def test_force_refresh_replaces_only_its_own_entry(catalog):
+    """A forced authenticated re-read must leave the anonymous entry intact."""
+    fetch_models_with_pricing(api_key="", base_url=BASE)
+    fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+    fetch_models_with_pricing(api_key="sk-test", base_url=BASE, force_refresh=True)
+
+    assert len(catalog) == 3
+    anon = fetch_models_with_pricing(api_key="", base_url=BASE)
+    assert sorted(anon) == sorted(_FULL)
+    assert len(catalog) == 3, "the anonymous entry should have survived"
+
+
+class TestPeekCachedPricing:
+    def test_returns_empty_when_nothing_cached(self):
+        assert peek_cached_pricing(BASE) == {}
+
+    def test_accepts_a_v1_suffixed_url(self, catalog):
+        """The agent holds a /v1-suffixed base URL; the fetchers key on the root."""
+        fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+        assert sorted(peek_cached_pricing(BASE + "/v1")) == sorted(_FILTERED)
+
+    def test_prefers_the_authenticated_catalog(self, catalog):
+        """It is the one scoped to the caller's org."""
+        fetch_models_with_pricing(api_key="", base_url=BASE)
+        fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+        assert sorted(peek_cached_pricing(BASE)) == sorted(_FILTERED)
+
+    def test_falls_back_to_the_anonymous_catalog(self, catalog):
+        fetch_models_with_pricing(api_key="", base_url=BASE)
+        assert sorted(peek_cached_pricing(BASE)) == sorted(_FULL)
+
+    def test_never_fetches(self, catalog):
+        peek_cached_pricing(BASE)
+        assert catalog == []

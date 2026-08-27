@@ -2255,6 +2255,39 @@ def _cache_catalog(
     return result
 
 
+# A governed endpoint answers an authenticated read with a policy-filtered
+# catalog and an anonymous read with the full one, so auth state is part of the
+# cache identity. NUL cannot appear in a URL, so the suffix cannot collide with
+# a base URL that happens to end this way.
+_PRICING_AUTH_KEY_SUFFIX = "\x00auth"
+
+
+def _pricing_cache_key(url_root: str, api_key: str | None) -> str:
+    """The ``_pricing_cache`` key for a read of *url_root*.
+
+    Only *whether* a key was supplied participates — never its value, so no
+    secret reaches the cache key.
+    """
+    return url_root + _PRICING_AUTH_KEY_SUFFIX if api_key else url_root
+
+
+def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
+    """Pricing already cached for *base_url*, or ``{}``. Never fetches.
+
+    Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the
+    catalog fetchers key on. Prefers the authenticated catalog, which is the
+    one scoped to the caller's org.
+    """
+    root = (base_url or "").rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    for key in (root + _PRICING_AUTH_KEY_SUFFIX, root):
+        cached = _pricing_cache.get(key)
+        if cached:
+            return cached
+    return {}
+
+
 def _format_price_per_mtok(per_token_str: str) -> str:
     """Convert a per-token price string to a human-friendly $/Mtok string.
 
@@ -2391,7 +2424,8 @@ def fetch_models_with_pricing(
 ) -> dict[str, dict[str, Any]]:
     """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
-    Results are cached per *base_url* so repeated calls are free.
+    Results are cached per *base_url* and per auth state, so repeated calls
+    are free and an authenticated read never answers an anonymous one.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
 
     When *include_sale_original* is true (Nous Portal only) and the gateway
@@ -2402,13 +2436,14 @@ def fetch_models_with_pricing(
     ``{prompt, completion}`` shape even if a response happens to nest
     ``original``.
     """
-    cache_key = (base_url or "").rstrip("/")
+    url_root = (base_url or "").rstrip("/")
+    cache_key = _pricing_cache_key(url_root, api_key)
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:
             return cached
 
-    url = cache_key + "/v1/models"
+    url = url_root + "/v1/models"
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": _HERMES_USER_AGENT,

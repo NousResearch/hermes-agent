@@ -927,3 +927,28 @@ class TestLoopTickWitness:
         finally:
             state["thread"].join(timeout=5.0)
             assert not errors, errors
+
+
+def test_default_probe_budget_stays_inside_query_tier():
+    """The module doc pins the worst-case wedge-suspected probe at ~3.4s,
+    'far inside the 10s query tier'. Assert the strike-count math so
+    retuning tick_timeout / tick_strikes / tick_gap_s can't silently blow
+    past that tier (reviewer ask on #92315).
+
+    Worst case: the first probe misses (tick_timeout), then the sustained
+    window runs (tick_strikes - 1) more probes, each up to tick_timeout,
+    with tick_gap_s sleeps between attempts.
+    """
+    import inspect
+
+    sig = inspect.signature(gateway_cli.probe_gateway_loop_liveness)
+    tick_timeout = sig.parameters["tick_timeout"].default
+    tick_strikes = sig.parameters["tick_strikes"].default
+    tick_gap_s = sig.parameters["tick_gap_s"].default
+
+    worst_case = tick_strikes * tick_timeout + (tick_strikes - 1) * tick_gap_s
+    assert worst_case <= 5.0, (
+        f"default probe budget {worst_case:.1f}s exceeds half the 10s query "
+        "tier — retune tick_timeout/tick_strikes/tick_gap_s or update the "
+        "subprocess-timeout doc reference in hermes_cli/gateway.py"
+    )

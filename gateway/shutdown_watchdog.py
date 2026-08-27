@@ -525,6 +525,14 @@ async def loop_heartbeat_forever(
     # path length) must not abort the gateway or the file heartbeat — it only
     # disables the witness, and the payload flag tells probes that staleness is
     # no longer sufficient authority to escalate.
+    #
+    # Windows: asyncio.start_unix_server raises (no AF_UNIX event-loop
+    # support), so the witness is PERMANENTLY absent there — the payload
+    # records loop_tick_socket=False and every stale-file probe classifies
+    # UNKNOWN, never WEDGED. That is deliberate fail-safe: a wedged native
+    # Windows gateway keeps the graceful-drain backstop instead of an
+    # escalation verdict built on a witness that cannot exist. (WSL2 — the
+    # #90502 incident environment — is Linux and arms the socket normally.)
     tick_server = None
     tick_socket_path = None
     try:

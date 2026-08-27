@@ -28,10 +28,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import resource
 import shutil
 import uuid
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Callable, Mapping
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import get_sandbox_dir
@@ -308,13 +309,74 @@ def build_bwrap_args(
     return argv
 
 
+def uid_thread_count(uid: int) -> int:
+    """Threads owned by *uid* host-wide, counted from /proc.
+
+    RLIMIT_NPROC counts threads, not processes (getrlimit(2)), and a desktop
+    uid runs several threads per process.
+    """
+    count = 0
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        proc = os.path.join("/proc", name)
+        try:
+            if os.stat(proc).st_uid == uid:
+                count += len(os.listdir(os.path.join(proc, "task")))
+        except OSError:
+            continue
+    return count
+
+
+def rlimit_values(config: BubblewrapConfig, *, uid_threads: int) -> dict[int, int]:
+    """The rlimits a spawn gets from the three terminal.bubblewrap_* keys.
+
+    A key at 0 leaves its limit out. RLIMIT_NPROC is counted per uid
+    host-wide, and a bwrap user namespace does not change that (kernel
+    6.8: with the limit below the uid's thread count bwrap cannot even
+    create its namespace), so max_procs is applied on top of the uid's
+    current thread count: it bounds what the sandbox may add, and the
+    documented default of 256 keeps working on a desktop that already runs
+    more.
+    """
+    limits: dict[int, int] = {}
+    if config.memory_mb:
+        limits[resource.RLIMIT_AS] = config.memory_mb * 1024 * 1024
+    if config.cpu_seconds:
+        limits[resource.RLIMIT_CPU] = config.cpu_seconds
+    if config.max_procs:
+        limits[resource.RLIMIT_NPROC] = uid_threads + config.max_procs
+    return limits
+
+
+def make_preexec(limits: Mapping[int, int]) -> Callable[[], None] | None:
+    """A Popen preexec_fn applying *limits* as soft and hard, or None when empty.
+
+    A value above the inherited hard limit is clamped to it: raising a
+    hard limit needs CAP_SYS_RESOURCE and would fail the spawn.
+    """
+    if not limits:
+        return None
+    pairs = tuple(limits.items())
+
+    def _apply_rlimits() -> None:
+        for res, value in pairs:
+            _, hard = resource.getrlimit(res)
+            if hard != resource.RLIM_INFINITY:
+                value = min(value, hard)
+            resource.setrlimit(res, (value, value))
+
+    return _apply_rlimits
+
+
 class BubblewrapEnvironment(LocalEnvironment):
     """LocalEnvironment whose every spawn runs inside a bwrap sandbox.
 
     Bash resolution, the run env, missing-cwd recovery and process-group
-    kill come from LocalEnvironment. This class adds the argv prefix, a
-    per-instance state dir for the shell snapshot and cwd file, the empty
-    file bound over sensitive files, and their removal on cleanup.
+    kill come from LocalEnvironment. This class adds the argv prefix, the
+    rlimit preexec, a per-instance state dir for the shell snapshot and cwd
+    file, the empty file bound over sensitive files, and their removal on
+    cleanup.
     """
 
     def __init__(
@@ -358,6 +420,10 @@ class BubblewrapEnvironment(LocalEnvironment):
             bwrap_path=self._bwrap_path,
         )
         return prefix + list(args)
+
+    def _popen_preexec(self):
+        uid_threads = uid_thread_count(os.getuid()) if self._config.max_procs else 0
+        return make_preexec(rlimit_values(self._config, uid_threads=uid_threads))
 
     def cleanup(self):
         super().cleanup()

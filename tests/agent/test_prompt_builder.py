@@ -394,6 +394,71 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_environment_gate_survives_the_disk_snapshot(self, monkeypatch, tmp_path):
+        """A gated skill stays hidden on the snapshot fast path, not just the cold scan.
+
+        The fast path rebuilds the index from serialized entries alone, so a filter
+        whose input is not serialized cannot run at all. ``environments`` used to be
+        left out of ``_build_snapshot_entry``, which made the gate hold on the first
+        build in a fresh HERMES_HOME and silently lapse for every process after it.
+        """
+        from agent import skill_utils
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Pin the detector rather than the host: the test must mean the same thing
+        # inside the Docker image, where s6 really is active.
+        monkeypatch.setattr(skill_utils, "_detect_environment", lambda env: False)
+
+        tools = tmp_path / "skills" / "tools"
+        (tools / "always-on").mkdir(parents=True)
+        (tools / "always-on" / "SKILL.md").write_text(
+            "---\nname: always-on\ndescription: Ungated\n---\n"
+        )
+        (tools / "container-only").mkdir()
+        (tools / "container-only" / "SKILL.md").write_text(
+            "---\nname: container-only\ndescription: Gated\nenvironments: [s6]\n---\n"
+        )
+
+        cold = build_skills_system_prompt()
+        assert "always-on" in cold
+        assert "container-only" not in cold
+
+        # Drop the in-process cache but KEEP the snapshot: this is the path a second
+        # process takes, and the only one where the regression was observable.
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        warm = build_skills_system_prompt()
+        assert "always-on" in warm
+        assert "container-only" not in warm
+
+    def test_snapshot_entry_serializes_environments(self, monkeypatch, tmp_path):
+        """The snapshot carries `environments`, in the same shape `platforms` uses."""
+        import json
+
+        from agent import skill_utils
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(skill_utils, "_detect_environment", lambda env: True)
+
+        d = tmp_path / "skills" / "tools" / "kanban-only"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: kanban-only\ndescription: Gated\nenvironments: [kanban]\n---\n"
+        )
+
+        build_skills_system_prompt()
+
+        snapshot = json.loads(
+            (tmp_path / ".skills_prompt_snapshot.json").read_text(encoding="utf-8")
+        )
+        gated = [
+            e
+            for e in (snapshot.get("skills") or [])
+            if e.get("skill_name") == "kanban-only"
+        ]
+        assert gated, f"kanban-only missing from snapshot: {snapshot}"
+        assert gated[0]["environments"] == ["kanban"]
+
 
 # =========================================================================
 # Context files prompt builder

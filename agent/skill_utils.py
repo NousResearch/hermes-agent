@@ -193,14 +193,37 @@ def _detect_environment(env: str) -> bool:
     return result
 
 
+def skill_matches_environment_list(environments: Any) -> bool:
+    """Return True when *environments* is relevant to the current runtime.
+
+    The list-shaped sibling of :func:`skill_matches_environment`, mirroring
+    :func:`skill_matches_platform_list`. Callers that hold serialized metadata
+    rather than frontmatter — the prompt-index snapshot, for one — need this
+    form; without it an ``environments`` tag survives a cold scan and is lost
+    on every cached rebuild.
+    """
+    if not environments:
+        return True
+    if not isinstance(environments, list):
+        environments = [environments]
+    for env in environments:
+        normalized = str(env).lower().strip()
+        if not normalized:
+            continue
+        # _detect_environment fails open on unknown tags — don't hide the
+        # skill over a tag we don't understand.
+        if _detect_environment(normalized):
+            return True
+    return False
+
+
 def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     """True when ANY declared ``environments:`` tag is active (absent = all;
     unknown tags fail open). Offer-time filter only."""
-    environments = frontmatter.get("environments")
-    if not environments:
-        return True
-    tags = [str(env).lower().strip() for env in (environments if isinstance(environments, list) else [environments])]
-    return any(_detect_environment(tag) for tag in tags if tag)
+    return skill_matches_environment_list(frontmatter.get("environments"))
+
+
+# ── Disabled skills ───────────────────────────────────────────────────────
 
 
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}

@@ -89,3 +89,39 @@ class TestApprovalGate:
         # A sandboxed container backend skips the gate entirely.
         assert approval.check_dangerous_command(command, "docker")["approved"] is True
         assert len(reached) == 2
+
+
+class TestHostPathGates:
+    """Gates outside the named sets that pick host-path behavior for local
+    must pick it for bubblewrap too."""
+
+    def test_image_source_treats_bubblewrap_as_host_side(self, monkeypatch):
+        from tools import image_source
+
+        monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+        assert image_source._is_local_terminal_backend() is True
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        assert image_source._is_local_terminal_backend() is False
+
+    def test_cwd_placeholder_resolves_messaging_cwd_for_bubblewrap(self):
+        from gateway import cwd_placeholder
+
+        source = inspect.getsource(cwd_placeholder.resolve_placeholder_terminal_cwd)
+        assert 'in ("local", "bubblewrap")' in source
+
+    @pytest.mark.parametrize("path, needle", [
+        ("cli.py", 'effective_backend in ("local", "bubblewrap")'),
+        ("run_agent.py", 'backend not in ("local", "bubblewrap")'),
+        ("tui_gateway/server.py", 'backend in ("local", "bubblewrap")'),
+    ])
+    def test_source_gates_name_bubblewrap_beside_local(self, path, needle):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        assert needle in (root / path).read_text(), path
+
+    def test_tui_gateway_has_both_local_gates(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        assert (root / "tui_gateway/server.py").read_text().count('backend in ("local", "bubblewrap")') == 2

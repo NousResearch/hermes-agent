@@ -325,10 +325,10 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
 
-    # Local backend: cwd is always os.getcwd(). Non-local: a placeholder is popped so
-    # terminal_tool uses its per-backend default; an explicit path is kept.
+    # Host-path backends (local, bubblewrap): cwd is always os.getcwd(). Others: a placeholder
+    # is popped so terminal_tool uses its per-backend default; an explicit path is kept.
     effective_backend = terminal_config.get("env_type", "local")
-    if effective_backend == "local":
+    if effective_backend in ("local", "bubblewrap"):
         terminal_config["cwd"] = os.getcwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:

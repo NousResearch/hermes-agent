@@ -3553,6 +3553,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)
+            # Intentionally string-exact (raw stored values, not normalized
+            # datetimes): trigger_job stamps the SAME isoformat string into
+            # both fields, and any rewrite of next_run_at (schedule edit,
+            # recovery re-anchor, fire-claim advance) must invalidate the
+            # marker. Do not "fix" this with _ensure_aware normalization.
             manual_run = job.get("manual_run_at") == next_run
             # Migration repair: a cron job persists next_run_at as an absolute
             # instant, but the cron expr describes local wall-clock intent. If the

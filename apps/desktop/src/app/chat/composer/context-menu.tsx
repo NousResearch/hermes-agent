@@ -1,5 +1,17 @@
+import {
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  PointerSensor,
+  useSensor,
+  useSensors
+} from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { composerPanelCard } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -32,21 +44,16 @@ import {
   Plus,
   Trash2
 } from '@/lib/icons'
+import { reorderCommitHaptic, REORDER_DRAG_TRANSITION_CSS, REORDER_RAIL_TRANSITION_CSS } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import {
   $promptTemplates,
   addFolder,
   addTemplate,
-  canIndent,
-  canMoveDown,
-  canMoveUp,
-  canOutdent,
   deleteTemplate,
+  type DropPlacement,
   ensureSeeded,
-  indentNode,
-  moveTemplateDown,
-  moveTemplateUp,
-  outdentNode,
+  placeNode,
   type PromptTemplate,
   resetToBuiltins,
   toggleFolderCollapsed,
@@ -57,6 +64,9 @@ import {
 import { useComposerAttachmentProviders } from './contrib'
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
+
+/** Vertical-only auto-scroll when the pointer nears the list edge (same feel as sidebar). */
+const TEMPLATE_LIST_AUTO_SCROLL = { threshold: { x: 0, y: 0.18 } } as const
 
 export function ContextMenu({
   state,
@@ -160,18 +170,21 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
   const c = t.composer
   const templates = useStore($promptTemplates)
   const rows = visibleTreeRows(templates)
+  const rowIds = useMemo(() => rows.map(r => r.node.id), [rows])
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [dropHint, setDropHint] = useState<{ overId: string; placement: DropPlacement } | null>(null)
+  const activeIdRef = useRef<string | null>(null)
+  const pointerYRef = useRef(0)
+  const listRef = useRef<HTMLUListElement | null>(null)
 
-  // Seed built-in templates (locale-aware) the first time the dialog opens.
-  // Done here rather than at module load so translateNow sees the active
-  // locale, not the default — avoids English text on a Chinese UI.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+
   useEffect(() => {
     if (open) {
       ensureSeeded()
     }
   }, [open])
 
-  // Drop edit state if the template being edited was deleted
   useEffect(() => {
     if (editingId && !templates.some(s => s.id === editingId)) {
       setEditingId(null)
@@ -212,6 +225,83 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     }
   }
 
+  function resolvePlacement(overId: string, clientY: number): DropPlacement {
+    const overNode = templates.find(s => s.id === overId)
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-template-id="${CSS.escape(overId)}"]`)
+
+    if (!el || !overNode) {
+      return 'after'
+    }
+
+    const rect = el.getBoundingClientRect()
+    const ratio = (clientY - rect.top) / Math.max(rect.height, 1)
+
+    if (overNode.kind === 'folder') {
+      if (ratio < 0.25) {
+        return 'before'
+      }
+
+      if (ratio > 0.75) {
+        return 'after'
+      }
+
+      return 'inside'
+    }
+
+    return ratio < 0.5 ? 'before' : 'after'
+  }
+
+  function updateDropHint(overId: string | null) {
+    if (!overId || overId === activeIdRef.current) {
+      setDropHint(null)
+
+      return
+    }
+
+    setDropHint({ overId, placement: resolvePlacement(overId, pointerYRef.current) })
+  }
+
+  function handleDragStart({ active }: DragStartEvent) {
+    activeIdRef.current = String(active.id)
+    setEditingId(null)
+  }
+
+  function handleDragMove({ over }: DragMoveEvent) {
+    updateDropHint(over ? String(over.id) : null)
+  }
+
+  function handleDragOver({ over }: DragOverEvent) {
+    updateDropHint(over ? String(over.id) : null)
+  }
+
+  function handleDragCancel() {
+    activeIdRef.current = null
+    setDropHint(null)
+  }
+
+  function handleDragEnd({ activatorEvent, active, over }: DragEndEvent) {
+    // Match sidebar: drop grabber focus so hover affordance doesn't stick "on".
+    if (!(activatorEvent instanceof KeyboardEvent)) {
+      ;(document.activeElement as HTMLElement | null)?.blur()
+    }
+
+    const fromId = String(active.id)
+    const toId = over ? String(over.id) : null
+    const placement = toId ? resolvePlacement(toId, pointerYRef.current) : null
+
+    activeIdRef.current = null
+    setDropHint(null)
+
+    if (!toId || !placement || fromId === toId) {
+      // Illegal / cancelled drop → no store write; dnd-kit snaps the row back.
+      return
+    }
+
+    if (placeNode(fromId, toId, placement)) {
+      reorderCommitHaptic()
+    }
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-lg">
@@ -223,37 +313,49 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
         {templates.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">{c.templateEmpty}</p>
         ) : (
-          <ul className="grid max-h-[40vh] gap-1 overflow-y-auto">
-            {rows.map(({ depth, node }) => (
-              <li key={node.id}>
-                {editingId === node.id ? (
-                  <TemplateEditor
-                    depth={depth}
-                    onCancel={() => setEditingId(null)}
-                    onSave={() => setEditingId(null)}
-                    template={node}
-                  />
-                ) : (
-                  <TemplateRow
-                    canIndent={canIndent(node.id, templates)}
-                    canMoveDown={canMoveDown(node.id, templates)}
-                    canMoveUp={canMoveUp(node.id, templates)}
-                    canOutdent={canOutdent(node.id, templates)}
-                    depth={depth}
-                    onDelete={() => handleDelete(node)}
-                    onEdit={() => setEditingId(node.id)}
-                    onIndent={() => indentNode(node.id)}
-                    onInsert={() => handleInsert(node)}
-                    onMoveDown={() => moveTemplateDown(node.id)}
-                    onMoveUp={() => moveTemplateUp(node.id)}
-                    onOutdent={() => outdentNode(node.id)}
-                    onToggleFolder={() => toggleFolderCollapsed(node.id)}
-                    template={node}
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
+          <DndContext
+            autoScroll={TEMPLATE_LIST_AUTO_SCROLL}
+            collisionDetection={closestCenter}
+            onDragCancel={handleDragCancel}
+            onDragEnd={handleDragEnd}
+            onDragMove={handleDragMove}
+            onDragOver={handleDragOver}
+            onDragStart={handleDragStart}
+            sensors={sensors}
+          >
+            <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
+              <ul
+                className="grid max-h-[40vh] gap-1 overflow-y-auto"
+                onPointerMove={event => {
+                  pointerYRef.current = event.clientY
+                }}
+                ref={listRef}
+              >
+                {rows.map(({ depth, node }) => (
+                  <li key={node.id}>
+                    {editingId === node.id ? (
+                      <TemplateEditor
+                        depth={depth}
+                        onCancel={() => setEditingId(null)}
+                        onSave={() => setEditingId(null)}
+                        template={node}
+                      />
+                    ) : (
+                      <SortableTemplateRow
+                        depth={depth}
+                        dropHint={dropHint?.overId === node.id ? dropHint.placement : null}
+                        onDelete={() => handleDelete(node)}
+                        onEdit={() => setEditingId(node.id)}
+                        onInsert={() => handleInsert(node)}
+                        onToggleFolder={() => toggleFolderCollapsed(node.id)}
+                        template={node}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
@@ -276,31 +378,51 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
   )
 }
 
-function TemplateRow({
-  canIndent: indentable,
-  canMoveDown: downable,
-  canMoveUp: upable,
-  canOutdent: outdentable,
+function SortableTemplateRow({
   depth,
+  dropHint,
   onDelete,
   onEdit,
-  onIndent,
   onInsert,
-  onMoveDown,
-  onMoveUp,
-  onOutdent,
   onToggleFolder,
   template
-}: TemplateRowProps) {
+}: SortableTemplateRowProps) {
   const { t } = useI18n()
   const c = t.composer
   const isFolder = template.kind === 'folder'
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: template.id })
 
   return (
     <div
-      className="group/template flex w-full items-start gap-1 rounded-md border border-transparent py-2 pr-2.5 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background)"
-      style={{ paddingLeft: `${0.625 + depth * 0.75}rem` }}
+      className={cn(
+        'group/template relative flex w-full items-start gap-1 rounded-md border border-transparent py-2 pr-2.5 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background)',
+        isDragging && 'z-10 border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) opacity-90 shadow-sm',
+        dropHint === 'inside' && 'border-(--ui-stroke-primary) bg-(--ui-control-hover-background)',
+        dropHint === 'before' && 'border-t-2 border-t-(--ui-stroke-primary)',
+        dropHint === 'after' && 'border-b-2 border-b-(--ui-stroke-primary)'
+      )}
+      data-template-id={template.id}
+      ref={setNodeRef}
+      style={{
+        paddingLeft: `${0.625 + depth * 0.75}rem`,
+        transform: transform ? `translate3d(0px, ${transform.y}px, 0)` : undefined,
+        transition: isDragging ? REORDER_DRAG_TRANSITION_CSS : transition || REORDER_RAIL_TRANSITION_CSS,
+        willChange: isDragging ? 'transform' : undefined
+      }}
     >
+      <button
+        aria-label={c.templateReorder}
+        className={cn(
+          'mt-0.5 flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded text-(--ui-text-quaternary) opacity-0 transition-opacity hover:text-foreground group-hover/template:opacity-100 active:cursor-grabbing',
+          isDragging && 'opacity-100'
+        )}
+        type="button"
+        {...attributes}
+        {...listeners}
+      >
+        <Codicon name="grabber" size="0.75rem" />
+      </button>
+
       {isFolder ? (
         <button
           aria-expanded={!template.collapsed}
@@ -340,26 +462,6 @@ function TemplateRow({
       </button>
 
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/template:opacity-100">
-        <Tip label={c.templateOutdent} side="top">
-          <Button disabled={!outdentable} onClick={onOutdent} size="icon" type="button" variant="ghost">
-            <Codicon name="chevron-left" size="0.875rem" />
-          </Button>
-        </Tip>
-        <Tip label={c.templateIndent} side="top">
-          <Button disabled={!indentable} onClick={onIndent} size="icon" type="button" variant="ghost">
-            <Codicon name="chevron-right" size="0.875rem" />
-          </Button>
-        </Tip>
-        <Tip label={c.templateMoveUp} side="top">
-          <Button disabled={!upable} onClick={onMoveUp} size="icon" type="button" variant="ghost">
-            <Codicon name="chevron-up" size="0.875rem" />
-          </Button>
-        </Tip>
-        <Tip label={c.templateMoveDown} side="top">
-          <Button disabled={!downable} onClick={onMoveDown} size="icon" type="button" variant="ghost">
-            <Codicon name="chevron-down" size="0.875rem" />
-          </Button>
-        </Tip>
         <Tip label={c.templateEdit} side="top">
           <Button onClick={onEdit} size="icon" type="button" variant="ghost">
             <Pencil className="size-3.5" />
@@ -383,7 +485,6 @@ function TemplateEditor({ depth, onCancel, onSave, template }: TemplateEditorPro
   const [description, setDescription] = useState(template.description)
   const [text, setText] = useState(template.text)
 
-  // Focus the label field on mount
   const labelRef = (el: HTMLInputElement | null) => {
     el?.focus()
   }
@@ -477,19 +578,12 @@ interface PromptTemplatesDialogProps {
   open: boolean
 }
 
-interface TemplateRowProps {
-  canIndent: boolean
-  canMoveDown: boolean
-  canMoveUp: boolean
-  canOutdent: boolean
+interface SortableTemplateRowProps {
   depth: number
+  dropHint: DropPlacement | null
   onDelete: () => void
   onEdit: () => void
-  onIndent: () => void
   onInsert: () => void
-  onMoveDown: () => void
-  onMoveUp: () => void
-  onOutdent: () => void
   onToggleFolder: () => void
   template: PromptTemplate
 }

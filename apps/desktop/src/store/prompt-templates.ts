@@ -339,6 +339,103 @@ export function moveTemplateDown(id: string): void {
   moveAmongSiblings(id, 1)
 }
 
+export type DropPlacement = 'after' | 'before' | 'inside'
+
+/**
+ * Tree drop commit used by the dialog DnD layer.
+ *
+ * - `before` / `after`: become a sibling of `overId` (same parent), inserted
+ *   before it or after it **and its remaining subtree**.
+ * - `inside`: only valid when `overId` is a folder; become its last child and
+ *   expand the folder so the move is visible.
+ *
+ * Moves the active node **and its descendants** as one block. Returns false
+ * when the drop is illegal (unknown ids, drop into own subtree, inside a
+ * non-folder) so the UI can leave the row alone and let dnd-kit snap back.
+ */
+export function placeNode(activeId: string, overId: string, placement: DropPlacement): boolean {
+  if (activeId === overId) {
+    return false
+  }
+
+  const list = $promptTemplates.get()
+  const active = list.find(s => s.id === activeId)
+  const over = list.find(s => s.id === overId)
+
+  if (!active || !over) {
+    return false
+  }
+
+  const blockIds = collectDescendantIds(activeId, list)
+
+  blockIds.add(activeId)
+
+  if (blockIds.has(overId)) {
+    return false
+  }
+
+  let newParentId: string | null
+
+  if (placement === 'inside') {
+    if (over.kind !== 'folder') {
+      return false
+    }
+
+    newParentId = over.id
+  } else {
+    newParentId = over.parentId
+  }
+
+  if (newParentId !== null) {
+    const parent = list.find(s => s.id === newParentId)
+
+    if (!parent || parent.kind !== 'folder' || blockIds.has(newParentId)) {
+      return false
+    }
+  }
+
+  const block = list
+    .filter(s => blockIds.has(s.id))
+    .map(s => (s.id === activeId ? { ...s, parentId: newParentId } : s))
+  const rest = list
+    .filter(s => !blockIds.has(s.id))
+    .map(s => (placement === 'inside' && s.id === overId ? { ...s, collapsed: false } : s))
+
+  const overIndex = rest.findIndex(s => s.id === overId)
+
+  if (overIndex < 0) {
+    return false
+  }
+
+  let insertAt: number
+
+  if (placement === 'before') {
+    insertAt = overIndex
+  } else {
+    // after | inside → after over and whatever descendants remain under it
+    const overDesc = collectDescendantIds(overId, rest)
+
+    insertAt = overIndex + 1
+
+    while (insertAt < rest.length && overDesc.has(rest[insertAt].id)) {
+      insertAt += 1
+    }
+  }
+
+  const next = [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)]
+  const orderEqual =
+    next.map(s => s.id).join(',') === list.map(s => s.id).join(',') &&
+    next.find(s => s.id === activeId)?.parentId === active.parentId
+
+  if (orderEqual) {
+    return false
+  }
+
+  setList(next)
+
+  return true
+}
+
 export function canMoveUp(id: string, list = $promptTemplates.get()): boolean {
   const node = list.find(s => s.id === id)
 

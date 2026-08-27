@@ -42,6 +42,7 @@ import {
   moveTemplateDown,
   moveTemplateUp,
   outdentNode,
+  placeNode,
   resetToBuiltins,
   toggleFolderCollapsed,
   updateTemplate,
@@ -295,7 +296,7 @@ describe('prompt-templates store', () => {
   describe('folders', () => {
     it('nests templates under a folder and hides them when collapsed', () => {
       $promptTemplates.set([])
-      const folder = addFolder('Kazike')
+      const folder = addFolder('Group')
       const child = addTemplate('Socratic', '', 'Ask why', folder.id)
 
       expect(child.parentId).toBe(folder.id)
@@ -316,16 +317,13 @@ describe('prompt-templates store', () => {
 
       deleteTemplate(folder.id)
 
-      expect($promptTemplates.get().map(s => s.id)).toEqual(
-        $promptTemplates.get().filter(s => s.label === 'Root').map(s => s.id)
-      )
       expect($promptTemplates.get()).toHaveLength(1)
       expect($promptTemplates.get()[0].label).toBe('Root')
     })
 
     it('indents under the previous sibling folder and outdents back to root', () => {
       $promptTemplates.set([])
-      const folder = addFolder('Kazike')
+      const folder = addFolder('Group')
       const tpl = addTemplate('Nested', '', 'x')
 
       indentNode(tpl.id)
@@ -361,6 +359,58 @@ describe('prompt-templates store', () => {
       const [row] = reloaded.$promptTemplates.get()
 
       expect(row).toMatchObject({ id: 'legacy', kind: 'template', parentId: null, label: 'L', text: 't' })
+    })
+  })
+
+  describe('placeNode', () => {
+    it('reorders siblings with before/after', () => {
+      $promptTemplates.set([])
+      const a = addTemplate('A', '', 'a')
+      const b = addTemplate('B', '', 'b')
+      const c = addTemplate('C', '', 'c')
+
+      expect(placeNode(c.id, a.id, 'before')).toBe(true)
+      expect($promptTemplates.get().map(s => s.id)).toEqual([c.id, a.id, b.id])
+
+      expect(placeNode(c.id, b.id, 'after')).toBe(true)
+      expect($promptTemplates.get().map(s => s.id)).toEqual([a.id, b.id, c.id])
+    })
+
+    it('nests inside a folder and expands it', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Group')
+      updateTemplate(folder.id, { collapsed: true })
+      const tpl = addTemplate('Nested', '', 'x')
+
+      expect(placeNode(tpl.id, folder.id, 'inside')).toBe(true)
+
+      const list = $promptTemplates.get()
+      expect(list.find(s => s.id === tpl.id)?.parentId).toBe(folder.id)
+      expect(list.find(s => s.id === folder.id)?.collapsed).toBe(false)
+    })
+
+    it('rejects drop into own subtree (snap-back case)', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Outer')
+      const inner = addFolder('Inner', folder.id)
+      const leaf = addTemplate('Leaf', '', 'l', folder.id)
+
+      expect(placeNode(folder.id, inner.id, 'inside')).toBe(false)
+      expect(placeNode(folder.id, leaf.id, 'before')).toBe(false)
+      expect($promptTemplates.get().find(s => s.id === folder.id)?.parentId).toBeNull()
+    })
+
+    it('moves a folder with its descendants as one block', () => {
+      $promptTemplates.set([])
+      const f = addFolder('F')
+      const child = addTemplate('Child', '', 'c', f.id)
+      const other = addTemplate('Other', '', 'o')
+
+      expect(placeNode(f.id, other.id, 'after')).toBe(true)
+
+      const ids = $promptTemplates.get().map(s => s.id)
+      expect(ids.indexOf(f.id)).toBeGreaterThan(ids.indexOf(other.id))
+      expect($promptTemplates.get().find(s => s.id === child.id)?.parentId).toBe(f.id)
     })
   })
 })

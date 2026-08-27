@@ -27,6 +27,7 @@ from tools.environments.bubblewrap import (
     BindMount,
     BubblewrapConfig,
     BubblewrapEnvironment,
+    chdir_failed,
     HOST_SOCKET_VARS,
     build_bwrap_args,
 )
@@ -757,6 +758,72 @@ class TestSandboxDirGuard:
             assert "/mnt" not in env._wrap_popen_args(["bash"])
         finally:
             env.cleanup()
+
+
+class TestChdirFailureDetection:
+    """The retry fires only for a spawn bwrap aborted before the shell ran."""
+
+    CWD = "/srv/hermes/logs"
+    MSG = "bwrap: Can't chdir to /srv/hermes/logs: No such file or directory\n"
+
+    def test_bwrap_chdir_error_alone_is_detected(self):
+        assert chdir_failed({"output": self.MSG, "returncode": 1}, self.CWD)
+
+    def test_a_failing_command_that_ran_is_not(self):
+        # cwd_observed means the wrapper printed the cwd marker: the shell ran.
+        assert not chdir_failed({"output": "boom\n", "returncode": 1, "cwd_observed": True}, self.CWD)
+        assert not chdir_failed({"output": self.MSG, "returncode": 1, "cwd_observed": True}, self.CWD)
+
+    def test_a_timeout_is_not(self):
+        out = self.MSG + "[Command timed out after 1s]"
+        assert not chdir_failed({"output": out, "returncode": -1}, self.CWD)
+
+    def test_a_clean_exit_or_another_cwd_is_not(self):
+        assert not chdir_failed({"output": self.MSG, "returncode": 0}, self.CWD)
+        assert not chdir_failed({"output": self.MSG, "returncode": 1}, "/srv/hermes")
+
+
+@needs_bwrap
+class TestMaskedCwdRecovery:
+    """A tracked cwd that exists on the host but not inside the sandbox
+    (masked by an overlay tmpfs or by the fresh /tmp) recovers to the
+    initial cwd instead of wedging every later spawn."""
+
+    @staticmethod
+    def _check_recovery(env, masked, work_dir):
+        result = env.execute(f"mkdir -p {masked} && cd {masked} && pwd")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].strip() == str(masked)
+        assert env.cwd == str(masked)
+        result = env.execute("pwd")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].splitlines()[-1] == str(work_dir)
+        assert str(masked) in result["output"] and str(work_dir) in result["output"]
+        assert env.cwd == str(work_dir)
+        result = env.execute("touch probe && pwd")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].strip() == str(work_dir)
+        assert (work_dir / "probe").is_file()
+
+    def test_host_dir_under_hermes_home_recovers(self, sandbox_root, host_dir, work_dir, monkeypatch):
+        hermes_home = host_dir / "hermes"
+        logs = hermes_home / "logs"
+        logs.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            self._check_recovery(env, logs, work_dir)
+        finally:
+            env.cleanup()
+
+    def test_host_dir_under_tmp_recovers(self, sandbox_root, work_dir):
+        masked = Path(tempfile.mkdtemp(prefix="hermes-", dir="/tmp"))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            self._check_recovery(env, masked, work_dir)
+        finally:
+            env.cleanup()
+            masked.rmdir()
 
 
 @needs_bwrap

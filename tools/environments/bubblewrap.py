@@ -668,6 +668,21 @@ def make_preexec(limits: Mapping[int, int]) -> Callable[[], None] | None:
     return _apply_rlimits
 
 
+def chdir_failed(result: Mapping[str, object], tracked_cwd: str) -> bool:
+    """True when bwrap could not enter *tracked_cwd*, so the shell never ran.
+
+    bwrap prints one line, ``Can't chdir to <dir>: ...``, and exits 1
+    before the command starts; the wrapper then never prints the cwd
+    marker (``cwd_observed`` stays unset). A command that ran and failed
+    has the marker, and a timed-out one has the timeout note appended, so
+    neither is a single bwrap line.
+    """
+    if result.get("returncode", 0) == 0 or result.get("cwd_observed"):
+        return False
+    lines = str(result.get("output", "")).strip().splitlines()
+    return len(lines) == 1 and lines[0].startswith(f"bwrap: Can't chdir to {tracked_cwd}:")
+
+
 class BubblewrapEnvironment(LocalEnvironment):
     """LocalEnvironment whose every spawn runs inside a bwrap sandbox.
 
@@ -790,6 +805,35 @@ class BubblewrapEnvironment(LocalEnvironment):
 
     def get_temp_dir(self) -> str:
         return self._state_dir
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        """Run a command; recover once when the tracked cwd is not visible inside.
+
+        The tracked cwd is checked against the host (LocalEnvironment's
+        missing-cwd recovery), not against what the overlays mask
+        inside the sandbox. After ``cd`` into a host directory under a
+        hidden path, or under the fresh /tmp, ``--chdir`` fails on every
+        later spawn before the shell runs, so no cwd marker ever moves the
+        tracked cwd again. Reset it to the initial cwd and run the command
+        once more there; nothing ran the first time. Only ``--chdir``
+        changes between the two spawns.
+        """
+        result = super().execute(command, cwd, **kwargs)
+        if not chdir_failed(result, self.cwd):
+            return result
+        stale = self.cwd
+        logger.warning(
+            "bubblewrap cannot enter the tracked cwd %s: it exists on the host but not "
+            "inside the sandbox. Resetting the working directory to %s.",
+            stale, self._initial_cwd,
+        )
+        self.cwd = self._initial_cwd
+        result = super().execute(command, cwd, **kwargs)
+        result["output"] = (
+            f"[bubblewrap: working directory {stale} is not visible inside the sandbox; "
+            f"reset to {self._initial_cwd}]\n" + result.get("output", "")
+        )
+        return result
 
     def _wrap_popen_args(self, args: list[str]) -> list[str]:
         prefix = build_bwrap_args(

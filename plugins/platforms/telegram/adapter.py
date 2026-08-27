@@ -4308,6 +4308,90 @@ class TelegramAdapter(BasePlatformAdapter):
             "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
             "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
 
+    def _match_plugin_callback_handler(self, data: str):
+        """Return the longest-prefix plugin handler for ``data``, or None."""
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            handlers = get_plugin_manager().get_telegram_callback_handlers()
+        except Exception as exc:
+            logger.debug(
+                "[%s] Could not load plugin Telegram callback handlers: %s",
+                self.name,
+                exc,
+            )
+            return None
+
+        match = None
+        match_len = -1
+        for prefix, callback, plugin_name in handlers:
+            if (
+                isinstance(prefix, str)
+                and data.startswith(prefix)
+                and len(prefix) > match_len
+            ):
+                match = (prefix, callback, plugin_name)
+                match_len = len(prefix)
+        return match
+
+    async def _dispatch_plugin_callback_query(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> bool:
+        """Dispatch a callback_query to a plugin handler.
+
+        Returns True when a plugin prefix matched (authorized or not).
+        Always answers the query on a match so the client spinner clears.
+        """
+        match = self._match_plugin_callback_handler(data)
+        if match is None:
+            return False
+
+        _prefix, callback, plugin_name = match
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            try:
+                await query.answer(text="⛔ You are not authorized to use this button.")
+            except Exception:
+                pass
+            return True
+
+        try:
+            await query.answer()
+        except Exception:
+            logger.debug(
+                "[%s] query.answer() failed for plugin '%s' callback",
+                self.name,
+                plugin_name,
+                exc_info=True,
+            )
+
+        try:
+            result = callback(query, data)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.error(
+                "[%s] Plugin '%s' Telegram callback handler raised: %s",
+                self.name,
+                plugin_name,
+                exc,
+                exc_info=True,
+            )
+        return True
+
     async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
         """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
         if self._is_callback_user_authorized(
@@ -4341,6 +4425,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
+        # Built-in prefixes above take precedence; try plugin handlers before giving up.
+        await self._dispatch_plugin_callback_query(
+            query,
+            data,
+            query_chat_id=cb["chat_id"],
+            query_chat_type=cb["chat_type"],
+            query_thread_id=cb["thread_id"],
+            query_user_name=cb["user_name"],
+        )
 
     async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""

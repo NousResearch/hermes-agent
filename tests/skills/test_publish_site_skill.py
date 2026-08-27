@@ -1,4 +1,4 @@
-"""Tests for the bundled skills/web-development/publish-site skill.
+"""Tests for the optional-skills/web-development/publish-site skill.
 
 Structural + internal-consistency checks only (stdlib + pytest, no network).
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-SKILL_DIR = REPO / "skills" / "web-development" / "publish-site"
+SKILL_DIR = REPO / "optional-skills" / "web-development" / "publish-site"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 
 VALID_PLATFORMS = {"linux", "macos", "windows"}
@@ -135,8 +135,8 @@ def test_preview_before_deploy(skill_text: str):
 
 
 def test_category_description_exists():
-    desc = REPO / "skills" / "web-development" / "DESCRIPTION.md"
-    assert desc.is_file(), "bundled web-development category needs a DESCRIPTION.md"
+    desc = REPO / "optional-skills" / "web-development" / "DESCRIPTION.md"
+    assert desc.is_file(), "optional web-development category needs a DESCRIPTION.md"
 
 
 if __name__ == "__main__":

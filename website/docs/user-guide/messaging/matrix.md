@@ -24,7 +24,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
-| **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
+| **Commands** | Element X may consume `/command` as a local client command. Use `!command` for Hermes commands. Hermes keeps `/` internally and rewrites known `!command` messages before gateway dispatch. Generated help and command-directory replies also use `!` on Matrix. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
@@ -545,26 +545,38 @@ To find a Room ID: in Element, go to the room → **Settings** → **Advanced** 
 
 ## Commands in Matrix
 
-Hermes supports the same gateway commands in Matrix that it supports on other
-messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
-`/steer`, `/goal`, `/subgoal`, `/bg`, `/btw`, `/tasks`, and
-`/yolo`.
+Hermes supports the same gateway-compatible commands in Matrix that it supports
+on other messaging platforms. Element X may consume `/command` as a local
+client command before it reaches the room, so use the Matrix-safe `!command`
+form. Hermes keeps `/` internally and rewrites known `!command` messages before
+gateway dispatch.
 
-Some Matrix clients reserve leading `/` for local client commands and may not
-send unknown slash commands to the room. In that case, use `!` as a Matrix-safe
-alias:
+Start with the generated command directory rather than relying on a static list:
 
 ```text
-!commands
-!model
-!model gpt-5.5 --provider openrouter
-!queue continue with the next task
-!stop
+!commands          # page 1 of all gateway-compatible commands and skills
+!commands 2        # next page
+!help              # concise command help
+!help skills       # installed skill commands
+!whoami            # verify admin/user command access
 ```
+
+The generated Matrix replies also advertise `!command`, including pagination
+instructions such as `!commands 2`, so the examples can be sent directly from
+Element X.
+
+Other examples include `!model`, `!stop`, `!queue`, `!steer`, `!goal`,
+`!background`, `!bg`, `!btw`, and `!tasks`.
 
 Hermes only normalizes `!command` when the command is known to the gateway, a
 registered plugin command, or an installed skill command. Ordinary exclamations
 such as `!important` remain normal chat messages.
+
+Here, the “full list” means every gateway-compatible built-in command and alias,
+registered plugin command, and installed skill command. CLI-only commands remain
+available only in the CLI/TUI. Matrix and Element X do not currently provide a
+Telegram Bot API-style remote command menu or autocomplete, so `!commands` is
+the authoritative in-room directory.
 
 ## Troubleshooting
 

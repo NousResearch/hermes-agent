@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry } from '@/global'
+import type { DesktopAgentRoster, DesktopConnectionsRegistry } from '@/global'
 
 import { deferred } from '../test/deferred'
 
@@ -102,6 +102,7 @@ const registry: DesktopConnectionsRegistry = {
 
 const list = vi.fn(async () => registry)
 const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } }))
+const getAgentRoster = vi.fn<() => Promise<DesktopAgentRoster>>(async () => ({ agents: [], sources: [] }))
 
 beforeEach(() => {
   localStorage.clear()
@@ -139,7 +140,9 @@ beforeEach(() => {
   $gatewaySwitching.set(false)
   list.mockClear()
   setLastUsed.mockClear()
-  vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed } }, localStorage })
+  getAgentRoster.mockReset()
+  getAgentRoster.mockResolvedValue({ agents: [], sources: [] })
+  vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed }, getAgentRoster }, localStorage })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -233,14 +236,66 @@ describe('selectConnection', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
-  it('does not reset or dial when the active source/profile is selected again', async () => {
+  it('revalidates the gateway without resetting when the active source/profile is selected again', async () => {
+    let release!: () => void
+
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
+    ensureGatewayAgent.mockImplementationOnce(async () => gate)
 
-    await selectConnection('local')
+    const selection = selectConnection('local')
+    await Promise.resolve()
 
-    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(ensureGatewayAgent).toHaveBeenCalledOnce()
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
+    expect($pendingConnectionId.get()).toBe('local')
     expect(requestFreshSession).not.toHaveBeenCalled()
+
+    release()
+    await selection
+
+    expect($pendingConnectionId.get()).toBeNull()
+  })
+
+  it('times out a stuck active-route revalidation and releases the source for retry', async () => {
+    vi.useFakeTimers()
+
+    try {
+      let signal: AbortSignal | undefined
+
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      ensureGatewayAgent.mockImplementationOnce(async (_connectionId, _profile, options) => {
+        signal = options?.signal
+
+        return new Promise<void>(() => undefined)
+      })
+
+      const selection = selectConnection('local')
+      const selectionError = selection.then(
+        () => null,
+        error => error
+      )
+
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(20_000)
+      const error = await selectionError
+
+      expect(error).toBeInstanceOf(Error)
+      expect(error.message).toBe('Timed out revalidating "This device".')
+
+      expect(signal?.aborted).toBe(true)
+      expect($pendingConnectionId.get()).toBeNull()
+
+      await selectConnection('local')
+      expect(ensureGatewayAgent).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses an explicit local id when This device is not primary', async () => {
@@ -303,7 +358,7 @@ describe('selectConnection', () => {
     expect($newChatProfile.get()).toBe('omer')
   })
 
-  it('restores the last profile used on each source', async () => {
+  it('opens a source at its root instead of restoring a remembered named profile', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local', profile: 'research', registryScoped: true })
     $activeGatewayProfile.set('research')

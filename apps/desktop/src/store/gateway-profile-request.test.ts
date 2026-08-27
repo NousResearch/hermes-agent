@@ -90,6 +90,41 @@ afterEach(() => {
 })
 
 describe('requestGatewayForProfile', () => {
+  it('reuses the active registry agent instead of spawning a same-named local profile', async () => {
+    const primary = makePrimary()
+    const getConnection = vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 'local-token' }))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      port: 5151,
+      profile,
+      token: 'registry-token'
+    }))
+
+    setPrimaryGateway(primary as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection,
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    await ensureGatewayForAgent('forge', 'sagan')
+    getConnection.mockClear()
+    getConnectionFor.mockClear()
+
+    const result = await requestGatewayForProfile('sagan', 'session.list', { limit: 20 })
+
+    expect(result).toEqual({ method: 'session.list', params: { limit: 20 } })
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].request).toHaveBeenCalledWith('session.list', { limit: 20 })
+  })
+
   it('requests through a pooled profile gateway without changing the active gateway', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

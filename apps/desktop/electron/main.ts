@@ -11393,6 +11393,39 @@ async function ensureBackend(profile) {
 // a genuinely-local child when the v1 mode says remote; non-local connections
 // pool under the composite key from backendScopeKey() and reuse the same pool
 // entry lifecycle (LRU, idle reaper, touch) as per-profile local backends.
+async function validateRegistryPooledBackend(key, id, profile, source, existing) {
+  const connectionPromise = existing.connectionPromise
+
+  return registryDispatchRevalidation.run(connectionPromise, async () => {
+    const connection = await ensureHealthyPooledRemoteBackendForDispatch({
+      connectionPromise,
+      currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
+      probe: (descriptor, requestPath, options) => fetchJsonForBackend(descriptor, requestPath, options),
+      reconnect: () => ensureRegistryBackend(id, profile),
+      retire: async (error: any) => {
+        if (backendPool.get(key) !== existing) {
+          return
+        }
+
+        rememberLog(
+          `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+        )
+        await stopPoolBackend(key)
+
+        if (source.kind === 'ssh') {
+          await sshBootstrapCoordinator.cancelAndWait(key)
+          await teardownSshConnection(key)
+        }
+      }
+    })
+
+    return {
+      connection,
+      rebuilt: backendPool.get(key)?.connectionPromise !== connectionPromise
+    }
+  })
+}
+
 async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrelation = '') {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
@@ -11556,37 +11589,9 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
 
   if (existing) {
     existing.lastActiveAt = Date.now()
-    const connectionPromise = existing.connectionPromise
+    const validated = await validateRegistryPooledBackend(key, id, profile, source, existing)
 
-    // A remote process can die while its local SSH forward stays LISTENing.
-    // Validate the exact cached descriptor at dispatch time; background
-    // revalidation is renderer-driven and may never run while the Bots pane is
-    // closed. Concurrent clicks share one retire/reconnect sequence.
-    return registryDispatchRevalidation.run(connectionPromise, () =>
-      ensureHealthyPooledRemoteBackendForDispatch({
-        connectionPromise,
-        currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
-        probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
-        reconnect: () => ensureRegistryBackend(id, profile),
-        retire: async (error: any) => {
-          // A late failure from an old descriptor must never tear down a newer
-          // entry that another caller has already installed.
-          if (backendPool.get(key) !== existing) {
-            return
-          }
-
-          rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
-          )
-          await stopPoolBackend(key)
-
-          if (source.kind === 'ssh') {
-            await sshBootstrapCoordinator.cancelAndWait(key)
-            await teardownSshConnection(key)
-          }
-        }
-      })
-    )
+    return validated.connection
   }
 
   evictLruPoolBackends(poolMaxBackends() - 1)
@@ -14691,6 +14696,34 @@ ipcMain.on('hermes:connection:active-route', (event, route) => {
     })
   }
 })
+
+// An apparently open renderer socket can still target a remote dashboard that
+// exited. Probe the exact registry profile before activation; `rebuilt` tells
+// the renderer to close that stale socket and redial the descriptor recovered
+// by the newer dispatch-time liveness path.
+ipcMain.handle('hermes:connection:revalidate-for', async (_event, payload) => {
+  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+  const registry = readDesktopConnectionsRegistry()
+  const id = String(connectionId || '').trim() || registry.primary
+  const key = backendScopeKey(id, profile)
+  const source = registry.connections.find(connection => connection.id === id)
+  const entry = backendPool.get(key)
+
+  // An open renderer socket with no matching main-process generation is stale
+  // by definition: dispatch recovery already retired or replaced its backend.
+  if (!source || !entry?.connectionPromise) {
+    return { ok: true, rebuilt: true }
+  }
+
+  if (entry.process || !entry.remoteBaseUrl) {
+    return { ok: true, rebuilt: backendPool.get(key) !== entry }
+  }
+
+  const validated = await validateRegistryPooledBackend(key, id, profile, source, entry)
+
+  return { ok: true, rebuilt: validated.rebuilt || backendPool.get(key) !== entry }
+})
+
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer

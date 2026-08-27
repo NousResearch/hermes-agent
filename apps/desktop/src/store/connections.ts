@@ -307,7 +307,32 @@ export async function selectConnection(connectionId: string, options: SelectConn
     currentProfile !== targetProfile
 
   if (!switching) {
-    await rememberConnection(connectionId)
+    // The renderer can still describe a source/profile whose socket died after
+    // the user left it. Revalidate the gateway even for a semantic no-op; do
+    // not reset the session unless the source or profile actually changed.
+    const revision = ++switchRevision
+
+    pendingTarget = targetKey
+    $pendingConnectionId.set(connectionId)
+    const activationController = new AbortController()
+
+    try {
+      await withTimeout(
+        ensureGatewayAgent(connectionId, targetProfile, { signal: activationController.signal }),
+        SWITCH_COMMIT_TIMEOUT_MS,
+        `Timed out revalidating "${targetConnection.label}".`,
+        error => activationController.abort(error)
+      )
+
+      if (revision === switchRevision) {
+        await rememberConnection(connectionId)
+      }
+    } finally {
+      if (revision === switchRevision) {
+        pendingTarget = null
+        $pendingConnectionId.set(null)
+      }
+    }
 
     return
   }

@@ -32,6 +32,7 @@ from tools.environments.bubblewrap import (
     empty_file_path,
     load_bubblewrap_config,
     sensitive_overlay_args,
+    sensitive_paths,
 )
 from tools.environments.local import LocalEnvironment
 
@@ -178,7 +179,8 @@ class TestOverlayArgs:
     """The builder emits one overlay per sensitive path that exists on the host."""
 
     def _overlays(self, paths):
-        return _mounts(sensitive_overlay_args(paths["home"], paths["hermes_home"], paths["state_dir"]))
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        return _mounts(sensitive_overlay_args(hidden, paths["state_dir"]))
 
     def test_empty_file_is_a_sibling_of_the_state_dir(self, paths):
         empty = empty_file_path(paths["state_dir"])
@@ -218,9 +220,11 @@ class TestOverlayArgs:
         (home / ".ssh").symlink_to(real_dir)
         (home / ".npmrc").symlink_to(real_file)
         (home / ".netrc").symlink_to(tmp_path / "dangling")
+        # bwrap resolves a mount destination inside the sandbox root, where an
+        # absolute symlink points nowhere, so the overlays go on the targets.
         assert self._overlays(paths) == [
-            ("--tmpfs", str(home / ".ssh")),
-            ("--ro-bind", empty_file_path(paths["state_dir"]), str(home / ".npmrc")),
+            ("--tmpfs", str(real_dir)),
+            ("--ro-bind", empty_file_path(paths["state_dir"]), str(real_file)),
         ]
 
     def test_overlays_sit_after_operator_binds_and_before_the_state_dir(self, paths, tmp_path):
@@ -357,6 +361,51 @@ class TestAncestorPinIntegration:
         result = env.execute(f"touch {fake_home}/.config/probe")
         assert result["returncode"] == 0, result["output"]
         assert (fake_home / ".config" / "probe").is_file()
+
+
+@needs_bwrap
+class TestSymlinkedEntryIntegration:
+    """A sensitive entry that is a symlink (a dotfiles repository) is hidden
+    at its target, and with cwd=HOME the parent of the target cannot be
+    renamed out from under the overlay."""
+
+    @pytest.fixture
+    def linked_home(self, sandbox_root, host_dir, monkeypatch):
+        home = host_dir / "home"
+        (home / "dotfiles" / "ssh").mkdir(parents=True)
+        (home / "dotfiles" / "ssh" / "key").write_text(MARKER + "\n")
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @staticmethod
+    def _readable(env, home):
+        paths = " ".join(f"{home}/{rel}/key" for rel in (".ssh", "dotfiles/ssh", "dotfiles2/ssh"))
+        listing = " ".join(f"{home}/{rel}" for rel in (".ssh", "dotfiles/ssh"))
+        out = env.execute(f"cat {paths} 2>/dev/null; ls -A {listing} 2>/dev/null")["output"]
+        return MARKER in out or "key" in out.split()
+
+    def test_relative_symlink_target_hidden_and_its_parent_pinned(self, linked_home):
+        (linked_home / ".ssh").symlink_to("dotfiles/ssh")
+        env = BubblewrapEnvironment(cwd=str(linked_home), timeout=30)
+        try:
+            assert not self._readable(env, linked_home)
+            result = env.execute(f"mv {linked_home}/dotfiles {linked_home}/dotfiles2")
+            assert result["returncode"] != 0, result["output"]
+            assert not self._readable(env, linked_home)
+        finally:
+            env.cleanup()
+        assert (linked_home / "dotfiles" / "ssh" / "key").read_text().startswith(MARKER)
+
+    def test_absolute_symlink_runs_commands_and_hides_the_target(self, linked_home):
+        (linked_home / ".ssh").symlink_to(linked_home / "dotfiles" / "ssh")
+        env = BubblewrapEnvironment(cwd=str(linked_home), timeout=30)
+        try:
+            result = env.execute("echo ok")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == "ok"
+            assert not self._readable(env, linked_home)
+        finally:
+            env.cleanup()
 
 
 @needs_bwrap

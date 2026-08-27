@@ -1128,6 +1128,29 @@ class TestLateEnvRepointScopesStore:
             store = jobs._current_cron_store()
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
 
+    def test_heartbeat_does_not_recreate_deleted_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+
+        with jobs.use_cron_store(deleted_home):
+            jobs.record_ticker_heartbeat()
+
+        assert not deleted_home.exists()
+
+    def test_heartbeat_initializes_existing_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profile_home = tmp_path / "profiles" / "active"
+        profile_home.mkdir(parents=True)
+
+        with jobs.use_cron_store(profile_home):
+            jobs.record_ticker_heartbeat()
+
+        assert (profile_home / "cron" / "ticker_heartbeat").is_file()
+
 
     def test_public_io_after_late_env_repoint_leaves_old_file_untouched(
         self, tmp_path, monkeypatch

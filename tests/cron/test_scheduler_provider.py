@@ -640,3 +640,37 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
+    """A stale profile_homes entry must not recreate a deleted profile."""
+    import cron.jobs as jobs
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    default_home = tmp_path / "default"
+    (default_home / "cron").mkdir(parents=True)
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    deleted_home = profiles_dir / "deleted"
+    profile_homes = [("default", default_home), ("deleted", deleted_home)]
+
+    ticked_homes = []
+    stop = threading.Event()
+
+    def _tracking_tick(*args, **kwargs):
+        ticked_homes.append(jobs._current_cron_store().cron_dir.parent)
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert ticked_homes == [default_home.resolve()]
+    assert not deleted_home.exists()

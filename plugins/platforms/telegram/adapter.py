@@ -6333,6 +6333,22 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
+        reply_to_author_id = None
+        reply_to_author_name = None
+        reply_to_is_own = False
+        replied = getattr(message, "reply_to_message", None)
+        if replied is not None:
+            replied_user = getattr(replied, "from_user", None)
+            if replied_user is not None:
+                reply_to_author_id = str(getattr(replied_user, "id", "") or "") or None
+                reply_to_author_name = (
+                    getattr(replied_user, "full_name", None)
+                    or getattr(replied_user, "username", None)
+                )
+                reply_to_is_own = bool(
+                    getattr(self, "_bot", None) is not None
+                    and getattr(replied_user, "id", None) == getattr(self._bot, "id", None)
+                )
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
@@ -6340,7 +6356,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
+            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            reply_to_is_own_message=reply_to_is_own,
+            auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
             timestamp=message.date)
 

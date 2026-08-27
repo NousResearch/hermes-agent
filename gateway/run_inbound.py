@@ -1511,8 +1511,14 @@ class GatewayInboundMixin:
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            if getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    "[Reply metadata: the user is replying to an assistant/bot-authored "
+                    f'message; the quoted text is not user-authored: "{reply_text}"]\n\n'
+                    f"{message_text}"
+                )
+            else:
+                message_text = f'[Replying to: "{reply_text}"]\n\n{message_text}'
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

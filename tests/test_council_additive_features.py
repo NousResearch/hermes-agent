@@ -471,6 +471,29 @@ def test_provider_call_rejects_post_call_token_cap_overrun(
         )
 
 
+def test_provider_call_releases_model_reservation_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
+        usage=SimpleNamespace(total_tokens=2),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **_kwargs: response)
+    active_models = {"already-active"}
+
+    content, tokens = council._call_llm_with_fallback(
+        member("a"),
+        [{"role": "user", "content": "test"}],
+        timeout=30,
+        token_cap=100,
+        current_total_tokens=0,
+        active_models=active_models,
+    )
+
+    assert (content, tokens) == ("{}", 2)
+    assert active_models == {"already-active"}
+
+
 def test_remaining_overall_timeout_is_passed_to_cross_examination(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

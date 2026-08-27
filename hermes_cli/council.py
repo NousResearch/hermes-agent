@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -620,6 +621,9 @@ class CouncilTokenCapExceeded(RuntimeError):
     """A completed provider call would exceed the configured council cap."""
 
 
+_ACTIVE_MODELS_LOCK = threading.Lock()
+
+
 def _call_llm_with_fallback(
     member: CouncilMember,
     messages: List[Dict[str, str]],
@@ -636,10 +640,8 @@ def _call_llm_with_fallback(
     2. Per-member fallbacks (member.fallback, in order)
     3. Shared fallback_pool (council-wide, in order)
 
-    At each step, if ``active_models`` is provided, entries whose model
-    name is already in the active set are skipped to prevent duplicate
-    models across the panel. The resolved model is added to
-    ``active_models`` so subsequent members exclude it.
+    If ``active_models`` is provided, a model is reserved only for the
+    duration of its in-flight call. Sequential phases may reuse it.
 
     Returns (response_text, tokens_used).
 
@@ -647,7 +649,6 @@ def _call_llm_with_fallback(
     """
     from agent.auxiliary_client import call_llm
 
-    active = active_models.copy() if active_models else set()
 
     # Pre-check the cap so an oversized call cannot blow the backstop by a
     # whole call's worth of tokens before the post-call guard fires.
@@ -668,13 +669,17 @@ def _call_llm_with_fallback(
     last_error: Optional[str] = None
     for attempt in providers_to_try:
         model_name = attempt["model"]
-        # Skip if this model is already in use by another active member
-        if model_name in active:
-            logger.debug(
-                "Council: skipping %s/%s — model already in use by another member",
-                attempt["provider"], model_name,
-            )
-            continue
+        claimed = False
+        if active_models is not None:
+            with _ACTIVE_MODELS_LOCK:
+                if model_name in active_models:
+                    logger.debug(
+                        "Council: skipping %s/%s — model already in use by another member",
+                        attempt["provider"], model_name,
+                    )
+                    continue
+                active_models.add(model_name)
+                claimed = True
 
         try:
             response = call_llm(
@@ -691,10 +696,6 @@ def _call_llm_with_fallback(
                     f"Council token cap ({token_cap:,}) exceeded: "
                     f"{current_total_tokens:,} + {tokens_used:,}"
                 )
-            # Mark this model as in-use for dedup
-            active.add(model_name)
-            if active_models is not None:
-                active_models.add(model_name)
             return content, tokens_used
         except CouncilTokenCapExceeded:
             raise
@@ -721,6 +722,10 @@ def _call_llm_with_fallback(
                 member.model, attempt["provider"], attempt["model"], last_error[:120],
             )
             continue
+        finally:
+            if claimed and active_models is not None:
+                with _ACTIVE_MODELS_LOCK:
+                    active_models.discard(model_name)
 
     raise RuntimeError(
         f"Council member {member.model} exhausted all providers ({len(providers_to_try)}). "

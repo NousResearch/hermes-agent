@@ -19,6 +19,7 @@ from tools.environments.bubblewrap import (
     build_bwrap_args,
     empty_file_path,
     load_bubblewrap_config,
+    resolve_bind_dests,
     runtime_overlay_args,
     sensitive_paths,
 )
@@ -514,7 +515,13 @@ class TestResolvedHiddenSet:
 
 class TestResolvedBindDest:
     """An operator bind lands at the real path of its dest, so the pins are
-    computed in the real tree of the bind."""
+    computed in the real tree of the bind. The
+    environment resolves once at construction; the builder resolves
+    nothing per spawn, so these resolve themselves."""
+
+    @staticmethod
+    def _config(*binds):
+        return BubblewrapConfig(binds=tuple(resolve_bind_dests(binds)))
 
     @pytest.fixture
     def tree(self, tmp_path):
@@ -533,7 +540,7 @@ class TestResolvedBindDest:
         link = self._link(tmp_path, tree, target)
         hidden = (str(tree / ".config" / "gcloud"),)
         bind = BindMount(src=str(link), dest=str(link), readonly=False)
-        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden)
+        argv = build(self._config(bind), paths=paths, hidden_paths=hidden)
         pins = triples(argv, "--bind")
         assert (str(link), str(tree)) in pins
         assert (str(link / ".config"), str(tree / ".config")) in pins
@@ -546,7 +553,7 @@ class TestResolvedBindDest:
         for target in ("relative", "absolute"):
             link = self._link(tmp_path, tree, target)
             bind = BindMount(src=str(link), dest=str(link), readonly=False)
-            argvs.append(build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden))
+            argvs.append(build(self._config(bind), paths=paths, hidden_paths=hidden))
             link.unlink()
         assert argvs[0] == argvs[1]
 
@@ -555,11 +562,20 @@ class TestResolvedBindDest:
         dest = tmp_path / "via" / "home"
         bind = BindMount(src=str(tree), dest=str(dest), readonly=False)
         hidden = (str(tree / ".config" / "gcloud"),)
-        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths, hidden_paths=hidden)
+        argv = build(self._config(bind), paths=paths, hidden_paths=hidden)
         pins = triples(argv, "--bind")
         assert (str(tree), str(tree)) in pins
         assert (str(tree / ".config"), str(tree / ".config")) in pins
         assert str(dest) not in argv
+
+    def test_builder_emits_a_dest_as_given(self, paths, tree, tmp_path):
+        # Resolution is the environment's, once at construction: a symlink
+        # planted under a dest after that must not move the mount.
+        link = self._link(tmp_path, tree, "relative")
+        bind = BindMount(src=str(tree), dest=str(link), readonly=False)
+        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths)
+        assert (str(tree), str(link)) in triples(argv, "--bind")
+        assert str(tree) not in [dest for _, dest in triples(argv, "--bind")]
 
 
 class TestPinTargetInsideTheBind:

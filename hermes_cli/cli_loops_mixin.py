@@ -18,6 +18,20 @@ def _preview(payload: str) -> str:
     return f"{payload[:80]}{'...' if len(payload) > 80 else ''}"
 
 
+_QUEUE_USAGE = ("Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | "
+                "/queue rm N | /queue move FROM TO | /queue clear")
+# management verb -> (handler, takes a leading item index). Verbs without an index are
+# only management when they stand alone; index verbs only when a number follows.
+_QUEUE_VERBS: dict[str, tuple[str, bool]] = {
+    "list": ("_queue_list", False), "ls": ("_queue_list", False), "show": ("_queue_list", False),
+    "clear": ("_queue_clear", False),
+    "edit": ("_queue_edit", True), "set": ("_queue_edit", True),
+    "rm": ("_queue_remove", True), "remove": ("_queue_remove", True), "delete": ("_queue_remove", True),
+    "del": ("_queue_remove", True), "pop": ("_queue_remove", True),
+    "move": ("_queue_move", True),
+}
+
+
 def _print_decision_message(decision: dict) -> bool:
     """Print a manager decision's ``message`` (if any) via _cprint; True when one was printed."""
     from cli import _cprint
@@ -265,15 +279,125 @@ class CLILoopsMixin:
         except Exception as e:
             print(f"Plugin system error: {e}")
 
+    # ── /queue: enqueue, list, edit, rm, move, clear ─────────────────
+    # Inspired by Factory Droid v0.203 "edit queued messages": a queued next-turn
+    # prompt can be inspected and changed before it is sent.
+
+    def _pending_input_items(self) -> list:
+        """Snapshot of queued next-turn prompts (raw items; may include ``_VoiceInputMessage``)."""
+        with self._pending_input.mutex:
+            return list(self._pending_input.queue)
+
+    def _replace_pending_input_items(self, items: list) -> None:
+        """Swap the queued prompts under the queue's own mutex so put/get bookkeeping stays consistent."""
+        q = self._pending_input
+        with q.mutex:
+            q.queue.clear()
+            q.queue.extend(items)
+            q.unfinished_tasks = len(items)
+            if items:
+                q.not_empty.notify_all()
+
+    def _queue_enqueue(self, text: str) -> None:
+        from cli import _cprint
+        payload = self._expand_paste_references(text)
+        self._pending_input.put(payload)
+        when = " for the next turn" if self._agent_running else ""
+        _cprint(f"  Queued{when}: {_preview(payload)}")
+
+    def _queue_list(self, rest: str) -> None:
+        from cli import _VoiceInputMessage, _cprint
+        items = self._pending_input_items()
+        if not items:
+            _cprint("  Queue is empty." + ("" if rest else "  " + _QUEUE_USAGE))
+            return
+        _cprint(f"  Queue ({len(items)} pending):")
+        for idx, item in enumerate(items, 1):
+            tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
+            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
+
+    def _queue_clear(self, rest: str) -> None:
+        from cli import _cprint
+        count = len(self._pending_input_items())
+        self._replace_pending_input_items([])
+        _cprint(f"  Cleared {count} queued prompt{'s' if count != 1 else ''}.")
+
+    def _queue_item_index(self, token: str, items: list) -> int | None:
+        from cli import _cprint
+        idx = int(token)
+        if 1 <= idx <= len(items):
+            return idx - 1
+        _cprint(f"  Queue item {idx} not found. Current size: {len(items)}")
+        return None
+
+    def _queue_remove(self, rest: str) -> None:
+        from cli import _cprint
+        items = self._pending_input_items()
+        pos = self._queue_item_index(rest, items)
+        if pos is None:
+            return
+        removed = items.pop(pos)
+        self._replace_pending_input_items(items)
+        _cprint(f"  Removed queue item {pos + 1}: {_preview(str(removed))}")
+
+    def _queue_edit(self, rest: str) -> None:
+        from cli import _VoiceInputMessage, _cprint
+        idx_text, _, new_prompt = rest.partition(" ")
+        if not new_prompt.strip():
+            _cprint("  Usage: /queue edit <number> <new prompt>")
+            return
+        items = self._pending_input_items()
+        pos = self._queue_item_index(idx_text, items)
+        if pos is None:
+            return
+        new_text = self._expand_paste_references(new_prompt.strip())
+        # A voice-queued item keeps its sentinel so the concise voice-response prefix
+        # still applies (#65827).
+        items[pos] = _VoiceInputMessage(new_text) if isinstance(items[pos], _VoiceInputMessage) else new_text
+        self._replace_pending_input_items(items)
+        _cprint(f"  Updated queue item {pos + 1}: {_preview(new_text)}")
+
+    def _queue_move(self, rest: str) -> None:
+        from cli import _cprint
+        bits = rest.split()
+        if len(bits) != 2 or not bits[1].isdigit():
+            _cprint("  Usage: /queue move <from> <to>")
+            return
+        items = self._pending_input_items()
+        src = self._queue_item_index(bits[0], items)
+        dst = self._queue_item_index(bits[1], items)
+        if src is None or dst is None:
+            return
+        items.insert(dst, items.pop(src))
+        self._replace_pending_input_items(items)
+        _cprint(f"  Moved queue item {src + 1} to {dst + 1}.")
+
     def _cmd_queue(self, cmd_original: str):
+        """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit
+        (``list``/``clear`` alone, ``edit N …``/``rm N``/``move A B``) manages the queue
+        instead. Anything else — ``clear the logs``, ``edit the config`` — is still a prompt;
+        ``/queue add <prompt>`` forces enqueueing."""
         from cli import _cprint, _slash_args
-        payload = self._expand_paste_references(_slash_args(cmd_original))
+        payload = _slash_args(cmd_original)
         if not payload:
-            _cprint("  Usage: /queue <prompt>")
+            self._queue_list("")
+            return
+        verb, _, rest = payload.partition(" ")
+        verb, rest = verb.lower(), rest.strip()
+        if verb == "add":
+            if rest:
+                self._queue_enqueue(rest)
+            else:
+                _cprint("  Usage: /queue add <prompt>")
+            return
+        handler, takes_index = _QUEUE_VERBS.get(verb, (None, False))
+        is_management = handler is not None and (
+            rest.split(None, 1)[0].isdigit() if takes_index and rest else not rest
+        )
+        if is_management:
+            getattr(self, handler)(rest)
         else:
-            self._pending_input.put(payload)
-            when = " for the next turn" if self._agent_running else ""
-            _cprint(f"  Queued{when}: {_preview(payload)}")
+            self._queue_enqueue(payload)
 
     def _cmd_steer(self, cmd_original: str):
         # Inject a message after the next tool call without interrupting: while the

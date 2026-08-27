@@ -167,18 +167,6 @@ def build_dashboard_parser(
     # JSON-RPC/WS, so `serve` skips the web UI build AND never serves the SPA
     # (cmd_dashboard exports HERMES_SERVE_HEADLESS=1). `dashboard` leaves it
     # unset and serves the browser UI as before.
-    # `--ws-only` bypasses the FastAPI/uvicorn dashboard entirely: a bare
-    # `websockets` server that calls `handle_ws` directly. This is the lean
-    # desktop path — no HTTP framework, no SPA, no route resolution, no
-    # middleware stack. The desktop app opts into it; human callers get the
-    # full `serve` (which is still headless, just through uvicorn).
-    serve_parser.add_argument(
-        "--ws-only",
-        dest="ws_only",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,
-    )
     serve_parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True)
 
     # `hermes dashboard register` — register a self-hosted dashboard OAuth

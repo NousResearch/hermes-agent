@@ -89,14 +89,14 @@ test('resolves with the announced port', async () => {
   const child = makeFakeChild()
   const p = waitForDashboardPort(child, 1000)
   child.stdout.emit('data', 'noise before\nHERMES_DASHBOARD_READY port=54321\n')
-  assert.deepEqual(await p, { port: 54321, token: undefined })
+  assert.equal(await p, 54321)
 })
 
 test('resolves with a HERMES_BACKEND_READY port (headless `serve`)', async () => {
   const child = makeFakeChild()
   const p = waitForDashboardPort(child, 1000)
   child.stdout.emit('data', 'HERMES_BACKEND_READY port=43210\n')
-  assert.deepEqual(await p, { port: 43210, token: undefined })
+  assert.equal(await p, 43210)
 })
 
 test('parses the port even when the line arrives split across chunks', async () => {
@@ -104,7 +104,7 @@ test('parses the port even when the line arrives split across chunks', async () 
   const p = waitForDashboardPort(child, 1000)
   child.stdout.emit('data', 'HERMES_DASHBOARD_READY po')
   child.stdout.emit('data', 'rt=8080\n')
-  assert.deepEqual(await p, { port: 8080, token: undefined })
+  assert.equal(await p, 8080)
 })
 
 test('rejects when the child exits before announcing', async () => {
@@ -185,7 +185,7 @@ test('waitForDashboardReadyFile resolves when the ready file appears', async () 
   try {
     const p = waitForDashboardReadyFile(tmp.file, child, 1000)
     setTimeout(() => fs.writeFileSync(tmp.file, JSON.stringify({ port: 8765 })), 20)
-    assert.deepEqual(await p, { port: 8765 })
+    assert.equal(await p, 8765)
   } finally {
     tmp.cleanup()
   }
@@ -198,7 +198,7 @@ test('waitForDashboardPortAnnouncement uses ready file when provided', async () 
   try {
     const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
     setTimeout(() => fs.writeFileSync(tmp.file, JSON.stringify({ port: 9876 })), 20)
-    assert.deepEqual(await p, { port: 9876 })
+    assert.equal(await p, 9876)
   } finally {
     tmp.cleanup()
   }
@@ -259,18 +259,4 @@ test('exit-before-announcement error stays clean when no output was buffered', a
 
     return true
   })
-})
-
-test('resolves with the token when the ready line includes one (--ws-only)', async () => {
-  const child = makeFakeChild()
-  const p = waitForDashboardPort(child, 1000)
-  child.stdout.emit('data', 'HERMES_BACKEND_READY port=9999 token=abc123-def456\n')
-  assert.deepEqual(await p, { port: 9999, token: 'abc123-def456' })
-})
-
-test('token is undefined when the ready line omits it (dashboard path)', async () => {
-  const child = makeFakeChild()
-  const p = waitForDashboardPort(child, 1000)
-  child.stdout.emit('data', 'HERMES_DASHBOARD_READY port=7777\n')
-  assert.deepEqual(await p, { port: 7777, token: undefined })
 })

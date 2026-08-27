@@ -3,10 +3,7 @@ import fs from 'node:fs'
 // `hermes serve` announces HERMES_BACKEND_READY; the legacy `hermes dashboard`
 // backend announces HERMES_DASHBOARD_READY. Accept either so the desktop spawn
 // works against both the headless backend and old/dashboard runtimes.
-// The `--ws-only` path also emits `token=<value>` on the same line (the slim
-// server auto-generates a session token when HERMES_DASHBOARD_SESSION_TOKEN
-// isn't set); capture it so the desktop can pass it to the renderer.
-const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)(?:\s+token=(\S+))?/m
+const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 
 // The announcement clock starts the instant the backend process is spawned —
 // before uvicorn binds its socket. On a cold install the child must first
@@ -54,7 +51,7 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(), describeOutputTail = () => ''): Promise<{ port: number; token?: string }> {
+function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(), describeOutputTail = () => '') {
   return new Promise((resolve, reject) => {
     let buf = ''
     let done = false
@@ -82,7 +79,7 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(),
 
         if (m) {
           cleanup()
-          resolve({ port: parseInt(m[1], 10), token: m[2] || undefined })
+          resolve(parseInt(m[1], 10))
 
           return
         }
@@ -130,7 +127,7 @@ function waitForDashboardReadyFile(
   child,
   timeoutMs = resolvePortAnnounceTimeoutMs(),
   describeOutputTail = () => ''
-): Promise<{ port: number; token?: string }> {
+) {
   return new Promise((resolve, reject) => {
     let done = false
     let interval = null
@@ -156,7 +153,7 @@ function waitForDashboardReadyFile(
 
       if (port) {
         cleanup()
-        resolve({ port })
+        resolve(port)
       }
     }
 
@@ -195,7 +192,7 @@ function waitForDashboardPortAnnouncement(
     readyFile?: fs.PathOrFileDescriptor | null
     timeoutMs?: number
   } = {}
-): Promise<{ port: number; token?: string }> {
+) {
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
   const describeOutputTail = options.describeOutputTail ?? (() => '')
 

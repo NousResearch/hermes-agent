@@ -612,8 +612,10 @@ class TestInitialCwdGuard:
 
     @pytest.fixture
     def fake_home(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        home.mkdir()
+        # One level down so the parent-of-home cwd does not cover the
+        # sandbox dir, which the sandbox dir guard would refuse.
+        home = tmp_path / "homes" / "home"
+        home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
         return home
 
@@ -657,6 +659,58 @@ def host_dir(tmp_path):
         yield base
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+class TestSandboxDirGuard:
+    """A sandbox dir a sandbox could write to is refused at construction: the
+    empty file bound over hidden files lives beside the state dir, and a
+    sandbox that can replace it with a symlink would choose the next
+    spawn's bind source."""
+
+    @pytest.mark.parametrize("profile", ["workspace", "network"])
+    def test_sandbox_dir_under_a_writable_cwd_is_refused(self, tmp_path, work_dir, monkeypatch, profile):
+        root = work_dir / "sandboxes"
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile=profile))
+        assert not root.exists() or not any(root.iterdir())
+
+    def test_sandbox_dir_under_a_read_only_cwd_constructs(self, tmp_path, work_dir, monkeypatch):
+        root = work_dir / "sandboxes"
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile="restricted"))
+        try:
+            assert Path(env.get_temp_dir()).parent == root
+        finally:
+            env.cleanup()
+
+    def test_sandbox_dir_under_a_rw_operator_bind_is_refused_and_under_a_ro_bind_constructs(self, tmp_path, work_dir, monkeypatch):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(shared / "sandboxes"))
+        rw = BubblewrapConfig(binds=(BindMount(src=str(shared), dest="/mnt/shared", readonly=False),))
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=rw)
+        ro = BubblewrapConfig(binds=(BindMount(src=str(shared), dest="/mnt/shared", readonly=True),))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=ro)
+        env.cleanup()
+
+    def test_default_hermes_home_sandboxes_under_cwd_home_constructs(self, tmp_path, monkeypatch):
+        # The HERMES_HOME overlay covers the default sandbox dir, so a
+        # sandbox never sees the empty file even with HOME writable.
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(home), timeout=10)
+        try:
+            assert Path(env.get_temp_dir()).parent == home / ".hermes" / "sandboxes"
+        finally:
+            env.cleanup()
 
 
 @needs_bwrap

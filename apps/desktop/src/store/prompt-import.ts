@@ -1,8 +1,9 @@
 /**
- * Hot-import / PE-save path for prompt templates (local dogfood).
+ * Hot-import path for prompt templates.
  *
- * Agent or scripts write a job JSON; the desktop store merges it live — no
- * rebuild, no seed edit. Static dedupe only (normalize + token overlap); no LLM.
+ * Agent or scripts write a job JSON under $HERMES_HOME; the desktop store merges
+ * it live — no rebuild, no seed edit. Static dedupe only (normalize + token
+ * overlap); no LLM.
  */
 import {
   $promptTemplates,
@@ -66,18 +67,23 @@ export function normalizePromptText(text: string): string {
 
 function tokenize(s: string): Set<string> {
   const out = new Set<string>()
+
   // Latin/num runs length>1
   for (const m of s.matchAll(/[a-z0-9]{2,}/gi)) {
     out.add(m[0].toLowerCase())
   }
+
   // CJK: unigrams + bigrams so short titles still overlap
   const cjk = [...s].filter(ch => /[\u4e00-\u9fff]/.test(ch))
+
   for (const ch of cjk) {
     out.add(ch)
   }
+
   for (let i = 0; i < cjk.length - 1; i++) {
     out.add(cjk[i] + cjk[i + 1])
   }
+
   return out
 }
 
@@ -125,6 +131,7 @@ function withMark(label: string, mark: string): string {
 
 function ensureFolderByLabel(label: string, description = ''): string {
   const list = $promptTemplates.get()
+
   const existing = list.find(
     n => n.kind === 'folder' && n.parentId === null && normalizePromptLabel(n.label) === normalizePromptLabel(label)
   )
@@ -153,9 +160,11 @@ export function applyPromptImportJob(job: PromptImportJob): PromptImportResult {
 
   if (defaultFolder) {
     const id = ensureFolderByLabel(defaultFolder, job.folderDescription || '')
+
     if (!result.foldersEnsured.includes(defaultFolder)) {
       result.foldersEnsured.push(defaultFolder)
     }
+
     void id
   }
 
@@ -167,6 +176,7 @@ export function applyPromptImportJob(job: PromptImportJob): PromptImportResult {
     const label = stripMark(raw.label).trim()
     const text = raw.text
     const description = typeof raw.description === 'string' ? raw.description : ''
+
     const folderLabel =
       typeof raw.folder === 'string' && raw.folder.trim()
         ? raw.folder.trim()
@@ -184,6 +194,7 @@ export function applyPromptImportJob(job: PromptImportJob): PromptImportResult {
 
     if (exact) {
       result.skippedDup += 1
+
       continue
     }
 
@@ -208,12 +219,14 @@ export function applyPromptImportJob(job: PromptImportJob): PromptImportResult {
 
     if (folderLabel) {
       parentId = ensureFolderByLabel(folderLabel, folderLabel === defaultFolder ? job.folderDescription || '' : '')
+
       if (!result.foldersEnsured.includes(folderLabel)) {
         result.foldersEnsured.push(folderLabel)
       }
     }
 
     const finalLabel = mark ? withMark(label || 'untitled', mark) : label || 'untitled'
+
     const finalDesc =
       mark && description && !description.includes('〔与库内')
         ? `〔与库内${mark === PROMPT_IMPORT_MARK_DUP ? '重复' : '相近'}〕${description}`

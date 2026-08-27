@@ -5,6 +5,7 @@ vi.mock('@/i18n/runtime', () => ({
 }))
 
 const store = new Map<string, string>()
+
 const localStorageMock = {
   getItem: vi.fn((key: string) => store.get(key) ?? null),
   setItem: vi.fn((key: string, value: string) => {
@@ -20,16 +21,16 @@ Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock, con
 Object.defineProperty(window, 'localStorage', { value: localStorageMock, configurable: true })
 
 import {
-  $promptTemplates,
-  addTemplate,
-  resetToBuiltins
-} from './prompt-templates'
-import {
   applyPromptImportJob,
   normalizePromptText,
   parsePromptImportJob,
   tokenJaccard
 } from './prompt-import'
+import {
+  $promptTemplates,
+  addTemplate,
+  resetToBuiltins
+} from './prompt-templates'
 
 describe('prompt-import', () => {
   beforeEach(() => {
@@ -81,6 +82,7 @@ describe('prompt-import', () => {
       folder: 'Group',
       templates: [{ label: 'A', text: 'same body' }]
     })
+
     const second = applyPromptImportJob({
       folder: 'Group',
       templates: [{ label: 'B', text: 'same body' }]
@@ -92,6 +94,7 @@ describe('prompt-import', () => {
 
   it('marks near-duplicate labels', () => {
     addTemplate('苏格拉底式提问', '', 'long unique body alpha')
+
     const result = applyPromptImportJob({
       folder: 'Group',
       templates: [{ label: '苏格拉底追问', text: 'totally different body beta' }]

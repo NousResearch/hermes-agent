@@ -140,6 +140,7 @@ async function processInboxOnce(inboxDir: string): Promise<void> {
 
       if (!job) {
         await archiveJob(path, inboxDir, false)
+
         continue
       }
 
@@ -177,6 +178,7 @@ export function startPromptImportInbox(): void {
 
     if (!inboxDir) {
       console.warn('[prompt-import-inbox] no HERMES_HOME; inbox disabled')
+
       return
     }
 

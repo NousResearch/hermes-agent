@@ -60,7 +60,12 @@ class SubdirectoryHintTracker:
     and append the returned text to the tool result.
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(
+        self,
+        working_dir: Optional[str] = None,
+        *,
+        allow_install_tree: Optional[bool] = None,
+    ):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         # Explicit callers may deliberately use a Hermes checkout as their workspace.
         # A fallback cwd must opt in explicitly.

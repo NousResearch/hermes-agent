@@ -179,13 +179,17 @@ class TestSubdirectoryHintTracker:
 
 
     @pytest.mark.parametrize(
-        ("session_root", "expect_hint"),
-        [("home", False), ("hermes-agent", True)],
+        ("platform", "session_root", "expect_hint"),
+        [
+            ("tui", "home", False),
+            ("desktop", "home", False),
+            ("tui", "hermes-agent", True),
+        ],
     )
-    def test_agent_init_scopes_tui_install_tree_opt_in_to_session_root(
-        self, tmp_path, monkeypatch, session_root, expect_hint
+    def test_agent_init_scopes_install_tree_opt_in_to_session_root(
+        self, tmp_path, monkeypatch, platform, session_root, expect_hint
     ):
-        """TUI hint authority follows its effective session root, not platform."""
+        """TUI/desktop hint authority follows its effective session root."""
         from agent import runtime_cwd
         from run_agent import AIAgent
 
@@ -203,7 +207,7 @@ class TestSubdirectoryHintTracker:
             model="test-model",
             base_url="http://localhost:9/v1",
             api_key="test-key",
-            platform="tui",
+            platform=platform,
             skip_context_files=True,
             skip_memory=True,
             quiet_mode=True,

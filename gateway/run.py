@@ -12692,6 +12692,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Failed to cancel gateway loop floor timer", exc_info=True)
 
+        # Also disarm the heartbeat writer task itself (ported from #95808):
+        # once shutdown starts loading the loop, a heartbeat that keeps
+        # refreshing the file can make a draining gateway look healthy to
+        # external probes. Cancel is idempotent; the task is also in
+        # _background_tasks so this is belt-and-braces ordering, not new
+        # lifecycle.
+        heartbeat = getattr(self, "_loop_heartbeat_task", None)
+        self._loop_heartbeat_task = None
+        if heartbeat is not None:
+            try:
+                heartbeat.cancel()
+            except Exception:
+                logger.debug("Failed to cancel gateway loop heartbeat task", exc_info=True)
+
     async def _consume_clean_shutdown_marker(self, marker_path) -> int:
         """Discard orphan turn markers before consuming a clean-exit receipt.
 

@@ -171,7 +171,7 @@ class TestExecuteCodeDispatch:
 
 @needs_bwrap
 class TestExecuteCodeIntegration:
-    def test_execute_code_runs_inside_the_sandbox_under_the_default_rlimits(self, isolated_tool):
+    def test_execute_code_runs_inside_the_sandbox_under_the_default_rlimits(self, isolated_tool, work_dir):
         from tools.code_execution_tool import execute_code
 
         task_id = "execute-code"
@@ -192,4 +192,12 @@ class TestExecuteCodeIntegration:
         assert pids < 10, r["output"]
         # RLIMIT_AS from the default memory_mb applies to the script too.
         assert "ALLOC MemoryError" in lines, r["output"]
-        assert isinstance(isolated_tool.get_active_env(task_id), BubblewrapEnvironment)
+        env = isolated_tool.get_active_env(task_id)
+        assert isinstance(env, BubblewrapEnvironment)
+        # The RPC commands ran with cwd=/; the terminal's tracked cwd is untouched
+        # and the next terminal write lands in the project directory.
+        assert env.cwd == str(work_dir)
+        t = json.loads(isolated_tool.terminal_tool("touch ./after-execute-code && pwd", task_id=task_id))
+        assert t["exit_code"] == 0, t
+        assert t["output"].strip() == str(work_dir)
+        assert (work_dir / "after-execute-code").is_file()

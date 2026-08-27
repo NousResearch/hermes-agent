@@ -154,6 +154,50 @@ class TestSendStampsUnfurl:
         assert a._transport.sent["metadata"]["unfurl_links"] is False
 
 
+class TestMediaLaneStampsUnfurl:
+    """The send_media lane egresses through the connector's Slack sender too,
+    so it must stamp the same unfurl hints as the text lane."""
+
+    def _media_adapter(self, extra):
+        a = RelayAdapter(
+            PlatformConfig(extra=extra),
+            make_desc(platform="slack", supported_ops=("send", "send_media")),
+            transport=_CaptureTransport(),
+        )
+        return a
+
+    @pytest.mark.asyncio
+    async def test_media_lane_stamps_explicit_bools(self):
+        a = self._media_adapter({"slack": {"unfurl_links": False, "unfurl_media": False}})
+        _mark_slack_chat(a)
+        res = await a.send_image("chan-1", "https://img.example/x.png", caption="cap")
+        assert res.success is True
+        assert a._transport.sent["op"] == "send_media"
+        assert a._transport.sent["metadata"]["unfurl_links"] is False
+        assert a._transport.sent["metadata"]["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_media_lane_falls_back_to_descriptor_platform(self):
+        """Regression: _send_media resolved platform only from
+        _platform_by_chat; after a gateway restart a proactive media send to a
+        Slack chat missed the stamp. Must fall back to descriptor.platform."""
+        a = self._media_adapter({"slack": {"unfurl_links": False}})
+        assert not a._platform_by_chat
+        res = await a.send_image("chan-1", "https://img.example/x.png")
+        assert res.success is True
+        assert a._transport.sent["op"] == "send_media"
+        assert a._transport.sent["metadata"]["unfurl_links"] is False
+
+    @pytest.mark.asyncio
+    async def test_media_lane_omits_when_unconfigured(self):
+        a = self._media_adapter({"slack": {}})
+        _mark_slack_chat(a)
+        await a.send_image("chan-1", "https://img.example/x.png")
+        assert a._transport.sent["op"] == "send_media"
+        assert "unfurl_links" not in a._transport.sent["metadata"]
+        assert "unfurl_media" not in a._transport.sent["metadata"]
+
+
 class TestSendForPlatformStampsUnfurl:
     @pytest.mark.asyncio
     async def test_cron_lane_stamps_explicit_bools(self):

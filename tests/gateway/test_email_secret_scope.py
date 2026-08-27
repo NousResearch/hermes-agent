@@ -134,6 +134,56 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         "EMAIL_PASSWORD": "default-pw",
         "EMAIL_IMAP_HOST": "imap.default.com",
         "EMAIL_SMTP_HOST": "smtp.default.com",
+        "EMAIL_SMTP_USERNAME": "default-smtp@test.invalid",
+        "EMAIL_SMTP_PASSWORD": "default-smtp-pw",
+    }, clear=False)
+    def test_scoped_missing_smtp_overrides_fall_back_within_profile(self):
+        """A secondary profile must not borrow the default profile's SMTP
+        overrides; missing overrides fall back to that profile's legacy pair."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter, _standalone_send
+
+        scoped = {
+            "EMAIL_ADDRESS": "beta@test.invalid",
+            "EMAIL_PASSWORD": "secondary-pw",
+            "EMAIL_IMAP_HOST": "imap.secondary.example",
+            "EMAIL_SMTP_HOST": "smtp.secondary.example",
+        }
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(scoped)
+        try:
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            smtp = MagicMock()
+            with patch.object(adapter, "_connect_smtp", return_value=smtp):
+                reply = asyncio.run(adapter.send("recipient@test.invalid", "Hello"))
+            self.assertTrue(reply.success)
+            smtp.login.assert_called_once_with("beta@test.invalid", "secondary-pw")
+
+            with patch("smtplib.SMTP") as mock_smtp:
+                standalone_smtp = MagicMock()
+                mock_smtp.return_value = standalone_smtp
+                result = asyncio.run(
+                    _standalone_send(
+                        SimpleNamespace(extra={}),
+                        "recipient@test.invalid",
+                        "Hello",
+                    )
+                )
+            self.assertTrue(result["success"])
+            standalone_smtp.login.assert_called_once_with(
+                "beta@test.invalid", "secondary-pw"
+            )
+        finally:
+            ss.reset_secret_scope(token)
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "alpha@test.invalid",
+        "EMAIL_PASSWORD": "default-pw",
+        "EMAIL_IMAP_HOST": "imap.default.com",
+        "EMAIL_SMTP_HOST": "smtp.default.com",
         "EMAIL_ALLOWED_USERS": "gamma@test.invalid",
     }, clear=False)
     def test_allowed_users_uses_scope(self):

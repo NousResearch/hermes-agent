@@ -108,6 +108,46 @@ def _esecret_bool(name: str, default: bool = False) -> bool:
     return is_truthy_value(raw, default=default) if (raw := str(_get_secret(name, "")).strip()) else default
 
 
+def _resolve_smtp_credentials(address: str, password: str) -> tuple[str, str]:
+    """Resolve each optional override independently within the owning profile."""
+    username = _get_secret("EMAIL_SMTP_USERNAME", "")
+    smtp_password = _get_secret("EMAIL_SMTP_PASSWORD", "")
+    return username if username.strip() else address, smtp_password if smtp_password.strip() else password
+
+
+def _smtp_auth_error_message(code: Any) -> str:
+    """Report only a numeric SMTP status, without the server's response text."""
+    status = f" (SMTP status {code})" if type(code) is int and 100 <= code <= 599 else ""
+    return (
+        f"SMTP authentication failed{status}. "
+        "Check EMAIL_SMTP_USERNAME / EMAIL_SMTP_PASSWORD overrides "
+        "or the EMAIL_ADDRESS / EMAIL_PASSWORD legacy fallbacks."
+    )
+
+
+class _SanitizedSMTPAuthenticationError(Exception):
+    """An SMTP authentication failure safe to log or return to the sender."""
+
+
+def _smtp_login(smtp: smtplib.SMTP, username: str, password: str) -> None:
+    try:
+        smtp.login(username, password)
+        return
+    except smtplib.SMTPAuthenticationError as exc:
+        message = _smtp_auth_error_message(exc.smtp_code)
+    # Keep the server reply out of the exception chain as well as its message.
+    raise _SanitizedSMTPAuthenticationError(message)
+
+
+def _close_smtp(smtp: smtplib.SMTP) -> None:
+    """Release the connection without masking the SMTP operation's result."""
+    with suppress(Exception):
+        smtp.quit()
+        return
+    with suppress(Exception):
+        smtp.close()
+
+
 def _normalize_security(value: Any, default: str = "tls") -> str:
     """Map to ``tls`` | ``starttls`` | ``plain``; unknown values warn and fall back to *default* (a typo never downgrades to plaintext)."""
     raw = str(value or "").strip().lower().replace("-", "").replace("_", "")
@@ -178,7 +218,8 @@ def _open_smtp(host: str, port: int, security: str, ctx: ssl.SSLContext, smtp_cl
         try:
             smtp.starttls(context=ctx)
         except Exception:
-            smtp.close()
+            with suppress(Exception):
+                smtp.close()
             raise
     return smtp
 
@@ -489,6 +530,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
         self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        self._smtp_credentials = _resolve_smtp_credentials(self._address, self._password)
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
@@ -601,16 +643,15 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             smtp = self._connect_smtp()
             try:
-                smtp.login(self._address, self._password)
+                _smtp_login(smtp, *self._smtp_credentials)
             finally:
-                smtp.quit()
+                _close_smtp(smtp)
             logger.info("[Email] SMTP connection test passed.")
             return True
-        except smtplib.SMTPAuthenticationError as e:
+        except (_SanitizedSMTPAuthenticationError, smtplib.SMTPAuthenticationError) as exc:
             # Typed auth failure (535 & friends) can never self-heal, so drop out of the reconnect queue — unambiguous, unlike IMAP4.error.
-            return self._fail("[Email] SMTP authentication failed: %s", e, "email_auth_error",
-                              f"SMTP authentication failed for {self._address}: {e}. Check EMAIL_PASSWORD (for Gmail/Outlook "
-                              "this must be an app password, not the account password).", retryable=False)
+            detail = _smtp_auth_error_message(exc.smtp_code) if isinstance(exc, smtplib.SMTPAuthenticationError) else str(exc)
+            return self._fail("[Email] %s", detail, "email_auth_error", detail, retryable=False)
         except Exception as e:
             return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
                               f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
@@ -895,13 +936,10 @@ class EmailAdapter(BasePlatformAdapter):
         """Login, send, and always release the SMTP connection (quit, else close)."""
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            _smtp_login(smtp, *self._smtp_credentials)
             smtp.send_message(msg)
         finally:
-            try:
-                smtp.quit()
-            except Exception:
-                smtp.close()
+            _close_smtp(smtp)
 
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
@@ -994,16 +1032,18 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
-    except Exception as e:
         try:
-            from gateway.outbound.send import _error as _e
-            return _e(f"Email send failed: {e}")
-        except Exception:
-            return send_error(f"Email send failed: {e}")
+            _smtp_login(server, *_resolve_smtp_credentials(address, password))
+            server.send_message(msg)
+        finally:
+            _close_smtp(server)
+        return {"success": True, "platform": "email", "chat_id": chat_id}
+    except _SanitizedSMTPAuthenticationError as exc:
+        return send_error(exc)
+    except smtplib.SMTPAuthenticationError as exc:
+        return send_error(_smtp_auth_error_message(exc.smtp_code))
+    except Exception as e:
+        return send_error(f"Email send failed: {e}")
 
 
 def _is_connected(config) -> bool:

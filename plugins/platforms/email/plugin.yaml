@@ -21,6 +21,14 @@ requires_env:
     prompt: "SMTP host"
     password: false
 optional_env:
+  - name: EMAIL_SMTP_USERNAME
+    description: "SMTP username (defaults to EMAIL_ADDRESS)"
+    prompt: "SMTP username"
+    password: false
+  - name: EMAIL_SMTP_PASSWORD
+    description: "SMTP password (defaults to EMAIL_PASSWORD)"
+    prompt: "SMTP password"
+    password: true
   - name: EMAIL_SMTP_PORT
     description: "SMTP port (default 587)"
     prompt: "SMTP port"

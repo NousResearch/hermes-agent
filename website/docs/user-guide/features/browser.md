@@ -186,6 +186,17 @@ When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
+:::note Windows: the browser must be fully closed
+On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
+an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
+open — it fails fast with a "fully quit the browser and retry" message rather
+than hang or produce a signed-out session. Real-profile browsing on Windows
+therefore requires the browser **fully quit**, including any background/tray
+instance (Chrome's "continue running background apps when closed" keeps a
+`chrome.exe` alive after you close the window). macOS and Linux can copy the
+profile while the browser is running.
+:::
+
 - **Supported browsers:** Chrome, Edge, Brave, Chromium (whichever is your OS
   default). A non-Chromium default (e.g. Firefox) fails closed with a clear
   message rather than guessing.

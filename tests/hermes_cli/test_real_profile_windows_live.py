@@ -53,19 +53,15 @@ def _raw_copy_raises_while_locked(path: str) -> bool:
         return True
 
 
-@pytest.mark.xfail(reason="behavior under active revision — diagnostic drives the real fix", strict=False)
 def test_locked_profile_fails_closed_not_silent(tmp_path):
-    """The user-facing contract on Windows: when a running Chrome share-locks
-    the cookie DB, ``snapshot_real_profile`` must FAIL CLOSED with an actionable
-    'close the browser' message — never a silent signed-out / torn copy.
-
-    Live-proven fact (this runner): Chrome's share lock is strong enough that
-    even a read-only SQLite open is refused by the OS, so copy-while-running is
-    impossible on Windows. The honest behavior is to say so, not to launch a
-    broken session. (Real-profile browsing on Windows therefore requires Chrome
-    closed; Linux/macOS are unaffected. The live-drive-the-real-profile path is
-    tracked separately in #95669.)
+    """Windows contract: a running Chrome holds the cookie DB deny-all (proven
+    live — even CreateFile with all share flags fails), so copy-while-running
+    is impossible. ``snapshot_real_profile`` must FAIL FAST with an actionable
+    'fully quit the browser' message — never hang, never a silent signed-out
+    copy. (Real-profile browsing on Windows therefore requires the browser
+    fully closed incl. background/tray; the live-drive path is #95669.)
     """
+    import time as _t
     chrome = _find_chrome()
     if not chrome:
         pytest.skip("Chrome not installed on this runner")
@@ -99,27 +95,27 @@ def test_locked_profile_fails_closed_not_silent(tmp_path):
             time.sleep(1)
         assert cookies is not None, "Chrome never created a Cookies DB"
 
-        # Precondition: the DB is genuinely share-locked (raw copy fails). If a
-        # future Chrome/runner stops locking, this test isn't exercising the
-        # case — skip rather than assert a vacuous result.
         if not _raw_copy_raises_while_locked(str(cookies)):
             pytest.skip("Chrome did not share-lock the cookie DB on this runner")
 
-        # Point the resolver at our locked user-data-dir and run the REAL
-        # user-facing snapshot. It must fail closed with the actionable message.
         import hermes_cli.browser_connect as bc_mod
         orig = bc_mod.real_profile_data_dir
         bc_mod.real_profile_data_dir = lambda browser, system=None: str(user_data)
         try:
+            # Must return FAST (fail-fast lock probe), not hang. Assert both the
+            # contract and that it took well under the old 24-min hang.
+            t0 = _t.time()
             dst, err = bc.snapshot_real_profile("chrome", src=str(user_data))
+            elapsed = _t.time() - t0
         finally:
             bc_mod.real_profile_data_dir = orig
 
         assert dst is None, "must not return a (silently broken) copy while locked"
         assert err is not None
         low = err.lower()
-        assert "login data" in low or "locked" in low, f"unclear error: {err}"
-        assert "close" in low, f"error must tell the user to close the browser: {err}"
+        assert "locked" in low or "running" in low, f"unclear error: {err}"
+        assert "quit" in low or "close" in low, f"error must tell the user to quit: {err}"
+        assert elapsed < 30, f"snapshot hung on a locked profile ({elapsed:.0f}s) — must fail fast"
     finally:
         proc.terminate()
         try:

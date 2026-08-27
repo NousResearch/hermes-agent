@@ -630,6 +630,38 @@ def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
 
 
+def _profile_cookie_db(src: str, source_profile: str) -> str | None:
+    """Path to the active profile's cookie DB (modern Network/ first)."""
+    for rel in (os.path.join("Network", "Cookies"), "Cookies"):
+        cand = os.path.join(src, source_profile, rel)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _profile_is_locked(src: str, source_profile: str) -> bool:
+    """True when the active profile's cookie DB can't be opened (browser running).
+
+    A running browser holds Cookies with a deny-all share mode on Windows
+    (proven live: even CreateFile with all share flags fails), so a plain open
+    raises PermissionError. This is a FAST probe — one open attempt, no copy —
+    used to fail closed BEFORE the heavy snapshot so a locked profile can never
+    hang the launch on a blocking file op. POSIX has no mandatory locking, so
+    the open succeeds and this returns False (copy proceeds normally).
+    """
+    db = _profile_cookie_db(src, source_profile)
+    if not db:
+        return False  # nothing to lock; let the copy path handle "no cookies"
+    try:
+        with open(db, "rb"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        # Other errors (transient) — don't declare locked; let the copy try.
+        return False
+
+
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir.
 
@@ -657,6 +689,17 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         )
     dst = real_profile_copy_dir(browser)
     source_profile = _last_used_profile(src)
+    # Fast lock probe BEFORE any copy: a running browser holds the cookie DB
+    # deny-all (Windows), and a blocking file op on it can hang the launch for
+    # minutes. Bail immediately with an actionable message instead. On POSIX
+    # this never trips (no mandatory locking) so copy-while-running still works.
+    if _profile_is_locked(src, source_profile):
+        return None, (
+            f"{browser} is running and has its profile locked, so its login "
+            "data can't be copied. Fully quit the browser (including any "
+            "background/tray instance) and retry, or turn "
+            "browser.use_real_profile off."
+        )
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated. A half-written
     # tree (no marker) is treated as absent and rebuilt — otherwise a torn first

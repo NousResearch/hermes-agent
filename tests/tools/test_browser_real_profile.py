@@ -709,6 +709,53 @@ class TestReviewRound3:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
         bc.cleanup_real_profile_snapshots()  # no raise
 
+    # ── Windows lock probe (unit; the live share-lock is proven in the
+    #    windows-latest E2E — here we cover the probe's contract portably) ──
+    def test_lock_probe_false_when_readable(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        (tmp_path / "Default" / "Network").mkdir(parents=True)
+        (tmp_path / "Default" / "Network" / "Cookies").write_bytes(b"db")
+        assert bc._profile_is_locked(str(tmp_path), "Default") is False
+
+    def test_lock_probe_false_when_no_cookie_db(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        (tmp_path / "Default").mkdir(parents=True)
+        assert bc._profile_is_locked(str(tmp_path), "Default") is False
+
+    def test_lock_probe_true_on_permissionerror(self, tmp_path, monkeypatch):
+        import hermes_cli.browser_connect as bc
+        (tmp_path / "Default").mkdir(parents=True)
+        (tmp_path / "Default" / "Cookies").write_bytes(b"db")
+        import builtins
+        real_open = builtins.open
+
+        def deny(path, *a, **k):
+            if str(path).endswith("Cookies"):
+                raise PermissionError("locked")
+            return real_open(path, *a, **k)
+
+        monkeypatch.setattr(builtins, "open", deny)
+        assert bc._profile_is_locked(str(tmp_path), "Default") is True
+
+    def test_snapshot_fails_fast_when_locked(self, tmp_path, monkeypatch):
+        """snapshot_real_profile bails with the actionable message when the
+        active profile's cookie DB is locked — never proceeds to a heavy copy."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        called = {"copytree": 0}
+        import shutil as _sh
+        orig_ct = _sh.copytree
+        monkeypatch.setattr(_sh, "copytree",
+                            lambda *a, **k: (called.__setitem__("copytree", called["copytree"] + 1), orig_ct(*a, **k))[1])
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert dst is None
+        assert err and ("locked" in err.lower() or "running" in err.lower())
+        assert "quit" in err.lower()
+        assert called["copytree"] == 0  # bailed before any copy
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         import tools.browser_tool as bt
         called = {"n": 0}

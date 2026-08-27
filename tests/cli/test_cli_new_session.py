@@ -179,6 +179,41 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
 
 
+def test_new_session_logs_when_session_row_creation_fails(tmp_path, caplog):
+    """A failed session-row INSERT on /new must leave a diagnostic trace.
+
+    ``SessionDB.create_session`` does not catch its own exceptions, so a
+    transient failure (SQLite lock, disk full) propagates here. Swallowing it
+    silently leaves ``_session_db_created`` False with nothing in the log to
+    explain why the row is missing for the rest of the turn.
+    """
+    import logging
+
+    cli = _prepare_cli_with_active_session(tmp_path)
+
+    real_create = cli._session_db.create_session
+    calls = {"n": 0}
+
+    def boom(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is locked")
+        return real_create(*args, **kwargs)
+
+    cli._session_db.create_session = boom
+
+    with caplog.at_level(logging.WARNING):
+        cli.process_command("/new")
+
+    assert calls["n"] >= 1, "create_session should have been attempted"
+    assert cli.agent._session_db_created is False
+    assert any(
+        "session" in r.message.lower()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    ), "a failed session-row creation must be logged, not swallowed"
+
+
 def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
     """The context-engine on_session_end must fire during /new itself.
 

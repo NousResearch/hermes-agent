@@ -291,6 +291,19 @@ def _prompt_model_selection(
             return None
         return _confirmed_selection(custom) if custom else None
 
+    # Reorder the catalog from the configured primary/fallback chain first.
+    # The upstream plan sections and current-model cursor remain authoritative.
+    if confirm_provider:
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.inventory import configured_model_order, order_models_for_provider
+
+            model_ids = order_models_for_provider(
+                list(model_ids), confirm_provider, configured_model_order(load_config()),
+            )
+        except Exception as exc:
+            logger.debug("Could not apply configured model order for %s: %s", confirm_provider, exc)
+
     # All models for column-width computation (selectable + unavailable). Plan usage is Nous-only chrome.
     window_usage = usage if sale_chrome else None
     ordered, sections, start = _picker_order(model_ids, current_model, window_usage)

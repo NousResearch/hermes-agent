@@ -13,8 +13,11 @@ Layout of the argv (later mounts overlay earlier ones):
 3. the initial cwd, read-write for workspace and network, read-only for
    restricted
 4. operator binds from terminal.bubblewrap_binds, minus sensitive sources
-5. the per-environment state dir read-write at the same path
-6. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
+5. the sensitive overlays: a tmpfs over each sensitive directory and an
+   empty file over each sensitive file that exists on the host, then the
+   same for HERMES_HOME
+6. the per-environment state dir read-write at the same path
+7. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
 """
 
@@ -172,6 +175,36 @@ def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
     )
 
 
+def empty_file_path(state_dir: str) -> str:
+    """Host path of the zero-length file bound over sensitive files.
+
+    It sits beside the state dir, not inside it: the state dir is bound
+    read-write into every spawn, so a file kept there could be rewritten
+    from inside the sandbox and would then show at the hidden paths.
+    """
+    return state_dir.rstrip(os.sep) + ".empty"
+
+
+def sensitive_overlay_args(home: str, hermes_home: str, state_dir: str) -> list[str]:
+    """Mount directives that hide the sensitive set and HERMES_HOME.
+
+    A directory gets a fresh tmpfs, a file gets the empty file bound over
+    it, and a path missing on the host gets nothing so bwrap never fails
+    on an absent mount target. On bwrap 0.9.0, ``--tmpfs`` on a
+    file path fails with "Not a directory", and a ro-bind of /dev/null
+    mounts but reads fail with EACCES because bwrap remounts binds nodev
+    inside the user namespace; only the empty-file bind works for files.
+    """
+    empty = empty_file_path(state_dir)
+    argv: list[str] = []
+    for path in sensitive_paths(home, hermes_home):
+        if os.path.isdir(path):
+            argv += ["--tmpfs", path]
+        elif os.path.exists(path):
+            argv += ["--ro-bind", empty, path]
+    return argv
+
+
 def _is_within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
@@ -242,9 +275,14 @@ def build_bwrap_args(
     for bind in filter_binds(config.binds, home, hermes_home):
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
 
+    # The overlays come after the cwd and operator binds so a bind of HOME
+    # itself still hides what sits under it, and before the state dir so
+    # that stays reachable under a hidden HERMES_HOME.
+    argv += sensitive_overlay_args(home, hermes_home, state_dir)
+
     # The state dir holds the shell snapshot and cwd file; it is bound after
-    # the operator binds (and, once added, after the sensitive overlays) so
-    # it stays writable at the same path in every spawn.
+    # the sensitive overlays so it stays writable at the same path in every
+    # spawn.
     argv += ["--bind", state_dir, state_dir]
 
     argv += ["--chdir", tracked_cwd, "--"]
@@ -256,8 +294,8 @@ class BubblewrapEnvironment(LocalEnvironment):
 
     Bash resolution, the run env, missing-cwd recovery and process-group
     kill come from LocalEnvironment. This class adds the argv prefix, a
-    per-instance state dir for the shell snapshot and cwd file, and its
-    removal on cleanup.
+    per-instance state dir for the shell snapshot and cwd file, the empty
+    file bound over sensitive files, and their removal on cleanup.
     """
 
     def __init__(
@@ -281,6 +319,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         # bootstrap straight away, so the state dir must exist first.
         self._state_dir = str(get_sandbox_dir() / f"bwrap-{uuid.uuid4().hex[:12]}")
         os.makedirs(self._state_dir, mode=0o700)
+        # Read-only and outside the state dir: nothing in a sandbox can
+        # write to what shows at the hidden file paths.
+        self._empty_file = empty_file_path(self._state_dir)
+        os.close(os.open(self._empty_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400))
         super().__init__(cwd=self._initial_cwd, timeout=timeout, env=env)
 
     def get_temp_dir(self) -> str:
@@ -301,3 +343,7 @@ class BubblewrapEnvironment(LocalEnvironment):
     def cleanup(self):
         super().cleanup()
         shutil.rmtree(self._state_dir, ignore_errors=True)
+        try:
+            os.unlink(self._empty_file)
+        except OSError:
+            pass

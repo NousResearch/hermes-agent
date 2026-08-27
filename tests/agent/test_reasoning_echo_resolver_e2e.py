@@ -1,7 +1,7 @@
 """Production-shape coverage for reasoning_echo: real resolver + real init read.
 
 Salvaged from #73811 per the consolidation triage on #76503 and adapted to this
-PR's per-active-provider `model.reasoning_echo` design.
+PR's route-scoped custom-provider replay design.
 
 Every existing reasoning_echo test hand-sets `agent._reasoning_echo_flag` (and
 `provider`/`base_url`). None drives the REAL config path that `init_agent` uses:
@@ -24,12 +24,20 @@ path-keyed, so this is hermetic) — no live server, no hand-set flag.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from agent.agent_runtime_helpers import copy_reasoning_content_for_api
+from agent.agent_init import _configure_custom_provider_reasoning_replay
 from run_agent import AIAgent
 
 
-def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
+def _write_home(
+    tmp_path,
+    monkeypatch,
+    reasoning_echo: bool,
+    reasoning_replay_field: str | None = None,
+):
     """Point HERMES_HOME at a temp profile declaring a named custom provider."""
     home = tmp_path / "hermes"
     home.mkdir()
@@ -46,6 +54,8 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
         "    base_url: http://127.0.0.1:8098/v1",
         "    key_env: LLAMACPP_KEY",
     ]
+    if reasoning_replay_field is not None:
+        lines.append(f"    reasoning_replay_field: {reasoning_replay_field}")
     (home / "config.yaml").write_text("\n".join(lines) + "\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Drop any path-keyed config cache from a prior test.
@@ -65,10 +75,15 @@ def _agent_with_init_flag() -> AIAgent:
     agent._reasoning_echo_flag = bool(
         (load_config_readonly().get("model") or {}).get("reasoning_echo")
     )
+    agent._reasoning_replay_field = None
     agent.provider = "custom"          # what the resolver returns for a named custom provider
     agent.base_url = "http://127.0.0.1:8098/v1"
     agent.model = "kimi-k3"
     agent.verbose_logging = False
+    from hermes_cli.config import get_compatible_custom_providers
+    _configure_custom_provider_reasoning_replay(
+        agent, get_compatible_custom_providers()
+    )
     return agent
 
 
@@ -106,3 +121,59 @@ class TestReasoningEchoResolverE2E:
         api_msg = dict(source)
         copy_reasoning_content_for_api(agent, source, api_msg)
         assert "reasoning_content" not in api_msg
+
+    def test_explicit_replay_field_materializes_from_real_config(self, tmp_path, monkeypatch):
+        _write_home(
+            tmp_path,
+            monkeypatch,
+            reasoning_echo=False,
+            reasoning_replay_field="Reasoning",
+        )
+
+        agent = _agent_with_init_flag()
+        assert agent._reasoning_replay_field == "reasoning"
+
+    def test_explicit_reasoning_field_reaches_api_message(self, tmp_path, monkeypatch):
+        _write_home(
+            tmp_path,
+            monkeypatch,
+            reasoning_echo=False,
+            reasoning_replay_field="reasoning",
+        )
+        agent = _agent_with_init_flag()
+        source = {
+            "role": "assistant",
+            "content": "calling a tool",
+            "reasoning": "SYNTHETIC_REASONING_MARKER",
+        }
+        api_msg = {"role": "assistant", "content": "calling a tool"}
+
+        copy_reasoning_content_for_api(agent, source, api_msg)
+
+        assert api_msg["reasoning"] == "SYNTHETIC_REASONING_MARKER"
+
+    def test_agent_init_materializes_explicit_replay_field(self, tmp_path, monkeypatch):
+        _write_home(
+            tmp_path,
+            monkeypatch,
+            reasoning_echo=False,
+            reasoning_replay_field="reasoning",
+        )
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="http://127.0.0.1:8098/v1",
+                provider="custom:llamacpp-k3",
+                model="kimi-k3",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._reasoning_replay_field == "reasoning"
+        assert agent.context_compressor.replay_historical_reasoning is True

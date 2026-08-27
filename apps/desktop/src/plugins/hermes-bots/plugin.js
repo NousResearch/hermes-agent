@@ -13444,27 +13444,54 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // #94570 shell rewired onto the real primitive (#91868/#94569): the button
+  // must stop the ROUND, not just spray per-member interrupts — without the
+  // epoch bump + holds the loop marched on to the next member. Thread scope:
+  // the run being stopped is the one the latest activity belongs to.
+  const stopRoomRun = async () => {
+    await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
+    host.notify({ kind: 'success', message: `Stopped ${group} — remaining turns are held until you resume` })
+  }
+
   const activityPanel = jsxs('div', {
     className: 'border-b border-(--ui-stroke-secondary)',
     children: [
-      jsxs('button', {
-        type: 'button',
-        'aria-expanded': activityOpen,
-        'aria-controls': `group-activity:${group}`,
-        title: activityOpen ? 'Hide room activity' : 'Show room activity',
-        className:
-          'flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
-        onClick: () => setActivityOpen(prev => !prev),
+      jsxs('div', {
+        className: 'flex items-center gap-1',
         children: [
-          jsx(Codicon, {
-            name: activityOpen ? 'chevron-down' : 'chevron-right',
-            className: 'shrink-0 text-[0.65rem]'
+          jsxs('button', {
+            type: 'button',
+            'aria-expanded': activityOpen,
+            'aria-controls': `group-activity:${group}`,
+            title: activityOpen ? 'Hide room activity' : 'Show room activity',
+            className:
+              'flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground',
+            onClick: () => setActivityOpen(prev => !prev),
+            children: [
+              jsx(Codicon, {
+                name: activityOpen ? 'chevron-down' : 'chevron-right',
+                className: 'shrink-0 text-[0.65rem]'
+              }),
+              jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
+              latestActivity
+                ? jsx('span', {
+                    className: 'min-w-0 flex-1 truncate',
+                    children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+                  })
+                : null
+            ]
           }),
-          jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
-          latestActivity
-            ? jsx('span', {
-                className: 'min-w-0 flex-1 truncate',
-                children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+          room.running
+            ? jsx('button', {
+                type: 'button',
+                title: 'Stop this run — interrupts the member on turn and holds the rest',
+                className:
+                  'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.7rem] font-medium text-(--ui-accent) transition-colors hover:bg-(--chrome-action-hover)',
+                onClick: () => void stopRoomRun(),
+                children: [
+                  jsx(Codicon, { name: 'debug-stop', className: 'shrink-0 text-[0.75rem]' }),
+                  'Stop'
+                ]
               })
             : null
         ]
@@ -13491,7 +13518,20 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
                         jsx('span', {
                           className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
                           children: relativeTime(event.at)
-                        })
+                        }),
+                        event.kind === 'working'
+                          ? jsx('button', {
+                              type: 'button',
+                              title: 'Stop this run — interrupts the member on turn and holds the rest',
+                              className:
+                                'inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[0.65rem] font-medium text-(--ui-accent) transition-colors hover:bg-(--chrome-action-hover)',
+                              onClick: () => void stopRoomRun(),
+                              children: [
+                                jsx(Codicon, { name: 'debug-stop', className: 'shrink-0 text-[0.7rem]' }),
+                                'Stop'
+                              ]
+                            })
+                          : null
                       ]
                     }, `${event.at}:${i}`)
                   )

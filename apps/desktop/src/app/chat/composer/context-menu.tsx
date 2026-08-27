@@ -19,6 +19,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import {
+  ChevronDown,
+  ChevronRight,
   Clipboard,
   FileText,
   FolderOpen,
@@ -33,14 +35,23 @@ import {
 import { cn } from '@/lib/utils'
 import {
   $promptTemplates,
+  addFolder,
   addTemplate,
+  canIndent,
+  canMoveDown,
+  canMoveUp,
+  canOutdent,
   deleteTemplate,
   ensureSeeded,
+  indentNode,
   moveTemplateDown,
   moveTemplateUp,
+  outdentNode,
   type PromptTemplate,
   resetToBuiltins,
-  updateTemplate
+  toggleFolderCollapsed,
+  updateTemplate,
+  visibleTreeRows
 } from '@/store/prompt-templates'
 
 import { useComposerAttachmentProviders } from './contrib'
@@ -148,6 +159,7 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
   const { t } = useI18n()
   const c = t.composer
   const templates = useStore($promptTemplates)
+  const rows = visibleTreeRows(templates)
   const [editingId, setEditingId] = useState<string | null>(null)
 
   // Seed built-in templates (locale-aware) the first time the dialog opens.
@@ -171,6 +183,11 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
     setEditingId(created.id)
   }
 
+  function handleAddFolder() {
+    const created = addFolder()
+    setEditingId(created.id)
+  }
+
   function handleReset() {
     if (window.confirm(c.templateResetConfirm)) {
       resetToBuiltins()
@@ -179,8 +196,20 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
   }
 
   function handleInsert(template: PromptTemplate) {
+    if (template.kind === 'folder') {
+      return
+    }
+
     onInsertText(template.text)
     onOpenChange(false)
+  }
+
+  function handleDelete(node: PromptTemplate) {
+    const message = node.kind === 'folder' ? c.templateConfirmDeleteFolder : c.templateConfirmDelete
+
+    if (window.confirm(message)) {
+      deleteTemplate(node.id)
+    }
   }
 
   return (
@@ -195,28 +224,31 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
           <p className="py-6 text-center text-sm text-muted-foreground">{c.templateEmpty}</p>
         ) : (
           <ul className="grid max-h-[40vh] gap-1 overflow-y-auto">
-            {templates.map((template, index) => (
-              <li key={template.id}>
-                {editingId === template.id ? (
+            {rows.map(({ depth, node }) => (
+              <li key={node.id}>
+                {editingId === node.id ? (
                   <TemplateEditor
+                    depth={depth}
                     onCancel={() => setEditingId(null)}
                     onSave={() => setEditingId(null)}
-                    template={template}
+                    template={node}
                   />
                 ) : (
                   <TemplateRow
-                    canMoveDown={index < templates.length - 1}
-                    canMoveUp={index > 0}
-                    onDelete={() => {
-                      if (window.confirm(c.templateConfirmDelete)) {
-                        deleteTemplate(template.id)
-                      }
-                    }}
-                    onEdit={() => setEditingId(template.id)}
-                    onInsert={() => handleInsert(template)}
-                    onMoveDown={() => moveTemplateDown(template.id)}
-                    onMoveUp={() => moveTemplateUp(template.id)}
-                    template={template}
+                    canIndent={canIndent(node.id, templates)}
+                    canMoveDown={canMoveDown(node.id, templates)}
+                    canMoveUp={canMoveUp(node.id, templates)}
+                    canOutdent={canOutdent(node.id, templates)}
+                    depth={depth}
+                    onDelete={() => handleDelete(node)}
+                    onEdit={() => setEditingId(node.id)}
+                    onIndent={() => indentNode(node.id)}
+                    onInsert={() => handleInsert(node)}
+                    onMoveDown={() => moveTemplateDown(node.id)}
+                    onMoveUp={() => moveTemplateUp(node.id)}
+                    onOutdent={() => outdentNode(node.id)}
+                    onToggleFolder={() => toggleFolderCollapsed(node.id)}
+                    template={node}
                   />
                 )}
               </li>
@@ -224,14 +256,20 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
           </ul>
         )}
 
-        <div className="flex items-center justify-between border-t pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
           <Button onClick={handleReset} size="sm" variant="ghost">
             {c.templateReset}
           </Button>
-          <Button onClick={handleAdd} size="sm" variant="outline">
-            <Plus className="size-4" />
-            {c.templateAdd}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleAddFolder} size="sm" variant="outline">
+              <FolderOpen className="size-4" />
+              {c.templateAddFolder}
+            </Button>
+            <Button onClick={handleAdd} size="sm" variant="outline">
+              <Plus className="size-4" />
+              {c.templateAdd}
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -239,46 +277,86 @@ function PromptTemplatesDialog({ onInsertText, onOpenChange, open }: PromptTempl
 }
 
 function TemplateRow({
-  canMoveDown,
-  canMoveUp,
+  canIndent: indentable,
+  canMoveDown: downable,
+  canMoveUp: upable,
+  canOutdent: outdentable,
+  depth,
   onDelete,
   onEdit,
+  onIndent,
   onInsert,
   onMoveDown,
   onMoveUp,
+  onOutdent,
+  onToggleFolder,
   template
 }: TemplateRowProps) {
   const { t } = useI18n()
   const c = t.composer
+  const isFolder = template.kind === 'folder'
 
   return (
-    <div className="group/template flex w-full items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background)">
+    <div
+      className="group/template flex w-full items-start gap-1 rounded-md border border-transparent py-2 pr-2.5 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background)"
+      style={{ paddingLeft: `${0.625 + depth * 0.75}rem` }}
+    >
+      {isFolder ? (
+        <button
+          aria-expanded={!template.collapsed}
+          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={onToggleFolder}
+          type="button"
+        >
+          {template.collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+        </button>
+      ) : (
+        <span className="mt-0.5 size-5 shrink-0" />
+      )}
+
       <button
         className="grid min-w-0 flex-1 cursor-pointer items-start gap-0.5 text-left"
-        onClick={onInsert}
+        onClick={isFolder ? onToggleFolder : onInsert}
         type="button"
       >
-        <span className="text-sm font-medium text-foreground">
-          {template.label || <span className="text-muted-foreground italic">{c.templateLabelPlaceholder}</span>}
+        <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+          {isFolder ? <FolderOpen className="size-3.5 shrink-0 text-(--ui-text-tertiary)" /> : null}
+          {template.label || (
+            <span className="text-muted-foreground italic">
+              {isFolder ? c.templateFolderPlaceholder : c.templateLabelPlaceholder}
+            </span>
+          )}
         </span>
-        {template.description && (
+        {!isFolder && template.description ? (
           <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             {template.description}
           </span>
-        )}
-        <span className="truncate text-[length:var(--conversation-caption-font-size)] text-muted-foreground/70">
-          {template.text}
-        </span>
+        ) : null}
+        {!isFolder ? (
+          <span className="truncate text-[length:var(--conversation-caption-font-size)] text-muted-foreground/70">
+            {template.text}
+          </span>
+        ) : null}
       </button>
 
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/template:opacity-100">
+        <Tip label={c.templateOutdent} side="top">
+          <Button disabled={!outdentable} onClick={onOutdent} size="icon" type="button" variant="ghost">
+            <Codicon name="chevron-left" size="0.875rem" />
+          </Button>
+        </Tip>
+        <Tip label={c.templateIndent} side="top">
+          <Button disabled={!indentable} onClick={onIndent} size="icon" type="button" variant="ghost">
+            <Codicon name="chevron-right" size="0.875rem" />
+          </Button>
+        </Tip>
         <Tip label={c.templateMoveUp} side="top">
-          <Button disabled={!canMoveUp} onClick={onMoveUp} size="icon" type="button" variant="ghost">
+          <Button disabled={!upable} onClick={onMoveUp} size="icon" type="button" variant="ghost">
             <Codicon name="chevron-up" size="0.875rem" />
           </Button>
         </Tip>
         <Tip label={c.templateMoveDown} side="top">
-          <Button disabled={!canMoveDown} onClick={onMoveDown} size="icon" type="button" variant="ghost">
+          <Button disabled={!downable} onClick={onMoveDown} size="icon" type="button" variant="ghost">
             <Codicon name="chevron-down" size="0.875rem" />
           </Button>
         </Tip>
@@ -297,9 +375,10 @@ function TemplateRow({
   )
 }
 
-function TemplateEditor({ onCancel, onSave, template }: TemplateEditorProps) {
+function TemplateEditor({ depth, onCancel, onSave, template }: TemplateEditorProps) {
   const { t } = useI18n()
   const c = t.composer
+  const isFolder = template.kind === 'folder'
   const [label, setLabel] = useState(template.label)
   const [description, setDescription] = useState(template.description)
   const [text, setText] = useState(template.text)
@@ -310,28 +389,45 @@ function TemplateEditor({ onCancel, onSave, template }: TemplateEditorProps) {
   }
 
   function handleSave() {
-    updateTemplate(template.id, {
-      label: label.trim(),
-      description: description.trim(),
-      text: text.trim()
-    })
+    if (isFolder) {
+      updateTemplate(template.id, { label: label.trim() })
+    } else {
+      updateTemplate(template.id, {
+        label: label.trim(),
+        description: description.trim(),
+        text: text.trim()
+      })
+    }
+
     onSave()
   }
 
   return (
-    <div className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-3">
+    <div
+      className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary) p-3"
+      style={{ marginLeft: `${depth * 0.75}rem` }}
+    >
       <Input
         onChange={e => setLabel(e.target.value)}
-        placeholder={c.templateLabelPlaceholder}
+        placeholder={isFolder ? c.templateFolderPlaceholder : c.templateLabelPlaceholder}
         ref={labelRef}
         value={label}
       />
-      <Input
-        onChange={e => setDescription(e.target.value)}
-        placeholder={c.templateDescPlaceholder}
-        value={description}
-      />
-      <Textarea onChange={e => setText(e.target.value)} placeholder={c.templateTextPlaceholder} rows={3} value={text} />
+      {isFolder ? null : (
+        <>
+          <Input
+            onChange={e => setDescription(e.target.value)}
+            placeholder={c.templateDescPlaceholder}
+            value={description}
+          />
+          <Textarea
+            onChange={e => setText(e.target.value)}
+            placeholder={c.templateTextPlaceholder}
+            rows={3}
+            value={text}
+          />
+        </>
+      )}
       <div className="flex justify-end gap-2">
         <Button onClick={onCancel} size="sm" type="button" variant="ghost">
           {c.templateCancel}
@@ -382,17 +478,24 @@ interface PromptTemplatesDialogProps {
 }
 
 interface TemplateRowProps {
+  canIndent: boolean
   canMoveDown: boolean
   canMoveUp: boolean
+  canOutdent: boolean
+  depth: number
   onDelete: () => void
   onEdit: () => void
+  onIndent: () => void
   onInsert: () => void
   onMoveDown: () => void
   onMoveUp: () => void
+  onOutdent: () => void
+  onToggleFolder: () => void
   template: PromptTemplate
 }
 
 interface TemplateEditorProps {
+  depth: number
   onCancel: () => void
   onSave: () => void
   template: PromptTemplate

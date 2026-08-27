@@ -33,14 +33,19 @@ vi.stubGlobal('window', { localStorage: localStorageMock })
 
 import {
   $promptTemplates,
+  addFolder,
   addTemplate,
   deleteTemplate,
   ensureSeeded,
   getBuiltInTemplates,
+  indentNode,
   moveTemplateDown,
   moveTemplateUp,
+  outdentNode,
   resetToBuiltins,
-  updateTemplate
+  toggleFolderCollapsed,
+  updateTemplate,
+  visibleTreeRows
 } from './prompt-templates'
 
 describe('prompt-templates store', () => {
@@ -284,6 +289,78 @@ describe('prompt-templates store', () => {
         'hermes.desktop.prompt-templates',
         expect.stringContaining('"label":"Persisted"')
       )
+    })
+  })
+
+  describe('folders', () => {
+    it('nests templates under a folder and hides them when collapsed', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Kazike')
+      const child = addTemplate('Socratic', '', 'Ask why', folder.id)
+
+      expect(child.parentId).toBe(folder.id)
+      expect(visibleTreeRows().map(r => r.node.id)).toEqual([folder.id, child.id])
+      expect(visibleTreeRows().map(r => r.depth)).toEqual([0, 1])
+
+      toggleFolderCollapsed(folder.id)
+
+      expect(visibleTreeRows().map(r => r.node.id)).toEqual([folder.id])
+    })
+
+    it('deletes a folder and its descendants', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Pack')
+      addTemplate('A', '', 'a', folder.id)
+      addTemplate('B', '', 'b', folder.id)
+      addTemplate('Root', '', 'r')
+
+      deleteTemplate(folder.id)
+
+      expect($promptTemplates.get().map(s => s.id)).toEqual(
+        $promptTemplates.get().filter(s => s.label === 'Root').map(s => s.id)
+      )
+      expect($promptTemplates.get()).toHaveLength(1)
+      expect($promptTemplates.get()[0].label).toBe('Root')
+    })
+
+    it('indents under the previous sibling folder and outdents back to root', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('Kazike')
+      const tpl = addTemplate('Nested', '', 'x')
+
+      indentNode(tpl.id)
+
+      expect($promptTemplates.get().find(s => s.id === tpl.id)?.parentId).toBe(folder.id)
+
+      outdentNode(tpl.id)
+
+      expect($promptTemplates.get().find(s => s.id === tpl.id)?.parentId).toBeNull()
+    })
+
+    it('moves only among siblings', () => {
+      $promptTemplates.set([])
+      const folder = addFolder('G')
+      const a = addTemplate('A', '', 'a', folder.id)
+      const b = addTemplate('B', '', 'b', folder.id)
+      addTemplate('Root', '', 'r')
+
+      moveTemplateDown(a.id)
+
+      const kids = $promptTemplates.get().filter(s => s.parentId === folder.id).map(s => s.id)
+      expect(kids).toEqual([b.id, a.id])
+    })
+
+    it('normalizes legacy v1 rows without kind/parentId', async () => {
+      store.set(
+        'hermes.desktop.prompt-templates',
+        JSON.stringify([{ id: 'legacy', label: 'L', description: 'd', text: 't' }])
+      )
+      vi.resetModules()
+
+      const reloaded = await import('./prompt-templates')
+      const [row] = reloaded.$promptTemplates.get()
+
+      expect(row).toMatchObject({ id: 'legacy', kind: 'template', parentId: null, label: 'L', text: 't' })
     })
   })
 })

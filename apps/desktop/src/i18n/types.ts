@@ -2614,11 +2614,16 @@ export interface Translations {
     templatesDesc: string
     templates: Record<string, { label: string; description: string; text: string }>
     templateAdd: string
+    templateAddFolder: string
     templateEdit: string
     templateDelete: string
     templateMoveUp: string
     templateMoveDown: string
+    templateIndent: string
+    templateOutdent: string
     templateReset: string
+    templateFolderPlaceholder: string
+    templateConfirmDeleteFolder: string
     templateResetConfirm: string
     templateLabelPlaceholder: string
     templateDescPlaceholder: string
